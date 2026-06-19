@@ -9,7 +9,7 @@
   "scripts": {
     "dev:workbench": "pnpm --filter @toee/workbench dev",
     "dev:gateway": "pnpm --filter @toee/hermes-gateway dev",
-    "eval": "node scripts/eval.mjs",
+    "eval": "tsx packages/eval-runner/src/cli.ts",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run"

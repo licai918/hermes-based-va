@@ -19,3 +19,6 @@ dist/
 build/
 .cache/
 .scratch/
+
+# Launch Eval run artifacts (ADR-0074); reports are generated per run
+eval/reports/

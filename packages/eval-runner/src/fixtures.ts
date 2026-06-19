@@ -475,3 +475,56 @@ export function loadScenario(
   }
   return match;
 }
+
+// ---------------------------------------------------------------------------
+// policy_publish suite (ADR-0075, ADR-0121)
+// ---------------------------------------------------------------------------
+
+export interface PolicySlotMap {
+  regression_subset: number[];
+  slots: Record<string, { scenario_ids: number[] }>;
+}
+
+export function loadPolicySlotMap(evalDir: string): PolicySlotMap {
+  const path = join(evalDir, "policy_slot_map.yaml");
+  if (!existsSync(path)) {
+    throw new Error(`Policy slot map not found at ${path}.`);
+  }
+  let raw: unknown;
+  try {
+    raw = parseYaml(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`Failed to parse ${path}: ${(error as Error).message}`);
+  }
+  if (!isObject(raw) || !isObject(raw.slots)) {
+    throw new Error(`Policy slot map at ${path} must define "slots".`);
+  }
+  return {
+    regression_subset: Array.isArray(raw.regression_subset)
+      ? (raw.regression_subset as number[])
+      : [],
+    slots: raw.slots as PolicySlotMap["slots"],
+  };
+}
+
+// A policy_publish run executes the scenarios mapped to one Required Operational
+// Policy Slot plus the standing regression subset (ADR-0075).
+export function loadPolicyPublishSuite(
+  evalDir: string,
+  slot: string,
+): MergedScenario[] {
+  const map = loadPolicySlotMap(evalDir);
+  const slotDef = map.slots[slot];
+  if (slotDef === undefined) {
+    throw new Error(
+      `Unknown policy slot "${slot}" in ${join(evalDir, "policy_slot_map.yaml")}.`,
+    );
+  }
+  const ids = new Set<number>([
+    ...(slotDef.scenario_ids ?? []),
+    ...map.regression_subset,
+  ]);
+  return loadSuite("text_first_launch", evalDir).filter((scenario) =>
+    ids.has(Number.parseInt(scenario.scenarioId, 10)),
+  );
+}
