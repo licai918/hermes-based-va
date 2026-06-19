@@ -1,0 +1,12 @@
+{
+  "name": "@toee/workbench",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "node -e \"console.log('workbench dev stub - Next.js app + auth shell land in slice #22 (issue #24)')\""
+  },
+  "dependencies": {
+    "@toee/hermes-runtime": "workspace:*",
+    "@toee/shared": "workspace:*"
+  }
+}
