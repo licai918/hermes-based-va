@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node -e \"console.log('gateway dev stub - Fastify Textline pipeline lands in slice #15 (issue #17)')\""
+    "dev": "node -e \"console.log('gateway dev stub - Fastify server lands in issue #17; SDK-free pipeline primitives are live')\"",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@toee/domain-adapters": "workspace:*",
