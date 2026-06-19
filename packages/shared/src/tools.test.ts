@@ -1,0 +1,70 @@
+import { describe, it, expect } from "vitest";
+import {
+  TOOL_CATALOG,
+  TOOL_NAMES,
+  isToolName,
+  isToolAction,
+} from "./tools";
+
+describe("TOOL_CATALOG", () => {
+  it("maps each v1 tool to its ADR-0070 action enum", () => {
+    expect(TOOL_CATALOG.toee_identity_lookup).toEqual([
+      "match_phone",
+      "match_email_sender",
+      "get_email_link_status",
+    ]);
+    expect(TOOL_CATALOG.toee_shopify_read).toEqual([
+      "get_order",
+      "list_customer_orders",
+      "search_products",
+      "get_product",
+    ]);
+    expect(TOOL_CATALOG.toee_customer_memory).toEqual([
+      "upsert_preference",
+      "clear_preference",
+      "get_preferences",
+    ]);
+  });
+
+  it("contains exactly the 15 v1 tool names", () => {
+    expect([...TOOL_NAMES].sort()).toEqual(
+      [
+        "toee_case",
+        "toee_case_manage",
+        "toee_copilot_draft",
+        "toee_customer_memory",
+        "toee_easyroutes_read",
+        "toee_eval_review",
+        "toee_identity_lookup",
+        "toee_knowledge_ops",
+        "toee_knowledge_search",
+        "toee_qbo_read",
+        "toee_shopify_read",
+        "toee_square_payment_link",
+        "toee_textline_reply",
+        "toee_workbench_admin",
+        "toee_workbench_read",
+      ].sort(),
+    );
+  });
+});
+
+describe("isToolName", () => {
+  it("accepts a known tool name", () => {
+    expect(isToolName("toee_case")).toBe(true);
+  });
+
+  it("rejects an unknown tool name", () => {
+    expect(isToolName("toee_business_write")).toBe(false);
+  });
+});
+
+describe("isToolAction", () => {
+  it("accepts a valid action for the tool", () => {
+    expect(isToolAction("toee_shopify_read", "get_order")).toBe(true);
+  });
+
+  it("rejects an action that belongs to a different tool", () => {
+    expect(isToolAction("toee_shopify_read", "create_case")).toBe(false);
+  });
+});
