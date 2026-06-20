@@ -26,7 +26,6 @@ from toee_hermes.execute import ToolDriver
 from toee_hermes.gateway.agent_turn import (
     AgentJobPayload,
     AgentTurnContext,
-    job_payload_matches,
     to_job_payload,
 )
 from toee_hermes.gateway.normalize import TextlineInboundFields
@@ -36,6 +35,7 @@ from toee_hermes.gateway.rate_limit import (
     create_inbound_rate_limiter,
 )
 
+from hermes_runtime.agent_turn_job import AgentJobOutcome, execute_agent_turn_job
 from hermes_runtime.gateway_store import (
     GatewayStore,
     InMemoryGatewayStore,
@@ -189,18 +189,16 @@ def create_app(
             conversation_id=str(body.get("conversation_id", "")),
         )
 
-        # Memory is the source of truth (ADR-0107): reload by eventId and verify the
-        # conversation binding before running any turn or outbound reply.
-        context = store.load_context(payload.event_id)
-        if context is None:
+        # Memory is the source of truth (ADR-0107): reload by eventId, verify the
+        # conversation binding, and run the shared guarded turn — the same logic the
+        # local dispatcher uses, so HTTP and in-process delivery cannot drift.
+        outcome = execute_agent_turn_job(
+            store=store, turn_runner=turn_runner, payload=payload
+        )
+        if outcome is AgentJobOutcome.CONTEXT_NOT_FOUND:
             return Response(status_code=404)
-        if not job_payload_matches(context, payload):
+        if outcome is AgentJobOutcome.BINDING_MISMATCH:
             return Response(status_code=409)
-
-        inbound_body = store.load_inbound_body(context.inbound_body_ref) or ""
-        if turn_runner is not None:
-            turn_runner(context, inbound_body)
-
         return Response(status_code=200)
 
     return app

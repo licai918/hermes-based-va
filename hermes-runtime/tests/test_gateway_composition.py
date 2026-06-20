@@ -24,6 +24,7 @@ from hermes_runtime.gateway_composition import (
     WEBHOOK_SECRET_ENV,
     build_gateway_app,
 )
+from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 
 # Every env var a correctly-configured deployment must set.
 REQUIRED_ENV = {
@@ -76,6 +77,28 @@ def test_build_gateway_app_wires_resolved_secrets_and_collaborators(
     # The real Textline sender and the OpenRouter-backed turn runner are both wired.
     assert callable(captured["reply_sender"])
     assert callable(captured["turn_runner"])
+
+
+def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    def _spy_create_app(**kwargs: object) -> FastAPI:
+        captured.update(kwargs)
+        return FastAPI()
+
+    monkeypatch.setattr(
+        "hermes_runtime.gateway_composition.create_app", _spy_create_app
+    )
+
+    build_gateway_app()
+
+    # Locally there is no Cloud Tasks, so the queue itself drives the turn (ADR-0105
+    # local substrate) against the same store the internal route reloads from.
+    assert isinstance(captured["queue"], LocalDispatchingJobQueue)
+    assert captured["store"] is not None
+    assert captured["queue"]._store is captured["store"]
 
 
 @pytest.mark.parametrize("missing", list(REQUIRED_ENV))

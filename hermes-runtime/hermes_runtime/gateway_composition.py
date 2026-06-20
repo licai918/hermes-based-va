@@ -29,6 +29,8 @@ import os
 from fastapi import FastAPI
 
 from hermes_runtime.gateway_app import create_app
+from hermes_runtime.gateway_store import InMemoryGatewayStore
+from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.openrouter import make_openrouter_run_turn, resolve_openrouter_config
 from hermes_runtime.textline_reply import (
     make_textline_reply_sender,
@@ -71,9 +73,17 @@ def build_gateway_app() -> FastAPI:
         reply_sender=reply_sender, run_turn=run_turn
     )
 
+    # The store is the source of truth (ADR-0107); the local dispatcher reloads from
+    # the same instance the internal route uses. The durable Postgres/Cloud Tasks
+    # substrate (ADR-0105/0140) replaces these two without touching the route.
+    store = InMemoryGatewayStore()
+    queue = LocalDispatchingJobQueue(store=store, turn_runner=turn_runner)
+
     return create_app(
         webhook_secret=webhook_secret,
         internal_job_secret=internal_job_secret,
         reply_sender=reply_sender,
         turn_runner=turn_runner,
+        store=store,
+        queue=queue,
     )

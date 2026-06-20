@@ -19,6 +19,7 @@ from hermes_runtime.gateway_app import (
     create_app,
 )
 from hermes_runtime.gateway_store import InMemoryGatewayStore, InMemoryJobQueue
+from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION
 
@@ -313,3 +314,62 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
 
     assert response.status_code == 200
     assert sent == [("conv-e2e", reply_body)]
+
+
+def test_webhook_alone_drives_the_reply_through_the_local_dispatcher() -> None:
+    # ADR-0105 local substrate: with the in-process LocalDispatchingJobQueue there is
+    # no Cloud Tasks and no manual internal-route call -- a single signed webhook
+    # fast-acks and the dispatcher runs the bound turn, deriving + delivering the
+    # reply. This is the end-to-end loop a locally-booted app actually executes.
+    store = InMemoryGatewayStore()
+    sent: list[tuple[str, str]] = []
+    reply_body = "We have 225/65R17 in stock - want me to text a payment link?"
+
+    def run_turn(context, inbound_body):
+        return run_gateway_turn(
+            conversation_id=context.conversation_id,
+            inbound_body=inbound_body,
+            system_message="You are Toee Tire support.",
+            scripted_completions=[
+                {
+                    "tool_calls": [
+                        {
+                            "name": "toee_textline_reply__send_message",
+                            "arguments": {
+                                "conversation_id": context.conversation_id,
+                                "body": reply_body,
+                            },
+                        }
+                    ]
+                },
+                {"content": "Done - texted them the stock update."},
+            ],
+        )
+
+    turn_runner = make_gateway_turn_runner(
+        reply_sender=lambda conv, text: sent.append((conv, text)),
+        run_turn=run_turn,
+    )
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        internal_job_secret=JOB_SECRET,
+        store=store,
+        # Synchronous dispatch keeps the assertion deterministic; the daemon-thread
+        # default is exercised in test_job_dispatch.
+        queue=LocalDispatchingJobQueue(
+            store=store, turn_runner=turn_runner, dispatch=lambda work: work()
+        ),
+        turn_runner=turn_runner,
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(
+        body="Do you have 225/65R17?",
+        from_phone="+14165550101",
+        event_id="evt-local",
+        conversation_id="conv-local",
+    )
+
+    assert _post_signed(client, raw).status_code == 200
+
+    # No internal-route call: the dispatcher alone drove the bound turn + reply.
+    assert sent == [("conv-local", reply_body)]
