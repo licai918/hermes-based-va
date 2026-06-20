@@ -12,7 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from eval_runner.cli import CliArgs, main, parse_args
+from eval_runner.cli import CliArgs, build_agent, main, parse_args
+from eval_runner.harness import stub_agent_harness
+from eval_runner.replay import ReplayAgentHarness
 
 EVAL_DIR = Path(__file__).resolve().parents[2] / "eval"
 
@@ -46,6 +48,40 @@ def test_parse_args_rejects_flags_without_values() -> None:
         parse_args(["--scenario"])
     with pytest.raises(ValueError, match="--slot"):
         parse_args(["--slot"])
+
+
+def test_parse_args_defaults_harness_to_stub() -> None:
+    args = parse_args([])
+    assert args.harness == "stub"
+    assert args.transcripts_dir is None
+
+
+def test_parse_args_reads_harness_and_transcripts_dir() -> None:
+    args = parse_args(["--harness", "replay", "--transcripts-dir", "eval/transcripts"])
+    assert args.harness == "replay"
+    assert args.transcripts_dir == "eval/transcripts"
+
+
+def test_parse_args_rejects_unknown_harness() -> None:
+    with pytest.raises(ValueError, match="--harness"):
+        parse_args(["--harness", "live"])
+
+
+def test_parse_args_replay_requires_transcripts_dir() -> None:
+    with pytest.raises(ValueError, match="transcripts-dir"):
+        parse_args(["--harness", "replay"])
+
+
+def test_build_agent_defaults_to_stub() -> None:
+    assert build_agent(parse_args([])) is stub_agent_harness
+
+
+def test_build_agent_returns_replay_harness_for_replay() -> None:
+    agent = build_agent(
+        parse_args(["--harness", "replay", "--transcripts-dir", "eval/transcripts"])
+    )
+    assert isinstance(agent, ReplayAgentHarness)
+    assert agent.transcripts_dir == Path("eval/transcripts")
 
 
 def test_main_exits_nonzero_when_high_severity_scenario_fails() -> None:

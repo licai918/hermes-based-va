@@ -9,7 +9,8 @@ Python-native Domain Adapter Tools (ADR-0139).
 from __future__ import annotations
 
 from .assertions import AssertionOutcome, evaluate_scenario
-from .cli import CliArgs, main, parse_args
+from .cli import CliArgs, build_agent, main, parse_args
+from .disclosures import derive_disclosures
 from .fixtures import (
     RESOLVED_AT,
     PolicySlotMap,
@@ -42,7 +43,10 @@ from .report import (
     build_report,
     write_report,
 )
+from .recorder import record_turn
+from .replay import ReplayAgentHarness, TranscriptNotFound, transcript_path
 from .run import RunResult, run_suite
+from .transcript import turn_result_from_transcript
 from .types import (
     BaseMocks,
     MergedMockContext,
@@ -95,8 +99,16 @@ __all__ = [
     # run
     "RunResult",
     "run_suite",
+    # record/replay
+    "turn_result_from_transcript",
+    "ReplayAgentHarness",
+    "TranscriptNotFound",
+    "transcript_path",
+    "record_turn",
+    "derive_disclosures",
     # cli
     "CliArgs",
+    "build_agent",
     "main",
     "parse_args",
 ]

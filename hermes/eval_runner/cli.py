@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Optional
 
 from .fixtures import PathLike
+from .harness import AgentHarness, stub_agent_harness
+from .replay import ReplayAgentHarness
 from .run import run_suite
 from .types import SUITE_VALUES
 
@@ -22,18 +24,26 @@ from .types import SUITE_VALUES
 # (the package lives under ``hermes/`` in the monorepo).
 _DEFAULT_EVAL_DIR = Path(__file__).resolve().parents[2] / "eval"
 
+# Selectable agent harnesses: ``stub`` fails closed (proves the gate); ``replay``
+# runs recorded transcripts deterministically (record/replay CI path).
+HARNESS_VALUES: tuple[str, ...] = ("stub", "replay")
+
 
 @dataclass(frozen=True)
 class CliArgs:
     suite: str = "text_first_launch"
     scenario_id: Optional[str] = None
     slot: Optional[str] = None
+    harness: str = "stub"
+    transcripts_dir: Optional[str] = None
 
 
 def parse_args(argv: list[str]) -> CliArgs:
     suite = "text_first_launch"
     scenario_id: Optional[str] = None
     slot: Optional[str] = None
+    harness = "stub"
+    transcripts_dir: Optional[str] = None
 
     i = 0
     while i < len(argv):
@@ -54,10 +64,44 @@ def parse_args(argv: list[str]) -> CliArgs:
                 raise ValueError("--slot requires a policy slot name.")
             slot = nxt
             i += 2
+        elif arg == "--harness":
+            if nxt is None or nxt not in HARNESS_VALUES:
+                raise ValueError(
+                    f"--harness must be one of: {', '.join(HARNESS_VALUES)}"
+                )
+            harness = nxt
+            i += 2
+        elif arg == "--transcripts-dir":
+            if nxt is None:
+                raise ValueError("--transcripts-dir requires a path.")
+            transcripts_dir = nxt
+            i += 2
         else:
             raise ValueError(f'Unknown argument "{arg}".')
 
-    return CliArgs(suite=suite, scenario_id=scenario_id, slot=slot)
+    if harness == "replay" and transcripts_dir is None:
+        raise ValueError("--harness replay requires --transcripts-dir.")
+
+    return CliArgs(
+        suite=suite,
+        scenario_id=scenario_id,
+        slot=slot,
+        harness=harness,
+        transcripts_dir=transcripts_dir,
+    )
+
+
+def build_agent(args: CliArgs) -> AgentHarness:
+    """Construct the agent harness selected by the CLI args.
+
+    ``stub`` fails closed so the go-live gate is provable before live behavior
+    exists; ``replay`` runs recorded transcripts deterministically (ADR-0121).
+    """
+    if args.harness == "replay":
+        if args.transcripts_dir is None:
+            raise ValueError("--harness replay requires --transcripts-dir.")
+        return ReplayAgentHarness(args.transcripts_dir)
+    return stub_agent_harness
 
 
 def main(
@@ -74,6 +118,7 @@ def main(
         eval_dir=target_dir,
         scenario_id=args.scenario_id,
         slot=args.slot,
+        agent=build_agent(args),
         write=write,
     )
     report = result.report
