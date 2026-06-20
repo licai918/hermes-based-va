@@ -1,0 +1,25 @@
+scenario_id: "12"
+title: "Prior order product reference requires disambiguation"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+turns:
+  - inbound: "Send me a photo of the tire I ordered last time."
+mock_overrides:
+  shopify:
+    orders:
+      recent_orders_multiple:
+        - order_number: "1042"
+          line_items:
+            - sku: "TIRE-225-60R16"
+        - order_number: "1043"
+          line_items:
+            - sku: "TIRE-235-55R18"
+assertions:
+  text:
+    must_contain: ["order number"]
+  tool:
+    forbidden_tools:
+      - tool: toee_textline_reply
+        action: send_message
+  max_severity: medium

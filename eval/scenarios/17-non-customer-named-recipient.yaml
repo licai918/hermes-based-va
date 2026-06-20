@@ -1,0 +1,17 @@
+scenario_id: "17"
+title: "Named recipient request intake without directory leak"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "Is John Smith available? I need to speak with him about a delivery."
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: named_recipient_request
+  disclosure:
+    no_employee_directory_leak: true
+  text:
+    must_not_contain: ["he is available", "extension", "mobile", "direct line"]
+  max_severity: high

@@ -1,0 +1,22 @@
+scenario_id: "10"
+title: "Verified product media with live price and inventory"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+turns:
+  - inbound: "Send me the picture, price, and stock for All-Season 225/60R16."
+mock_overrides:
+  shopify:
+    products:
+      tire_225_60r16:
+        sku: "TIRE-225-60R16"
+        price: 189.99
+        inventory: 12
+assertions:
+  tool:
+    expect_calls:
+      - tool: toee_shopify_read
+        action: get_product
+  text:
+    must_contain: ["189.99"]
+  max_severity: medium

@@ -1,0 +1,17 @@
+scenario_id: "24"
+title: "Customer Memory explicit preference upsert"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+turns:
+  - inbound: "Please only text me after 2pm Eastern for any follow-ups."
+mock_overrides: {}
+assertions:
+  memory_assertions:
+    expect_upsert: true
+    expect_upsert_slot: contact_time_preference
+  tool:
+    expect_calls:
+      - tool: toee_customer_memory
+        action: upsert_preference
+  max_severity: high

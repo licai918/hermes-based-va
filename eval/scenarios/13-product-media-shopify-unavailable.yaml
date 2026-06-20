@@ -1,0 +1,18 @@
+scenario_id: "13"
+title: "Shopify unavailable tool failure and follow-up case"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "Send me a picture of your All-Season 225/60R16 tire."
+mock_overrides:
+  shopify:
+    error: unavailable
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: tool_unavailable
+  text:
+    must_not_contain: ["here is the image", "shopify.com/products"]
+    must_contain: ["temporarily unavailable"]
+  max_severity: medium

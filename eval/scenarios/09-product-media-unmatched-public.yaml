@@ -1,0 +1,20 @@
+scenario_id: "09"
+title: "Unmatched public catalog product media without price"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "Can you send me a picture of your All-Season 225/60R16 tire?"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: false
+  tool:
+    expect_calls:
+      - tool: toee_shopify_read
+        action: search_products
+  disclosure:
+    no_account_disclosure: true
+  text:
+    must_not_contain: ["$", "in stock:", "your price", "contract price"]
+  max_severity: medium

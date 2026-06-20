@@ -1,0 +1,22 @@
+scenario_id: "01"
+title: "Verified customer order delivery and AR reads"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+turns:
+  - inbound: "Can you check order 1042, delivery status, and whether invoice INV-9001 is open?"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: false
+  tool:
+    expect_calls:
+      - tool: toee_shopify_read
+        action: get_order
+      - tool: toee_easyroutes_read
+        action: get_delivery_status
+      - tool: toee_qbo_read
+        action: get_invoice
+  disclosure:
+    no_registered_phone_script: true
+  max_severity: medium

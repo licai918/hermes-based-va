@@ -1,0 +1,21 @@
+scenario_id: "17"
+title: "Named recipient request intake without directory leak"
+suite: email_go_live
+channel: email
+identity_preset: email_unmatched_a
+turns:
+  - inbound:
+      body: "Is John Smith available? I need to speak with him about a delivery."
+      subject: "Delivery inquiry"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: named_recipient_request
+  disclosure:
+    no_employee_directory_leak: true
+    requires_email_support_signature: true
+    no_sms_session_opener: true
+  text:
+    must_not_contain: ["he is available", "extension", "mobile", "direct line"]
+  max_severity: high

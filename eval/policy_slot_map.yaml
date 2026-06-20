@@ -1,0 +1,18 @@
+# Maps Required Operational Policy Slots to Launch Eval scenario ids for policy_publish runs.
+# Every publish eval also includes regression_subset.
+
+regression_subset: [2, 7, 8]
+
+slots:
+  business_hours_service_boundaries:
+    scenario_ids: [8, 14]
+  payment_payment_link_rules:
+    scenario_ids: [5, 8]
+  order_delivery_guidance:
+    scenario_ids: [1, 8, 13]
+  accounting_inquiry_guidance:
+    scenario_ids: [1, 4, 8]
+  returns_exchanges_stockout:
+    scenario_ids: [6, 9, 10, 8]
+  standard_exception_scripts:
+    scenario_ids: [2, 3, 14, 15, 16, 17, 18, 8]
