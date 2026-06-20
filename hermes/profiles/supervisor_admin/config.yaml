@@ -1,0 +1,9 @@
+# Hermes profile home: Supervisor Admin Profile (ADR-0139, ADR-0038).
+#
+# Governance-only: knowledge ops, eval review, and workbench administration. No
+# customer-facing send tools and no business writes. Tool enforcement is
+# default-deny inside the toee-tire plugin (ADR-0038), selected via
+# TOEE_HERMES_PROFILE in this home's .env.
+plugins:
+  enabled:
+    - toee-tire

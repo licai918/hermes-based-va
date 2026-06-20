@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pyyaml>=6"]
 
 # This project is the Python Hermes-integration layer (ADR-0139). It is run, not
 # distributed, in v1, so uv manages the env without building a wheel.

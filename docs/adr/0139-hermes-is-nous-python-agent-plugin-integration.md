@@ -22,9 +22,10 @@ core).
 Integrate with Hermes through its real, supported surfaces:
 
 - **Hermes core stays upstream.** Depend on it as a pinned external package, not a
-  vendored fork: `hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@<pinned-rev>`
-  installed with `uv`. `hermes update` / re-pinning is the upgrade path
-  (ADR-0101 workflow still applies, now against the git rev).
+  vendored fork: `hermes-agent @ git+https://github.com/NousResearch/hermes-agent.git@c253b07`
+  (v0.17.0, the rev the v1 contract was verified against) installed with `uv`.
+  `hermes update` / re-pinning is the upgrade path (ADR-0101 workflow still
+  applies, now against the git rev).
 - **Toee business logic is a Hermes plugin** (`toee_hermes`): a `plugin.yaml` +
   `register(ctx)` that registers every `toee_*` **Domain Adapter Tool**
   (ADR-0059/0070 catalog) with JSON-returning handlers, plus a `pre_llm_call`
@@ -63,3 +64,25 @@ the three profile definitions.
 - **Expose Toee tools as a TypeScript MCP server (rejected for v1).** Technically
   viable (Hermes consumes MCP), but the team chose Python-native plugins for the
   closest native fit and to keep Tool Gate in one language with the agent.
+
+## Verification
+
+The plugin contract was verified against the installed upstream (v0.17.0,
+`c253b07`), not just the docs:
+
+- `register(ctx)` is invoked by the loader as `register_fn(ctx)` with a real
+  `hermes_cli.plugins.PluginContext`; `ctx.register_tool(name, toolset, schema,
+  handler)` and `ctx.register_hook("pre_llm_call", cb)` match the upstream
+  signatures, and `pre_llm_call` is a `VALID_HOOKS` member.
+- Tool handlers are `def h(args, **kwargs) -> str`; the registry dispatches them
+  as `entry.handler(args, **kwargs)` (params dict positional), and `pre_llm_call`
+  callbacks are invoked as `cb(**kwargs)` with their return `{"context": ...}`
+  appended to the user turn.
+- End-to-end smoke: loading the `toee_hermes` plugin into a real `PluginContext`
+  under the external profile registered exactly the 21 allowlisted action-tools
+  (supervisor tools excluded), and `registry.dispatch(...)` returned governed
+  JSON through registry → handler → `execute_tool` → `MockDriver`.
+
+The probe ran in an isolated throwaway venv; flipping `toee_hermes` to an
+installable entry-point package (`hermes_agent.plugins`) for real per-profile
+homes lands with the gateway embedding slice.
