@@ -1,0 +1,29 @@
+[project]
+name = "toee-hermes-runtime"
+version = "0.1.0"
+description = "Hermes Runtime Shim: boots the Nous hermes-agent with the toee_hermes plugin per profile (ADR-0139, ADR-0100, ADR-0101)."
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "hermes-agent",
+]
+
+# ADR-0101 / ADR-0139: the official Hermes core is pinned to an exact git rev and
+# managed by uv. This is the single place the SDK version lives; the eval runner
+# (../hermes) stays dependency-free and never imports hermes_agent.
+[tool.uv.sources]
+hermes-agent = { git = "https://github.com/NousResearch/hermes-agent.git", rev = "c253b07" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pyyaml>=6",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+# Reach the dependency-free toee_hermes plugin without packaging it: the runtime
+# shim is the only layer that imports both hermes_agent and toee_hermes.
+pythonpath = ["../hermes", "."]
+testpaths = ["tests"]
