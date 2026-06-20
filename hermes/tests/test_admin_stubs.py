@@ -14,6 +14,7 @@ import pytest
 from toee_hermes.drivers.mock.admin_stubs import create_admin_stub_mock_handlers
 from toee_hermes.drivers.mock.driver import MockDriver
 from toee_hermes.execute import execute_tool
+from toee_hermes.operational_policy import REQUIRED_POLICY_SLOTS
 from toee_hermes.tool_catalog import TOOL_CATALOG
 from toee_hermes.tool_gate import ToolExecutionContext
 
@@ -140,11 +141,15 @@ def test_copilot_draft_sms_returns_stub_draft_string() -> None:
     assert isinstance(result.data["draft"], str)
 
 
-def test_knowledge_ops_get_policy_slots_returns_empty_list() -> None:
+def test_knowledge_ops_get_policy_slots_returns_six_required_placeholders() -> None:
+    # ADR-0003: the six Required Operational Policy Slots exist as structured
+    # placeholders at onboarding (empty content until KnowledgeOps publishes copy).
     result = _call("toee_knowledge_ops", "get_policy_slots")
 
     assert result.ok is True
-    assert result.data == {"slots": []}
+    slots = result.data["slots"]
+    assert [slot["key"] for slot in slots] == list(REQUIRED_POLICY_SLOTS)
+    assert all(slot["status"] == "empty" and slot["content"] == "" for slot in slots)
 
 
 def test_knowledge_ops_rollback_uses_rolled_back_key() -> None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ...operational_policy import policy_slots_payload
 from .driver import MockHandlerRegistry
 
 
@@ -111,7 +112,10 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
             },
         },
         "toee_knowledge_ops": {
-            "get_policy_slots": lambda params, context: {"slots": []},
+            # Not a hollow stub: ADR-0003 requires the six Required Operational
+            # Policy Slots to exist as structured placeholders at onboarding, so
+            # this returns the canonical registry (empty content until published).
+            "get_policy_slots": lambda params, context: policy_slots_payload(),
             "update_policy_slot": lambda params, context: {
                 "slot": _read_string(params, "slot", default="slot_stub"),
                 "state": "draft",
