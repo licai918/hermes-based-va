@@ -118,28 +118,25 @@ def _scripted_openai_factory(completions: Sequence[Mapping[str, Any]]) -> type:
     return _ScriptedOpenAI
 
 
-def run_live_turn(
+def run_scripted_agent(
     *,
     user_message: str,
     system_message: str | None = None,
     scripted_completions: Sequence[Mapping[str, Any]],
-    profile: str | None = None,
+    governed_tool_names: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Run one real ``AIAgent`` turn against a scripted provider; capture the turn.
+    """Drive one real ``AIAgent`` turn against a scripted provider; capture the turn.
 
-    When ``profile`` is set, the profile's governed ``toee_*`` tools are booted and
-    admitted so scripted tool calls dispatch through real governed execution.
+    The agent is forced non-streaming and pointed at the scripted ``OpenAI`` so the
+    loop runs with no model, network, or credentials. ``governed_tool_names`` (the
+    booted profile's tools) are admitted to ``valid_tool_names`` so scripted tool
+    calls dispatch through real governed execution rather than being rejected.
 
     Returns ``{"final_response": str, "messages": list}`` — the exact shape
-    :func:`eval_runner.recorder.record_turn` persists for replay.
+    :func:`eval_runner.recorder.record_turn` persists for replay. The caller owns
+    profile booting, because that determines the governed binding (ADR-0107).
     """
     os.environ.setdefault("HERMES_HOME", tempfile.mkdtemp(prefix="hermes-home-"))
-
-    governed_tool_names: list[str] = []
-    if profile is not None:
-        from hermes_runtime.boot import boot_profile
-
-        governed_tool_names = boot_profile(profile).tool_names
 
     import run_agent
 
@@ -171,3 +168,34 @@ def run_live_turn(
         "final_response": result.get("final_response", "") or "",
         "messages": result.get("messages", []) or [],
     }
+
+
+def run_live_turn(
+    *,
+    user_message: str,
+    system_message: str | None = None,
+    scripted_completions: Sequence[Mapping[str, Any]],
+    profile: str | None = None,
+) -> dict[str, Any]:
+    """Run one real ``AIAgent`` turn against a scripted provider; capture the turn.
+
+    When ``profile`` is set, the profile's governed ``toee_*`` tools are booted
+    (unbound) and admitted so scripted tool calls dispatch through real governed
+    execution. This is the eval recorder bridge; the bound async reply path is
+    :func:`hermes_runtime.turn_runner.run_gateway_turn`.
+
+    Returns ``{"final_response": str, "messages": list}`` — the exact shape
+    :func:`eval_runner.recorder.record_turn` persists for replay.
+    """
+    governed_tool_names: list[str] = []
+    if profile is not None:
+        from hermes_runtime.boot import boot_profile
+
+        governed_tool_names = boot_profile(profile).tool_names
+
+    return run_scripted_agent(
+        user_message=user_message,
+        system_message=system_message,
+        scripted_completions=scripted_completions,
+        governed_tool_names=governed_tool_names,
+    )

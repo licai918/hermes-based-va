@@ -10,7 +10,7 @@ SDK is imported here and nowhere in the dependency-free eval runner.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -28,8 +28,19 @@ class BootedProfile:
         return registry.dispatch(name, args, **kwargs)
 
 
-def boot_profile(profile: str) -> BootedProfile:
+def boot_profile(
+    profile: str,
+    *,
+    conversation_id: Optional[str] = None,
+    sms_session_id: Optional[str] = None,
+) -> BootedProfile:
     """Register the profile's allowlisted toee_* tools into a real PluginContext.
+
+    When ``conversation_id`` is given, the profile is booted for one async Textline
+    turn via :func:`toee_hermes.plugin.register_turn`: every governed dispatch
+    carries that turn binding and the turn-binding gate constrains
+    ``toee_textline_reply.send_message`` to the bound conversation (ADR-0107/0066).
+    Without it, the unbound :func:`register` path is used (eval/replay + Copilot).
 
     ``toee_hermes`` must be importable. The test harness puts ``../hermes`` on the
     path (``pythonpath`` in pyproject); the gateway-embedding slice replaces this
@@ -38,14 +49,19 @@ def boot_profile(profile: str) -> BootedProfile:
     """
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
-    from toee_hermes.plugin import register
+    from toee_hermes.plugin import register, register_turn
 
     manager = PluginManager()
     manifest = PluginManifest(name="toee-tire")
     ctx = PluginContext(manifest, manager)
     # resolve_profile(ctx) reads ctx.profile first (ADR-0034 default-deny by profile).
     ctx.profile = profile
-    register(ctx)
+    if conversation_id is not None:
+        register_turn(
+            ctx, conversation_id=conversation_id, sms_session_id=sms_session_id
+        )
+    else:
+        register(ctx)
     return BootedProfile(
         profile=profile,
         tool_names=sorted(manager._plugin_tool_names),

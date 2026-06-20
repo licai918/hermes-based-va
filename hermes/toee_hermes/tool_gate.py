@@ -24,6 +24,11 @@ class ToolExecutionContext:
     identity: Optional[Any] = None
     user_id: Optional[str] = None
     connected_account_id: Optional[str] = None
+    # Async Textline turn binding (ADR-0107): the conversation / SMS Session the
+    # loaded inbound turn belongs to. Set by the gateway turn runner so an outbound
+    # reply can be enforced to target this thread only; None outside that path.
+    conversation_id: Optional[str] = None
+    sms_session_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
