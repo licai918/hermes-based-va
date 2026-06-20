@@ -20,9 +20,12 @@ import yaml
 
 from toee_hermes.plugin.profiles import PROFILE_ENV_VAR, PROFILES
 
-# Entry-point name under ``[project.entry-points."hermes_agent.plugins"]`` in
-# hermes/pyproject.toml; also the key Hermes' ``plugins.enabled`` allow-list matches.
-TOEE_PLUGIN_KEY = "toee"
+# Canonical Hermes plugin identity: the ``hermes_agent.plugins`` entry-point name
+# in hermes/pyproject.toml, the ``plugin.yaml`` name, the ``boot_profile`` manifest
+# name, and the key Hermes' ``plugins.enabled`` allow-list matches all share this
+# one value so native discovery enables the same plugin the canonical
+# ``hermes/profiles/*`` homes do (lookup_key = entry-point name).
+TOEE_PLUGIN_KEY = "toee-tire"
 
 
 @dataclass(frozen=True)

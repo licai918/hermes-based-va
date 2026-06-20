@@ -41,7 +41,7 @@ from hermes_cli.plugins import discover_plugins, get_plugin_manager, has_hook
 from tools.registry import registry
 
 discover_plugins(force=True)
-loaded = get_plugin_manager()._plugins.get("toee")
+loaded = get_plugin_manager()._plugins.get("toee-tire")
 print("PROBE_JSON=" + json.dumps({
     "loaded": bool(loaded and loaded.enabled and not loaded.error),
     "toolsets": registry.get_registered_toolset_names(),

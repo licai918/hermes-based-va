@@ -29,8 +29,8 @@ def test_discover_plugins_loads_external_profile_via_entry_point(monkeypatch) ->
 
     discover_plugins(force=True)
 
-    loaded = get_plugin_manager()._plugins.get("toee")
-    assert loaded is not None, "toee entry-point plugin was not discovered"
+    loaded = get_plugin_manager()._plugins.get("toee-tire")
+    assert loaded is not None, "toee-tire entry-point plugin was not discovered"
     assert loaded.enabled and not loaded.error
 
     # The External profile's allowlisted governed tool is registered globally,

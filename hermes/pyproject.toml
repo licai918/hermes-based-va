@@ -7,9 +7,11 @@ dependencies = []
 
 # Hermes discovers the plugin via this entry-point group (ADR-0139); the profile
 # is selected per-home by TOEE_HERMES_PROFILE, so one entry point serves all three
-# profiles. The value resolves to the module exposing register(ctx).
+# profiles. The value resolves to the module exposing register(ctx). The entry-point
+# NAME is the plugin's lookup_key (Hermes sets lookup_key = ep.name), so it must match
+# plugin.yaml's name and the canonical hermes/profiles/*/config.yaml plugins.enabled.
 [project.entry-points."hermes_agent.plugins"]
-toee = "toee_hermes.plugin"
+toee-tire = "toee_hermes.plugin"
 
 [build-system]
 requires = ["hatchling"]
