@@ -19,6 +19,7 @@ from hermes_runtime.gateway_app import (
     create_app,
 )
 from hermes_runtime.gateway_store import InMemoryGatewayStore, InMemoryJobQueue
+from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION
 
 WEBHOOK_SECRET = "test-textline-shared-secret"
@@ -248,3 +249,67 @@ def test_internal_agent_turn_404_when_context_is_unknown() -> None:
 
     assert response.status_code == 404
     assert runs == []
+
+
+def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> None:
+    # Full loop (ADR-0103/0105/0106/0107): signed webhook -> persist + enqueue ->
+    # internal job -> a real bound governed AIAgent turn -> the governed Textline
+    # reply is derived and delivered to the inbound turn's conversation. The model
+    # is the only fake (scripted provider); the agent loop, governed dispatch, and
+    # turn binding are all real.
+    store = InMemoryGatewayStore()
+    queue = InMemoryJobQueue()
+    sent: list[tuple[str, str]] = []
+    reply_body = "Your order TOEE-1001 shipped today - tracking to follow."
+
+    def run_turn(context, inbound_body):
+        return run_gateway_turn(
+            conversation_id=context.conversation_id,
+            inbound_body=inbound_body,
+            system_message="You are Toee Tire support.",
+            scripted_completions=[
+                {
+                    "tool_calls": [
+                        {
+                            "name": "toee_textline_reply__send_message",
+                            "arguments": {
+                                "conversation_id": context.conversation_id,
+                                "body": reply_body,
+                            },
+                        }
+                    ]
+                },
+                {"content": "Done - I've texted you the update."},
+            ],
+        )
+
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        internal_job_secret=JOB_SECRET,
+        store=store,
+        queue=queue,
+        turn_runner=make_gateway_turn_runner(
+            reply_sender=lambda conv, text: sent.append((conv, text)),
+            run_turn=run_turn,
+        ),
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(
+        body="Where is my order?",
+        from_phone="+14165550101",
+        event_id="evt-e2e",
+        conversation_id="conv-e2e",
+    )
+    assert _post_signed(client, raw).status_code == 200
+    payload = queue.payloads[0]
+
+    response = client.post(
+        "/internal/jobs/agent-turn",
+        content=json.dumps(
+            {"event_id": payload.event_id, "conversation_id": payload.conversation_id}
+        ),
+        headers={INTERNAL_JOB_SECRET_HEADER: JOB_SECRET},
+    )
+
+    assert response.status_code == 200
+    assert sent == [("conv-e2e", reply_body)]

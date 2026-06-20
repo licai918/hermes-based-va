@@ -15,12 +15,22 @@ Textline send, else its ``final_response``), so this returns the captured turn �
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
+from eval_runner.transcript import turn_result_from_transcript
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_scripted_agent
+
+# Runs one bound governed turn for a reloaded context + its inbound body and returns
+# the captured ``{final_response, messages}`` turn. This is the only model boundary:
+# tests inject a scripted run; production injects the real OpenRouter-backed run.
+RunTurn = Callable[[Any, str], Mapping[str, Any]]
+
+# The gateway's outbound reply sender (conversation_id, text) — the same seam used
+# for the opt-out confirmation (gateway_app.ReplySender).
+ReplySender = Callable[[str, str], None]
 
 
 def run_gateway_turn(
@@ -45,3 +55,36 @@ def run_gateway_turn(
         scripted_completions=scripted_completions,
         governed_tool_names=booted.tool_names,
     )
+
+
+def outbound_reply_text(turn: Mapping[str, Any]) -> str:
+    """Derive the one customer-facing reply from a captured turn (ADR-0083).
+
+    The reply is the governed Textline send body when the agent sent one, else the
+    agent's ``final_response``. A send the turn-binding gate blocked is a governed
+    failure (``error_class``), so its body is not customer-facing text — the reply
+    falls back rather than delivering the rejected content.
+    """
+    result = turn_result_from_transcript(
+        final_response=turn.get("final_response", "") or "",
+        messages=list(turn.get("messages", []) or []),
+    )
+    return result.outbound_text
+
+
+def make_gateway_turn_runner(
+    *, reply_sender: ReplySender, run_turn: RunTurn
+) -> Callable[[Any, str], None]:
+    """Compose the model-agnostic async reply path into a gateway ``TurnRunner``.
+
+    The returned ``(context, inbound_body)`` callable runs the bound governed turn
+    (``run_turn`` — the injected model boundary), derives the customer-facing reply,
+    and sends it to the context's conversation via ``reply_sender``. The route has
+    already reloaded + verified the binding (ADR-0106/0107) before this runs.
+    """
+
+    def turn_runner(context: Any, inbound_body: str) -> None:
+        turn = run_turn(context, inbound_body)
+        reply_sender(context.conversation_id, outbound_reply_text(turn))
+
+    return turn_runner
