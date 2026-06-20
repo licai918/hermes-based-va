@@ -75,6 +75,31 @@ def test_enqueue_runs_nothing_when_the_binding_does_not_match() -> None:
     assert runs == []
 
 
+def test_a_failing_turn_is_reported_to_on_error_not_swallowed_silently() -> None:
+    # ADR-0104: a turn that raises out-of-band (e.g. both models down, or the
+    # Textline send fails) must surface, not vanish in a dead background thread. The
+    # dispatcher routes it to on_error (default: log) instead of propagating.
+    errors: list[tuple[str, str]] = []
+    store = _FakeStore(context=_context(), body="hi")
+
+    def boom(ctx: object, body: str) -> None:
+        raise RuntimeError("textline unreachable")
+
+    queue = LocalDispatchingJobQueue(
+        store=store,
+        turn_runner=boom,
+        dispatch=lambda work: work(),
+        on_error=lambda payload, exc: errors.append(
+            (payload.event_id, type(exc).__name__)
+        ),
+    )
+
+    # enqueue does not raise even though the turn failed:
+    queue.enqueue(AgentJobPayload(event_id="evt-1", conversation_id="conv-1"))
+
+    assert errors == [("evt-1", "RuntimeError")]
+
+
 def test_enqueue_fast_acks_by_running_the_turn_out_of_band() -> None:
     # The default dispatch runs the turn on a background thread so enqueue (called
     # inside the webhook handler) returns before the turn completes (ADR-0103).
