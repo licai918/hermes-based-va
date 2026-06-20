@@ -1,0 +1,18 @@
+[project]
+name = "toee-hermes"
+version = "0.1.0"
+description = "Toee Tire Hermes VA: Domain Adapter Tools, Tool Gate, and governed dispatch as a Hermes plugin (ADR-0139)."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# This project is the Python Hermes-integration layer (ADR-0139). It is run, not
+# distributed, in v1, so uv manages the env without building a wheel.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
