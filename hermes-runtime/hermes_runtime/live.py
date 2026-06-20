@@ -118,19 +118,25 @@ def _scripted_openai_factory(completions: Sequence[Mapping[str, Any]]) -> type:
     return _ScriptedOpenAI
 
 
-def run_scripted_agent(
+def run_agent_turn(
     *,
     user_message: str,
     system_message: str | None = None,
-    scripted_completions: Sequence[Mapping[str, Any]],
+    base_url: str,
+    api_key: str,
+    model: str,
+    max_iterations: int,
+    openai_factory: Any = None,
     governed_tool_names: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Drive one real ``AIAgent`` turn against a scripted provider; capture the turn.
+    """Drive one real ``AIAgent`` turn against the given provider; capture the turn.
 
-    The agent is forced non-streaming and pointed at the scripted ``OpenAI`` so the
-    loop runs with no model, network, or credentials. ``governed_tool_names`` (the
-    booted profile's tools) are admitted to ``valid_tool_names`` so scripted tool
-    calls dispatch through real governed execution rather than being rejected.
+    The agent is forced non-streaming and built with the given connection params.
+    ``openai_factory`` is the provider seam: when given it replaces ``run_agent.OpenAI``
+    for the turn (a deterministic scripted client in tests/eval); when ``None`` the
+    real OpenAI client is used, pointed at ``base_url`` (production OpenRouter,
+    ADR-0009). ``governed_tool_names`` (the booted profile's tools) are admitted to
+    ``valid_tool_names`` so tool calls dispatch through real governed execution.
 
     Returns ``{"final_response": str, "messages": list}`` — the exact shape
     :func:`eval_runner.recorder.record_turn` persists for replay. The caller owns
@@ -141,22 +147,23 @@ def run_scripted_agent(
     import run_agent
 
     original_openai = run_agent.OpenAI
-    run_agent.OpenAI = _scripted_openai_factory(scripted_completions)
+    if openai_factory is not None:
+        run_agent.OpenAI = openai_factory
     try:
         agent = run_agent.AIAgent(
-            base_url="http://eval.invalid/v1",
-            api_key="sk-eval-fake",
-            model="eval-fake-model",
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
             skip_context_files=True,
             skip_memory=True,
             quiet_mode=True,
-            max_iterations=max(1, len(scripted_completions)),
+            max_iterations=max_iterations,
         )
         agent._disable_streaming = True
         if governed_tool_names:
             # Admit the booted governed tools so the loop dispatches (not rejects)
-            # the scripted tool call. The schema list sent to the model is moot —
-            # the provider is scripted — so only the name allowlist matters here.
+            # the tool call. The schema list sent to the model is moot when the
+            # provider is scripted — only the name allowlist matters there.
             agent.valid_tool_names = set(agent.valid_tool_names or set()) | set(
                 governed_tool_names
             )
@@ -168,6 +175,30 @@ def run_scripted_agent(
         "final_response": result.get("final_response", "") or "",
         "messages": result.get("messages", []) or [],
     }
+
+
+def run_scripted_agent(
+    *,
+    user_message: str,
+    system_message: str | None = None,
+    scripted_completions: Sequence[Mapping[str, Any]],
+    governed_tool_names: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Drive one real ``AIAgent`` turn against a scripted provider; capture the turn.
+
+    The scripted ``OpenAI`` runs the loop with no model, network, or credentials.
+    Returns ``{"final_response": str, "messages": list}`` for record/replay.
+    """
+    return run_agent_turn(
+        user_message=user_message,
+        system_message=system_message,
+        base_url="http://eval.invalid/v1",
+        api_key="sk-eval-fake",
+        model="eval-fake-model",
+        max_iterations=max(1, len(scripted_completions)),
+        openai_factory=_scripted_openai_factory(scripted_completions),
+        governed_tool_names=governed_tool_names,
+    )
 
 
 def run_live_turn(
