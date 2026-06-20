@@ -1,0 +1,310 @@
+"""Mock handlers for ``toee_customer_memory`` (ports mock/memory.test.ts).
+
+Exercises the v1 Customer Memory actions (ADR-0114: ``upsert_preference``,
+``clear_preference``, ``get_preferences``) end-to-end through ``execute_tool`` so
+the governed boundary is covered. Asserts the fixed four-slot rule (ADR-0111),
+identity-binding isolation (verified ``shopify_customer_id`` vs the provisional
+channel binding of ADR-0112), and the lightweight injection read path (ADR-0113).
+"""
+
+from toee_hermes.drivers.mock.driver import MockDriver
+from toee_hermes.drivers.mock.memory import (
+    MemoryMockData,
+    create_memory_mock_handlers,
+)
+from toee_hermes.execute import execute_tool
+from toee_hermes.tool_gate import ToolExecutionContext
+
+VERIFIED_CUSTOMER_ID = "gid://shopify/Customer/1001"
+
+
+def _driver(data: MemoryMockData | None = None) -> MockDriver:
+    handlers = (
+        create_memory_mock_handlers()
+        if data is None
+        else create_memory_mock_handlers(data)
+    )
+    return MockDriver(handlers)
+
+
+def _verified_ctx(shopify_customer_id: str = VERIFIED_CUSTOMER_ID) -> ToolExecutionContext:
+    return ToolExecutionContext(
+        profile="customer_service_external",
+        identity={
+            "outcome": "verified_customer",
+            "shopify_customer_id": shopify_customer_id,
+            "company_name": "Acme Fleet",
+        },
+    )
+
+
+def _unmatched_ctx() -> ToolExecutionContext:
+    return ToolExecutionContext(profile="customer_service_external", identity=None)
+
+
+def _call(driver: MockDriver, action: str, params: dict, context: ToolExecutionContext):
+    return execute_tool(
+        tool="toee_customer_memory",
+        action=action,
+        params=params,
+        context=context,
+        driver=driver,
+    )
+
+
+# --- upsert_preference -----------------------------------------------------
+
+
+def test_upsert_records_explicit_preference() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {
+            "key": "contact_time_preference",
+            "value": "after 2pm Eastern",
+            "source": "explicit_customer_statement",
+        },
+        _verified_ctx(),
+    )
+
+    assert result.ok is True
+    assert result.data["slot"] == "contact_time_preference"
+    assert result.data["value"] == "after 2pm Eastern"
+    assert result.data["source"] == "explicit_customer_statement"
+    assert result.data["stored"] is True
+    assert result.data["binding_key"] == VERIFIED_CUSTOMER_ID
+
+
+def test_upsert_then_get_reflects_it() -> None:
+    driver = _driver()
+    ctx = _verified_ctx()
+
+    _call(
+        driver,
+        "upsert_preference",
+        {
+            "key": "contact_time_preference",
+            "value": "after 2pm Eastern",
+            "source": "explicit_customer_statement",
+        },
+        ctx,
+    )
+    read = _call(driver, "get_preferences", {}, ctx)
+
+    assert read.ok is True
+    assert read.data["preferences"] == {"contact_time_preference": "after 2pm Eastern"}
+
+
+def test_upsert_rejects_open_ended_key() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {
+            "key": "favorite_color",
+            "value": "blue",
+            "source": "explicit_customer_statement",
+        },
+        _verified_ctx(),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_upsert_rejects_non_string_value() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "channel_preference", "value": 123},
+        _verified_ctx(),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_slot_alias_is_accepted() -> None:
+    driver = _driver()
+    ctx = _verified_ctx()
+
+    result = _call(
+        driver,
+        "upsert_preference",
+        {
+            "slot": "communication_style_note",
+            "value": "prefers brief replies",
+            "source": "explicit_customer_statement",
+        },
+        ctx,
+    )
+    assert result.ok is True
+    assert result.data["slot"] == "communication_style_note"
+
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"]["communication_style_note"] == "prefers brief replies"
+
+
+# --- get_preferences -------------------------------------------------------
+
+
+def test_get_empty_without_explicit_write() -> None:
+    read = _call(_driver(), "get_preferences", {}, _verified_ctx())
+
+    assert read.ok is True
+    assert read.data["preferences"] == {}
+
+
+def test_get_honors_injected_baseline() -> None:
+    driver = _driver(
+        MemoryMockData(preferences={"contact_time_preference": "after 2pm Eastern"})
+    )
+
+    read = _call(driver, "get_preferences", {}, _verified_ctx())
+
+    assert read.ok is True
+    assert read.data["preferences"] == {"contact_time_preference": "after 2pm Eastern"}
+
+
+def test_get_preferences_returns_independent_copy() -> None:
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "email"}))
+    ctx = _verified_ctx()
+
+    first = _call(driver, "get_preferences", {}, ctx)
+    first.data["preferences"]["channel_preference"] = "MUTATED"
+
+    second = _call(driver, "get_preferences", {}, ctx)
+    assert second.data["preferences"]["channel_preference"] == "email"
+
+
+# --- clear_preference ------------------------------------------------------
+
+
+def test_clear_acknowledges_removal() -> None:
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    ctx = _verified_ctx()
+
+    cleared = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
+    assert cleared.ok is True
+    assert cleared.data["slot"] == "channel_preference"
+    assert cleared.data["cleared"] is True
+
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"] == {}
+
+
+def test_clear_missing_slot_is_idempotent() -> None:
+    cleared = _call(
+        _driver(), "clear_preference", {"key": "channel_preference"}, _verified_ctx()
+    )
+
+    assert cleared.ok is True
+    assert cleared.data["cleared"] is True
+
+
+def test_clear_rejects_open_ended_key() -> None:
+    result = _call(
+        _driver(), "clear_preference", {"key": "favorite_color"}, _verified_ctx()
+    )
+
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+# --- round-trip ------------------------------------------------------------
+
+
+def test_round_trip_upsert_get_clear_get() -> None:
+    driver = _driver()
+    ctx = _verified_ctx()
+
+    upsert = _call(
+        driver,
+        "upsert_preference",
+        {
+            "key": "delivery_habit_note",
+            "value": "leave at side door",
+            "source": "explicit_customer_statement",
+        },
+        ctx,
+    )
+    assert upsert.ok is True
+    assert upsert.data["stored"] is True
+
+    after_upsert = _call(driver, "get_preferences", {}, ctx)
+    assert after_upsert.data["preferences"]["delivery_habit_note"] == "leave at side door"
+
+    cleared = _call(driver, "clear_preference", {"key": "delivery_habit_note"}, ctx)
+    assert cleared.ok is True
+    assert cleared.data["cleared"] is True
+
+    after_clear = _call(driver, "get_preferences", {}, ctx)
+    assert after_clear.data["preferences"] == {}
+
+
+# --- identity binding isolation (ADR-0112) ---------------------------------
+
+
+def test_writes_isolated_by_verified_binding() -> None:
+    driver = _driver()
+
+    _call(
+        driver,
+        "upsert_preference",
+        {
+            "key": "contact_time_preference",
+            "value": "mornings",
+            "source": "explicit_customer_statement",
+        },
+        _verified_ctx("gid://shopify/Customer/1001"),
+    )
+
+    other = _call(driver, "get_preferences", {}, _verified_ctx("gid://shopify/Customer/2002"))
+    assert other.ok is True
+    assert other.data["preferences"] == {}
+
+
+def test_provisional_binding_uses_channel_identity_from_params() -> None:
+    driver = _driver()
+
+    upsert = _call(
+        driver,
+        "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "source": "explicit_customer_statement",
+            "channel_identity_id": "textline:+14165550999",
+        },
+        _unmatched_ctx(),
+    )
+    assert upsert.ok is True
+    assert upsert.data["binding_key"] == "provisional:textline:+14165550999"
+
+    read = _call(
+        driver,
+        "get_preferences",
+        {"channel_identity_id": "textline:+14165550999"},
+        _unmatched_ctx(),
+    )
+    assert read.data["preferences"]["channel_preference"] == "sms"
+
+
+def test_provisional_bindings_isolated_by_channel_identity() -> None:
+    driver = _driver()
+
+    _call(
+        driver,
+        "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "source": "explicit_customer_statement",
+            "channel_identity_id": "textline:A",
+        },
+        _unmatched_ctx(),
+    )
+
+    other = _call(
+        driver, "get_preferences", {"channel_identity_id": "textline:B"}, _unmatched_ctx()
+    )
+    assert other.data["preferences"] == {}

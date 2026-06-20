@@ -1,6 +1,7 @@
 """Registry merge semantics and the merged all-tools factory (ADR-0137)."""
 
 from toee_hermes.drivers.mock import create_all_mock_handlers, merge_registries
+from toee_hermes.tool_catalog import TOOL_CATALOG, tool_names
 
 
 def test_merge_registries_later_fragment_wins_on_collision() -> None:
@@ -25,13 +26,14 @@ def test_merge_registries_does_not_mutate_input_fragments() -> None:
     assert set(second["t"]) == {"y"}
 
 
-def test_create_all_mock_handlers_registers_every_implemented_tool() -> None:
+def test_create_all_mock_handlers_registers_every_catalog_tool() -> None:
     registry = create_all_mock_handlers()
 
-    assert set(registry) == {
-        "toee_identity_lookup",
-        "toee_shopify_read",
-        "toee_qbo_read",
-        "toee_easyroutes_read",
-        "toee_knowledge_search",
-    }
+    assert set(registry) == set(tool_names())
+
+
+def test_create_all_mock_handlers_registers_every_catalog_action() -> None:
+    registry = create_all_mock_handlers()
+
+    for tool, actions in TOOL_CATALOG.items():
+        assert set(registry[tool]) == set(actions), tool
