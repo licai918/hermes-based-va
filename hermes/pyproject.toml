@@ -5,13 +5,23 @@ description = "Toee Tire Hermes VA: Domain Adapter Tools, Tool Gate, and governe
 requires-python = ">=3.11"
 dependencies = []
 
+# Hermes discovers the plugin via this entry-point group (ADR-0139); the profile
+# is selected per-home by TOEE_HERMES_PROFILE, so one entry point serves all three
+# profiles. The value resolves to the module exposing register(ctx).
+[project.entry-points."hermes_agent.plugins"]
+toee = "toee_hermes.plugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# eval_runner stays import-only/deps-free; packaging it alongside toee_hermes lets
+# the gateway-embedding venv (hermes-runtime) import both without pythonpath.
+[tool.hatch.build.targets.wheel]
+packages = ["toee_hermes", "eval_runner"]
+
 [dependency-groups]
 dev = ["pytest>=8", "pyyaml>=6"]
-
-# This project is the Python Hermes-integration layer (ADR-0139). It is run, not
-# distributed, in v1, so uv manages the env without building a wheel.
-[tool.uv]
-package = false
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -829,11 +829,25 @@ wheels = [
 ]
 
 [[package]]
+name = "toee-hermes"
+version = "0.1.0"
+source = { editable = "../hermes" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
+]
+
+[[package]]
 name = "toee-hermes-runtime"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "hermes-agent" },
+    { name = "toee-hermes" },
 ]
 
 [package.dev-dependencies]
@@ -843,7 +857,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "hermes-agent", git = "https://github.com/NousResearch/hermes-agent.git?rev=c253b07" }]
+requires-dist = [
+    { name = "hermes-agent", git = "https://github.com/NousResearch/hermes-agent.git?rev=c253b07" },
+    { name = "toee-hermes", editable = "../hermes" },
+]
 
 [package.metadata.requires-dev]
 dev = [
