@@ -1,11 +1,10 @@
 // Workbench session signing secret (ADR-0018). Node runtime only — reads
-// process.env. Edge code must not import this; pass the secret in explicitly.
-
-// dev only: fallback so local dev works without configuring a secret. Real
-// deployments set WORKBENCH_SESSION_SECRET (GCP Secret Manager).
-const DEV_SESSION_SECRET = "workbench-dev-session-secret-change-me";
+// process.env. Edge code (middleware) must NOT import this; instead it calls
+// resolveSessionSecret(process.env.WORKBENCH_SESSION_SECRET) directly so both
+// runtimes share the same dev fallback (see session-secret.ts). Real deployments
+// set WORKBENCH_SESSION_SECRET (GCP Secret Manager).
+import { resolveSessionSecret } from "./session-secret";
 
 export function getSessionSecret(): string {
-  const fromEnv = process.env.WORKBENCH_SESSION_SECRET;
-  return fromEnv && fromEnv.length > 0 ? fromEnv : DEV_SESSION_SECRET;
+  return resolveSessionSecret(process.env.WORKBENCH_SESSION_SECRET);
 }
