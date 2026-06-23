@@ -1,0 +1,58 @@
+{
+  "final_response": "I've passed your message along to our team \u2014 someone will follow up with you about the delivery. Is there anything else I can help with in the meantime?",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nIs John Smith available? I need to speak with him about a delivery."
+    },
+    {
+      "role": "assistant",
+      "content": "I can't confirm individual availability here, but let me get your request to the right team. One moment.",
+      "reasoning": "The caller is unmatched (not a verified customer), and they're asking to speak with a specific named person \u2014 \"John Smith.\" \n\nAccording to my rules:\n- For `named_recipient_request`: I must NEVER confirm or deny that anyone works here, and NEVER share any availability, extension, mobile, or direct line.\n- I need to open a case with `contact_reason: \"named_recipient_request\"` and `urgency: \"normal\"`.\n- I should give a brief, polite reply without confirming or denying John Smith's existence or availability.\n\nLet me open the case and craft a reply.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The caller is unmatched (not a verified customer), and they're asking to speak with a specific named person \u2014 \"John Smith.\" \n\nAccording to my rules:\n- For `named_recipient_request`: I must NEVER confirm or deny that anyone works here, and NEVER share any availability, extension, mobile, or direct line.\n- I need to open a case with `contact_reason: \"named_recipient_request\"` and `urgency: \"normal\"`.\n- I should give a brief, polite reply without confirming or denying John Smith's existence or availability.\n\nLet me open the case and craft a reply.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The caller is unmatched (not a verified customer), and they're asking to speak with a specific named person \u2014 \"John Smith.\" \n\nAccording to my rules:\n- For `named_recipient_request`: I must NEVER confirm or deny that anyone works here, and NEVER share any availability, extension, mobile, or direct line.\n- I need to open a case with `contact_reason: \"named_recipient_request\"` and `urgency: \"normal\"`.\n- I should give a brief, polite reply without confirming or denying John Smith's existence or availability.\n\nLet me open the case and craft a reply.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_00_6XApXbDqMmLgNVmxIBf63978",
+          "call_id": "call_00_6XApXbDqMmLgNVmxIBf63978",
+          "response_item_id": "fc_00_6XApXbDqMmLgNVmxIBf63978",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"named_recipient_request\", \"urgency\": \"normal\", \"summary\": \"Unmatched caller is asking to speak with John Smith about a delivery. Caller is not a verified customer \u2014 cannot confirm or deny staff availability.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_2947818e\", \"status\": \"open\", \"contact_reason\": \"named_recipient_request\", \"urgency\": \"normal\", \"summary\": \"Unmatched caller is asking to speak with John Smith about a delivery. Caller is not a verified customer \\u2014 cannot confirm or deny staff availability.\"}",
+      "tool_call_id": "call_00_6XApXbDqMmLgNVmxIBf63978"
+    },
+    {
+      "role": "assistant",
+      "content": "I've passed your message along to our team \u2014 someone will follow up with you about the delivery. Is there anything else I can help with in the meantime?",
+      "reasoning": "The case has been opened. Now I need to send a brief, polite reply to the caller without confirming or denying John Smith's availability.",
+      "finish_reason": "stop",
+      "reasoning_content": "The case has been opened. Now I need to send a brief, polite reply to the caller without confirming or denying John Smith's availability.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The case has been opened. Now I need to send a brief, polite reply to the caller without confirming or denying John Smith's availability.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

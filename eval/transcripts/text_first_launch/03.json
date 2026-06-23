@@ -1,0 +1,58 @@
+{
+  "final_response": "I'd be happy to help you check on your order! Your number is linked to more than one account, so I'll need a bit more to pull up the right one. Could you share your **order number** when you have it? In the meantime, I've opened a case and our team will reach out to help get you sorted.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: ambiguous_phone_match\n- shopify_customer_ids: ['gid://shopify/Customer/2001', 'gid://shopify/Customer/2002']\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nI need the status of my recent order.\n\nI don't have the order number right now."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The contact has an `ambiguous_phone_match` outcome, meaning their phone matches more than one customer. I'm not sure which customer they are. Per the rules, I need to ask for their order number before sharing anything. I must include the words \"order number\" in my reply.\n\nAdditionally, since this is an ambiguous contact asking for account-specific help and they can't provide an order number, I need to open a case with reason `unknown` so the team can verify them and follow up. I should do both: open the case and reply asking for the order number.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The contact has an `ambiguous_phone_match` outcome, meaning their phone matches more than one customer. I'm not sure which customer they are. Per the rules, I need to ask for their order number before sharing anything. I must include the words \"order number\" in my reply.\n\nAdditionally, since this is an ambiguous contact asking for account-specific help and they can't provide an order number, I need to open a case with reason `unknown` so the team can verify them and follow up. I should do both: open the case and reply asking for the order number.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The contact has an `ambiguous_phone_match` outcome, meaning their phone matches more than one customer. I'm not sure which customer they are. Per the rules, I need to ask for their order number before sharing anything. I must include the words \"order number\" in my reply.\n\nAdditionally, since this is an ambiguous contact asking for account-specific help and they can't provide an order number, I need to open a case with reason `unknown` so the team can verify them and follow up. I should do both: open the case and reply asking for the order number.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_3a4db2f6e1bc48f1b6e5cc7d",
+          "call_id": "call_3a4db2f6e1bc48f1b6e5cc7d",
+          "response_item_id": "fc_3a4db2f6e1bc48f1b6e5cc7d",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"unknown\", \"urgency\": \"normal\", \"summary\": \"Ambiguous phone match \u2014 customer requesting order status but unable to provide order number. Matches two customer IDs (2001, 2002). Team needs to verify identity and follow up.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_ad79d484\", \"status\": \"open\", \"contact_reason\": \"unknown\", \"urgency\": \"normal\", \"summary\": \"Ambiguous phone match \\u2014 customer requesting order status but unable to provide order number. Matches two customer IDs (2001, 2002). Team needs to verify identity and follow up.\"}",
+      "tool_call_id": "call_3a4db2f6e1bc48f1b6e5cc7d"
+    },
+    {
+      "role": "assistant",
+      "content": "I'd be happy to help you check on your order! Your number is linked to more than one account, so I'll need a bit more to pull up the right one. Could you share your **order number** when you have it? In the meantime, I've opened a case and our team will reach out to help get you sorted.",
+      "reasoning": "I've opened the case. Now I need to reply to the customer. Since this is an ambiguous match, I should ask them for their order number (must include those words) and let them know we'll need to verify their identity.",
+      "finish_reason": "stop",
+      "reasoning_content": "I've opened the case. Now I need to reply to the customer. Since this is an ambiguous match, I should ask them for their order number (must include those words) and let them know we'll need to verify their identity.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "I've opened the case. Now I need to reply to the customer. Since this is an ambiguous match, I should ask them for their order number (must include those words) and let them know we'll need to verify their identity.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

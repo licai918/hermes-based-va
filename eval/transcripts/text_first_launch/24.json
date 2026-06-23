@@ -1,0 +1,58 @@
+{
+  "final_response": "All set! I'll make sure any follow-ups only come through after 2pm Eastern.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: verified_customer\n- shopify_customer_id: gid://shopify/Customer/1001\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nPlease only text me after 2pm Eastern for any follow-ups."
+    },
+    {
+      "role": "assistant",
+      "content": "Got it \u2014 I'll save that preference for you now",
+      "reasoning": "The customer wants me to save a preference that they should only be contacted after 2pm Eastern. Let me save this preference for them.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The customer wants me to save a preference that they should only be contacted after 2pm Eastern. Let me save this preference for them.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The customer wants me to save a preference that they should only be contacted after 2pm Eastern. Let me save this preference for them.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_e0f304f816d74a9b9277eb45",
+          "call_id": "call_e0f304f816d74a9b9277eb45",
+          "response_item_id": "fc_e0f304f816d74a9b9277eb45",
+          "type": "function",
+          "function": {
+            "name": "toee_customer_memory__upsert_preference",
+            "arguments": "{\"slot\": \"contact_time_preference\", \"value\": \"after 2pm Eastern\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_customer_memory__upsert_preference",
+      "tool_name": "toee_customer_memory__upsert_preference",
+      "content": "{\"binding_key\": \"gid://shopify/Customer/1001\", \"slot\": \"contact_time_preference\", \"value\": \"after 2pm Eastern\", \"source\": null, \"stored\": true}",
+      "tool_call_id": "call_e0f304f816d74a9b9277eb45"
+    },
+    {
+      "role": "assistant",
+      "content": "All set! I'll make sure any follow-ups only come through after 2pm Eastern.",
+      "reasoning": "The preference was saved successfully. I'll confirm to the customer.",
+      "finish_reason": "stop",
+      "reasoning_content": "The preference was saved successfully. I'll confirm to the customer.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The preference was saved successfully. I'll confirm to the customer.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

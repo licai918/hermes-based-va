@@ -10,13 +10,11 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import replace
 from pathlib import Path
 from typing import Union
 
-from .disclosures import derive_disclosures
 from .harness import AgentTurnResult
-from .transcript import turn_result_from_transcript
+from .turn_result import build_scenario_turn_result
 from .types import MergedScenario
 
 PathLike = Union[str, os.PathLike[str]]
@@ -57,12 +55,11 @@ class ReplayAgentHarness:
                 f"(suite '{scenario.suite}') at {path}."
             )
         doc = json.loads(path.read_text(encoding="utf-8"))
-        result = turn_result_from_transcript(
+        # The transcript composer is channel-agnostic; the scenario-aware builder
+        # layers on structural disclosures (ADR-0056), the safety invariants, and the
+        # injected-preference signal — the same composition the live recorder uses.
+        return build_scenario_turn_result(
+            scenario,
             final_response=doc.get("final_response", "") or "",
             messages=doc.get("messages", []) or [],
         )
-        # The transcript composer is channel-agnostic; structural disclosures
-        # (ADR-0056) come from the scenario. Composer-provided keys take
-        # precedence over the structural defaults.
-        derived = derive_disclosures(channel=scenario.channel)
-        return replace(result, disclosures={**derived, **result.disclosures})

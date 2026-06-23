@@ -18,7 +18,7 @@ from ..drivers.base import resolve_integration_driver
 from ..drivers.mock import MockDriver, create_all_mock_handlers
 from ..execute import ToolDriver
 from ..gates import create_turn_binding_gate
-from ..tool_gate import ToolExecutionContext
+from ..tool_gate import ToolExecutionContext, ToolGate
 from .hooks import make_pre_llm_call_hook
 from .profiles import allowlisted_tools, resolve_profile
 from .schemas import build_tool_schemas
@@ -43,6 +43,7 @@ def _build_driver() -> ToolDriver:
 def _make_context_provider(
     profile: str,
     *,
+    identity: Optional[Any] = None,
     conversation_id: Optional[str] = None,
     sms_session_id: Optional[str] = None,
 ) -> ContextProvider:
@@ -50,15 +51,17 @@ def _make_context_provider(
 
     Identity-bearing kwargs (``identity``/``user_id``/``connected_account_id``)
     are read when the embedding layer passes them; until then the context carries
-    the profile alone and identity-scoped reads see ``identity is None``. The async
-    Textline turn binding (``conversation_id``/``sms_session_id``, ADR-0107) is
-    injected by :func:`register_turn` and closed over here — never model-supplied.
+    the profile alone and identity-scoped reads see ``identity is None``. A closed
+    over ``identity`` (the eval Session Identity Snapshot, ADR-0043) takes
+    precedence, because the agent loop never supplies it as a per-call kwarg. The
+    async Textline turn binding (``conversation_id``/``sms_session_id``, ADR-0107)
+    is injected by :func:`register_turn` and closed over here — never model-supplied.
     """
 
     def provider(kwargs: dict[str, Any]) -> ToolExecutionContext:
         return ToolExecutionContext(
             profile=profile,
-            identity=kwargs.get("identity"),
+            identity=identity if identity is not None else kwargs.get("identity"),
             user_id=kwargs.get("user_id"),
             connected_account_id=kwargs.get("connected_account_id"),
             conversation_id=conversation_id,
@@ -68,18 +71,26 @@ def _make_context_provider(
     return provider
 
 
-def _register(ctx: Any, *, provider_factory: ProviderFactory) -> None:
+def _register(
+    ctx: Any,
+    *,
+    provider_factory: ProviderFactory,
+    driver: Optional[ToolDriver] = None,
+    gate: Optional[ToolGate] = None,
+) -> None:
     """Register a profile's allowlisted tools + the injection hook.
 
-    The turn-binding gate (ADR-0107/0066) is wired on every path; it is inert
-    unless the context carries a ``conversation_id`` (eval/replay + Copilot paths
-    are unbound), so only :func:`register_turn` activates the binding constraint.
+    The turn-binding gate (ADR-0107/0066) is the default gate; it is inert unless
+    the context carries a ``conversation_id`` (eval/replay + Copilot paths are
+    unbound), so only :func:`register_turn` activates the binding constraint. The
+    Launch Eval recording path (:func:`register_eval`) injects the scenario's
+    ``driver`` (its MockDriver) and ``gate`` (the External-profile gate) instead.
     """
     profile = resolve_profile(ctx)
     allow = allowlisted_tools(profile)
-    driver = _build_driver()
+    active_driver = driver if driver is not None else _build_driver()
     context_provider = provider_factory(profile)
-    gate = create_turn_binding_gate()
+    active_gate = gate if gate is not None else create_turn_binding_gate()
 
     for entry in build_tool_schemas():
         if entry["toolset"] not in allow:
@@ -87,9 +98,9 @@ def _register(ctx: Any, *, provider_factory: ProviderFactory) -> None:
         handler = make_tool_handler(
             tool=entry["tool"],
             action=entry["action"],
-            driver=driver,
+            driver=active_driver,
             context_provider=context_provider,
-            gate=gate,
+            gate=active_gate,
         )
         ctx.register_tool(
             name=entry["schema"]["name"],
@@ -130,4 +141,30 @@ def register_turn(
     )
 
 
-__all__ = ["register", "register_turn"]
+def register_eval(
+    ctx: Any,
+    *,
+    driver: ToolDriver,
+    gate: ToolGate,
+    identity: Optional[Any] = None,
+) -> None:
+    """Register for a Launch Eval recording turn (ADR-0071, ADR-0139).
+
+    Injects the scenario's ``driver`` (its MockDriver), the External-profile
+    ``gate``, and the closed-over Session Identity Snapshot (ADR-0043), so a
+    recorded live ``AIAgent`` turn dispatches through the scenario's mock data and
+    policy. This path is unbound (no async Textline ``conversation_id``), so the
+    reply tool is unconstrained — recording captures whatever conversation the
+    scenario's scripted/model turn targets.
+    """
+    _register(
+        ctx,
+        provider_factory=lambda profile: _make_context_provider(
+            profile, identity=identity
+        ),
+        driver=driver,
+        gate=gate,
+    )
+
+
+__all__ = ["register", "register_turn", "register_eval"]

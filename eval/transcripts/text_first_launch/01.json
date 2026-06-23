@@ -1,0 +1,92 @@
+{
+  "final_response": "Here's what I found:\n\n- **Order 1042**: All-Season 225/60R16 tires. It's currently **in transit**.\n- **Invoice INV-9001**: Has an outstanding balance of **$1,250.00**, so it is still open.\n\nLet me know if you'd like a payment link for that invoice or need anything else!",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: verified_customer\n- shopify_customer_id: gid://shopify/Customer/1001\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nCan you check order 1042, delivery status, and whether invoice INV-9001 is open?"
+    },
+    {
+      "role": "assistant",
+      "content": "Sure! Let me pull all three of those up for you at once.",
+      "reasoning": "The customer is verified, so I can look up their order, delivery status, and invoice. Let me make all three calls in parallel since they're independent.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The customer is verified, so I can look up their order, delivery status, and invoice. Let me make all three calls in parallel since they're independent.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The customer is verified, so I can look up their order, delivery status, and invoice. Let me make all three calls in parallel since they're independent.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_c9359be64a114e4e8280bcd9",
+          "call_id": "call_c9359be64a114e4e8280bcd9",
+          "response_item_id": "fc_c9359be64a114e4e8280bcd9",
+          "type": "function",
+          "function": {
+            "name": "toee_shopify_read__get_order",
+            "arguments": "{\"order_number\": \"1042\"}"
+          }
+        },
+        {
+          "id": "call_8d135cfd8af343f4a76dae53",
+          "call_id": "call_8d135cfd8af343f4a76dae53",
+          "response_item_id": "fc_8d135cfd8af343f4a76dae53",
+          "type": "function",
+          "function": {
+            "name": "toee_easyroutes_read__get_delivery_status",
+            "arguments": "{\"order_number\": \"1042\"}"
+          }
+        },
+        {
+          "id": "call_ad0cc9b181eb4836a9887d68",
+          "call_id": "call_ad0cc9b181eb4836a9887d68",
+          "response_item_id": "fc_ad0cc9b181eb4836a9887d68",
+          "type": "function",
+          "function": {
+            "name": "toee_qbo_read__get_invoice",
+            "arguments": "{\"invoice_number\": \"INV-9001\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_shopify_read__get_order",
+      "tool_name": "toee_shopify_read__get_order",
+      "content": "{\"order_number\": \"1042\", \"customer_id\": \"gid://shopify/Customer/1001\", \"line_items\": [{\"sku\": \"TIRE-225-60R16\", \"title\": \"All-Season 225/60R16\"}]}",
+      "tool_call_id": "call_c9359be64a114e4e8280bcd9"
+    },
+    {
+      "role": "tool",
+      "name": "toee_easyroutes_read__get_delivery_status",
+      "tool_name": "toee_easyroutes_read__get_delivery_status",
+      "content": "{\"order_number\": \"1042\", \"status\": \"in_transit\"}",
+      "tool_call_id": "call_8d135cfd8af343f4a76dae53"
+    },
+    {
+      "role": "tool",
+      "name": "toee_qbo_read__get_invoice",
+      "tool_name": "toee_qbo_read__get_invoice",
+      "content": "{\"invoice_number\": \"INV-9001\", \"shopify_customer_id\": \"gid://shopify/Customer/1001\", \"customer_email\": \"accounts@acme-fleet.example\", \"balance\": 1250.0}",
+      "tool_call_id": "call_ad0cc9b181eb4836a9887d68"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's what I found:\n\n- **Order 1042**: All-Season 225/60R16 tires. It's currently **in transit**.\n- **Invoice INV-9001**: Has an outstanding balance of **$1,250.00**, so it is still open.\n\nLet me know if you'd like a payment link for that invoice or need anything else!",
+      "reasoning": "Let me summarize the results:\n\n1. Order 1042: Contains All-Season 225/60R16 tires (SKU: TIRE-225-60R16)\n2. Delivery status: In transit\n3. Invoice INV-9001: Has a balance of $1,250.00 \u2014 since it has a balance, it's open (not fully paid)\n\nI'll send a concise reply to the customer with all three pieces of information.",
+      "finish_reason": "stop",
+      "reasoning_content": "Let me summarize the results:\n\n1. Order 1042: Contains All-Season 225/60R16 tires (SKU: TIRE-225-60R16)\n2. Delivery status: In transit\n3. Invoice INV-9001: Has a balance of $1,250.00 \u2014 since it has a balance, it's open (not fully paid)\n\nI'll send a concise reply to the customer with all three pieces of information.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "Let me summarize the results:\n\n1. Order 1042: Contains All-Season 225/60R16 tires (SKU: TIRE-225-60R16)\n2. Delivery status: In transit\n3. Invoice INV-9001: Has a balance of $1,250.00 \u2014 since it has a balance, it's open (not fully paid)\n\nI'll send a concise reply to the customer with all three pieces of information.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

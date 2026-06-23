@@ -28,6 +28,29 @@ class BootedProfile:
         return registry.dispatch(name, args, **kwargs)
 
 
+def _boot(profile: str, register_fn: Any) -> BootedProfile:
+    """Construct a real PluginContext, run ``register_fn(ctx)``, return the booted profile.
+
+    ``toee_hermes`` must be importable. The test harness puts ``../hermes`` on the
+    path (``pythonpath`` in pyproject); the gateway-embedding slice replaces this
+    with the installable ``hermes_agent.plugins`` entry-point package (ADR-0139),
+    at which point Hermes' own loader discovers the plugin without this call.
+    """
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    manifest = PluginManifest(name="toee-tire")
+    ctx = PluginContext(manifest, manager)
+    # resolve_profile(ctx) reads ctx.profile first (ADR-0034 default-deny by profile).
+    ctx.profile = profile
+    register_fn(ctx)
+    return BootedProfile(
+        profile=profile,
+        tool_names=sorted(manager._plugin_tool_names),
+        manager=manager,
+    )
+
+
 def boot_profile(
     profile: str,
     *,
@@ -41,29 +64,36 @@ def boot_profile(
     carries that turn binding and the turn-binding gate constrains
     ``toee_textline_reply.send_message`` to the bound conversation (ADR-0107/0066).
     Without it, the unbound :func:`register` path is used (eval/replay + Copilot).
-
-    ``toee_hermes`` must be importable. The test harness puts ``../hermes`` on the
-    path (``pythonpath`` in pyproject); the gateway-embedding slice replaces this
-    with the installable ``hermes_agent.plugins`` entry-point package (ADR-0139),
-    at which point Hermes' own loader discovers the plugin without this call.
     """
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-
     from toee_hermes.plugin import register, register_turn
 
-    manager = PluginManager()
-    manifest = PluginManifest(name="toee-tire")
-    ctx = PluginContext(manifest, manager)
-    # resolve_profile(ctx) reads ctx.profile first (ADR-0034 default-deny by profile).
-    ctx.profile = profile
     if conversation_id is not None:
-        register_turn(
-            ctx, conversation_id=conversation_id, sms_session_id=sms_session_id
+        return _boot(
+            profile,
+            lambda ctx: register_turn(
+                ctx, conversation_id=conversation_id, sms_session_id=sms_session_id
+            ),
         )
-    else:
-        register(ctx)
-    return BootedProfile(
-        profile=profile,
-        tool_names=sorted(manager._plugin_tool_names),
-        manager=manager,
+    return _boot(profile, register)
+
+
+def boot_profile_eval(
+    profile: str,
+    *,
+    driver: Any,
+    gate: Any,
+    identity: Optional[Any] = None,
+) -> BootedProfile:
+    """Boot a profile for a Launch Eval recording turn (ADR-0071, ADR-0139).
+
+    Injects the scenario's MockDriver (``driver``), the External-profile Tool Gate
+    (``gate``), and the closed-over Session Identity Snapshot (``identity``, ADR-0043)
+    via :func:`toee_hermes.plugin.register_eval`, so a recorded live ``AIAgent`` turn
+    dispatches through the scenario's mock data and policy — not the default mock.
+    """
+    from toee_hermes.plugin import register_eval
+
+    return _boot(
+        profile,
+        lambda ctx: register_eval(ctx, driver=driver, gate=gate, identity=identity),
     )

@@ -1,0 +1,75 @@
+{
+  "final_response": "Your order #1042 for the All-Season 225/60R16 is on its way \u2014 it's currently in transit. Let me know if you need anything else!",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: verified_customer\n- shopify_customer_id: gid://shopify/Customer/1001\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nWhat's the status of order 1042?"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The customer is verified with shopify_customer_id 1001. They're asking about order 1042. Let me look up the order and its delivery status.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The customer is verified with shopify_customer_id 1001. They're asking about order 1042. Let me look up the order and its delivery status.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The customer is verified with shopify_customer_id 1001. They're asking about order 1042. Let me look up the order and its delivery status.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_c31bd2164bef4b148daf5957",
+          "call_id": "call_c31bd2164bef4b148daf5957",
+          "response_item_id": "fc_c31bd2164bef4b148daf5957",
+          "type": "function",
+          "function": {
+            "name": "toee_shopify_read__get_order",
+            "arguments": "{\"order_number\": \"1042\"}"
+          }
+        },
+        {
+          "id": "call_be6ae5041413416ebf54ed2a",
+          "call_id": "call_be6ae5041413416ebf54ed2a",
+          "response_item_id": "fc_be6ae5041413416ebf54ed2a",
+          "type": "function",
+          "function": {
+            "name": "toee_easyroutes_read__get_delivery_status",
+            "arguments": "{\"order_number\": \"1042\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_shopify_read__get_order",
+      "tool_name": "toee_shopify_read__get_order",
+      "content": "{\"order_number\": \"1042\", \"customer_id\": \"gid://shopify/Customer/1001\", \"line_items\": [{\"sku\": \"TIRE-225-60R16\", \"title\": \"All-Season 225/60R16\"}]}",
+      "tool_call_id": "call_c31bd2164bef4b148daf5957"
+    },
+    {
+      "role": "tool",
+      "name": "toee_easyroutes_read__get_delivery_status",
+      "tool_name": "toee_easyroutes_read__get_delivery_status",
+      "content": "{\"order_number\": \"1042\", \"status\": \"in_transit\"}",
+      "tool_call_id": "call_be6ae5041413416ebf54ed2a"
+    },
+    {
+      "role": "assistant",
+      "content": "Your order #1042 for the All-Season 225/60R16 is on its way \u2014 it's currently in transit. Let me know if you need anything else!",
+      "reasoning": "The customer is verified and the order 1042 belongs to them (customer_id matches). Let me summarize:\n\n- Order 1042: 1x All-Season 225/60R16\n- Delivery status: in_transit\n\nI'll keep it brief and friendly.",
+      "finish_reason": "stop",
+      "reasoning_content": "The customer is verified and the order 1042 belongs to them (customer_id matches). Let me summarize:\n\n- Order 1042: 1x All-Season 225/60R16\n- Delivery status: in_transit\n\nI'll keep it brief and friendly.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The customer is verified and the order 1042 belongs to them (customer_id matches). Let me summarize:\n\n- Order 1042: 1x All-Season 225/60R16\n- Delivery status: in_transit\n\nI'll keep it brief and friendly.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}
