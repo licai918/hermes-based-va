@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@toee/domain-adapters": "workspace:^",
     "@toee/hermes-runtime": "workspace:*",
     "@toee/shared": "workspace:*",
     "next": "^16.2.9",

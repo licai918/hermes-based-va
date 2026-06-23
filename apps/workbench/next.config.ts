@@ -8,7 +8,11 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 const nextConfig: NextConfig = {
   turbopack: { root: repoRoot },
-  transpilePackages: ["@toee/shared", "@toee/hermes-runtime"],
+  transpilePackages: [
+    "@toee/shared",
+    "@toee/hermes-runtime",
+    "@toee/domain-adapters",
+  ],
 };
 
 export default nextConfig;
