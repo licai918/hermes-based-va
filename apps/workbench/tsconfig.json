@@ -9,7 +9,7 @@
     "allowJs": true,
     "incremental": true,
     "noEmit": true,
-    "types": ["node"],
+    "types": ["node", "vitest/globals"],
     "plugins": [{ "name": "next" }],
     "paths": { "@/*": ["./*"] }
   },
