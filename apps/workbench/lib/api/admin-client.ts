@@ -1,0 +1,133 @@
+// Typed browser-side wrappers for the Admin Governance Console BFF endpoints
+// (ADR-0087 knowledge, ADR-0088 eval, ADR-0089 accounts). Thin over getJson/
+// sendJson so non-2xx responses raise the shared ApiError — except createAccount,
+// whose 400 carries a policy `errors[]` we surface inline rather than throw.
+import type { WorkbenchRoleId } from "@toee/shared";
+import type { PublicAccount } from "@/lib/bff/admin/accounts";
+import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
+import type { PolicySlot } from "@/lib/gateway/knowledge-store";
+import { getJson, sendJson } from "./http";
+
+// --- Knowledge (Required Operational Policy Slots) ---------------------------
+
+export function listSlots(): Promise<PolicySlot[]> {
+  return getJson<{ slots: PolicySlot[] }>("/api/admin/knowledge/slots").then(
+    (b) => b.slots,
+  );
+}
+
+export type SlotDraftPatch = {
+  draftText?: string;
+  owner?: string;
+  reviewDate?: string;
+};
+
+export function saveDraft(slotId: string, patch: SlotDraftPatch): Promise<PolicySlot> {
+  return sendJson<{ slot: PolicySlot }>(
+    "PUT",
+    `/api/admin/knowledge/slots/${slotId}`,
+    patch,
+  ).then((b) => b.slot);
+}
+
+export function submitSlot(slotId: string): Promise<PolicySlot> {
+  return sendJson<{ slot: PolicySlot }>(
+    "POST",
+    `/api/admin/knowledge/slots/${slotId}/submit`,
+  ).then((b) => b.slot);
+}
+
+export function rollbackSlot(slotId: string): Promise<PolicySlot> {
+  return sendJson<{ slot: PolicySlot }>(
+    "POST",
+    `/api/admin/knowledge/slots/${slotId}/rollback`,
+  ).then((b) => b.slot);
+}
+
+// --- Eval review (Knowledge Publish Eval Gate) -------------------------------
+
+export function listRuns(): Promise<EvalRunSummary[]> {
+  return getJson<{ runs: EvalRunSummary[] }>("/api/admin/eval/runs").then(
+    (b) => b.runs,
+  );
+}
+
+export function getRun(runId: string): Promise<EvalRunReport> {
+  return getJson<{ run: EvalRunReport }>(`/api/admin/eval/runs/${runId}`).then(
+    (b) => b.run,
+  );
+}
+
+export function signOff(runId: string): Promise<EvalRunReport> {
+  return sendJson<{ run: EvalRunReport }>(
+    "POST",
+    `/api/admin/eval/runs/${runId}/sign-off`,
+  ).then((b) => b.run);
+}
+
+export function promote(runId: string): Promise<EvalRunReport> {
+  return sendJson<{ run: EvalRunReport }>(
+    "POST",
+    `/api/admin/eval/runs/${runId}/promote`,
+  ).then((b) => b.run);
+}
+
+// --- Accounts ----------------------------------------------------------------
+
+export function listAccounts(): Promise<PublicAccount[]> {
+  return getJson<{ accounts: PublicAccount[] }>("/api/admin/accounts").then(
+    (b) => b.accounts,
+  );
+}
+
+export type CreateAccountInput = {
+  username: string;
+  role: WorkbenchRoleId;
+  password: string;
+};
+
+// The create path is the one endpoint whose error body is actionable in the UI:
+// a 400 carries the password-policy `errors[]` (ADR-0018) and a 409 means the
+// username is taken. Return a result union instead of throwing so the form can
+// render those inline rather than only via the global banner.
+export type CreateAccountResult =
+  | { ok: true; account: PublicAccount }
+  | { ok: false; status: number; error: string; errors?: string[] };
+
+export async function createAccount(
+  input: CreateAccountInput,
+): Promise<CreateAccountResult> {
+  const res = await fetch("/api/admin/accounts", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = (await res.json().catch(() => null)) as
+    | { account?: PublicAccount; error?: string; errors?: string[] }
+    | null;
+  if (res.ok && body?.account) return { ok: true, account: body.account };
+  return {
+    ok: false,
+    status: res.status,
+    error: typeof body?.error === "string" ? body.error : `request failed (${res.status})`,
+    errors: Array.isArray(body?.errors) ? body.errors : undefined,
+  };
+}
+
+export function updateRole(
+  accountId: string,
+  role: WorkbenchRoleId,
+): Promise<PublicAccount> {
+  return sendJson<{ account: PublicAccount }>(
+    "PATCH",
+    `/api/admin/accounts/${accountId}/role`,
+    { role },
+  ).then((b) => b.account);
+}
+
+export function disableAccount(accountId: string): Promise<PublicAccount> {
+  return sendJson<{ account: PublicAccount }>(
+    "POST",
+    `/api/admin/accounts/${accountId}/disable`,
+  ).then((b) => b.account);
+}
