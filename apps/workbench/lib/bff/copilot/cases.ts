@@ -10,6 +10,7 @@ import {
   readNonEmptyString,
   type CopilotDeps,
 } from "./deps";
+import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import type {
   AssigneeFilterMode,
   CaseListFilter,
@@ -44,7 +45,8 @@ function parseStatuses(url: URL): CaseStatus[] | null {
 
 // Builds the queue filter from query params, defaulting per role when params are
 // absent: reps see mine_or_unassigned, supervisors/admins see all (ADR-0079).
-function buildCaseListFilter(url: URL, deps: CopilotDeps): CaseListFilter {
+// Exported so the per-profile API path (ADR-0141) derives the identical filter.
+export function buildCaseListFilter(url: URL, deps: CopilotDeps): CaseListFilter {
   const statuses = parseStatuses(url) ?? DEFAULT_STATUSES;
   const modeRaw = url.searchParams.get("assignee");
   const accountId = deps.session.accountId;
@@ -68,6 +70,27 @@ function buildCaseListFilter(url: URL, deps: CopilotDeps): CaseListFilter {
 export function handleListCases(req: Request, deps: CopilotDeps): Response {
   const filter = buildCaseListFilter(new URL(req.url), deps);
   return json({ cases: deps.store.listCases(filter) });
+}
+
+// Per-profile API variant of the queue read (ADR-0141): same role-derived filter,
+// but the cases come from the Internal Copilot Profile's deterministic
+// `tools:dispatch` over HTTP instead of the in-memory store. The route picks this
+// path only when HERMES_COPILOT_API_URL/TOKEN are configured.
+export async function handleListCasesViaApi(
+  req: Request,
+  client: HermesApiClient,
+  deps: CopilotDeps,
+): Promise<Response> {
+  const filter = buildCaseListFilter(new URL(req.url), deps);
+  try {
+    const cases = await client.listCases(filter as unknown as Record<string, unknown>);
+    return json({ cases });
+  } catch {
+    // ponytail: the tracer collapses any upstream failure (transport or governed
+    // tool error) to a 502 so ADR-0090's global error banner surfaces it; per-class
+    // handling (e.g. distinguishing policy_blocked) lands with the full migration.
+    return problem(502, "case service unavailable");
+  }
 }
 
 export function handleGetCase(caseId: string, deps: CopilotDeps): Response {

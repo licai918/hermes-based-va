@@ -4,6 +4,7 @@ import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import type { WorkbenchSession } from "../../auth/session";
 import { createInMemoryGatewayStore, type GatewayStore } from "../../gateway/store";
 import { createSeed } from "../../gateway/seed";
+import { HermesApiClient } from "../../gateway/hermes-api-client";
 import type { AuditAction, WorkbenchCase } from "../../gateway/types";
 import type { CopilotDeps } from "./deps";
 import {
@@ -14,6 +15,7 @@ import {
   handleGetCase,
   handleGetThread,
   handleListCases,
+  handleListCasesViaApi,
   handlePriority,
   handleResolve,
 } from "./cases";
@@ -301,5 +303,68 @@ describe("handleContactReason", () => {
       deps(),
     );
     expect(res.status).toBe(404);
+  });
+});
+
+describe("handleListCasesViaApi", () => {
+  function client(
+    fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
+  ): HermesApiClient {
+    return new HermesApiClient({
+      baseUrl: "http://copilot.internal",
+      token: "tok",
+      fetchImpl,
+    });
+  }
+
+  it("returns cases from the per-profile API dispatch", async () => {
+    const apiCase = { caseId: "case_api" } as WorkbenchCase;
+    const res = await handleListCasesViaApi(
+      listReq(),
+      client(async () =>
+        new Response(JSON.stringify({ ok: true, data: { cases: [apiCase] } }), {
+          status: 200,
+        }),
+      ),
+      deps(),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { cases: WorkbenchCase[] };
+    expect(body.cases.map((c) => c.caseId)).toEqual(["case_api"]);
+  });
+
+  it("derives the same role filter and sends it as dispatch params", async () => {
+    let sent: { tool: string; action: string; params: unknown } | null = null;
+    await handleListCasesViaApi(
+      listReq(),
+      client(async (_url, init) => {
+        sent = JSON.parse(init.body as string);
+        return new Response(JSON.stringify({ ok: true, data: { cases: [] } }), {
+          status: 200,
+        });
+      }),
+      // A rep defaults to mine_or_unassigned over open/in_progress (ADR-0079).
+      deps(session(WORKBENCH_ROLES.rep, "seed-rep")),
+    );
+
+    expect(sent).toEqual({
+      tool: "toee_workbench_read",
+      action: "list_cases",
+      params: {
+        statuses: ["open", "in_progress"],
+        assignee: { mode: "mine_or_unassigned", accountId: "seed-rep" },
+      },
+    });
+  });
+
+  it("maps an upstream failure to a 502 (ADR-0090 error banner)", async () => {
+    const res = await handleListCasesViaApi(
+      listReq(),
+      client(async () => new Response("boom", { status: 500 })),
+      deps(),
+    );
+
+    expect(res.status).toBe(502);
   });
 });

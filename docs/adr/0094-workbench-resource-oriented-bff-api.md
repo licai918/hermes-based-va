@@ -1,5 +1,17 @@
 # Workbench resource-oriented BFF API namespaces
 
+> **Amended by [ADR-0141](0141-workbench-bff-per-profile-hermes-http-contract.md).**
+> The browser-facing routes below still hold (resource-oriented, no raw
+> `{ tool, action }` to the browser). What changed is the BFF→backend hop: per
+> ADR-0139 there is no in-process TypeScript executor, so BFF handlers call the
+> **per-profile Hermes HTTP API** (deterministic `POST /v1/tools:dispatch` for the
+> resource routes; the agent-turn API for chat/drafts) instead of executing
+> `packages/domain-adapters` in-process. `packages/domain-adapters` remains as the
+> shared TypeScript request/response **types** for that API (the ADR-0070
+> catalog), not an executor. Read "call `packages/domain-adapters`" /
+> "tool-gate enforcement live in `packages/domain-adapters`" below as the Python
+> `toee_hermes` plugin reached over HTTP.
+
 `apps/workbench` exposes resource-oriented BFF routes under `app/api/`. Browser clients do not call `services/hermes-gateway` directly and do not send raw `{ tool, action }` envelopes in v1.
 
 BFF handlers validate the HttpOnly session, derive `activeProfile` from the route prefix per ADR-0093, enforce role checks, and call `packages/domain-adapters` using the v1 tool catalog from ADR-0070.
