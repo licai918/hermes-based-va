@@ -9,17 +9,10 @@ Postgres service container in a later slice.
 
 from __future__ import annotations
 
-import uuid
-
-import pytest
-
-from hermes_runtime.datastore.config import database_url
 from hermes_runtime.datastore.migrate import discover_migrations, run_migrations
 
-try:  # psycopg lives in the hermes-runtime venv (ADR-0142); guard for safety.
-    import psycopg
-except ImportError:  # pragma: no cover - exercised only without the driver
-    psycopg = None  # type: ignore[assignment]
+# The ``temp_schema_conn`` fixture (throwaway schema, skip-if-no-DB) is shared
+# from tests/conftest.py.
 
 
 # System-of-record tables the first migration must create (ADR-0140 entity list,
@@ -40,36 +33,6 @@ EXPECTED_TABLES = {
     "knowledge_version",
     "eval_run",
 }
-
-
-@pytest.fixture
-def temp_schema_conn():
-    """An open connection whose search_path points at a fresh throwaway schema."""
-    if psycopg is None:
-        pytest.skip("psycopg not installed")
-    from psycopg import sql
-
-    try:
-        conn = psycopg.connect(database_url())
-    except Exception as exc:  # OperationalError and friends -> no DB available.
-        pytest.skip(f"no Postgres at DATABASE_URL: {exc}")
-
-    schema = f"test_migrate_{uuid.uuid4().hex[:12]}"
-    schema_id = sql.Identifier(schema)
-    with conn.cursor() as cur:
-        cur.execute(sql.SQL("CREATE SCHEMA {}").format(schema_id))
-        cur.execute(sql.SQL("SET search_path TO {}").format(schema_id))
-    conn.commit()
-    try:
-        yield conn, schema
-    finally:
-        # A failed migration leaves the transaction aborted; clear it so the
-        # DROP can run instead of raising a confusing secondary error.
-        conn.rollback()
-        with conn.cursor() as cur:
-            cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema_id))
-        conn.commit()
-        conn.close()
 
 
 def _tables_in(conn, schema: str) -> set[str]:

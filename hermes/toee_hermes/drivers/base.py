@@ -9,8 +9,13 @@ from __future__ import annotations
 import os
 from typing import Literal
 
-IntegrationDriver = Literal["mock", "composio", "rest"]
+# Driver kinds an audit record can attribute a tool call to. "datastore" is the
+# Postgres system-of-record driver (ADR-0140), wired in the hermes-runtime
+# embedding; it is intentionally NOT a KNOWN_DRIVERS value because it is selected
+# on a separate axis from the external-vendor INTEGRATION_DRIVER backend.
+IntegrationDriver = Literal["mock", "composio", "rest", "datastore"]
 
+# Valid INTEGRATION_DRIVER env values (the external vendor backend, ADR-0137).
 KNOWN_DRIVERS: tuple[IntegrationDriver, ...] = ("mock", "composio", "rest")
 
 _UNSET = object()
