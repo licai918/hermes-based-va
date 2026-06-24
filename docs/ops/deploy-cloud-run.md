@@ -18,7 +18,8 @@
 > path is **stale**. The gateway is now the **Python FastAPI** runtime in
 > `hermes-runtime/`, and its Dockerfile lives at **`hermes-runtime/Dockerfile`**. ADR-0098's
 > env-layering and "separate image per service" decisions still hold; only the gateway
-> source/path changed (ADR-0139). ADR-0098 itself is left unedited as the historical record.
+> source/path changed (ADR-0139). ADR-0098 now carries an amendment banner pointing here;
+> its body is retained as the historical record.
 
 ## Services and images
 

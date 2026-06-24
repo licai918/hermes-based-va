@@ -1,5 +1,14 @@
 # Local development and Cloud Run deployment conventions
 
+> **Amended by [ADR-0139](0139-hermes-is-nous-python-agent-plugin-integration.md).**
+> The per-service split, env layering, per-service Dockerfiles, and Secret Manager
+> injection below still hold, but the gateway is the **Python FastAPI** service in
+> `hermes-runtime/` (image `toee-hermes-gateway`, built from
+> `hermes-runtime/Dockerfile`) run with `uv`, not a Node Fastify
+> `services/hermes-gateway` started by `pnpm dev:gateway`. The current deploy +
+> smoke runbook is `docs/ops/deploy-cloud-run.md`. This ADR is retained as
+> historical record.
+
 The monorepo uses local pnpm development by default and deploys `apps/workbench` and `services/hermes-gateway` as separate Cloud Run services.
 
 ## Local development

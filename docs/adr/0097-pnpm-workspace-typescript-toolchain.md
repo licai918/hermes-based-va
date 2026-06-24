@@ -1,5 +1,14 @@
 # pnpm workspace monorepo toolchain with TypeScript project references
 
+> **Amended by [ADR-0139](0139-hermes-is-nous-python-agent-plugin-integration.md).**
+> The pnpm + TypeScript toolchain below still governs `apps/workbench` and its
+> `packages/*` libraries, but the Hermes runtime is Python: `hermes/` (the
+> `toee_hermes` plugin + **Launch Eval Runner**) and `hermes-runtime/` (the FastAPI
+> gateway) build with `uv` against the upstream `hermes-agent`, not as pnpm/TS
+> project-reference packages. The `packages/hermes-runtime` and
+> `services/hermes-gateway` entries below are superseded; this ADR is retained as
+> historical record.
+
 The **Hermes VA** repository uses a pnpm workspace monorepo for `apps/*`, `services/*`, and `packages/*` per ADR-0091.
 
 ## Workspace layout

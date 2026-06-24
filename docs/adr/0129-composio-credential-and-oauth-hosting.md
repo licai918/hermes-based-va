@@ -1,5 +1,12 @@
 # Composio credential and OAuth hosting for Layer 1 adapters
 
+> **Amended by [ADR-0139](0139-hermes-is-nous-python-agent-plugin-integration.md).**
+> Layer 1 Composio adapters run in the Python `toee_hermes` plugin's Composio
+> driver (ADR-0127, ADR-0132), reached through the Python gateway embedding — not a
+> TypeScript `packages/hermes-runtime` invoked from `apps/workbench` or
+> `services/hermes-gateway`. The credential model below (per-service key injection,
+> no global process-wide secret file) is unchanged.
+
 Layer 1 **Domain Adapter Tools** from ADR-0128 may use Composio internally. Tooe Tire uses a hybrid credential model that keeps server secrets in GCP while delegating SaaS OAuth refresh to Composio Connected Accounts.
 
 Connected Account onboarding is performed ops-side without Workbench UI per ADR-0133.

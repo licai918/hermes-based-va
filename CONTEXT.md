@@ -33,8 +33,8 @@ A thin Toee Tire-specific Skill, Tool, or MCP wrapper that implements business r
 _Avoid_: Full custom agent core, Gemini VA module port
 
 **Hermes Runtime Shim**:
-The thin wrapper that boots the official Hermes SDK, selects a **Hermes Profile**, and registers **Domain Adapter Tools** without reimplementing orchestration, **Hermes Native Memory**, or **Tool Gate** logic. It is the only repo layer allowed to import official Hermes packages.
-_Avoid_: Custom agent core, forked Hermes source, thick runtime framework, direct Hermes imports from UI, BFF, gateway, or domain adapter code
+The Python Hermes-integration layer — the `toee_hermes` plugin plus the gateway embedding — that boots and embeds the upstream Python `hermes-agent`, selects a **Hermes Profile**, and registers **Domain Adapter Tools** without reimplementing orchestration, **Hermes Native Memory**, or **Tool Gate** logic. It is the only repo layer that imports Hermes (`hermes_agent` / `run_agent`); `apps/workbench` never imports Hermes and reaches per-profile Hermes over the API Server (HTTP) per ADR-0139.
+_Avoid_: TypeScript in-process Hermes SDK, npm `packages/hermes-runtime` wrapper, custom agent core, forked Hermes source, direct Hermes imports from UI, BFF, or domain adapter code
 
 **Hermes Built-in Tool**:
 A tool shipped with **Hermes Core**, such as `web_search` or `memory`, registered through the same native tool surface as **Domain Adapter Tools**.
@@ -494,14 +494,14 @@ _Avoid_: Automatic erasure, single-button delete
 - **Hermes VA** has one **Hermes Core**.
 - **Hermes Core** is not a separately invented Gemini-style application core; it is the shared Hermes text orchestration layer reused across profiles and channels.
 - **Cloud-Hosted Hermes** runs on Google Cloud Run and adds Google Cloud services only as **Hermes Core** requirements demand.
-- The repository uses a monorepo layout with `apps/workbench` for the Next.js workbench, `services/hermes-gateway` for channel ingress and external runtime, and shared `packages/domain-adapters` and `packages/shared` libraries.
+- The repository is a polyglot monorepo: the Python `hermes/` package holds the `toee_hermes` Hermes plugin (**Domain Adapter Tools**, **Tool Gate**, profiles) and the **Launch Eval Runner**; the Python `hermes-runtime/` package holds the **Channel Gateway** (FastAPI) and the Hermes library embedding; `apps/workbench` is the Next.js workbench with its supporting `packages/*` TypeScript libraries.
 - `apps/workbench` uses the Next.js App Router with `(public)` and `(authenticated)` route groups mapping directly to `/login`, `/copilot`, `/copilot/audit/*`, and `/admin/*`.
 - `apps/workbench` authenticates with an HttpOnly session cookie, protects authenticated pages and BFF routes through middleware, and derives `internal_copilot` versus `supervisor_admin` profile context from `/copilot` and `/admin` route prefixes.
 - `apps/workbench` exposes resource-oriented BFF routes under `/api/auth`, `/api/copilot`, and `/api/admin` that map internally to v1 **Domain Adapter Tools** without exposing raw tool envelopes to the browser.
-- `services/hermes-gateway` is a Node Fastify Cloud Run service with `POST /webhooks/textline` and a server-side pipeline for verification, normalization, ingress phone match, and **External Customer Service Profile** execution.
-- `packages/hermes-runtime` wraps the Hermes Core native SDK for in-process use by both `apps/workbench` and `services/hermes-gateway`; the workbench does not call the gateway over HTTP for Copilot or admin execution.
-- The repository uses a pnpm workspace monorepo with TypeScript project references across `packages/shared`, `packages/domain-adapters`, `packages/hermes-runtime`, `apps/workbench`, and `services/hermes-gateway`.
-- Local development runs `pnpm dev:workbench` and `pnpm dev:gateway` without Docker by default; production deploys separate Cloud Run services from `apps/workbench/Dockerfile` and `services/hermes-gateway/Dockerfile`.
+- The **Channel Gateway** is the Python FastAPI Cloud Run service in `hermes-runtime/` with `POST /webhooks/textline` and a server-side pipeline for verification, normalization, ingress phone match, and **External Customer Service Profile** execution that embeds Hermes via the Python library (ADR-0139). The legacy Node Fastify `services/hermes-gateway` is superseded and retained only as historical scaffolding.
+- There is no TypeScript in-process Hermes SDK (ADR-0139): Hermes is the upstream Python `hermes-agent`, embedded only by the Python integration layer. `apps/workbench` never imports Hermes; it reaches the **Internal Copilot Profile** and **Supervisor Admin Profile** through the per-profile API Server over HTTP.
+- The Python Hermes packages (`hermes/`, `hermes-runtime/`) build with `uv` against the upstream `hermes-agent` pinned by git rev (the ADR-0101 pin-and-eval-gate workflow, now against the rev). `apps/workbench` and its supporting `packages/*` TypeScript libraries use a pnpm workspace.
+- Local development runs the workbench with pnpm and the Python gateway with `uv` (no Docker by default); production deploys separate Cloud Run services from `apps/workbench/Dockerfile` and `hermes-runtime/Dockerfile` (ADR-0098 env layering still applies; the gateway image path is updated per ADR-0139). See `docs/ops/deploy-cloud-run.md`.
 - Toee Tire memory for **Hermes VA** lives in **Hermes Native Memory**, not a parallel custom store.
 - External systems connect through the **Hermes Integration Surface** using Skills, Tools, and MCP.
 - Customer-service policy boundaries are enforced through **Tool Gate** checks and **Hermes Profile** tool allowlists, with **Skill Guidance** and **Launch Eval Gate** as supporting layers.

@@ -1,5 +1,13 @@
 # Hermes gateway Node Fastify service with Textline webhook pipeline
 
+> **Amended by [ADR-0139](0139-hermes-is-nous-python-agent-plugin-integration.md).**
+> The Textline pipeline stages below (verify → normalize → ingress match → run
+> External profile) still hold, but the gateway is the **Python FastAPI** service
+> in `hermes-runtime/`, not a Node Fastify service — it embeds the upstream Python
+> `hermes-agent` via the library. The "build a Python FastAPI gateway (rejected)"
+> option at the end was reversed by ADR-0139. Deploy details live in
+> `docs/ops/deploy-cloud-run.md`; this ADR is retained as historical record.
+
 `services/hermes-gateway` is a standalone Node.js service deployed to Cloud Run for external channel ingress and **External Customer Service Profile** runtime execution.
 
 ## Runtime stack
