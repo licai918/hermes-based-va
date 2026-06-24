@@ -11,6 +11,7 @@ dependencies = [
     # dependency-free (ADR-0096/0100). The route layer wraps the pure
     # toee_hermes.gateway.* decision logic and the embedded AIAgent turn.
     "fastapi",
+    "psycopg[binary]>=3",
 ]
 
 # ADR-0101 / ADR-0139: the official Hermes core is pinned to an exact git rev and
