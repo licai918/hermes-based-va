@@ -122,6 +122,14 @@ def create_app(
 
     app = FastAPI()
 
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        # Cheap liveness probe for the Cloud Run health check (ADR-0098, issue #33):
+        # no secret, store, or turn-runner dependency, so it answers before (and
+        # independently of) any inbound traffic. Readiness of the model/Textline
+        # connections is enforced at boot by build_gateway_app (fail-closed).
+        return {"status": "ok"}
+
     @app.post("/webhooks/textline")
     async def textline_webhook(request: Request) -> Response:
         raw = await request.body()

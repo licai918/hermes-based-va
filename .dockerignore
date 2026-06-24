@@ -1,0 +1,30 @@
+# Keep build contexts small and reproducible (ADR-0098, #33). Both Dockerfiles use
+# the repo root as their build context, so this covers the gateway and workbench
+# images. Local venvs/caches/build output are rebuilt inside the image, never copied.
+
+# Python (hermes/ + hermes-runtime/ uv projects)
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+
+# Node / Next.js (apps/workbench pnpm workspace)
+**/node_modules
+**/.next
+**/.turbo
+
+# VCS and editor metadata (hermes-agent's git dep is fetched from GitHub by uv,
+# not from this local .git, so excluding it is safe).
+.git
+.gitignore
+.vscode
+.idea
+
+# Local env files and secrets — never bake into an image (prod uses Secret Manager).
+**/.env
+**/.env.*
+!**/.env.example
+
+# Launch Eval run artifacts (ADR-0074); regenerated per run.
+eval/reports
