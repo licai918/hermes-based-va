@@ -22,10 +22,11 @@ from typing import Optional
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
-from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.execute import ToolDriver, execute_tool
 from toee_hermes.plugin.profiles import allowlisted_tools
 from toee_hermes.tool_gate import GateDecision, ToolExecutionContext, ToolGate
+
+from .tool_backend import select_tool_driver
 
 # Resource dispatch uses a Google-style custom method (AIP-136) so it never
 # collides with a future resource-shaped REST path under /v1.
@@ -67,11 +68,13 @@ def create_tool_dispatch_app(
     """Build the per-profile tool-dispatch app from injected collaborators.
 
     ``profile`` fixes the home this server runs under (ADR-0139 separate homes);
-    ``api_token`` is the bearer the BFF presents. Defaults are mock-first: the
-    MockDriver and the profile allowlist gate, so an unconfigured app is safe to
-    boot and contract-test before Postgres exists.
+    ``api_token`` is the bearer the BFF presents. Defaults are mock-first: an
+    unconfigured app uses :func:`select_tool_driver` (``TOOL_BACKEND`` unset ->
+    MockDriver, ADR-0137) and the profile allowlist gate, so it is safe to boot and
+    contract-test before Postgres exists. Set ``TOOL_BACKEND=datastore`` to back the
+    system-of-record tools with the Postgres driver (ADR-0140).
     """
-    active_driver = driver or MockDriver(create_all_mock_handlers())
+    active_driver = driver if driver is not None else select_tool_driver()
     active_gate = gate or profile_allowlist_gate(profile)
 
     app = FastAPI()

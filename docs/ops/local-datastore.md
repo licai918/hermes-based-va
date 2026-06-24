@@ -33,17 +33,47 @@ First run prints `applied migrations: 0001_initial_schema`; a re-run prints
 `no pending migrations`. Connection comes from `DATABASE_URL` (see `.env.example`),
 defaulting to the docker-compose DSN above — no GCP credentials needed locally.
 
+## Datastore-backed tools (Slice 33 / #36)
+
+The `PostgresDriver` (`hermes_runtime/datastore/`) runs real SQL behind the
+internal **system-of-record** tools, replacing the in-memory mock for those tools.
+It is selected on a separate axis from `INTEGRATION_DRIVER` (the external-vendor
+backend): set `TOOL_BACKEND=datastore` to back these tools with Postgres, or leave
+it unset for the mock-first default (ADR-0137):
+
+- `toee_case`, `toee_case_manage`, `toee_workbench_read` — cases + audit log
+- `toee_customer_memory` — preference slots (ADR-0110–0114)
+- `toee_identity_lookup` — channel↔Shopify identity links (read-only)
+- `toee_workbench_admin` — accounts (ADR-0069/0089)
+- `toee_knowledge_ops` — policy-slot versions (ADR-0003/0040)
+- `toee_eval_review` — eval runs + policy promotion (ADR-0074/0040)
+
+External-vendor tools (Shopify, QBO, EasyRoutes, Square, Textline) and LLM drafts
+stay on the mock/Composio path — they are not system-of-record. The driver runs
+behind the **same** governed `execute_tool` as the mock (catalog check → Tool Gate
+→ profile allowlist all run first), and every mutation writes a Workbench Audit Log
+row in the same transaction (ADR-0029/0085), so swapping the backend introduces no
+governance drift. A no-drift test pins the datastore registry to both the v1 tool
+catalog and the mock registry.
+
 ## Tests
 
 The datastore integration tests isolate themselves in a throwaway schema and
 **skip** when no Postgres is reachable (so the suite stays green without a DB):
 
 ```bash
-uv run pytest tests/test_datastore_migrate.py -v
+uv run pytest tests/test_datastore_migrate.py tests/test_datastore_driver_*.py -v
 ```
 
-With the container up they run for real and assert every system-of-record table
-(ADR-0140) and the retention timestamp columns (ADR-0004/0116) exist.
+With the container up they run for real: the migrate test asserts every
+system-of-record table (ADR-0140) and retention timestamp column (ADR-0004/0116)
+exists, and the `test_datastore_driver_*` tests exercise the `PostgresDriver` CRUD
+and audit writes end-to-end against a throwaway schema. The backend-selection and
+no-drift tests need no database:
+
+```bash
+uv run pytest tests/test_tool_backend.py -v
+```
 
 ## Teardown
 
