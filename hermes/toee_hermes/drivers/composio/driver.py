@@ -428,7 +428,7 @@ class _ComposioSdkClient:
         connected_account_id: str | None,
         user_id: str | None,
     ) -> dict[str, Any]:
-        # NOTE: SDK surface verified at staging smoke; upgrade path is to pin the
+        # ponytail: SDK surface verified at staging smoke; upgrade path is to pin the
         # exact Composio v3 method + envelope once confirmed against live toolkits.
         result = self._sdk.tools.execute(
             action,
