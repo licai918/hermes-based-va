@@ -165,4 +165,5 @@ CREATE INDEX idx_cases_thread ON cases (customer_thread_id);
 CREATE INDEX idx_message_turn_session ON message_turn (sms_session_id);
 CREATE INDEX idx_message_turn_thread ON message_turn (customer_thread_id);
 CREATE INDEX idx_audit_account ON workbench_audit_log (account_id);
-CREATE INDEX idx_memory_binding ON customer_memory_slot (binding_key);
+-- customer_memory_slot (binding_key) needs no standalone index: the
+-- UNIQUE (binding_key, slot_name) constraint already indexes that prefix.

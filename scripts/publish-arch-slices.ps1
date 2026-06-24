@@ -41,8 +41,11 @@ $blocked
     $tmp = [System.IO.Path]::GetTempFileName()
     [System.IO.File]::WriteAllText($tmp, $body, [System.Text.UTF8Encoding]::new($false))
     $fullTitle = "[Slice $n] $title"
-    $url = gh issue create --title $fullTitle --label $Label --body-file $tmp
-    Remove-Item $tmp -Force
+    try {
+        $url = gh issue create --title $fullTitle --label $Label --body-file $tmp
+    } finally {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    }
     if ($url -match '/issues/(\d+)') { $map[$n] = [int]$Matches[1] }
     Write-Host "Slice $n -> #$($map[$n]) $title"
 }

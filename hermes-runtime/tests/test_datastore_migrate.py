@@ -47,21 +47,27 @@ def temp_schema_conn():
     """An open connection whose search_path points at a fresh throwaway schema."""
     if psycopg is None:
         pytest.skip("psycopg not installed")
+    from psycopg import sql
+
     try:
         conn = psycopg.connect(database_url())
     except Exception as exc:  # OperationalError and friends -> no DB available.
         pytest.skip(f"no Postgres at DATABASE_URL: {exc}")
 
     schema = f"test_migrate_{uuid.uuid4().hex[:12]}"
+    schema_id = sql.Identifier(schema)
     with conn.cursor() as cur:
-        cur.execute(f'CREATE SCHEMA "{schema}"')
-        cur.execute(f'SET search_path TO "{schema}"')
+        cur.execute(sql.SQL("CREATE SCHEMA {}").format(schema_id))
+        cur.execute(sql.SQL("SET search_path TO {}").format(schema_id))
     conn.commit()
     try:
         yield conn, schema
     finally:
+        # A failed migration leaves the transaction aborted; clear it so the
+        # DROP can run instead of raising a confusing secondary error.
+        conn.rollback()
         with conn.cursor() as cur:
-            cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema_id))
         conn.commit()
         conn.close()
 
@@ -93,6 +99,21 @@ def test_discover_migrations_is_ordered_and_nonempty() -> None:
     versions = [version for version, _ in migrations]
     assert versions == sorted(versions), "migrations must apply in lexical order"
     assert versions[0] == "0001_initial_schema"
+
+
+def test_initial_migration_declares_every_system_of_record_table() -> None:
+    """No-DB CI guard for the Slice 32 acceptance criterion: the first migration
+    must declare every system-of-record table. The live-DB tests below skip when
+    no Postgres is reachable, so without this a dropped/renamed table would ship
+    behind green CI until a Postgres service container lands."""
+    version, sql_text = discover_migrations()[0]
+    assert version == "0001_initial_schema"
+    lowered = sql_text.lower()
+    # schema_migrations is created by the runner, not the migration file.
+    for table in EXPECTED_TABLES - {"schema_migrations"}:
+        assert f"create table {table}" in lowered, (
+            f"0001_initial_schema must declare CREATE TABLE {table}"
+        )
 
 
 def test_migrations_create_all_system_of_record_tables(temp_schema_conn) -> None:
