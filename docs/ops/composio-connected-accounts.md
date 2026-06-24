@@ -202,6 +202,50 @@ Until that command exists, use [manual smoke](#33-manual-smoke-until-runner-impl
 
 **Pass criteria:** Layer 1 reads succeed; failures return governed **Tool Unavailable Response**, not raw Composio errors to customers.
 
+### 3.4 Layer 1 composio driver smoke (one read per tool)
+
+This is the per-tool smoke for the Layer 1 `composio` driver (master Slice 30). The
+driver sits behind exactly the three Layer 1 tools with strict one-to-one Composio
+action mapping (ADR-0130); `mock` stays the default everywhere else (ADR-0137). It
+performs the backend call and reshapes the vendor payload — the public `toee_*`
+contracts are unchanged from the mock drivers.
+
+**Required environment (on the active Cloud Run revision):**
+
+| Variable | Example | Notes |
+|----------|---------|-------|
+| `INTEGRATION_DRIVER` | `composio` | Selects the Layer 1 composio driver; `mock` everywhere else |
+| `COMPOSIO_API_KEY` | secret | From Secret Manager; missing key → governed `configuration_missing` |
+| `COMPOSIO_USER_ID` | `toee-staging` | Fixed per environment |
+| `COMPOSIO_SHOPIFY_CONNECTED_ACCOUNT_ID` | `ca_...` | Routes `toee_shopify_read` |
+| `COMPOSIO_QBO_CONNECTED_ACCOUNT_ID` | `ca_...` | Routes `toee_qbo_read` |
+| `COMPOSIO_SQUARE_CONNECTED_ACCOUNT_ID` | `ca_...` | Routes `toee_square_payment_link` |
+
+**Steps:**
+
+1. Connect Shopify, QuickBooks, and Square for this environment's `COMPOSIO_USER_ID`
+   per [section 1.3](#13-link-connected-accounts-cli) (ADR-0133/0138), and confirm
+   each connected account is **active** in the Composio Dashboard.
+2. Confirm the Cloud Run revision carries `INTEGRATION_DRIVER=composio` plus all six
+   variables above.
+3. Run exactly one read per Layer 1 tool through a governed **External** turn and
+   confirm governed output (not a raw vendor payload, not a customer-facing vendor
+   error):
+   - `toee_shopify_read.get_order` → Shopify connected account
+   - `toee_qbo_read.get_invoice` → QBO connected account (verified + email-linked fixture)
+   - `toee_square_payment_link.send_payment_link` → Square connected account
+     (staging vendor sandbox or a controlled test invoice only)
+4. In **Cloud Logging**, confirm each adapter audit record carries `user_id`, the
+   toolkit `connected_account_id`, the v1 tool name, and the v1 `action` — and shows
+   no `error_class=configuration_missing` / `auth_expired` on the success path.
+
+**Verify the Composio action slugs here.** The slugs in the driver's one-to-one
+mapping table (`hermes/toee_hermes/drivers/composio/driver.py`,
+`ACTION_MAPPING` — e.g. `SHOPIFY_GET_ORDER`, `QUICKBOOKS_GET_INVOICE`,
+`SQUARE_CREATE_PAYMENT_LINK`) are plausible placeholders. Confirm each against the
+live Composio toolkit during this smoke, along with the SDK response envelope the
+`_ComposioSdkClient` adapter unwraps, and correct any mismatch before go-live.
+
 ## 4. Reconnect on `auth_expired`
 
 Triggered by ADR-0136 logs or alerts with `error_class=auth_expired` or `configuration_missing`.

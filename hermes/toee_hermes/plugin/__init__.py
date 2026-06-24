@@ -15,6 +15,7 @@ from typing import Any
 from typing import Callable, Optional
 
 from ..drivers.base import resolve_integration_driver
+from ..drivers.composio import COMPOSIO_LAYER1_TOOLS, build_composio_driver
 from ..drivers.mock import MockDriver, create_all_mock_handlers
 from ..execute import ToolDriver
 from ..gates import create_turn_binding_gate
@@ -29,12 +30,32 @@ from .tools import ContextProvider, make_tool_handler
 # because the agent — not the embedding — invokes the governed handler.
 ProviderFactory = Callable[[str], ContextProvider]
 
+# Picks the driver for one tool. Per-tool selection keeps the audit record's
+# driver.kind accurate when Composio backs only the Layer 1 tools (ADR-0128).
+DriverSelector = Callable[[str], ToolDriver]
 
-def _build_driver() -> ToolDriver:
-    """Build the configured integration driver (mock-first, ADR-0137)."""
+
+def _build_driver_selector(injected: Optional[ToolDriver]) -> DriverSelector:
+    """Resolve a per-tool driver selector (mock-first, ADR-0137).
+
+    An ``injected`` driver (the eval recording path, :func:`register_eval`)
+    overrides ALL tools and short-circuits backend resolution, so eval/replay never
+    builds a live driver. Otherwise ``INTEGRATION_DRIVER`` selects the backend:
+    ``mock`` (default) serves every tool, while ``composio`` routes only the three
+    Layer 1 tools to the Composio driver and leaves the rest on mock (ADR-0128).
+    """
+    if injected is not None:
+        return lambda _tool: injected
+
     kind = resolve_integration_driver()
+    mock_driver = MockDriver(create_all_mock_handlers())
     if kind == "mock":
-        return MockDriver(create_all_mock_handlers())
+        return lambda _tool: mock_driver
+    if kind == "composio":
+        composio_driver = build_composio_driver()
+        return lambda tool: (
+            composio_driver if tool in COMPOSIO_LAYER1_TOOLS else mock_driver
+        )
     raise NotImplementedError(
         f'Integration driver "{kind}" is not implemented yet (mock-first, ADR-0137).'
     )
@@ -88,7 +109,7 @@ def _register(
     """
     profile = resolve_profile(ctx)
     allow = allowlisted_tools(profile)
-    active_driver = driver if driver is not None else _build_driver()
+    driver_for = _build_driver_selector(driver)
     context_provider = provider_factory(profile)
     active_gate = gate if gate is not None else create_turn_binding_gate()
 
@@ -98,7 +119,7 @@ def _register(
         handler = make_tool_handler(
             tool=entry["tool"],
             action=entry["action"],
-            driver=active_driver,
+            driver=driver_for(entry["tool"]),
             context_provider=context_provider,
             gate=active_gate,
         )
