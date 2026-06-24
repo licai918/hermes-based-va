@@ -1,5 +1,11 @@
 # Toee business datastore is system-of-record; Hermes native memory is conversation-only
 
+> **Amended by [ADR-0142](0142-local-first-datastore-and-per-profile-api-servers-cloud-deferred.md).**
+> Postgres stays the system-of-record, but it is stood up as **local Postgres**
+> (docker-compose) for development first; "Cloud SQL on Cloud Run" below is the
+> deferred target, provisioned in a later cloud-deploy slice once the local path
+> is green.
+
 ## Context
 
 The same investigation behind ADR-0139 established what Hermes "native memory"

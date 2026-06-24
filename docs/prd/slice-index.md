@@ -4,6 +4,16 @@ Parent: [Issue #2](https://github.com/licai918/hermes-based-va/issues/2)
 
 All slices labeled `ready-for-agent`.
 
+> **Architecture update (ADR-0139/0140/0141/0142) — local-first.**
+> Slices 1–31 were authored against the original in-process TypeScript Hermes
+> Runtime Shim. ADR-0139 (Hermes is a Python agent plugin), ADR-0140 (Postgres is
+> the system-of-record), and ADR-0141 (workbench BFF reaches per-profile Hermes
+> over HTTP) replaced that model. Their *behavior and scope* still hold; only the
+> substrate changed — Python `toee_hermes` reached over HTTP, with Postgres for
+> structured data. Slices 32–37 carry that reconciliation, sequenced
+> **local-first** (ADR-0142): every database/server dependency is proven locally
+> before any cloud provisioning, which is isolated in Slice 37.
+
 | Slice | Issue | Title | Blocked by |
 |-------|-------|-------|------------|
 | 1 | [#3](https://github.com/licai918/hermes-based-va/issues/3) | Monorepo workspace bootstrap | — |
@@ -38,4 +48,15 @@ All slices labeled `ready-for-agent`.
 | 30 | [#32](https://github.com/licai918/hermes-based-va/issues/32) | Composio Layer 1 drivers | #7, #20 |
 | 31 | [#33](https://github.com/licai918/hermes-based-va/issues/33) | Cloud Run deploy + smoke | #21, #31 |
 
-Republish script: `scripts/publish-prd-slices.ps1`
+### Local-first reconciliation slices (post ADR-0139/0140/0141/0142)
+
+| Slice | Issue | Title | Blocked by |
+|-------|-------|-------|------------|
+| 32 | [#35](https://github.com/licai918/hermes-based-va/issues/35) | Local Toee Business Datastore (Postgres): schema, migrations, dev compose | — |
+| 33 | [#36](https://github.com/licai918/hermes-based-va/issues/36) | Postgres-backed tool handlers (datastore driver) | #35 |
+| 34 | [#37](https://github.com/licai918/hermes-based-va/issues/37) | Per-profile Hermes API server runnable locally | #36 |
+| 35 | [#38](https://github.com/licai918/hermes-based-va/issues/38) | Workbench BFF resource routes: full HTTP cutover | #37 |
+| 36 | [#39](https://github.com/licai918/hermes-based-va/issues/39) | Copilot chat + drafts over the agent-turn API (local) | #37 |
+| 37 | [#40](https://github.com/licai918/hermes-based-va/issues/40) | Cloud deploy: per-profile API servers + Cloud SQL (deferred) | #35, #36, #37, #38, #39, #33 |
+
+Republish scripts: `scripts/publish-prd-slices.ps1` (slices 1–31), `scripts/publish-arch-slices.ps1` (slices 32–37).
