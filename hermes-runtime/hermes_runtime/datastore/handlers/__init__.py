@@ -11,6 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable
 
 from .cases import case_handlers
+from .identity import identity_handlers
+from .memory import memory_handlers
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -32,6 +34,8 @@ def build_datastore_registry() -> DatastoreRegistry:
     """Merge all per-tool datastore handler fragments into one registry."""
     return _merge(
         case_handlers(),
+        memory_handlers(),
+        identity_handlers(),
     )
 
 
