@@ -16,6 +16,7 @@ import {
   handleGetCase,
   handleGetCaseViaApi,
   handleGetThread,
+  handleGetThreadViaApi,
   handleListCases,
   handleListCasesViaApi,
   handlePriority,
@@ -506,5 +507,71 @@ describe("handleGetAuditLogViaApi", () => {
   it("404s when the case is unknown", async () => {
     const res = await handleGetAuditLogViaApi(clientFor(null, []), "missing");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("handleGetThreadViaApi", () => {
+  const messageRow = {
+    id: "mt_1",
+    customer_thread_id: "thr_api",
+    author: "hermes",
+    channel: "sms",
+    body: "active human reply",
+    auto_handled: false,
+    active_case_segment: true,
+    created_at: "2026-06-01T12:00:00+00:00",
+  };
+
+  it("returns the mapped case and timeline from get_thread", async () => {
+    const res = await handleGetThreadViaApi(
+      apiClient(async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: { case: apiCaseRow, messages: [messageRow] },
+          }),
+          { status: 200 },
+        ),
+      ),
+      "case_api",
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      case: WorkbenchCase;
+      messages: { messageId: string; author: string; activeCaseSegment: boolean }[];
+    };
+    expect(body.case.caseId).toBe("case_api");
+    expect(body.messages[0]?.messageId).toBe("mt_1");
+    expect(body.messages[0]?.author).toBe("hermes");
+    expect(body.messages[0]?.activeCaseSegment).toBe(true);
+  });
+
+  it("404s when the datastore returns a null case (ADR-0020 empty read)", async () => {
+    const res = await handleGetThreadViaApi(
+      apiClient(async () =>
+        new Response(
+          JSON.stringify({ ok: true, data: { case: null, messages: [] } }),
+          { status: 200 },
+        ),
+      ),
+      "missing",
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a governed denial to its per-class status", async () => {
+    const res = await handleGetThreadViaApi(
+      apiClient(async () =>
+        new Response(
+          JSON.stringify({ ok: false, error: { class: "policy_blocked", message: "no" } }),
+          { status: 200 },
+        ),
+      ),
+      "case_api",
+    );
+
+    expect(res.status).toBe(403);
   });
 });

@@ -23,7 +23,7 @@ All Toee Tire **Domain Adapter Tools** use one tool per integration with fixed v
 | Inherited external reads | `toee_knowledge_search`, `toee_shopify_read`, `toee_qbo_read`, `toee_easyroutes_read`, `toee_identity_lookup` |
 | `toee_case_manage` | `claim_case`, `assign_case`, `update_priority`, `update_contact_reason`, `resolve_case` |
 | `toee_copilot_draft` | `draft_sms`, `draft_email`, `draft_internal_note` |
-| `toee_workbench_read` | `get_case`, `list_cases`, `get_audit_log` |
+| `toee_workbench_read` | `get_case`, `list_cases`, `get_audit_log`, `get_thread` |
 | `toee_customer_memory` | `upsert_preference`, `clear_preference`, `get_preferences` |
 
 ## Supervisor Admin Profile
@@ -33,7 +33,7 @@ All Toee Tire **Domain Adapter Tools** use one tool per integration with fixed v
 | `toee_knowledge_ops` | `get_policy_slots`, `update_policy_slot`, `submit_for_eval`, `rollback_published_policy` |
 | `toee_eval_review` | `list_eval_runs`, `get_eval_run`, `sign_off_medium_failure`, `promote_pending_policy` |
 | `toee_workbench_admin` | `list_accounts`, `create_account`, `update_account_role`, `disable_account` |
-| `toee_workbench_read` | `get_case`, `list_cases`, `get_audit_log` |
+| `toee_workbench_read` | `get_case`, `list_cases`, `get_audit_log`, `get_thread` |
 | `toee_knowledge_search` | `search_public_site`, `search_operational_policy` |
 
 Deferred past v1: business write tools, autonomous Copilot customer sends except approved governed-write phases, email send tool, and additional action enums without ADR approval.

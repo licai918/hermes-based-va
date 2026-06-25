@@ -26,6 +26,16 @@ describe("TOOL_CATALOG", () => {
     ]);
   });
 
+  it("exposes get_thread on toee_workbench_read for Case Thread Context (ADR-0143)", () => {
+    expect(TOOL_CATALOG.toee_workbench_read).toEqual([
+      "get_case",
+      "list_cases",
+      "get_audit_log",
+      "get_thread",
+    ]);
+    expect(isToolAction("toee_workbench_read", "get_thread")).toBe(true);
+  });
+
   it("contains exactly the 15 v1 tool names", () => {
     expect([...TOOL_NAMES].sort()).toEqual(
       [

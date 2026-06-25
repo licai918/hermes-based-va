@@ -41,6 +41,17 @@ def test_identity_lookup_actions_match_adr_0060() -> None:
     )
 
 
+def test_workbench_read_exposes_get_thread_for_case_thread_context() -> None:
+    # ADR-0143 extends ADR-0068 with the Case Thread Context read.
+    assert TOOL_CATALOG["toee_workbench_read"] == (
+        "get_case",
+        "list_cases",
+        "get_audit_log",
+        "get_thread",
+    )
+    assert is_tool_action("toee_workbench_read", "get_thread") is True
+
+
 def test_is_tool_name_accepts_known_and_rejects_unknown() -> None:
     assert is_tool_name("toee_identity_lookup") is True
     assert is_tool_name("toee_unknown") is False

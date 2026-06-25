@@ -11,11 +11,14 @@ import type {
   AuditLogEntry,
   CaseChannel,
   CaseStatus,
+  ThreadAuthor,
+  ThreadMessage,
   WorkbenchCase,
 } from "./types";
 
 const CHANNELS: readonly CaseChannel[] = ["sms", "email", "voice"];
 const STATUSES: readonly CaseStatus[] = ["open", "in_progress", "resolved"];
+const AUTHORS: readonly ThreadAuthor[] = ["customer", "hermes", "workbench"];
 
 function asObject(raw: unknown, label: string): Record<string, unknown> {
   if (typeof raw !== "object" || raw === null) {
@@ -81,6 +84,38 @@ export function mapWorkbenchCase(raw: unknown): WorkbenchCase {
     smsSessionActive: r.sms_session_active === true,
     openedAt: isoToMs(r.opened_at, "opened_at"),
     lastActivityAt: isoToMs(r.last_activity_at, "last_activity_at"),
+  };
+}
+
+// Maps a snake_case message_turn row onto the camelCase ThreadMessage (ADR-0082
+// Case Thread Context timeline). channel + active_case_segment are computed by
+// the datastore (a thread is single-channel; the active segment is the
+// non-auto-handled turns); an unknown author/channel is a contract violation.
+export function mapThreadMessage(raw: unknown): ThreadMessage {
+  const r = asObject(raw, "thread message");
+  const author = r.author;
+  const channel = r.channel;
+  if (!(AUTHORS as readonly unknown[]).includes(author)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown thread author: ${String(author)}`,
+    );
+  }
+  if (!(CHANNELS as readonly unknown[]).includes(channel)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown thread channel: ${String(channel)}`,
+    );
+  }
+  return {
+    messageId: requiredString(r.id, "message id"),
+    threadId: optionalString(r.customer_thread_id),
+    at: isoToMs(r.created_at, "created_at"),
+    author: author as ThreadAuthor,
+    channel: channel as CaseChannel,
+    body: optionalString(r.body),
+    autoHandled: r.auto_handled === true,
+    activeCaseSegment: r.active_case_segment === true,
   };
 }
 

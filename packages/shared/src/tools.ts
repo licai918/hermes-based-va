@@ -33,7 +33,7 @@ export const TOOL_CATALOG = {
     "resolve_case",
   ],
   toee_copilot_draft: ["draft_sms", "draft_email", "draft_internal_note"],
-  toee_workbench_read: ["get_case", "list_cases", "get_audit_log"],
+  toee_workbench_read: ["get_case", "list_cases", "get_audit_log", "get_thread"],
   toee_knowledge_ops: [
     "get_policy_slots",
     "update_policy_slot",

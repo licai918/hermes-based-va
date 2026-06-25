@@ -91,6 +91,35 @@ def _thread_sms_active(conn, thread_id: Optional[str]) -> bool:
         return cur.fetchone() is not None
 
 
+def _thread_messages(
+    conn, thread_id: Optional[str], channel: str
+) -> list[dict[str, Any]]:
+    """The ordered Case Thread Context timeline for a thread (ADR-0082).
+
+    ``message_turn`` has no channel column (a thread is single-channel), so the
+    case/thread channel is applied to each turn. ``active_case_segment`` is the
+    inverse of ``auto_handled``: the active Human Intervention segment is the
+    non-auto-handled turns, while prior Auto-Handled turns stay de-emphasized.
+    """
+    if not thread_id:
+        return []
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT id, customer_thread_id, author, body, auto_handled, created_at"
+            " FROM message_turn WHERE customer_thread_id = %s ORDER BY created_at ASC",
+            (thread_id,),
+        )
+        rows = cur.fetchall()
+    messages: list[dict[str, Any]] = []
+    for row in rows:
+        msg = serialize_row(row)
+        assert msg is not None  # fetched row is never None
+        msg["channel"] = channel
+        msg["active_case_segment"] = not bool(row.get("auto_handled"))
+        messages.append(msg)
+    return messages
+
+
 def _read_model(conn, row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     """Expand a base ``cases`` row into the full WorkbenchCase read model (ADR-0064/0115).
 
@@ -298,6 +327,30 @@ def _get_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> 
     return {"case": _case_row(conn, case_id)}
 
 
+def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    case_id = _require_case_id(params)
+    case = _case_row(conn, case_id)
+    # A missing case is a legitimate empty read (ADR-0020); return nulls and do
+    # not audit a view of a case that does not exist.
+    if case is None:
+        return {"case": None, "messages": []}
+    messages = _thread_messages(
+        conn, case.get("thread_id") or None, case.get("channel") or "sms"
+    )
+    # ADR-0042/0082: opening or refreshing Case Thread Context writes a Workbench
+    # Audit Log case_view entry in the same transaction as the read.
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=context.user_id,
+        action="case_view",
+        target_type="case",
+        target_id=case_id,
+        details={},
+    )
+    return {"case": case, "messages": messages}
+
+
 def _list_cases(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     status = read_string(params, "status")
     with conn.cursor(row_factory=dict_row) as cur:
@@ -350,5 +403,6 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "get_case": _get_case,
             "list_cases": _list_cases,
             "get_audit_log": _get_audit_log,
+            "get_thread": _get_thread,
         },
     }

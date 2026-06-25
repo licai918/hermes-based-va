@@ -157,6 +157,81 @@ def test_list_cases_carries_read_model_fields(datastore) -> None:
     assert found["thread_id"] == "thr_l"
 
 
+def test_get_thread_returns_timeline_with_derived_channel_and_segment(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_thread(
+        conn,
+        thread_id="thr_t",
+        channel="sms",
+        messages=(
+            ("customer", "older auto-handled", True),
+            ("hermes", "active human reply", False),
+        ),
+    )
+    _seed_case(conn, case_id="case_t", thread_id="thr_t", channel="sms")
+
+    result = _run(driver, "toee_workbench_read", "get_thread", {"case_id": "case_t"}).data
+
+    assert result["case"]["case_id"] == "case_t"
+    messages = result["messages"]
+    assert [m["body"] for m in messages] == ["older auto-handled", "active human reply"]
+    # message_turn has no channel column; it is derived from the case/thread.
+    assert all(m["channel"] == "sms" for m in messages)
+    # ADR-0082 highlight: the active Human Intervention segment is the
+    # non-auto-handled turns; prior Auto-Handled turns stay de-emphasized.
+    assert messages[0]["auto_handled"] is True
+    assert messages[0]["active_case_segment"] is False
+    assert messages[1]["auto_handled"] is False
+    assert messages[1]["active_case_segment"] is True
+
+
+def test_get_thread_writes_one_case_view_audit_entry(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_thread(conn, thread_id="thr_av", messages=(("customer", "hi", False),))
+    _seed_case(conn, case_id="case_av", thread_id="thr_av")
+
+    _run(
+        driver,
+        "toee_workbench_read",
+        "get_thread",
+        {"case_id": "case_av"},
+        _ctx(user_id="acct_z"),
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT action, target_type, target_id, account_id"
+            " FROM workbench_audit_log WHERE target_id = %s",
+            ("case_av",),
+        )
+        rows = cur.fetchall()
+    # ADR-0042/0082: opening Case Thread Context writes exactly one case_view entry.
+    assert rows == [("case_view", "case", "case_av", "acct_z")]
+
+
+def test_get_thread_missing_case_is_empty_read_without_audit(datastore) -> None:
+    driver, conn, _ = datastore
+    result = _run(driver, "toee_workbench_read", "get_thread", {"case_id": "nope"}).data
+    # A missing case is a legitimate empty read (ADR-0020), not a fabricated view,
+    # so nothing is audited.
+    assert result == {"case": None, "messages": []}
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM workbench_audit_log")
+        assert cur.fetchone()[0] == 0
+
+
+def test_get_thread_threadless_case_has_empty_timeline(datastore) -> None:
+    driver, _, _ = datastore
+    case_id = _run(
+        driver, "toee_case", "create_case", {"contact_reason": "x"}
+    ).data["case_id"]
+
+    result = _run(driver, "toee_workbench_read", "get_thread", {"case_id": case_id}).data
+
+    assert result["case"]["case_id"] == case_id
+    assert result["messages"] == []
+
+
 def test_get_audit_log_includes_actor_username(datastore) -> None:
     driver, conn, _ = datastore
     with conn.cursor() as cur:

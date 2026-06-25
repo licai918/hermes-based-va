@@ -545,7 +545,7 @@ _Avoid_: Automatic erasure, single-button delete
 - `search_operational_policy` returns only **Published Operational Policy** content for external and Copilot use.
 - `toee_copilot_draft` v1 actions are `draft_sms`, `draft_email`, and `draft_internal_note` on the **Internal Copilot Profile**.
 - `toee_case_manage` v1 actions are `claim_case`, `assign_case`, `update_priority`, `update_contact_reason`, and `resolve_case` on the **Internal Copilot Profile**.
-- `toee_workbench_read` v1 actions are `get_case`, `list_cases`, and `get_audit_log` on the **Internal Copilot Profile** and **Supervisor Admin Profile**.
+- `toee_workbench_read` v1 actions are `get_case`, `list_cases`, `get_audit_log`, and `get_thread` on the **Internal Copilot Profile** and **Supervisor Admin Profile**.
 - `toee_knowledge_ops` v1 actions are `get_policy_slots`, `update_policy_slot`, `submit_for_eval`, and `rollback_published_policy` on the **Supervisor Admin Profile**.
 - `toee_eval_review` v1 actions are `list_eval_runs`, `get_eval_run`, `sign_off_medium_failure`, and `promote_pending_policy` on the **Supervisor Admin Profile**.
 - `toee_workbench_admin` v1 actions are `list_accounts`, `create_account`, `update_account_role`, and `disable_account` on the **Supervisor Admin Profile**.

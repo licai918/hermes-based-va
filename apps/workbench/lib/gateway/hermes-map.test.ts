@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiError } from "./hermes-api-client";
-import { mapAuditEntry, mapWorkbenchCase } from "./hermes-map";
+import { mapAuditEntry, mapThreadMessage, mapWorkbenchCase } from "./hermes-map";
 
 const fullCaseRow = {
   id: "case_1",
@@ -98,5 +98,58 @@ describe("mapAuditEntry", () => {
   it("omits caseId when the audit target is not a case", () => {
     const e = mapAuditEntry({ ...auditRow, target_type: "account", target_id: "acct_1" });
     expect(e.caseId).toBeUndefined();
+  });
+});
+
+describe("mapThreadMessage", () => {
+  const messageRow = {
+    id: "mt_1",
+    customer_thread_id: "thr_1",
+    author: "hermes",
+    channel: "sms",
+    body: "active human reply",
+    auto_handled: false,
+    active_case_segment: true,
+    created_at: "2026-06-01T12:00:00+00:00",
+  };
+
+  it("maps a snake_case message turn onto the camelCase ThreadMessage", () => {
+    const m = mapThreadMessage(messageRow);
+    expect(m.messageId).toBe("mt_1");
+    expect(m.threadId).toBe("thr_1");
+    expect(m.author).toBe("hermes");
+    expect(m.channel).toBe("sms");
+    expect(m.body).toBe("active human reply");
+    expect(m.autoHandled).toBe(false);
+    expect(m.activeCaseSegment).toBe(true);
+    expect(m.at).toBe(Date.parse("2026-06-01T12:00:00+00:00"));
+  });
+
+  it("carries an auto-handled, de-emphasized turn", () => {
+    const m = mapThreadMessage({
+      ...messageRow,
+      auto_handled: true,
+      active_case_segment: false,
+    });
+    expect(m.autoHandled).toBe(true);
+    expect(m.activeCaseSegment).toBe(false);
+  });
+
+  it("rejects an unknown author as a contract violation (ADR-0070)", () => {
+    expect(() => mapThreadMessage({ ...messageRow, author: "robot" })).toThrow(
+      HermesApiError,
+    );
+  });
+
+  it("rejects an unknown channel", () => {
+    expect(() =>
+      mapThreadMessage({ ...messageRow, channel: "carrier_pigeon" }),
+    ).toThrow(HermesApiError);
+  });
+
+  it("rejects a malformed timestamp", () => {
+    expect(() =>
+      mapThreadMessage({ ...messageRow, created_at: "not-a-date" }),
+    ).toThrow(HermesApiError);
   });
 });

@@ -27,6 +27,10 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       entries: [],
     }),
+    get_thread: (params) => ({
+      caseId: readStringParam(params, "caseId", "case_stub"),
+      messages: [],
+    }),
   },
   toee_case_manage: {
     claim_case: (params) => ({

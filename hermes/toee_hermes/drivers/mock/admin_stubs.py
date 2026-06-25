@@ -56,6 +56,12 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 ),
                 "entries": [],
             },
+            "get_thread": lambda params, context: {
+                "case_id": _read_string(
+                    params, "case_id", "caseId", default="case_stub"
+                ),
+                "messages": [],
+            },
         },
         "toee_case_manage": {
             "claim_case": lambda params, context: {

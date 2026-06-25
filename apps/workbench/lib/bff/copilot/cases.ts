@@ -12,7 +12,11 @@ import {
 } from "./deps";
 import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
-import { mapAuditEntry, mapWorkbenchCase } from "../../gateway/hermes-map";
+import {
+  mapAuditEntry,
+  mapThreadMessage,
+  mapWorkbenchCase,
+} from "../../gateway/hermes-map";
 import type {
   AssigneeFilterMode,
   CaseListFilter,
@@ -132,6 +136,29 @@ export function handleGetThread(caseId: string, deps: CopilotDeps): Response {
   const messages = deps.store.getThread(caseId);
   appendAudit(deps, "case_view", { caseId });
   return json({ case: found, messages });
+}
+
+// Per-profile API variant of the Case Thread Context read (ADR-0082/0141): the
+// case + its read-only timeline come from the Internal Copilot Profile's
+// get_thread dispatch, which also writes the case_view audit entry (ADR-0042) in
+// the same transaction. A null case is a legitimate empty read -> 404 (ADR-0020).
+export async function handleGetThreadViaApi(
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  try {
+    const data = (await client.dispatch("toee_workbench_read", "get_thread", {
+      case_id: caseId,
+    })) as { case?: unknown; messages?: unknown };
+    if (!data || data.case == null) return problem(404, CASE_NOT_FOUND);
+    const rows = Array.isArray(data.messages) ? data.messages : [];
+    return json({
+      case: mapWorkbenchCase(data.case),
+      messages: rows.map(mapThreadMessage),
+    });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
 }
 
 export function handleGetAuditLog(caseId: string, deps: CopilotDeps): Response {
