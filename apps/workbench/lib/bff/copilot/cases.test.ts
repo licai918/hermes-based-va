@@ -9,8 +9,11 @@ import type { AuditAction, WorkbenchCase } from "../../gateway/types";
 import type { CopilotDeps } from "./deps";
 import {
   handleAssign,
+  handleAssignViaApi,
   handleClaim,
+  handleClaimViaApi,
   handleContactReason,
+  handleContactReasonViaApi,
   handleGetAuditLog,
   handleGetAuditLogViaApi,
   handleGetCase,
@@ -20,7 +23,9 @@ import {
   handleListCases,
   handleListCasesViaApi,
   handlePriority,
+  handlePriorityViaApi,
   handleResolve,
+  handleResolveViaApi,
 } from "./cases";
 
 const NOW = 1_700_000_000_000;
@@ -573,5 +578,291 @@ describe("handleGetThreadViaApi", () => {
     );
 
     expect(res.status).toBe(403);
+  });
+});
+
+// Slice 35 Increment 3: the governed case writes over the per-profile API. Each
+// pre-reads get_case for 404 parity (the datastore raises on a missing case, which
+// the store path returns as 404), then dispatches the toee_case_manage mutation and
+// maps the fresh case the handler returns. Role/body validation matches the store
+// path exactly and runs before any dispatch.
+type SentDispatch = {
+  tool: string;
+  action: string;
+  params: Record<string, unknown>;
+};
+
+function writeClient(
+  caseValue: unknown,
+  mutationData: unknown,
+  capture?: (sent: SentDispatch) => void,
+): HermesApiClient {
+  return apiClient(async (_url, init) => {
+    const sent = JSON.parse(init.body as string) as SentDispatch;
+    capture?.(sent);
+    const data = sent.action === "get_case" ? { case: caseValue } : mutationData;
+    return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
+  });
+}
+
+function denyOn(action: string, errorClass: string): HermesApiClient {
+  // get_case succeeds (so 404/role gates pass) but the mutation is denied, proving
+  // the governed error maps to its ADR-0104 per-class status.
+  return apiClient(async (_url, init) => {
+    const sent = JSON.parse(init.body as string) as SentDispatch;
+    if (sent.action === action) {
+      return new Response(
+        JSON.stringify({ ok: false, error: { class: errorClass, message: "no" } }),
+        { status: 200 },
+      );
+    }
+    return new Response(JSON.stringify({ ok: true, data: { case: apiCaseRow } }), {
+      status: 200,
+    });
+  });
+}
+
+const sup = () => session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
+
+describe("handleClaimViaApi", () => {
+  it("claims an unassigned case and returns the mapped fresh case", async () => {
+    let claim: SentDispatch | null = null;
+    const client = writeClient(
+      apiCaseRow,
+      {
+        case: { ...apiCaseRow, assignee_account_id: "seed-rep", status: "in_progress" },
+        claimed: true,
+      },
+      (sent) => {
+        if (sent.action === "claim_case") claim = sent;
+      },
+    );
+    const res = await handleClaimViaApi(client, "case_api", deps());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { case: WorkbenchCase };
+    expect(body.case.assigneeAccountId).toBe("seed-rep");
+    expect(body.case.status).toBe("in_progress");
+    const sent = claim as SentDispatch | null;
+    expect(sent?.tool).toBe("toee_case_manage");
+    expect(sent?.params).toEqual({ case_id: "case_api" });
+  });
+
+  it("is idempotent when the actor already holds the case", async () => {
+    const mine = { ...apiCaseRow, assignee_account_id: "seed-rep" };
+    const res = await handleClaimViaApi(
+      writeClient(mine, { case: mine, claimed: true }),
+      "case_api",
+      deps(),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("409s when another account holds the case", async () => {
+    const held = { ...apiCaseRow, assignee_account_id: "seed-other" };
+    const res = await handleClaimViaApi(
+      writeClient(held, { case: held, claimed: true }),
+      "case_api",
+      deps(),
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it("404s an unknown case (null pre-read)", async () => {
+    const res = await handleClaimViaApi(writeClient(null, {}), "missing", deps());
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a governed denial to its per-class status", async () => {
+    const res = await handleClaimViaApi(denyOn("claim_case", "policy_blocked"), "case_api", deps());
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("handleAssignViaApi (supervisor/admin only)", () => {
+  it("403s a rep before any dispatch", async () => {
+    let dispatched = false;
+    const client = apiClient(async () => {
+      dispatched = true;
+      return new Response(JSON.stringify({ ok: true, data: { case: apiCaseRow } }), {
+        status: 200,
+      });
+    });
+    const res = await handleAssignViaApi(
+      jsonReq({ assigneeAccountId: "seed-rep" }),
+      client,
+      "case_api",
+      deps(),
+    );
+    expect(res.status).toBe(403);
+    expect(dispatched).toBe(false);
+  });
+
+  it("assigns as a supervisor and dispatches assignee_id", async () => {
+    let assign: SentDispatch | null = null;
+    const client = writeClient(
+      apiCaseRow,
+      { case: { ...apiCaseRow, assignee_account_id: "seed-rep" }, assigned: true },
+      (sent) => {
+        if (sent.action === "assign_case") assign = sent;
+      },
+    );
+    const res = await handleAssignViaApi(
+      jsonReq({ assigneeAccountId: "seed-rep" }),
+      client,
+      "case_api",
+      deps(sup()),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { case: WorkbenchCase };
+    expect(body.case.assigneeAccountId).toBe("seed-rep");
+    const sent = assign as SentDispatch | null;
+    expect(sent?.params).toEqual({ case_id: "case_api", assignee_id: "seed-rep" });
+  });
+
+  it("400s a missing assigneeAccountId", async () => {
+    const res = await handleAssignViaApi(
+      jsonReq({}),
+      writeClient(apiCaseRow, {}),
+      "case_api",
+      deps(sup()),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404s an unknown case", async () => {
+    const res = await handleAssignViaApi(
+      jsonReq({ assigneeAccountId: "seed-rep" }),
+      writeClient(null, {}),
+      "missing",
+      deps(sup()),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("handleResolveViaApi", () => {
+  it("resolves a case and returns the mapped fresh case", async () => {
+    let resolve: SentDispatch | null = null;
+    const client = writeClient(
+      apiCaseRow,
+      {
+        case: { ...apiCaseRow, status: "resolved", resolved_by_account_id: "seed-rep" },
+        status: "resolved",
+      },
+      (sent) => {
+        if (sent.action === "resolve_case") resolve = sent;
+      },
+    );
+    const res = await handleResolveViaApi(client, "case_api");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { case: WorkbenchCase };
+    expect(body.case.status).toBe("resolved");
+    const sent = resolve as SentDispatch | null;
+    expect(sent?.params).toEqual({ case_id: "case_api" });
+  });
+
+  it("404s an unknown case", async () => {
+    const res = await handleResolveViaApi(writeClient(null, {}), "missing");
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a governed denial to its per-class status", async () => {
+    const res = await handleResolveViaApi(denyOn("resolve_case", "vendor_timeout"), "case_api");
+    expect(res.status).toBe(504);
+  });
+});
+
+describe("handlePriorityViaApi (supervisor/admin only)", () => {
+  it("403s a rep", async () => {
+    const res = await handlePriorityViaApi(
+      jsonReq({ urgent: true }),
+      writeClient(apiCaseRow, {}),
+      "case_api",
+      deps(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("maps urgent boolean to the priority label and returns the case", async () => {
+    let pr: SentDispatch | null = null;
+    const client = writeClient(
+      apiCaseRow,
+      { case: { ...apiCaseRow, urgency: "normal", urgent: false }, updated: true },
+      (sent) => {
+        if (sent.action === "update_priority") pr = sent;
+      },
+    );
+    const res = await handlePriorityViaApi(
+      jsonReq({ urgent: false }),
+      client,
+      "case_api",
+      deps(sup()),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { case: WorkbenchCase };
+    expect(body.case.urgent).toBe(false);
+    const sent = pr as SentDispatch | null;
+    expect(sent?.params).toEqual({ case_id: "case_api", priority: "normal" });
+  });
+
+  it("400s a non-boolean urgent", async () => {
+    const res = await handlePriorityViaApi(
+      jsonReq({ urgent: "yes" }),
+      writeClient(apiCaseRow, {}),
+      "case_api",
+      deps(sup()),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404s an unknown case", async () => {
+    const res = await handlePriorityViaApi(
+      jsonReq({ urgent: true }),
+      writeClient(null, {}),
+      "missing",
+      deps(sup()),
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("handleContactReasonViaApi", () => {
+  it("updates the contact reason and dispatches contact_reason", async () => {
+    let cr: SentDispatch | null = null;
+    const client = writeClient(
+      apiCaseRow,
+      { case: { ...apiCaseRow, contact_reason: "warranty" }, updated: true },
+      (sent) => {
+        if (sent.action === "update_contact_reason") cr = sent;
+      },
+    );
+    const res = await handleContactReasonViaApi(
+      jsonReq({ contactReason: "warranty" }),
+      client,
+      "case_api",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { case: WorkbenchCase };
+    expect(body.case.contactReason).toBe("warranty");
+    const sent = cr as SentDispatch | null;
+    expect(sent?.params).toEqual({ case_id: "case_api", contact_reason: "warranty" });
+  });
+
+  it("400s an empty contact reason", async () => {
+    const res = await handleContactReasonViaApi(
+      jsonReq({ contactReason: "  " }),
+      writeClient(apiCaseRow, {}),
+      "case_api",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404s an unknown case", async () => {
+    const res = await handleContactReasonViaApi(
+      jsonReq({ contactReason: "warranty" }),
+      writeClient(null, {}),
+      "missing",
+    );
+    expect(res.status).toBe(404);
   });
 });

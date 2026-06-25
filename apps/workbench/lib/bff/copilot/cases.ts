@@ -251,3 +251,142 @@ export async function handleContactReason(
   appendAudit(deps, "update_contact_reason", { caseId, detail: contactReason });
   return json({ case: updated });
 }
+
+// --- Per-profile API write cutover (ADR-0141 Increment 3) --------------------
+// The governed case mutations over the deterministic dispatch. Each pre-reads
+// get_case so a missing case 404s like the store path (the datastore raises on a
+// missing case, which would otherwise surface as a 502), then dispatches the
+// toee_case_manage action — attributed to the acting account baked into the client
+// (ADR-0141) — and renders the fresh WorkbenchCase the handler returns. Role/body
+// validation matches the store path and runs before any dispatch.
+
+// The raw datastore case row, or null when the case does not exist (ADR-0020 empty
+// read). Throws HermesApiError on a governed/transport failure (caught by callers).
+async function dispatchGetCaseData(
+  client: HermesApiClient,
+  caseId: string,
+): Promise<unknown | null> {
+  const data = (await client.dispatch("toee_workbench_read", "get_case", {
+    case_id: caseId,
+  })) as { case?: unknown };
+  return data && data.case != null ? data.case : null;
+}
+
+// Maps the fresh case a mutation returns onto the WorkbenchCase response shape.
+function mappedCaseResponse(result: unknown): Response {
+  const data = (result ?? {}) as { case?: unknown };
+  return json({ case: mapWorkbenchCase(data.case) });
+}
+
+export async function handleClaimViaApi(
+  client: HermesApiClient,
+  caseId: string,
+  deps: CopilotDeps,
+): Promise<Response> {
+  try {
+    const current = await dispatchGetCaseData(client, caseId);
+    if (current == null) return problem(404, CASE_NOT_FOUND);
+    // 409 parity with the store path: another account already holds the case.
+    const accountId = deps.session.accountId;
+    const held = mapWorkbenchCase(current).assigneeAccountId;
+    if (held !== null && held !== accountId) {
+      return problem(409, "case already assigned to another account");
+    }
+    const result = await client.dispatch("toee_case_manage", "claim_case", {
+      case_id: caseId,
+    });
+    return mappedCaseResponse(result);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export async function handleAssignViaApi(
+  req: Request,
+  client: HermesApiClient,
+  caseId: string,
+  deps: CopilotDeps,
+): Promise<Response> {
+  if (!isSupervisorOrAdmin(deps.session)) return problem(403, "forbidden");
+  const body = await readJsonBody(req);
+  const assigneeAccountId = readNonEmptyString(body, "assigneeAccountId");
+  if (!assigneeAccountId) return problem(400, "assigneeAccountId is required");
+  try {
+    if ((await dispatchGetCaseData(client, caseId)) == null) {
+      return problem(404, CASE_NOT_FOUND);
+    }
+    const result = await client.dispatch("toee_case_manage", "assign_case", {
+      case_id: caseId,
+      assignee_id: assigneeAccountId,
+    });
+    return mappedCaseResponse(result);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export async function handleResolveViaApi(
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  try {
+    if ((await dispatchGetCaseData(client, caseId)) == null) {
+      return problem(404, CASE_NOT_FOUND);
+    }
+    const result = await client.dispatch("toee_case_manage", "resolve_case", {
+      case_id: caseId,
+    });
+    return mappedCaseResponse(result);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export async function handlePriorityViaApi(
+  req: Request,
+  client: HermesApiClient,
+  caseId: string,
+  deps: CopilotDeps,
+): Promise<Response> {
+  if (!isSupervisorOrAdmin(deps.session)) return problem(403, "forbidden");
+  const body = await readJsonBody(req);
+  const urgent = body?.urgent;
+  if (typeof urgent !== "boolean") return problem(400, "urgent must be a boolean");
+  try {
+    if ((await dispatchGetCaseData(client, caseId)) == null) {
+      return problem(404, CASE_NOT_FOUND);
+    }
+    // store.ts keeps a boolean `urgent`; the datastore stores a free urgency label
+    // that _read_model maps back to urgent (ADR-0064). Map true->urgent / false->normal.
+    const result = await client.dispatch("toee_case_manage", "update_priority", {
+      case_id: caseId,
+      priority: urgent ? "urgent" : "normal",
+    });
+    return mappedCaseResponse(result);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export async function handleContactReasonViaApi(
+  req: Request,
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const contactReason = readNonEmptyString(body, "contactReason");
+  if (!contactReason) return problem(400, "contactReason is required");
+  try {
+    if ((await dispatchGetCaseData(client, caseId)) == null) {
+      return problem(404, CASE_NOT_FOUND);
+    }
+    const result = await client.dispatch(
+      "toee_case_manage",
+      "update_contact_reason",
+      { case_id: caseId, contact_reason: contactReason },
+    );
+    return mappedCaseResponse(result);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}

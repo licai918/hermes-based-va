@@ -158,6 +158,54 @@ def test_case_manage_mutations_persist_and_write_audit(datastore) -> None:
     assert entry["target_id"] == case_id
 
 
+def test_claim_and_assign_transition_open_to_in_progress(datastore) -> None:
+    # Parity with store.ts claimCase/assignCase (Slice 35 cutover): claiming or
+    # assigning an *open* case moves it to in_progress, so the API path matches the
+    # in-memory store the BFF mirrors.
+    driver, _, _ = datastore
+    case_a = _run(driver, "toee_case", "create_case", {"contact_reason": "a"}).data["case_id"]
+    claimed = _run(
+        driver, "toee_case_manage", "claim_case", {"case_id": case_a},
+        _ctx(user_id="acct_1"),
+    )
+    assert claimed.data["case"]["status"] == "in_progress"
+    assert claimed.data["case"]["assignee_account_id"] == "acct_1"
+
+    case_b = _run(driver, "toee_case", "create_case", {"contact_reason": "b"}).data["case_id"]
+    assigned = _run(
+        driver, "toee_case_manage", "assign_case",
+        {"case_id": case_b, "assignee_id": "acct_2"}, _ctx(user_id="acct_sup"),
+    )
+    assert assigned.data["case"]["status"] == "in_progress"
+    assert assigned.data["case"]["assignee_account_id"] == "acct_2"
+
+
+def test_case_mutations_return_the_fresh_read_model(datastore) -> None:
+    # Each governed mutation returns the full WorkbenchCase read model so the BFF
+    # cutover renders the updated case without a second get_case round-trip.
+    driver, _, _ = datastore
+    case_id = _run(driver, "toee_case", "create_case", {"contact_reason": "x"}).data["case_id"]
+
+    pr = _run(
+        driver, "toee_case_manage", "update_priority",
+        {"case_id": case_id, "priority": "urgent"}, _ctx(user_id="a"),
+    )
+    assert pr.data["case"]["urgent"] is True
+
+    cr = _run(
+        driver, "toee_case_manage", "update_contact_reason",
+        {"case_id": case_id, "contact_reason": "warranty"}, _ctx(user_id="a"),
+    )
+    assert cr.data["case"]["contact_reason"] == "warranty"
+
+    rs = _run(
+        driver, "toee_case_manage", "resolve_case", {"case_id": case_id},
+        _ctx(user_id="a"),
+    )
+    assert rs.data["case"]["status"] == "resolved"
+    assert rs.data["case"]["resolved_by_account_id"] == "a"
+
+
 def test_unknown_datastore_tool_is_governed_configuration_missing(datastore) -> None:
     # A catalog-valid tool the datastore driver does not implement is a governed
     # failure (mirrors MockDriver), never a raise that escapes dispatch.

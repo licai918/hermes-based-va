@@ -203,10 +203,13 @@ def _claim_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     # The claiming employee is the acting account; fall back to an explicit param.
     account_id = context.user_id or read_string(params, "assignee_id", "assigneeId")
     with conn.cursor() as cur:
+        # store.ts claimCase moves an open case to in_progress on claim; mirror it
+        # so the API-path queue state matches the in-memory store (ADR-0079/0141).
         cur.execute(
             """
             UPDATE cases SET
                 assignee_account_id = COALESCE(%s, assignee_account_id),
+                status = CASE WHEN status = 'open' THEN 'in_progress' ELSE status END,
                 last_activity_at = now()
             WHERE id = %s
             """,
@@ -221,7 +224,9 @@ def _claim_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -
         target_id=case_id,
         details={"assignee_account_id": account_id},
     )
-    return {"case_id": case_id, "claimed": True}
+    # Return the fresh read model so the BFF renders the updated case without a
+    # second get_case round-trip; keep the legacy keys for existing callers.
+    return {"case_id": case_id, "claimed": True, "case": _case_row(conn, case_id)}
 
 
 def _assign_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
@@ -231,8 +236,15 @@ def _assign_case(conn, params: dict[str, Any], context: "ToolExecutionContext") 
     if assignee_id is None:
         raise ToolDriverError("unexpected_error", "assignee_id is required.")
     with conn.cursor() as cur:
+        # store.ts assignCase also moves an open case to in_progress (ADR-0079).
         cur.execute(
-            "UPDATE cases SET assignee_account_id = %s, last_activity_at = now() WHERE id = %s",
+            """
+            UPDATE cases SET
+                assignee_account_id = %s,
+                status = CASE WHEN status = 'open' THEN 'in_progress' ELSE status END,
+                last_activity_at = now()
+            WHERE id = %s
+            """,
             (assignee_id, case_id),
         )
     insert_audit(
@@ -244,7 +256,12 @@ def _assign_case(conn, params: dict[str, Any], context: "ToolExecutionContext") 
         target_id=case_id,
         details={"assignee_account_id": assignee_id},
     )
-    return {"case_id": case_id, "assignee_id": assignee_id, "assigned": True}
+    return {
+        "case_id": case_id,
+        "assignee_id": assignee_id,
+        "assigned": True,
+        "case": _case_row(conn, case_id),
+    }
 
 
 def _update_priority(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
@@ -267,7 +284,12 @@ def _update_priority(conn, params: dict[str, Any], context: "ToolExecutionContex
         target_id=case_id,
         details={"priority": priority},
     )
-    return {"case_id": case_id, "priority": priority, "updated": True}
+    return {
+        "case_id": case_id,
+        "priority": priority,
+        "updated": True,
+        "case": _case_row(conn, case_id),
+    }
 
 
 def _update_contact_reason(
@@ -290,7 +312,12 @@ def _update_contact_reason(
         target_id=case_id,
         details={"contact_reason": contact_reason},
     )
-    return {"case_id": case_id, "contact_reason": contact_reason, "updated": True}
+    return {
+        "case_id": case_id,
+        "contact_reason": contact_reason,
+        "updated": True,
+        "case": _case_row(conn, case_id),
+    }
 
 
 def _resolve_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
@@ -317,7 +344,7 @@ def _resolve_case(conn, params: dict[str, Any], context: "ToolExecutionContext")
         target_id=case_id,
         details={},
     )
-    return {"case_id": case_id, "status": "resolved"}
+    return {"case_id": case_id, "status": "resolved", "case": _case_row(conn, case_id)}
 
 
 def _get_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
