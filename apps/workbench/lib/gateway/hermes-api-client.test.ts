@@ -47,6 +47,50 @@ describe("HermesApiClient.dispatch", () => {
     });
   });
 
+  it("includes the acting account id (actor_account_id) when configured", async () => {
+    // ADR-0141 actor attribution: the BFF bakes the acting workbench account into
+    // the client so every governed write/read audits to the real employee, not NULL.
+    let captured: RequestInit | undefined;
+    const client = new HermesApiClient({
+      baseUrl: BASE,
+      token: TOKEN,
+      actorAccountId: "acct_rep_7",
+      fetchImpl: async (_url, init) => {
+        captured = init;
+        return okResponse({});
+      },
+    });
+
+    await client.dispatch("toee_case_manage", "claim_case", { case_id: "c1" });
+
+    if (!captured) throw new Error("expected fetch to be called");
+    expect(JSON.parse(captured.body as string)).toEqual({
+      tool: "toee_case_manage",
+      action: "claim_case",
+      params: { case_id: "c1" },
+      actor_account_id: "acct_rep_7",
+    });
+  });
+
+  it("omits actor_account_id when no acting account is configured", async () => {
+    let captured: RequestInit | undefined;
+    const client = new HermesApiClient({
+      baseUrl: BASE,
+      token: TOKEN,
+      fetchImpl: async (_url, init) => {
+        captured = init;
+        return okResponse({});
+      },
+    });
+
+    await client.dispatch("toee_workbench_read", "list_cases");
+
+    if (!captured) throw new Error("expected fetch to be called");
+    expect(JSON.parse(captured.body as string)).not.toHaveProperty(
+      "actor_account_id",
+    );
+  });
+
   it("strips a trailing slash from the base URL", async () => {
     const calls: string[] = [];
     const client = new HermesApiClient({

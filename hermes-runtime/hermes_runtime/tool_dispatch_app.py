@@ -116,11 +116,19 @@ def create_tool_dispatch_app(
                 status_code=400, content={"error": "params must be an object"}
             )
 
+        # Actor attribution (ADR-0141): the BFF asserts the acting workbench account
+        # in the request body. The server already trusts the BFF via the shared
+        # bearer (the BFF is the only caller), so this asserted actor flows into the
+        # context so governed writes — and the case_view read audit — attribute to
+        # the real employee instead of NULL. Absent/blank stays fail-open (None).
+        actor = body.get("actor_account_id")
+        actor_account_id = actor if isinstance(actor, str) and actor else None
+
         result = execute_tool(
             tool=tool,
             action=action,
             params=params,
-            context=ToolExecutionContext(profile=profile),
+            context=ToolExecutionContext(profile=profile, user_id=actor_account_id),
             driver=active_driver,
             gate=active_gate,
         )

@@ -16,7 +16,12 @@ export const GET = withSession((_req, { session, params }) => {
     process.env.HERMES_COPILOT_API_TOKEN,
   );
   if (apiConfig) {
-    return handleGetThreadViaApi(new HermesApiClient(apiConfig), caseId);
+    // Thread the acting account (ADR-0141) so the case_view audit attributes to it.
+    const client = new HermesApiClient({
+      ...apiConfig,
+      actorAccountId: session.accountId,
+    });
+    return handleGetThreadViaApi(client, caseId);
   }
   return handleGetThread(caseId, createCopilotDeps(session));
 });

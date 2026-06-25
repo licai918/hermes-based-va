@@ -27,6 +27,10 @@ export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 export interface HermesApiClientConfig {
   baseUrl: string;
   token: string;
+  // The acting workbench account (ADR-0141 actor attribution). Baked in at
+  // construction so every dispatch carries the real employee id; the dispatch
+  // server trusts it under the shared bearer and attributes audits to it.
+  actorAccountId?: string;
   fetchImpl?: FetchLike;
 }
 
@@ -39,11 +43,13 @@ const DISPATCH_PATH = "/v1/tools:dispatch";
 export class HermesApiClient {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly actorAccountId?: string;
   private readonly fetchImpl: FetchLike;
 
   constructor(config: HermesApiClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, "");
     this.token = config.token;
+    this.actorAccountId = config.actorAccountId;
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
@@ -52,13 +58,17 @@ export class HermesApiClient {
     action: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
+    // Only attach actor_account_id when an acting account is configured, so an
+    // unauthenticated/system caller's body shape stays unchanged.
+    const payload: Record<string, unknown> = { tool, action, params };
+    if (this.actorAccountId) payload.actor_account_id = this.actorAccountId;
     const res = await this.fetchImpl(`${this.baseUrl}${DISPATCH_PATH}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.token}`,
       },
-      body: JSON.stringify({ tool, action, params }),
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {

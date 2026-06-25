@@ -74,6 +74,21 @@ bearer with a constant-time compare and runs every dispatch under its fixed
 profile home; tokens never reach the browser. This mirrors the gateway's existing
 `X-Internal-Job-Secret` shared-secret pattern (ADR-0106), one token per profile.
 
+**Actor attribution.** A governed write (and the `case_view` read audit) must
+record *who* acted. The dispatch token authenticates the BFF as a deployment, not
+an employee, so the acting workbench account is carried explicitly: each
+`tools:dispatch` request body includes an optional `actor_account_id` alongside
+`{ tool, action, params }`, which the server reads into
+`ToolExecutionContext.user_id`. The Workbench audit rows the handlers write in the
+same transaction (ADR-0029/0085) then attribute to that account — matching the
+in-memory store path, which audits to `session.accountId`. **Trust model:** under
+the existing shared-bearer auth the BFF is the sole, trusted caller, so a
+BFF-asserted actor is accepted for v1 (the BFF derives it from the authenticated
+`WorkbenchSession`, never from the browser). Absence is fail-open (`user_id`
+NULL) for reads that tolerate it; the BFF always supplies one for governed writes.
+A later hardening could sign or scope the actor per request, but that is not
+required while the bearer gates a single internal caller.
+
 **Datastore + deployment.** Tool handlers read/write the Toee Business Datastore
 (ADR-0140), activated on demand (ADR-0025). The two employee profiles deploy as
 separate Cloud Run services (one `HERMES_HOME` each, matching ADR-0139's separate

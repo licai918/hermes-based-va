@@ -15,7 +15,11 @@ export const GET = withSession((_req, { session, params }) => {
     process.env.HERMES_COPILOT_API_TOKEN,
   );
   if (apiConfig) {
-    return handleGetCaseViaApi(new HermesApiClient(apiConfig), caseId);
+    const client = new HermesApiClient({
+      ...apiConfig,
+      actorAccountId: session.accountId,
+    });
+    return handleGetCaseViaApi(client, caseId);
   }
   return handleGetCase(caseId, createCopilotDeps(session));
 });

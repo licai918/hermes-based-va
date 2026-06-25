@@ -17,7 +17,12 @@ export const GET = withSession((req, { session }) => {
     process.env.HERMES_COPILOT_API_TOKEN,
   );
   if (apiConfig) {
-    return handleListCasesViaApi(req, new HermesApiClient(apiConfig), deps);
+    // Thread the acting account (ADR-0141) so the dispatch audits attribute to it.
+    const client = new HermesApiClient({
+      ...apiConfig,
+      actorAccountId: session.accountId,
+    });
+    return handleListCasesViaApi(req, client, deps);
   }
   return handleListCases(req, deps);
 });
