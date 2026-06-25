@@ -12,6 +12,7 @@ import {
 } from "./deps";
 import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
+import { mapAuditEntry, mapWorkbenchCase } from "../../gateway/hermes-map";
 import type {
   AssigneeFilterMode,
   CaseListFilter,
@@ -84,8 +85,14 @@ export async function handleListCasesViaApi(
 ): Promise<Response> {
   const filter = buildCaseListFilter(new URL(req.url), deps);
   try {
-    const cases = await client.listCases(filter as unknown as Record<string, unknown>);
-    return json({ cases });
+    const data = (await client.dispatch(
+      "toee_workbench_read",
+      "list_cases",
+      filter as unknown as Record<string, unknown>,
+    )) as { cases?: unknown };
+    const rows = Array.isArray(data?.cases) ? data.cases : [];
+    // Map + validate each snake_case datastore row onto WorkbenchCase (ADR-0070).
+    return json({ cases: rows.map(mapWorkbenchCase) });
   } catch (err) {
     // Surface transport/governed tool failures on the ADR-0090 error banner with
     // the ADR-0104 per-class status (policy_blocked -> 403, vendor_timeout -> 504,
@@ -100,6 +107,25 @@ export function handleGetCase(caseId: string, deps: CopilotDeps): Response {
   return json({ case: found });
 }
 
+// Per-profile API variant of the single-case read (ADR-0141): the case comes from
+// the Internal Copilot Profile's get_case dispatch, mapped + validated onto the
+// WorkbenchCase shape. A null payload is a legitimate empty read -> 404 (ADR-0020),
+// matching the store path.
+export async function handleGetCaseViaApi(
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  try {
+    const data = (await client.dispatch("toee_workbench_read", "get_case", {
+      case_id: caseId,
+    })) as { case?: unknown };
+    if (!data || data.case == null) return problem(404, CASE_NOT_FOUND);
+    return json({ case: mapWorkbenchCase(data.case) });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
 export function handleGetThread(caseId: string, deps: CopilotDeps): Response {
   const found = deps.store.getCase(caseId);
   if (!found) return problem(404, CASE_NOT_FOUND);
@@ -112,6 +138,28 @@ export function handleGetAuditLog(caseId: string, deps: CopilotDeps): Response {
   const found = deps.store.getCase(caseId);
   if (!found) return problem(404, CASE_NOT_FOUND);
   return json({ entries: deps.store.getCaseAuditLog(caseId) });
+}
+
+// Per-profile API variant of the case audit-log read (ADR-0141). Confirms the
+// case exists first so an unknown case 404s like the store path, then maps the
+// audit rows (with the joined actor username) onto AuditLogEntry.
+export async function handleGetAuditLogViaApi(
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  try {
+    const caseData = (await client.dispatch("toee_workbench_read", "get_case", {
+      case_id: caseId,
+    })) as { case?: unknown };
+    if (!caseData || caseData.case == null) return problem(404, CASE_NOT_FOUND);
+    const data = (await client.dispatch("toee_workbench_read", "get_audit_log", {
+      case_id: caseId,
+    })) as { entries?: unknown };
+    const rows = Array.isArray(data?.entries) ? data.entries : [];
+    return json({ entries: rows.map(mapAuditEntry) });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
 }
 
 export function handleClaim(caseId: string, deps: CopilotDeps): Response {

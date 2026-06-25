@@ -4,8 +4,9 @@
 // per-profile bearer token. Tool Gate denials and backend failures arrive as a
 // governed `{ ok: false, error: { class, message } }` body (HTTP 200, ADR-0020);
 // only transport/auth problems are non-2xx. This client surfaces both as a thrown
-// HermesApiError so callers map them onto the ADR-0090 error banner.
-import type { WorkbenchCase } from "./types";
+// HermesApiError so callers map them onto the ADR-0090 error banner. The client is
+// pure transport; snake_case->WorkbenchCase mapping + validation live in the BFF
+// (lib/gateway/hermes-map.ts), keyed off the raw dispatch data.
 
 export class HermesApiError extends Error {
   readonly errorClass: string;
@@ -77,18 +78,5 @@ export class HermesApiClient {
       );
     }
     return body.data;
-  }
-
-  async listCases(filter: Record<string, unknown>): Promise<WorkbenchCase[]> {
-    // ponytail: the tracer passes the BFF CaseListFilter straight through as
-    // params and trusts the `data.cases` shape (the mock returns []). The real
-    // list_cases param schema, snake_case->WorkbenchCase mapping, and runtime
-    // validation land with the Postgres datastore (ADR-0140/0141).
-    const data = (await this.dispatch(
-      "toee_workbench_read",
-      "list_cases",
-      filter,
-    )) as { cases?: unknown };
-    return Array.isArray(data?.cases) ? (data.cases as WorkbenchCase[]) : [];
   }
 }

@@ -12,7 +12,9 @@ import {
   handleClaim,
   handleContactReason,
   handleGetAuditLog,
+  handleGetAuditLogViaApi,
   handleGetCase,
+  handleGetCaseViaApi,
   handleGetThread,
   handleListCases,
   handleListCasesViaApi,
@@ -56,6 +58,38 @@ function jsonReq(body: unknown): Request {
 
 function actions(caseId: string): AuditAction[] {
   return store.getCaseAuditLog(caseId).map((e) => e.action);
+}
+
+// A realistic snake_case datastore read-model row (ADR-0064/0141) for the
+// per-profile API path: the BFF maps + validates it onto a WorkbenchCase.
+const apiCaseRow = {
+  id: "case_api",
+  case_id: "case_api",
+  channel: "sms",
+  identity_summary: "Verified: cust_900",
+  contact_reason: "order_status",
+  urgency: "high",
+  urgent: true,
+  status: "open",
+  assignee_account_id: null,
+  resolved_by_account_id: null,
+  customer_thread_id: "thr_api",
+  thread_id: "thr_api",
+  last_message_preview: "hi",
+  tool_failure: false,
+  sms_session_active: true,
+  opened_at: "2026-06-01T12:00:00+00:00",
+  last_activity_at: "2026-06-01T13:00:00+00:00",
+};
+
+function apiClient(
+  fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
+): HermesApiClient {
+  return new HermesApiClient({
+    baseUrl: "http://copilot.internal",
+    token: "tok",
+    fetchImpl,
+  });
 }
 
 describe("handleListCases", () => {
@@ -317,12 +351,11 @@ describe("handleListCasesViaApi", () => {
     });
   }
 
-  it("returns cases from the per-profile API dispatch", async () => {
-    const apiCase = { caseId: "case_api" } as WorkbenchCase;
+  it("returns mapped cases from the per-profile API dispatch", async () => {
     const res = await handleListCasesViaApi(
       listReq(),
       client(async () =>
-        new Response(JSON.stringify({ ok: true, data: { cases: [apiCase] } }), {
+        new Response(JSON.stringify({ ok: true, data: { cases: [apiCaseRow] } }), {
           status: 200,
         }),
       ),
@@ -332,6 +365,10 @@ describe("handleListCasesViaApi", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { cases: WorkbenchCase[] };
     expect(body.cases.map((c) => c.caseId)).toEqual(["case_api"]);
+    // snake_case -> camelCase mapping (ADR-0070): identity_summary, sms_session_active, urgency->urgent.
+    expect(body.cases[0]?.identitySummary).toBe("Verified: cust_900");
+    expect(body.cases[0]?.smsSessionActive).toBe(true);
+    expect(body.cases[0]?.urgent).toBe(true);
   });
 
   it("derives the same role filter and sends it as dispatch params", async () => {
@@ -384,5 +421,90 @@ describe("handleListCasesViaApi", () => {
     );
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe("handleGetCaseViaApi", () => {
+  it("returns the mapped case from the per-profile API", async () => {
+    const res = await handleGetCaseViaApi(
+      apiClient(async () =>
+        new Response(JSON.stringify({ ok: true, data: { case: apiCaseRow } }), {
+          status: 200,
+        }),
+      ),
+      "case_api",
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { case: WorkbenchCase };
+    expect(body.case.caseId).toBe("case_api");
+    expect(body.case.threadId).toBe("thr_api");
+  });
+
+  it("404s when the datastore returns a null case (ADR-0020 empty read)", async () => {
+    const res = await handleGetCaseViaApi(
+      apiClient(async () =>
+        new Response(JSON.stringify({ ok: true, data: { case: null } }), {
+          status: 200,
+        }),
+      ),
+      "missing",
+    );
+
+    expect(res.status).toBe(404);
+  });
+
+  it("maps a governed denial to its per-class status", async () => {
+    const res = await handleGetCaseViaApi(
+      apiClient(async () =>
+        new Response(
+          JSON.stringify({ ok: false, error: { class: "policy_blocked", message: "no" } }),
+          { status: 200 },
+        ),
+      ),
+      "case_api",
+    );
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("handleGetAuditLogViaApi", () => {
+  const auditRow = {
+    id: "audit_1",
+    account_id: "seed-rep",
+    actor_username: "rep",
+    profile: "internal_copilot",
+    action: "claim_case",
+    target_type: "case",
+    target_id: "case_api",
+    details: {},
+    created_at: "2026-06-01T12:00:00+00:00",
+  };
+
+  // The API path checks the case exists (get_case) before reading its audit log,
+  // so 404 parity with the store path holds for an unknown case.
+  function clientFor(caseValue: unknown, entries: unknown[]): HermesApiClient {
+    return apiClient(async (_url, init) => {
+      const sent = JSON.parse(init.body as string) as { action: string };
+      const data = sent.action === "get_case" ? { case: caseValue } : { entries };
+      return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
+    });
+  }
+
+  it("returns mapped audit entries", async () => {
+    const res = await handleGetAuditLogViaApi(clientFor(apiCaseRow, [auditRow]), "case_api");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      entries: { entryId: string; actorUsername: string; action: string }[];
+    };
+    expect(body.entries[0]?.entryId).toBe("audit_1");
+    expect(body.entries[0]?.actorUsername).toBe("rep");
+    expect(body.entries[0]?.action).toBe("claim_case");
+  });
+
+  it("404s when the case is unknown", async () => {
+    const res = await handleGetAuditLogViaApi(clientFor(null, []), "missing");
+    expect(res.status).toBe(404);
   });
 });

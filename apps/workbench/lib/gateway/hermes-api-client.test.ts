@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiClient, HermesApiError } from "./hermes-api-client";
-import type { WorkbenchCase } from "./types";
 
 const BASE = "http://hermes-copilot.internal";
 const TOKEN = "copilot-api-token";
@@ -86,42 +85,5 @@ describe("HermesApiClient.dispatch", () => {
     await expect(
       client.dispatch("toee_workbench_read", "list_cases"),
     ).rejects.toBeInstanceOf(HermesApiError);
-  });
-});
-
-describe("HermesApiClient.listCases", () => {
-  it("dispatches list_cases with the filter and returns the cases array", async () => {
-    const apiCase = { caseId: "case_api" } as WorkbenchCase;
-    let body: { tool: string; action: string; params: unknown } | null = null;
-    const client = new HermesApiClient({
-      baseUrl: BASE,
-      token: TOKEN,
-      fetchImpl: async (_url, init) => {
-        body = JSON.parse(init.body as string);
-        return okResponse({ cases: [apiCase] });
-      },
-    });
-
-    const cases = await client.listCases({
-      statuses: ["open"],
-      assignee: { mode: "all" },
-    });
-
-    expect(cases).toEqual([apiCase]);
-    expect(body).toEqual({
-      tool: "toee_workbench_read",
-      action: "list_cases",
-      params: { statuses: ["open"], assignee: { mode: "all" } },
-    });
-  });
-
-  it("returns an empty array when the dispatch data has no cases", async () => {
-    const client = new HermesApiClient({
-      baseUrl: BASE,
-      token: TOKEN,
-      fetchImpl: async () => okResponse({}),
-    });
-
-    expect(await client.listCases({})).toEqual([]);
   });
 });

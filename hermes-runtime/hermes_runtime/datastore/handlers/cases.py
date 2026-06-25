@@ -42,14 +42,81 @@ def _status(conn, case_id: str) -> Optional[str]:
     return row[0] if row else None
 
 
+# WorkbenchCase.urgent is a boolean; the cases table stores a free urgency label
+# (ADR-0064). These labels render as urgent in the ADR-0079 queue.
+_URGENT_URGENCIES = {"urgent", "high"}
+
+
+def _thread_identity_summary(conn, thread_id: Optional[str]) -> str:
+    """ADR-0082 identity summary: the linked Shopify customer, else the channel id."""
+    if not thread_id:
+        return ""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT channel_identity, shopify_customer_id FROM customer_thread WHERE id = %s",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return ""
+    if row.get("shopify_customer_id"):
+        return f"Verified: {row['shopify_customer_id']}"
+    return row.get("channel_identity") or ""
+
+
+def _thread_last_preview(conn, thread_id: Optional[str]) -> str:
+    """The newest message-turn body on the thread (ADR-0079 queue preview)."""
+    if not thread_id:
+        return ""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT body FROM message_turn WHERE customer_thread_id = %s"
+            " ORDER BY created_at DESC LIMIT 1",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    return (row[0] if row else "") or ""
+
+
+def _thread_sms_active(conn, thread_id: Optional[str]) -> bool:
+    """True while an unexpired SMS Session exists (ADR-0019/0083 governed-send gate)."""
+    if not thread_id:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM sms_session WHERE customer_thread_id = %s"
+            " AND expires_at > now() LIMIT 1",
+            (thread_id,),
+        )
+        return cur.fetchone() is not None
+
+
+def _read_model(conn, row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Expand a base ``cases`` row into the full WorkbenchCase read model (ADR-0064/0115).
+
+    Durable columns are returned JSON-safe as-is; the ADR-0082 UI-derived fields
+    (identity_summary, last_message_preview, sms_session_active) are computed by
+    joining the customer thread, its newest message turn, and any live SMS
+    session, and ``urgent`` is derived from the urgency label.
+    """
+    out = serialize_row(row)
+    if out is None:
+        return None
+    thread_id = row.get("customer_thread_id") if row else None
+    out["case_id"] = out["id"]
+    out["thread_id"] = thread_id or ""
+    out["urgent"] = (out.get("urgency") or "") in _URGENT_URGENCIES
+    out["identity_summary"] = _thread_identity_summary(conn, thread_id)
+    out["last_message_preview"] = _thread_last_preview(conn, thread_id)
+    out["sms_session_active"] = _thread_sms_active(conn, thread_id)
+    return out
+
+
 def _case_row(conn, case_id: str) -> Optional[dict[str, Any]]:
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute("SELECT * FROM cases WHERE id = %s", (case_id,))
         row = cur.fetchone()
-    out = serialize_row(row)
-    if out is not None:
-        out["case_id"] = out["id"]
-    return out
+    return _read_model(conn, row)
 
 
 def _create_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
@@ -242,22 +309,22 @@ def _list_cases(conn, params: dict[str, Any], context: "ToolExecutionContext") -
         else:
             cur.execute("SELECT * FROM cases ORDER BY last_activity_at DESC")
         rows = cur.fetchall()
-    cases = []
-    for row in rows:
-        serialized = serialize_row(row)
-        serialized["case_id"] = serialized["id"]
-        cases.append(serialized)
-    return {"cases": cases}
+    return {"cases": [_read_model(conn, row) for row in rows]}
 
 
 def _get_audit_log(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
+    # Join the actor's account so the entry carries actor_username (ADR-0029); the
+    # audit row itself only stores account_id. A missing/unknown account leaves it
+    # NULL, which the BFF maps to an empty string.
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT * FROM workbench_audit_log
-            WHERE target_type = 'case' AND target_id = %s
-            ORDER BY created_at ASC
+            SELECT a.*, acct.username AS actor_username
+            FROM workbench_audit_log a
+            LEFT JOIN workbench_account acct ON acct.id = a.account_id
+            WHERE a.target_type = 'case' AND a.target_id = %s
+            ORDER BY a.created_at ASC
             """,
             (case_id,),
         )
