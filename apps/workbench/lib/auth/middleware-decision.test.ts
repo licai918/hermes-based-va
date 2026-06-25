@@ -29,6 +29,16 @@ describe("decideAccess — public routes", () => {
     expect(decideAccess("/api/auth/session", null, NOW).action).toBe("allow");
     expect(decideAccess("/api/auth/logout", null, NOW).action).toBe("allow");
   });
+
+  it("allows the /healthz liveness probe without a session (Cloud Run, issue #33)", () => {
+    // The platform probe carries no session cookie; middleware must not redirect
+    // it to /login or the health check never reaches the 200 route handler.
+    expect(decideAccess("/healthz", null, NOW).action).toBe("allow");
+  });
+
+  it("allows /healthz for an authenticated user without redirecting", () => {
+    expect(decideAccess("/healthz", rep(), NOW).action).toBe("allow");
+  });
 });
 
 describe("decideAccess — unauthenticated protected access", () => {

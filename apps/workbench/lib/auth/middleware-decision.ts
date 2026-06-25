@@ -24,10 +24,19 @@ function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
-// /login (page) and every /api/auth/* endpoint stay reachable without a session;
-// the auth handlers return their own status codes.
+// The Cloud Run liveness probe (issue #33) carries no session cookie, so it must
+// bypass the redirect-to-login gate or the health check never reaches its 200
+// route handler.
+const HEALTHZ_PATH = "/healthz";
+
+// /login (page), every /api/auth/* endpoint, and the /healthz probe stay
+// reachable without a session; the auth handlers return their own status codes.
 function isPublicPath(pathname: string): boolean {
-  return pathname === ROUTES.login || pathname.startsWith("/api/auth");
+  return (
+    pathname === ROUTES.login ||
+    pathname === HEALTHZ_PATH ||
+    pathname.startsWith("/api/auth")
+  );
 }
 
 export function decideAccess(
