@@ -11,6 +11,7 @@ import {
   type CopilotDeps,
 } from "./deps";
 import type { HermesApiClient } from "../../gateway/hermes-api-client";
+import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import type {
   AssigneeFilterMode,
   CaseListFilter,
@@ -85,11 +86,11 @@ export async function handleListCasesViaApi(
   try {
     const cases = await client.listCases(filter as unknown as Record<string, unknown>);
     return json({ cases });
-  } catch {
-    // ponytail: the tracer collapses any upstream failure (transport or governed
-    // tool error) to a 502 so ADR-0090's global error banner surfaces it; per-class
-    // handling (e.g. distinguishing policy_blocked) lands with the full migration.
-    return problem(502, "case service unavailable");
+  } catch (err) {
+    // Surface transport/governed tool failures on the ADR-0090 error banner with
+    // the ADR-0104 per-class status (policy_blocked -> 403, vendor_timeout -> 504,
+    // ...) instead of the tracer's blanket 502.
+    return hermesErrorToProblem(err);
   }
 }
 

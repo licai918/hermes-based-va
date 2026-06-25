@@ -367,4 +367,22 @@ describe("handleListCasesViaApi", () => {
 
     expect(res.status).toBe(502);
   });
+
+  it("maps a governed Tool Gate denial to a 403 (ADR-0104 per-class status)", async () => {
+    const res = await handleListCasesViaApi(
+      listReq(),
+      client(async () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: { class: "policy_blocked", message: "denied by Tool Gate" },
+          }),
+          { status: 200 },
+        ),
+      ),
+      deps(),
+    );
+
+    expect(res.status).toBe(403);
+  });
 });
