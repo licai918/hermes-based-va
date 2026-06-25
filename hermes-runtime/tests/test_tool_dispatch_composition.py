@@ -1,0 +1,97 @@
+"""Slice 34 / #37: per-profile tool-dispatch server composition root.
+
+``build_tool_dispatch_app`` assembles the ADR-0141 dispatch app from the
+environment, fail-closed like ``gateway_composition.build_gateway_app``: the
+profile selector ``TOEE_HERMES_PROFILE`` and the per-process bearer
+``DISPATCH_API_TOKEN``. Mock-first (``TOOL_BACKEND`` unset), so these need no
+Postgres — only that the env-driven assembly and the governed contract hold.
+"""
+
+from __future__ import annotations
+
+import pytest
+from starlette.testclient import TestClient
+
+from toee_hermes.plugin.profiles import PROFILE_ENV_VAR
+
+from hermes_runtime.tool_dispatch_composition import (
+    DISPATCH_API_TOKEN_ENV,
+    build_tool_dispatch_app,
+)
+
+
+def _configure(monkeypatch, *, profile="internal_copilot", token="dev-token") -> None:
+    # Force the mock backend so the app needs no database.
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    if profile is None:
+        monkeypatch.delenv(PROFILE_ENV_VAR, raising=False)
+    else:
+        monkeypatch.setenv(PROFILE_ENV_VAR, profile)
+    if token is None:
+        monkeypatch.delenv(DISPATCH_API_TOKEN_ENV, raising=False)
+    else:
+        monkeypatch.setenv(DISPATCH_API_TOKEN_ENV, token)
+
+
+def test_missing_profile_fails_closed(monkeypatch) -> None:
+    _configure(monkeypatch, profile=None)
+    with pytest.raises(ValueError):
+        build_tool_dispatch_app()
+
+
+def test_unknown_profile_fails_closed(monkeypatch) -> None:
+    _configure(monkeypatch, profile="not_a_profile")
+    with pytest.raises(ValueError):
+        build_tool_dispatch_app()
+
+
+def test_missing_token_fails_closed(monkeypatch) -> None:
+    _configure(monkeypatch, token=None)
+    with pytest.raises(ValueError):
+        build_tool_dispatch_app()
+
+
+def test_built_app_serves_healthz(monkeypatch) -> None:
+    _configure(monkeypatch)
+    client = TestClient(build_tool_dispatch_app())
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_built_app_enforces_bearer_token(monkeypatch) -> None:
+    _configure(monkeypatch)
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        json={"tool": "toee_workbench_read", "action": "list_cases"},
+    )
+    assert response.status_code == 401
+
+
+def test_built_app_runs_allowlisted_tool_for_its_profile(monkeypatch) -> None:
+    _configure(monkeypatch, profile="internal_copilot")
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={"tool": "toee_workbench_read", "action": "list_cases"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
+def test_built_app_denies_tool_outside_its_profile(monkeypatch) -> None:
+    # toee_workbench_admin is supervisor-only (ADR-0038); under the copilot
+    # profile the per-profile gate returns a governed policy_blocked, not a raise.
+    _configure(monkeypatch, profile="internal_copilot")
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={"tool": "toee_workbench_admin", "action": "list_accounts"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
