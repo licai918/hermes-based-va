@@ -68,15 +68,37 @@ def test_list_cases_returns_created_and_filters_by_status(datastore) -> None:
     b = _run(driver, "toee_case", "create_case", {"contact_reason": "b"}).data["case_id"]
     _run(driver, "toee_case_manage", "resolve_case", {"case_id": b}, _ctx(user_id="acct_1"))
 
-    listed = _run(driver, "toee_workbench_read", "list_cases", {})
-    assert listed.ok
-    ids = {c["case_id"] for c in listed.data["cases"]}
-    assert {a, b} <= ids
+    # The queue filter is the BFF's {statuses, assignee} shape (ADR-0141), not a
+    # singular status. Absent statuses default to open/in_progress, so the default
+    # queue hides the resolved case (ADR-0079).
+    default_ids = {
+        c["case_id"]
+        for c in _run(driver, "toee_workbench_read", "list_cases", {}).data["cases"]
+    }
+    assert a in default_ids
+    assert b not in default_ids
 
-    open_only = _run(driver, "toee_workbench_read", "list_cases", {"status": "open"})
-    open_ids = {c["case_id"] for c in open_only.data["cases"]}
-    assert a in open_ids
-    assert b not in open_ids
+    # An explicit statuses list including resolved surfaces both cases.
+    all_ids = {
+        c["case_id"]
+        for c in _run(
+            driver,
+            "toee_workbench_read",
+            "list_cases",
+            {"statuses": ["open", "in_progress", "resolved"]},
+        ).data["cases"]
+    }
+    assert {a, b} <= all_ids
+
+    # Narrowing to resolved returns the resolved case but not the open one.
+    resolved_ids = {
+        c["case_id"]
+        for c in _run(
+            driver, "toee_workbench_read", "list_cases", {"statuses": ["resolved"]}
+        ).data["cases"]
+    }
+    assert b in resolved_ids
+    assert a not in resolved_ids
 
 
 def test_update_case_changes_urgency_and_contact_reason(datastore) -> None:

@@ -81,12 +81,27 @@ def _seed_case(
     urgency: str | None = "normal",
     status: str = "open",
     contact_reason: str = "order_status",
+    assignee_account_id: str | None = None,
+    opened_offset: int = 0,
 ) -> None:
+    # opened_offset shifts opened_at off now() so the ADR-0079 oldest-first
+    # tiebreak is deterministic regardless of insert timing.
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO cases (id, channel, customer_thread_id, contact_reason, urgency, status)"
-            " VALUES (%s, %s, %s, %s, %s, %s)",
-            (case_id, channel, thread_id, contact_reason, urgency, status),
+            "INSERT INTO cases"
+            " (id, channel, customer_thread_id, contact_reason, urgency, status,"
+            " assignee_account_id, opened_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, now() + (%s || ' seconds')::interval)",
+            (
+                case_id,
+                channel,
+                thread_id,
+                contact_reason,
+                urgency,
+                status,
+                assignee_account_id,
+                str(opened_offset),
+            ),
         )
     conn.commit()
 
@@ -157,6 +172,53 @@ def test_list_cases_carries_read_model_fields(datastore) -> None:
     assert found["thread_id"] == "thr_l"
 
 
+def test_list_cases_honors_queue_filter_and_adr0079_sort(datastore) -> None:
+    """C1: the API path must filter + sort exactly like the in-memory store.
+
+    The BFF dispatches ``buildCaseListFilter`` ({statuses, assignee}); the
+    datastore must exclude sales_outreach (ADR-0050) and out-of-status/other-rep
+    cases, then order urgent-first, unassigned-before-assigned, oldest-first
+    (ADR-0079) — byte-for-byte with store.ts listCases + queueCompare.
+    """
+    driver, conn, _ = datastore
+    rep_a, rep_b = "acct_rep_a", "acct_rep_b"
+    # Survivors of the rep-A queue, listed in their expected output order:
+    _seed_case(conn, case_id="case_urgent", urgency="urgent", opened_offset=0)
+    _seed_case(conn, case_id="case_norm_unassigned_old", urgency="normal", opened_offset=10)
+    _seed_case(conn, case_id="case_norm_unassigned_new", urgency="normal", opened_offset=40)
+    _seed_case(
+        conn, case_id="case_norm_rep_a", urgency="normal",
+        assignee_account_id=rep_a, opened_offset=20,
+    )
+    # Excluded: rep B's case, a resolved case, and a sales_outreach case.
+    _seed_case(
+        conn, case_id="case_rep_b", urgency="normal",
+        assignee_account_id=rep_b, opened_offset=5,
+    )
+    _seed_case(conn, case_id="case_resolved", urgency="normal", status="resolved", opened_offset=1)
+    _seed_case(
+        conn, case_id="case_sales", urgency="urgent",
+        contact_reason="sales_outreach", opened_offset=2,
+    )
+
+    listed = _run(
+        driver,
+        "toee_workbench_read",
+        "list_cases",
+        {
+            "statuses": ["open", "in_progress"],
+            "assignee": {"mode": "mine_or_unassigned", "accountId": rep_a},
+        },
+    ).data["cases"]
+
+    assert [c["case_id"] for c in listed] == [
+        "case_urgent",  # urgent tier first
+        "case_norm_unassigned_old",  # then unassigned-before-assigned, oldest first
+        "case_norm_unassigned_new",  # (newer unassigned still beats the assigned one)
+        "case_norm_rep_a",  # assigned-to-me sorts last in its tier
+    ]
+
+
 def test_get_thread_returns_timeline_with_derived_channel_and_segment(datastore) -> None:
     driver, conn, _ = datastore
     _seed_thread(
@@ -200,13 +262,16 @@ def test_get_thread_writes_one_case_view_audit_entry(datastore) -> None:
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT action, target_type, target_id, account_id"
+            "SELECT action, target_type, target_id, account_id, details"
             " FROM workbench_audit_log WHERE target_id = %s",
             ("case_av",),
         )
         rows = cur.fetchall()
-    # ADR-0042/0082: opening Case Thread Context writes exactly one case_view entry.
-    assert rows == [("case_view", "case", "case_av", "acct_z")]
+    # ADR-0042: opening Case Thread Context writes exactly one case_view entry that
+    # records the viewer, the case, and the customer thread identifier.
+    assert rows == [
+        ("case_view", "case", "case_av", "acct_z", {"customer_thread_id": "thr_av"})
+    ]
 
 
 def test_get_thread_missing_case_is_empty_read_without_audit(datastore) -> None:
@@ -221,7 +286,7 @@ def test_get_thread_missing_case_is_empty_read_without_audit(datastore) -> None:
 
 
 def test_get_thread_threadless_case_has_empty_timeline(datastore) -> None:
-    driver, _, _ = datastore
+    driver, conn, _ = datastore
     case_id = _run(
         driver, "toee_case", "create_case", {"contact_reason": "x"}
     ).data["case_id"]
@@ -230,6 +295,13 @@ def test_get_thread_threadless_case_has_empty_timeline(datastore) -> None:
 
     assert result["case"]["case_id"] == case_id
     assert result["messages"] == []
+    # ADR-0042: a threadless case still audits the view, but omits the thread id
+    # rather than writing a misleading empty string.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT details FROM workbench_audit_log WHERE target_id = %s", (case_id,)
+        )
+        assert cur.fetchone()[0] == {}
 
 
 def test_get_audit_log_includes_actor_username(datastore) -> None:

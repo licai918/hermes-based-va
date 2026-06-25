@@ -334,11 +334,12 @@ def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     # not audit a view of a case that does not exist.
     if case is None:
         return {"case": None, "messages": []}
-    messages = _thread_messages(
-        conn, case.get("thread_id") or None, case.get("channel") or "sms"
-    )
+    thread_id = case.get("thread_id")
+    messages = _thread_messages(conn, thread_id or None, case.get("channel") or "sms")
     # ADR-0042/0082: opening or refreshing Case Thread Context writes a Workbench
-    # Audit Log case_view entry in the same transaction as the read.
+    # Audit Log case_view entry in the same transaction as the read, recording the
+    # customer thread identifier. A threadless case omits it rather than logging a
+    # misleading empty string.
     insert_audit(
         conn,
         profile=context.profile,
@@ -346,21 +347,61 @@ def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -
         action="case_view",
         target_type="case",
         target_id=case_id,
-        details={},
+        details={"customer_thread_id": thread_id} if thread_id else {},
     )
     return {"case": case, "messages": messages}
 
 
+# Mirrors store.ts DEFAULT_STATUSES: resolved cases are hidden by default.
+_DEFAULT_STATUSES = ("open", "in_progress")
+
+
 def _list_cases(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
-    status = read_string(params, "status")
+    """Queue read that mirrors the in-memory GatewayStore (ADR-0141 parity).
+
+    The BFF dispatches ``buildCaseListFilter`` ({statuses, assignee}); this must
+    filter and sort exactly like ``store.ts`` ``listCases`` + ``queueCompare``:
+    exclude ``sales_outreach`` (ADR-0050), keep only the requested statuses
+    (default open/in_progress), apply the assignee mode, and order urgent-first,
+    unassigned-before-assigned, oldest-open-first (ADR-0079). Doing it in SQL also
+    avoids fetching the whole table just to drop most rows.
+    """
+    raw_statuses = params.get("statuses")
+    statuses = (
+        [s for s in raw_statuses if isinstance(s, str) and s]
+        if isinstance(raw_statuses, list)
+        else []
+    )
+    if not statuses:
+        statuses = list(_DEFAULT_STATUSES)
+
+    assignee = params.get("assignee")
+    assignee = assignee if isinstance(assignee, dict) else None
+    mode = read_string(assignee, "mode") if assignee else None
+    account_id = read_string(assignee, "account_id", "accountId") if assignee else None
+
+    # IS DISTINCT FROM keeps NULL/blank reasons (the store compares !== so only an
+    # exact "sales_outreach" is dropped); = ANY filters the requested status set.
+    where = ["contact_reason IS DISTINCT FROM 'sales_outreach'", "status = ANY(%s)"]
+    args: list[Any] = [statuses]
+    if mode == "mine":
+        where.append("assignee_account_id = %s")
+        args.append(account_id)
+    elif mode == "unassigned":
+        where.append("assignee_account_id IS NULL")
+    elif mode == "mine_or_unassigned":
+        where.append("(assignee_account_id IS NULL OR assignee_account_id = %s)")
+        args.append(account_id)
+    # mode in (None, "all") -> no assignee predicate, matching matchesAssignee.
+
+    sql = (
+        "SELECT * FROM cases WHERE "
+        + " AND ".join(where)
+        + " ORDER BY (COALESCE(urgency, '') IN ('urgent', 'high')) DESC,"
+        " (assignee_account_id IS NOT NULL) ASC, opened_at ASC"
+    )
     with conn.cursor(row_factory=dict_row) as cur:
-        if status is not None:
-            cur.execute(
-                "SELECT * FROM cases WHERE status = %s ORDER BY last_activity_at DESC",
-                (status,),
-            )
-        else:
-            cur.execute("SELECT * FROM cases ORDER BY last_activity_at DESC")
+        cur.execute(sql, args)
         rows = cur.fetchall()
     return {"cases": [_read_model(conn, row) for row in rows]}
 
