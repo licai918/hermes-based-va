@@ -92,6 +92,12 @@ def test_agent_turn_returns_scripted_draft_and_provenance() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
+    # Exhaustive key-set: the sms envelope is EXACTLY {channel, draft, provenance}
+    # (ADR-0147 Slice 2 review follow-up). Pinned on the Python side, where envelope
+    # shape responsibility now lives after the BFF's pass-through change — so a future
+    # drift (e.g. spreading the whole `result` into `data`) breaks here, which the
+    # frozen-fixture BFF tests cannot catch.
+    assert set(body["data"]) == {"channel", "draft", "provenance"}
     assert body["data"]["channel"] == "sms"
     assert body["data"]["draft"] == "draft for case_ar_urgent"
     # Provenance carries the model boundary + the (structurally no-send) profile.
@@ -143,6 +149,9 @@ def test_agent_turn_email_data_includes_subject() -> None:
     )
     assert response.status_code == 200
     data = response.json()["data"]
+    # Exhaustive key-set: the email envelope is EXACTLY {channel, subject, draft,
+    # provenance} — `subject` is the one key that distinguishes it from sms.
+    assert set(data) == {"channel", "subject", "draft", "provenance"}
     assert data["channel"] == "email"
     assert data["subject"] == "Subject for case_e"
     assert data["draft"] == "email body for case_e"
@@ -157,7 +166,9 @@ def test_agent_turn_internal_note_data_keys_on_kind() -> None:
     )
     assert response.status_code == 200
     data = response.json()["data"]
-    # Note envelope: {kind, draft} (+ provenance), and crucially NO `channel` key.
+    # Note envelope: EXACTLY {kind, draft, provenance} — keys on `kind`, and
+    # crucially carries NO `channel` key (the key-set equality pins that absence).
+    assert set(data) == {"kind", "draft", "provenance"}
     assert data["kind"] == "internal_note"
     assert "channel" not in data
     assert data["draft"] == "draft for case_n"
