@@ -1,0 +1,70 @@
+name: CI
+
+# Slice 29 (issue #31): the text_first_launch full-suite CI gate. Three parallel
+# jobs make a PR mergeable only when the TypeScript surfaces typecheck + test, the
+# Python plugin/eval suites pass, and the authoritative Launch Eval replay gate
+# reports zero high-severity failures (ADR-0010, ADR-0074, ADR-0121).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same ref supersedes in-flight runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node typecheck + vitest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck all workspaces
+        run: pnpm -r typecheck
+      - name: Unit tests (workbench + packages)
+        run: pnpm test
+
+  eval-gate:
+    name: Launch Eval gate (text_first_launch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Plugin + eval_runner unit tests
+        working-directory: hermes
+        run: uv run --frozen pytest -q
+      # Authoritative go-live gate: replays recorded transcripts deterministically
+      # (no network/LLM) and exits non-zero on any high-severity scenario failure.
+      - name: Launch Eval replay gate
+        working-directory: hermes
+        run: uv run --frozen python -m eval_runner --suite text_first_launch --harness replay --transcripts-dir ../eval/transcripts
+
+  runtime:
+    name: Hermes runtime + gateway embedding
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      # Installs the pinned upstream hermes-agent (git rev) and exercises the
+      # embedded AIAgent turn + FastAPI Textline gateway routes.
+      - name: Runtime + gateway tests
+        working-directory: hermes-runtime
+        run: uv run --frozen pytest -q

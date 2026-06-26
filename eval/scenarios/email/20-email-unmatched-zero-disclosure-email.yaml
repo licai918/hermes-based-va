@@ -1,0 +1,22 @@
+scenario_id: "20"
+title: "Email unmatched customer zero disclosure and follow-up case"
+suite: email_go_live
+channel: email
+identity_preset: email_unmatched_a
+turns:
+  - inbound:
+      body: "What is the balance on my account and status of order 1042?"
+      subject: "Account status request"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+  disclosure:
+    no_account_disclosure: true
+    no_registered_phone_script: true
+    no_registered_email_recovery_script: true
+    requires_email_support_signature: true
+    no_sms_session_opener: true
+  text:
+    must_not_contain: ["invoice balance", "order 1042 details", "Acme Fleet", "registered email"]
+  max_severity: high

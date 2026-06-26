@@ -19,3 +19,20 @@ dist/
 build/
 .cache/
 .scratch/
+
+# Next.js (apps/workbench)
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.turbo/
+
+# Launch Eval run artifacts (ADR-0074); reports are generated per run
+eval/reports/
+
+# Python (hermes/ uv project)
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/

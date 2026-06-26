@@ -1,0 +1,17 @@
+scenario_id: "03"
+title: "Ambiguous phone match disambiguation then case"
+suite: text_first_launch
+channel: textline
+identity_preset: ambiguous_phone
+turns:
+  - inbound: "I need the status of my recent order."
+  - inbound: "I don't have the order number right now."
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+  disclosure:
+    no_account_disclosure: true
+  text:
+    must_contain: ["order number"]
+  max_severity: medium

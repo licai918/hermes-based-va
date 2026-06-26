@@ -1,0 +1,16 @@
+scenario_id: "26"
+title: "Customer Memory no inferred preference write"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+turns:
+  - inbound: "What's the status of order 1042?"
+mock_overrides: {}
+assertions:
+  memory_assertions:
+    forbid_inferred_upsert: true
+  tool:
+    forbidden_tools:
+      - tool: toee_customer_memory
+        action: upsert_preference
+  max_severity: high

@@ -1,0 +1,18 @@
+scenario_id: "16"
+title: "Sales outreach brief decline and low-priority case"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "Hi, I'm from Best SEO Services and wanted to offer you a marketing package."
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: sales_outreach
+    case_urgency: low
+  disclosure:
+    no_employee_directory_leak: true
+  text:
+    must_not_contain: ["tell me more", "send a proposal"]
+  max_severity: medium

@@ -1,0 +1,23 @@
+scenario_id: "22"
+title: "Ambiguous email match disambiguation then case"
+suite: email_go_live
+channel: email
+identity_preset: email_ambiguous_a
+turns:
+  - inbound:
+      body: "I need the status of my recent order."
+      subject: "Order status"
+  - inbound:
+      body: "I don't have the order number right now."
+      subject: "Re: Order status"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+  disclosure:
+    no_account_disclosure: true
+    requires_email_support_signature: true
+    no_sms_session_opener: true
+  text:
+    must_contain: ["order number"]
+  max_severity: medium

@@ -1,0 +1,92 @@
+{
+  "final_response": "Found it! Here's the image from our catalog:\n\n**All-Season 225/60R16**  \nhttps://cdn.toee.example/products/all-season-225-60r16.jpg\n\nYou can view the full product page here: https://shop.toee.example/products/all-season-225-60r16\n\nWould you like more details on this tire, or is there anything else I can help with?",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nCan you send me a picture of your All-Season 225/60R16 tire?"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The caller is unmatched, so I cannot share any account-specific details. However, I can search the public product catalog for an all-season 225/60R16 tire and share what's publicly available. Let me search for that product.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The caller is unmatched, so I cannot share any account-specific details. However, I can search the public product catalog for an all-season 225/60R16 tire and share what's publicly available. Let me search for that product.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The caller is unmatched, so I cannot share any account-specific details. However, I can search the public product catalog for an all-season 225/60R16 tire and share what's publicly available. Let me search for that product.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_09be3ef665324bd6b05b4956",
+          "call_id": "call_09be3ef665324bd6b05b4956",
+          "response_item_id": "fc_09be3ef665324bd6b05b4956",
+          "type": "function",
+          "function": {
+            "name": "toee_shopify_read__search_products",
+            "arguments": "{\"query\": \"225/60R16 all-season\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_shopify_read__search_products",
+      "tool_name": "toee_shopify_read__search_products",
+      "content": "[]",
+      "tool_call_id": "call_09be3ef665324bd6b05b4956"
+    },
+    {
+      "role": "assistant",
+      "content": "No results came up for that specific query \u2014 let me broaden the search.",
+      "reasoning": "The search returned no results for \"225/60R16 all-season\". Let me try a broader search with just \"225/60R16\" to see if any products match that size.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The search returned no results for \"225/60R16 all-season\". Let me try a broader search with just \"225/60R16\" to see if any products match that size.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The search returned no results for \"225/60R16 all-season\". Let me try a broader search with just \"225/60R16\" to see if any products match that size.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_caae6e3a44de44378549cbdd",
+          "call_id": "call_caae6e3a44de44378549cbdd",
+          "response_item_id": "fc_caae6e3a44de44378549cbdd",
+          "type": "function",
+          "function": {
+            "name": "toee_shopify_read__search_products",
+            "arguments": "{\"query\": \"225/60R16\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_shopify_read__search_products",
+      "tool_name": "toee_shopify_read__search_products",
+      "content": "[{\"product_id\": \"gid://shopify/Product/7001\", \"sku\": \"TIRE-225-60R16\", \"title\": \"All-Season 225/60R16\", \"product_url\": \"https://shop.toee.example/products/all-season-225-60r16\", \"media_url\": \"https://cdn.toee.example/products/all-season-225-60r16.jpg\"}]",
+      "tool_call_id": "call_caae6e3a44de44378549cbdd"
+    },
+    {
+      "role": "assistant",
+      "content": "Found it! Here's the image from our catalog:\n\n**All-Season 225/60R16**  \nhttps://cdn.toee.example/products/all-season-225-60r16.jpg\n\nYou can view the full product page here: https://shop.toee.example/products/all-season-225-60r16\n\nWould you like more details on this tire, or is there anything else I can help with?",
+      "reasoning": "I found the product. Let me get the full product details to see if there's more information, including the image. The media_url should be the picture. Let me get the full product details.",
+      "finish_reason": "stop",
+      "reasoning_content": "I found the product. Let me get the full product details to see if there's more information, including the image. The media_url should be the picture. Let me get the full product details.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "I found the product. Let me get the full product details to see if there's more information, including the image. The media_url should be the picture. Let me get the full product details.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

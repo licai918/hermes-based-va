@@ -1,0 +1,24 @@
+scenario_id: "14"
+title: "Non-customer government default urgent"
+suite: email_go_live
+channel: email
+identity_preset: email_unmatched_a
+turns:
+  - inbound:
+      body: "Canada Revenue Agency regarding your HST filing"
+      subject: "HST filing notice"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: government
+    case_urgency: urgent
+  disclosure:
+    no_account_disclosure: true
+    no_registered_phone_script: true
+    no_registered_email_recovery_script: true
+    requires_email_support_signature: true
+    no_sms_session_opener: true
+  text:
+    must_not_contain: ["Registered Phone", "account balance", "registered email"]
+  max_severity: medium

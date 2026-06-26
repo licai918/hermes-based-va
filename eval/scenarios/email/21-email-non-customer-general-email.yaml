@@ -1,0 +1,22 @@
+scenario_id: "21"
+title: "Email non-customer governed intake fallback"
+suite: email_go_live
+channel: email
+identity_preset: email_unmatched_a
+turns:
+  - inbound:
+      body: "Hello, I represent a local warehouse collective and need to discuss something with your operations team."
+      subject: "Operations inquiry"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: non_customer_general
+  disclosure:
+    no_account_disclosure: true
+    no_registered_phone_script: true
+    requires_email_support_signature: true
+    no_sms_session_opener: true
+  text:
+    must_not_contain: ["our policy is to", "we always", "guaranteed"]
+  max_severity: medium

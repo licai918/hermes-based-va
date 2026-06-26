@@ -1,0 +1,55 @@
+# Toee Tire Hermes plugin manifest (ADR-0139). provides_tools is generated
+# from the v1 Domain Adapter Tool catalog (ADR-0059/0070); register() filters
+# to the active profile's Profile Tool Allowlist (ADR-0034/35/38) at load.
+name: toee-tire
+version: 0.1.0
+description: Toee Tire Domain Adapter Tools, Tool Gate, and governed dispatch (ADR-0139).
+provides_tools:
+  - toee_identity_lookup__match_phone
+  - toee_identity_lookup__match_email_sender
+  - toee_identity_lookup__get_email_link_status
+  - toee_knowledge_search__search_public_site
+  - toee_knowledge_search__search_operational_policy
+  - toee_shopify_read__get_order
+  - toee_shopify_read__list_customer_orders
+  - toee_shopify_read__search_products
+  - toee_shopify_read__get_product
+  - toee_qbo_read__get_invoice
+  - toee_qbo_read__list_customer_invoices
+  - toee_qbo_read__get_ar_summary
+  - toee_easyroutes_read__get_delivery_status
+  - toee_easyroutes_read__get_route_details
+  - toee_square_payment_link__send_payment_link
+  - toee_textline_reply__send_message
+  - toee_case__create_case
+  - toee_case__update_case
+  - toee_customer_memory__upsert_preference
+  - toee_customer_memory__clear_preference
+  - toee_customer_memory__get_preferences
+  - toee_case_manage__claim_case
+  - toee_case_manage__assign_case
+  - toee_case_manage__update_priority
+  - toee_case_manage__update_contact_reason
+  - toee_case_manage__resolve_case
+  - toee_copilot_draft__draft_sms
+  - toee_copilot_draft__draft_email
+  - toee_copilot_draft__draft_internal_note
+  - toee_workbench_read__get_case
+  - toee_workbench_read__list_cases
+  - toee_workbench_read__get_audit_log
+  - toee_workbench_read__get_thread
+  - toee_knowledge_ops__get_policy_slots
+  - toee_knowledge_ops__update_policy_slot
+  - toee_knowledge_ops__submit_for_eval
+  - toee_knowledge_ops__rollback_published_policy
+  - toee_eval_review__list_eval_runs
+  - toee_eval_review__get_eval_run
+  - toee_eval_review__sign_off_medium_failure
+  - toee_eval_review__promote_pending_policy
+  - toee_workbench_admin__list_accounts
+  - toee_workbench_admin__create_account
+  - toee_workbench_admin__update_account_role
+  - toee_workbench_admin__disable_account
+  - toee_workbench_admin__authenticate
+provides_hooks:
+  - pre_llm_call

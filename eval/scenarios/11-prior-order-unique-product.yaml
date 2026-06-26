@@ -1,0 +1,18 @@
+scenario_id: "11"
+title: "Prior order product reference resolves uniquely"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+turns:
+  - inbound: "Send me a photo of the tire I ordered last time."
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: false
+  tool:
+    expect_calls:
+      - tool: toee_shopify_read
+        action: list_customer_orders
+  text:
+    must_contain: ["TIRE-225-60R16"]
+  max_severity: medium

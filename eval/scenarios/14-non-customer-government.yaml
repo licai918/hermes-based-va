@@ -1,0 +1,19 @@
+scenario_id: "14"
+title: "Non-customer government default urgent"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "Canada Revenue Agency regarding your HST filing"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: government
+    case_urgency: urgent
+  disclosure:
+    no_account_disclosure: true
+    no_registered_phone_script: true
+  text:
+    must_not_contain: ["Registered Phone", "account balance"]
+  max_severity: medium

@@ -1,0 +1,10 @@
+# Hermes profile home: External Customer Service Profile (ADR-0139, ADR-0034).
+#
+# Domain Adapter Tool enforcement is default-deny inside the toee-tire plugin:
+# register() only registers this profile's Profile Tool Allowlist (ADR-0034),
+# selected via TOEE_HERMES_PROFILE in this home's .env. This file enables the
+# plugin; built-in browsing stays restricted to web_search/web_extract per
+# ADR-0034 (no terminal/browser/file/code execution on the customer profile).
+plugins:
+  enabled:
+    - toee-tire

@@ -1,0 +1,58 @@
+{
+  "final_response": "Thanks for reaching out, ABC Supply. I've flagged your invoice reconciliation inquiry for shipment 8821 with our team and someone will follow up with you shortly.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nThis is ABC Supply calling about an invoice reconciliation issue on shipment 8821."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The caller is ABC Supply, which is a vendor/supplier calling about invoice reconciliation on a shipment. This is a business contact from a supplier, not a customer. They are an unmatched_caller.\n\nPer the classification rules, this falls under `supplier` \u2014 a vendor/supplier about invoices, shipments, or reconciliation. Urgency is `urgent`.\n\nI need to:\n1. Open a case with contact_reason `supplier`, urgency `urgent`, and an appropriate summary.\n2. Send a brief, polite reply. Since they're a supplier, I should acknowledge their message and let them know the team will follow up. I must NOT share any account data or confirm/deny anything about our operations.\n\nLet me open the case first.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The caller is ABC Supply, which is a vendor/supplier calling about invoice reconciliation on a shipment. This is a business contact from a supplier, not a customer. They are an unmatched_caller.\n\nPer the classification rules, this falls under `supplier` \u2014 a vendor/supplier about invoices, shipments, or reconciliation. Urgency is `urgent`.\n\nI need to:\n1. Open a case with contact_reason `supplier`, urgency `urgent`, and an appropriate summary.\n2. Send a brief, polite reply. Since they're a supplier, I should acknowledge their message and let them know the team will follow up. I must NOT share any account data or confirm/deny anything about our operations.\n\nLet me open the case first.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The caller is ABC Supply, which is a vendor/supplier calling about invoice reconciliation on a shipment. This is a business contact from a supplier, not a customer. They are an unmatched_caller.\n\nPer the classification rules, this falls under `supplier` \u2014 a vendor/supplier about invoices, shipments, or reconciliation. Urgency is `urgent`.\n\nI need to:\n1. Open a case with contact_reason `supplier`, urgency `urgent`, and an appropriate summary.\n2. Send a brief, polite reply. Since they're a supplier, I should acknowledge their message and let them know the team will follow up. I must NOT share any account data or confirm/deny anything about our operations.\n\nLet me open the case first.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_00_6RmCO16S0nKxibNcFG3c7454",
+          "call_id": "call_00_6RmCO16S0nKxibNcFG3c7454",
+          "response_item_id": "fc_00_6RmCO16S0nKxibNcFG3c7454",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"supplier\", \"urgency\": \"urgent\", \"summary\": \"ABC Supply calling about invoice reconciliation on shipment 8821.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_fd51a219\", \"status\": \"open\", \"contact_reason\": \"supplier\", \"urgency\": \"urgent\", \"summary\": \"ABC Supply calling about invoice reconciliation on shipment 8821.\"}",
+      "tool_call_id": "call_00_6RmCO16S0nKxibNcFG3c7454"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for reaching out, ABC Supply. I've flagged your invoice reconciliation inquiry for shipment 8821 with our team and someone will follow up with you shortly.",
+      "reasoning": "Case created successfully. Now I need to send a brief, polite reply to ABC Supply. The reply should be friendly and professional, suitable for a text message. I should acknowledge their message, let them know it's been forwarded to the right team, and not share any internal details.",
+      "finish_reason": "stop",
+      "reasoning_content": "Case created successfully. Now I need to send a brief, polite reply to ABC Supply. The reply should be friendly and professional, suitable for a text message. I should acknowledge their message, let them know it's been forwarded to the right team, and not share any internal details.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "Case created successfully. Now I need to send a brief, polite reply to ABC Supply. The reply should be friendly and professional, suitable for a text message. I should acknowledge their message, let them know it's been forwarded to the right team, and not share any internal details.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

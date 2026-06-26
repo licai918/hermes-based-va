@@ -1,0 +1,92 @@
+{
+  "final_response": "I'm sorry, but our product catalog is temporarily unavailable right now. I've opened a follow-up case and someone from our team will reach out with the information and image you're looking for. Apologies for the inconvenience!",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSend me a picture of your All-Season 225/60R16 tire."
+    },
+    {
+      "role": "assistant",
+      "content": "Let me look that up for",
+      "reasoning": "The caller is unmatched, so I can only share public catalog information \u2014 no prices, no stock levels. They're asking for a picture of an All-Season 225/60R16 tire. Let me search the product catalog for that.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The caller is unmatched, so I can only share public catalog information \u2014 no prices, no stock levels. They're asking for a picture of an All-Season 225/60R16 tire. Let me search the product catalog for that.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The caller is unmatched, so I can only share public catalog information \u2014 no prices, no stock levels. They're asking for a picture of an All-Season 225/60R16 tire. Let me search the product catalog for that.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_f09f51da22d748c08204267c",
+          "call_id": "call_f09f51da22d748c08204267c",
+          "response_item_id": "fc_f09f51da22d748c08204267c",
+          "type": "function",
+          "function": {
+            "name": "toee_shopify_read__search_products",
+            "arguments": "{\"query\": \"225/60R16 all-season\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_shopify_read__search_products",
+      "tool_name": "toee_shopify_read__search_products",
+      "content": "{\"error\": \"The requested system is temporarily unavailable.\", \"error_class\": \"vendor_timeout\"}",
+      "tool_call_id": "call_f09f51da22d748c08204267c"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The search_products tool returned a vendor_timeout error. According to the rules, when a tool/system is unavailable, I should tell the customer it's temporarily unavailable and open a follow-up case. I cannot fabricate product details or images.\n\nLet me open a follow-up case with contact_reason: tool_unavailable.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The search_products tool returned a vendor_timeout error. According to the rules, when a tool/system is unavailable, I should tell the customer it's temporarily unavailable and open a follow-up case. I cannot fabricate product details or images.\n\nLet me open a follow-up case with contact_reason: tool_unavailable.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The search_products tool returned a vendor_timeout error. According to the rules, when a tool/system is unavailable, I should tell the customer it's temporarily unavailable and open a follow-up case. I cannot fabricate product details or images.\n\nLet me open a follow-up case with contact_reason: tool_unavailable.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_9bab9c1e1e054ee487708082",
+          "call_id": "call_9bab9c1e1e054ee487708082",
+          "response_item_id": "fc_9bab9c1e1e054ee487708082",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"tool_unavailable\", \"urgency\": \"normal\", \"summary\": \"Unmatched caller requested a picture of an All-Season 225/60R16 tire. Product search was unavailable due to a system timeout. Needs follow-up once systems are back online.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_bf4c4b9c\", \"status\": \"open\", \"contact_reason\": \"tool_unavailable\", \"urgency\": \"normal\", \"summary\": \"Unmatched caller requested a picture of an All-Season 225/60R16 tire. Product search was unavailable due to a system timeout. Needs follow-up once systems are back online.\"}",
+      "tool_call_id": "call_9bab9c1e1e054ee487708082"
+    },
+    {
+      "role": "assistant",
+      "content": "I'm sorry, but our product catalog is temporarily unavailable right now. I've opened a follow-up case and someone from our team will reach out with the information and image you're looking for. Apologies for the inconvenience!",
+      "reasoning": "Good, the case has been created. Now I need to reply to the customer. Since the system is temporarily unavailable and I can't look up the product, I should tell them the catalog is temporarily unavailable and that I've opened a follow-up case so someone can get back to them. Keep it concise, friendly, and professional.",
+      "finish_reason": "stop",
+      "reasoning_content": "Good, the case has been created. Now I need to reply to the customer. Since the system is temporarily unavailable and I can't look up the product, I should tell them the catalog is temporarily unavailable and that I've opened a follow-up case so someone can get back to them. Keep it concise, friendly, and professional.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "Good, the case has been created. Now I need to reply to the customer. Since the system is temporarily unavailable and I can't look up the product, I should tell them the catalog is temporarily unavailable and that I've opened a follow-up case so someone can get back to them. Keep it concise, friendly, and professional.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

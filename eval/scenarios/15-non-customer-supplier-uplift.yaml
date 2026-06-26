@@ -1,0 +1,17 @@
+scenario_id: "15"
+title: "Non-customer supplier invoice uplift urgent"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "This is ABC Supply calling about an invoice reconciliation issue on shipment 8821."
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: supplier
+    case_urgency: urgent
+  disclosure:
+    no_account_disclosure: true
+    no_registered_phone_script: true
+  max_severity: medium

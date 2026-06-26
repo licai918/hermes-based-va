@@ -1,0 +1,256 @@
+"""Copilot draft provider: an unbound ``internal_copilot`` agent turn (ADR-0147).
+
+The drafts half of the agent-turn capability ADR-0141 named. Unlike
+:func:`hermes_runtime.openrouter.make_openrouter_run_turn` (External, bound to a
+conversation, ending in a customer send), a copilot draft turn boots
+``internal_copilot`` **UNBOUND** (no ``conversation_id``) and ends in *proposed
+text, never a send*: the agent's ``final_response`` IS the draft (Fork E1),
+mirroring how the External reply derives from ``final_response``.
+
+No-auto-send is **structural**: ``internal_copilot``'s allowlist (ADR-0035) has no
+send tool, so the booted turn cannot send to a customer (ADR-0067) — there is no
+runtime guard to forget. The agent still holds the copilot *read* tools
+(``toee_workbench_read``, ``toee_knowledge_search``, …) to ground the draft.
+
+The ``channel`` selects a per-channel system message: a short SMS reply, an email
+body (with a subject alongside), a staff-facing internal note (Slice 2), or a
+conversational ``chat`` reply (Slice 4, #39 — the staff-facing copilot conversation,
+not a customer draft). The booted tool set is identical across all of them, so the
+structural no-send invariant holds for chat exactly as for the draft channels.
+
+Provider seam (Fork C1, mock-first ADR-0137), in precedence order:
+
+1. ``scripted_completions`` injected (tests/eval) -> the deterministic
+   :mod:`hermes_runtime.live` scripted seam: a real ``AIAgent`` loop with no
+   model, network, or key.
+2. ``OPENROUTER_API_KEY`` present (or an explicit ``config``/``openai_factory``)
+   -> the real OpenRouter boundary (ADR-0009: deepseek primary / qwen fallback),
+   reusing :mod:`hermes_runtime.openrouter`'s config + per-completion fallback
+   verbatim — no new provider abstraction, the External precedent unbound.
+3. Otherwise -> a deterministic keyless stub completion, so local dev and CI draft
+   without a model or key, exactly as the dispatch server runs against MockDriver.
+
+``OPENROUTER_API_KEY`` is read only via :func:`resolve_openrouter_config` and is
+never logged.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable, Mapping, Optional, Sequence
+
+from toee_hermes.plugin.profiles import INTERNAL
+
+from hermes_runtime.boot import boot_profile
+from hermes_runtime.live import run_agent_turn, run_scripted_agent
+from hermes_runtime.openrouter import (
+    OpenRouterConfig,
+    default_is_retryable,
+    make_fallback_openai_factory,
+    resolve_openrouter_config,
+)
+
+# Reported as the provenance model when no real LLM produced the draft (scripted
+# in tests, deterministic stub locally). A real keyed turn reports the resolved
+# OpenRouter model slug instead (ADR-0009).
+SCRIPTED_MODEL = "scripted"
+
+# Headroom for the reply iteration after a governed context-read tool call; caps a
+# runaway loop without truncating a normal draft turn (mirrors openrouter.py).
+_DEFAULT_MAX_ITERATIONS = 12
+
+# An email turn frames the subject on a leading ``Subject:`` line (see the email
+# system message); the derivation peels it off so the body is the draft text.
+_SUBJECT_LINE_PREFIX = "subject:"
+
+# Per-channel system messages (ADR-0147 Slice 2 drafts; Slice 4 adds `chat`). The
+# channel selects how the same unbound internal_copilot turn is framed — short SMS
+# reply, email body, staff-facing internal note, or (Slice 4) a conversational chat
+# reply that helps the staff member work the case. Each instructs "propose only,
+# never send"; the agent has no send tool regardless (the structural no-send
+# invariant, ADR-0035/0067).
+_SYSTEM_MESSAGES = {
+    "sms": (
+        "You are a Toee Tire support copilot drafting a customer SMS reply for a "
+        "staff member to review and send themselves. Write one short, plain, "
+        "friendly message. Output only the suggested reply text; never send it."
+    ),
+    "email": (
+        "You are a Toee Tire support copilot drafting a customer email reply for a "
+        "staff member to review and send themselves. Put the subject on the first "
+        "line as 'Subject: <subject>', then a clear, courteous email body with a "
+        "greeting and sign-off. Output only the subject line and body; never send it."
+    ),
+    "internal_note": (
+        "You are a Toee Tire support copilot drafting an internal case note for "
+        "staff — never shown to the customer. Summarize the situation and the "
+        "suggested next step plainly for a colleague. Output only the note text."
+    ),
+    # Slice 4 (#39): /api/copilot/chat. A conversational copilot turn — the reply is
+    # the agent's final_response (relabeled `reply` by the endpoint), not a per-channel
+    # draft. If the staff member asks for a customer reply the agent provides the
+    # suggested text for them to review/edit/send; it can never send (no send tool).
+    "chat": (
+        "You are a Toee Tire support copilot helping a staff member work a customer "
+        "support case. Answer their question about the case concisely and helpfully. "
+        "If they ask you to draft a customer reply, provide the suggested reply text "
+        "for them to review, edit, and send themselves. Never send anything yourself."
+    ),
+}
+
+
+def _system_message(channel: str) -> str:
+    # The route validates channel against VALID_CHANNELS before run_turn is called,
+    # so an unknown channel here is a programming error and should fail loudly.
+    return _SYSTEM_MESSAGES[channel]
+
+
+def _derive_email_subject_and_body(final_response: str, case_id: str) -> tuple[str, str]:
+    """Split an email turn's ``final_response`` into ``(subject, body)`` (Fork C1).
+
+    The email system message asks the model to lead with a ``Subject: <subject>``
+    line; when the first non-blank line follows that convention, that line is peeled
+    off the body — so the body the staff member edits never carries a stray
+    ``Subject:`` line — and its text becomes the subject. An EMPTY subject (a bare
+    ``Subject:`` line, or a model that left it blank) still strips that line from the
+    body but uses the deterministic case-scoped fallback subject (M2: previously the
+    bare ``Subject:`` line leaked into the body). When the first real line is not a
+    ``Subject:`` line at all (the keyless stub, or a model that skipped the
+    convention), fall back to the same subject and keep the whole response as the
+    body. Body handling is symmetric across both paths (``.strip()``), so
+    ``{channel, subject, draft}`` always holds and the scripted/stub path stays
+    deterministic for tests.
+    """
+    text = final_response or ""
+    fallback_subject = f"Re: your Toee Tire case {case_id}"
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue  # skip leading blank lines to the first real line
+        stripped = line.strip()
+        if stripped.lower().startswith(_SUBJECT_LINE_PREFIX):
+            subject = stripped[len(_SUBJECT_LINE_PREFIX) :].strip()
+            body = "\n".join(lines[index + 1 :]).strip()
+            # Peel the Subject: line off the body either way; an empty subject uses
+            # the deterministic fallback so the bare line never survives in the draft.
+            return (subject or fallback_subject), body
+        break  # first real line is not a Subject: line -> fall back, keep whole body
+    return fallback_subject, text.strip()
+
+
+def _user_message(channel: str, case_id: str, prompt: Optional[str]) -> str:
+    # case_id is an internal identifier, not customer PII; the agent gathers any
+    # customer detail itself via its governed read tools (ADR-0147 decision 2).
+    if channel == "chat":
+        # Chat is single-shot (the in-memory handleChat contract): the prompt IS the
+        # staff member's message about the case — conversational, not "draft a reply".
+        base = f"A staff member is working case {case_id} and asks:"
+        return f"{base} {prompt}".strip() if prompt else f"Help the staff member with case {case_id}."
+    base = f"Draft a {channel} reply for case {case_id}."
+    return f"{base} {prompt}".strip() if prompt else base
+
+
+def _stub_draft(channel: str, case_id: str) -> str:
+    """A deterministic keyless draft so the endpoint serves without a model/key."""
+    if channel == "chat":
+        return f"Looking at case {case_id} now - how can I help with it?"
+    return f"[draft:{channel}] Thanks for reaching out about case {case_id} - we're on it."
+
+
+def make_copilot_run_turn(
+    *,
+    scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
+    config: Optional[OpenRouterConfig] = None,
+    openai_factory: Any = None,
+    is_retryable: Callable[[BaseException], bool] = default_is_retryable,
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+) -> Callable[..., dict[str, Any]]:
+    """Build the copilot draft ``run_turn``: an unbound ``internal_copilot`` turn.
+
+    The returned ``run_turn(*, channel, case_id, prompt=None)`` boots
+    ``internal_copilot`` unbound, runs a real ``AIAgent`` loop against the resolved
+    provider, and returns ``{"draft", "model", "profile"}`` (email also carries
+    ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1).
+
+    Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
+    OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
+    is injected (ADR-0009, per-completion fallback) → a deterministic keyless stub.
+    Building never requires a key; tests inject scripted completions, so CI is
+    keyless. The key is read only by :func:`resolve_openrouter_config`, never logged.
+    """
+
+    def run_turn(*, channel: str, case_id: str, prompt: Optional[str] = None) -> dict[str, Any]:
+        # Unbound boot (no conversation_id): the Copilot path the boot docstring
+        # calls out. This registers the internal_copilot read tools and — by
+        # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
+        booted = boot_profile(INTERNAL)
+        user_message = _user_message(channel, case_id, prompt)
+        system_message = _system_message(channel)
+
+        if scripted_completions is not None:
+            # Tests/eval: a real AIAgent loop with no model, network, or key.
+            turn = run_scripted_agent(
+                user_message=user_message,
+                system_message=system_message,
+                scripted_completions=scripted_completions,
+                governed_tool_names=booted.tool_names,
+            )
+            model = SCRIPTED_MODEL
+        else:
+            resolved = config
+            if resolved is None and openai_factory is None:
+                # No injected provider: route through real OpenRouter only when a
+                # key is configured (ADR-0009); a missing key falls through to the
+                # keyless stub below (resolve_openrouter_config fails closed).
+                try:
+                    resolved = resolve_openrouter_config()
+                except ValueError:
+                    resolved = None
+            if resolved is None and openai_factory is None:
+                # Keyless: a deterministic local stub completion through the same
+                # real loop, so the endpoint serves without a model or key.
+                turn = run_scripted_agent(
+                    user_message=user_message,
+                    system_message=system_message,
+                    scripted_completions=[{"content": _stub_draft(channel, case_id)}],
+                    governed_tool_names=booted.tool_names,
+                )
+                model = SCRIPTED_MODEL
+            else:
+                # Real OpenRouter (or an injected provider): wrap the client with
+                # per-completion fallback to the secondary model (ADR-0009), mirroring
+                # the External production turn — but booted internal_copilot UNBOUND.
+                resolved = resolved or resolve_openrouter_config()
+                base_factory = openai_factory
+                if base_factory is None:
+                    from openai import OpenAI
+
+                    base_factory = OpenAI
+                factory = make_fallback_openai_factory(
+                    base_factory=base_factory,
+                    fallback_model=resolved.fallback_model,
+                    is_retryable=is_retryable,
+                )
+                turn = run_agent_turn(
+                    user_message=user_message,
+                    system_message=system_message,
+                    base_url=resolved.base_url,
+                    api_key=resolved.api_key,
+                    model=resolved.model,
+                    max_iterations=max_iterations,
+                    openai_factory=factory,
+                    governed_tool_names=booted.tool_names,
+                )
+                model = resolved.model
+
+        draft = turn["final_response"]
+        result: dict[str, Any] = {"draft": draft, "model": model, "profile": INTERNAL}
+        # Email carries a subject (the in-process mock returns {channel, subject,
+        # draft}); the subject is derived from the turn's final_response, and the
+        # body becomes the draft. sms/internal_note key only on draft.
+        if channel == "email":
+            subject, body = _derive_email_subject_and_body(draft, case_id)
+            result["subject"] = subject
+            result["draft"] = body
+        return result
+
+    return run_turn

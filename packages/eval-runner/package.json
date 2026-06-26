@@ -1,0 +1,22 @@
+{
+  "name": "@toee/eval-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "toee-eval": "./src/cli.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@toee/domain-adapters": "workspace:*",
+    "@toee/shared": "workspace:*",
+    "yaml": "^2.9.0"
+  }
+}

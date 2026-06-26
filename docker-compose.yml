@@ -1,0 +1,24 @@
+# Local-first Toee Business Datastore (ADR-0140 system-of-record, ADR-0142
+# local-first). Brings up a Postgres equivalent to the deferred Cloud SQL target
+# so the datastore, migrations, and per-profile API servers run end-to-end
+# locally. Apply schema with:  uv run python -m hermes_runtime.datastore.migrate
+services:
+  postgres:
+    image: postgres:16
+    container_name: toee-va-postgres
+    environment:
+      POSTGRES_USER: toee
+      POSTGRES_PASSWORD: toee
+      POSTGRES_DB: toee_va
+    ports:
+      - "5432:5432"
+    volumes:
+      - toee_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toee -d toee_va"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  toee_pgdata:

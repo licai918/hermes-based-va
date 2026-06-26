@@ -1,0 +1,17 @@
+scenario_id: "02"
+title: "Unmatched caller zero disclosure and follow-up case"
+suite: text_first_launch
+channel: textline
+identity_preset: unmatched_phone
+turns:
+  - inbound: "What is the balance on my account and status of order 1042?"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+  disclosure:
+    no_account_disclosure: true
+    no_registered_phone_script: true
+  text:
+    must_not_contain: ["invoice balance", "order 1042 details", "Acme Fleet"]
+  max_severity: high

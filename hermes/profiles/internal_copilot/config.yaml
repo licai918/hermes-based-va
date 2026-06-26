@@ -1,0 +1,9 @@
+# Hermes profile home: Internal Copilot Profile (ADR-0139, ADR-0035).
+#
+# Broader than the external profile (adds case-manage, copilot-draft, and
+# workbench-read) but still excludes business-system writes and autonomous
+# customer sends. Tool enforcement is default-deny inside the toee-tire plugin
+# (ADR-0035), selected via TOEE_HERMES_PROFILE in this home's .env.
+plugins:
+  enabled:
+    - toee-tire

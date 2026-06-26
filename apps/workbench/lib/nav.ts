@@ -1,0 +1,31 @@
+// Role-aware top navigation (ADR-0084). Reps see only Copilot; supervisors and
+// admins additionally see the three Admin Governance Console entries. Audit
+// routes are reached from Copilot-side navigation, not the top bar. Pure +
+// Edge-safe so it can be shared by the server shell and any client nav.
+import { ROUTES, WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
+
+export type NavItem = { label: string; href: string };
+
+const COPILOT: NavItem = { label: "Copilot", href: ROUTES.copilot };
+const GOVERNANCE: NavItem[] = [
+  { label: "Knowledge", href: ROUTES.adminKnowledge },
+  { label: "Eval", href: ROUTES.adminEval },
+  { label: "Accounts", href: ROUTES.adminAccounts },
+];
+
+export function navItemsForRole(role: WorkbenchRoleId): NavItem[] {
+  if (role === WORKBENCH_ROLES.supervisor || role === WORKBENCH_ROLES.admin) {
+    return [COPILOT, ...GOVERNANCE];
+  }
+  return [COPILOT];
+}
+
+const ROLE_LABELS: Record<WorkbenchRoleId, string> = {
+  [WORKBENCH_ROLES.rep]: "Customer Service Rep",
+  [WORKBENCH_ROLES.supervisor]: "Workbench Supervisor",
+  [WORKBENCH_ROLES.admin]: "Workbench Admin",
+};
+
+export function roleLabel(role: WorkbenchRoleId): string {
+  return ROLE_LABELS[role];
+}

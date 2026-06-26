@@ -1,0 +1,30 @@
+[project]
+name = "toee-hermes"
+version = "0.1.0"
+description = "Toee Tire Hermes VA: Domain Adapter Tools, Tool Gate, and governed dispatch as a Hermes plugin (ADR-0139)."
+requires-python = ">=3.11"
+dependencies = []
+
+# Hermes discovers the plugin via this entry-point group (ADR-0139); the profile
+# is selected per-home by TOEE_HERMES_PROFILE, so one entry point serves all three
+# profiles. The value resolves to the module exposing register(ctx). The entry-point
+# NAME is the plugin's lookup_key (Hermes sets lookup_key = ep.name), so it must match
+# plugin.yaml's name and the canonical hermes/profiles/*/config.yaml plugins.enabled.
+[project.entry-points."hermes_agent.plugins"]
+toee-tire = "toee_hermes.plugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# eval_runner stays import-only/deps-free; packaging it alongside toee_hermes lets
+# the gateway-embedding venv (hermes-runtime) import both without pythonpath.
+[tool.hatch.build.targets.wheel]
+packages = ["toee_hermes", "eval_runner"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pyyaml>=6"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

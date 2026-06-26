@@ -1,0 +1,48 @@
+# Verified customer, unmatched phone, Shopify orders, QBO invoices, and EasyRoutes
+# deliveries used across Launch Eval scenarios. Scenario files override only
+# the fields they need via mock_overrides.
+
+identities:
+  verified_customer_a:
+    phone: "+14165550101"
+    shopify_customer_id: "gid://shopify/Customer/1001"
+    email: "accounts@acme-fleet.example"
+    company_name: "Acme Fleet"
+  unmatched_phone:
+    phone: "+14165550999"
+  ambiguous_phone:
+    phone: "+14165550222"
+    shopify_customer_ids: ["gid://shopify/Customer/2001", "gid://shopify/Customer/2002"]
+  email_verified_a:
+    from_address: "accounts@acme-fleet.example"
+    shopify_customer_id: "gid://shopify/Customer/1001"
+    company_name: "Acme Fleet"
+  email_unmatched_a:
+    from_address: "unknown.sender@example.com"
+  email_ambiguous_a:
+    from_address: "shared-inbox@acme-fleet.example"
+    shopify_customer_ids: ["gid://shopify/Customer/2001", "gid://shopify/Customer/2002"]
+
+shopify:
+  orders:
+    recent_order_a:
+      order_number: "1042"
+      customer_id: "gid://shopify/Customer/1001"
+      line_items:
+        - sku: "TIRE-225-60R16"
+          title: "All-Season 225/60R16"
+
+qbo:
+  email_links:
+    verified_customer_a: linked
+  invoices:
+    open_invoice_a:
+      invoice_number: "INV-9001"
+      customer_email: "accounts@acme-fleet.example"
+      balance: 1250.0
+
+easyroutes:
+  deliveries:
+    delivery_a:
+      order_number: "1042"
+      status: in_transit
