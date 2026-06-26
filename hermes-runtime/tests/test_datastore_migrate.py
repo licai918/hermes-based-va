@@ -95,6 +95,15 @@ def test_migrations_are_idempotent(temp_schema_conn) -> None:
     assert second == [], "second run must be a no-op (nothing pending)"
 
 
+def test_workbench_account_has_last_login_at_after_migrate(temp_schema_conn) -> None:
+    # ADR-0144 login cutover: authenticate records last_login_at, surfaced on the
+    # Supervisor Admin account list. The 0002 migration adds the column (the live
+    # schema already applied 0001, so a new migration — not an edit — is required).
+    conn, schema = temp_schema_conn
+    run_migrations(conn)
+    assert "workbench_account" in _tables_with_column(conn, schema, "last_login_at")
+
+
 def test_retention_timestamp_columns_present(temp_schema_conn) -> None:
     conn, schema = temp_schema_conn
     run_migrations(conn)

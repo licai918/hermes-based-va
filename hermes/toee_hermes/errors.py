@@ -3,8 +3,10 @@
 Ports `errors.ts`. Dispatch-level classes (`unknown_tool`, `unknown_action`,
 `policy_blocked`) sit alongside the runtime driver classes from ADR-0136.
 `not_found`/`conflict` are datastore resource-state denials (a missing or
-contended row), which the workbench BFF maps to 404/409. `unexpected_error`
-covers driver throws the driver did not classify itself.
+contended row), which the workbench BFF maps to 404/409. `unauthenticated` is a
+rejected credential on the pre-auth login verification (ADR-0144), which the BFF
+maps to 401. `unexpected_error` covers driver throws the driver did not classify
+itself.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ ToolErrorClass = Literal[
     "policy_blocked",
     "not_found",
     "conflict",
+    "unauthenticated",
     "auth_expired",
     "vendor_timeout",
     "composio_api_error",

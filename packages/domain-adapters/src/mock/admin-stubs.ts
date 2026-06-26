@@ -110,5 +110,14 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       accountId: readStringParam(params, "accountId", "account_stub"),
       disabled: true,
     }),
+    // Deterministic no-op (ADR-0144): the mock verifies nothing and is never an
+    // auth authority — a real login surface must run TOOL_BACKEND=datastore.
+    authenticate: (params) => ({
+      account: {
+        accountId: readStringParam(params, "username", "account_stub"),
+        role: "customer_service_rep",
+        status: "active",
+      },
+    }),
   },
 };

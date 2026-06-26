@@ -7,10 +7,33 @@ ADR-0074/0088) doing real CRUD with governance audit writes. Skip-if-no-DB.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
+
+# A real scrypt hash produced by the workbench TS ``hashPassword`` (Node
+# ``scryptSync`` defaults: N=16384, r=8, p=1, 64-byte key) for ``TS_HASH_PASSWORD``.
+# Pins the Python verify (``hashlib.scrypt``) against the TS hasher so the two
+# cannot silently drift (ADR-0144 cross-runtime hash compatibility).
+TS_HASH_PASSWORD = "Workbench123!"
+TS_GENERATED_HASH = (
+    "scrypt$60c8747ae0e3f7c886acbe7ab039fa86$"
+    "92025de04d801fded8382fbfae1e0eaa0bebea5b04e0a1057c582980c01e538c"
+    "2615ebb5332bac5d1cbe0d9cc59bebc603c921dc9d8e36ed3501db742a4fc7a8"
+)
+
+
+def _scrypt_hash(plain: str, salt: bytes = b"\x01" * 16) -> str:
+    """A workbench-format ``scrypt$saltHex$hashHex`` using the TS hashPassword
+    parameters, so the handler verifies it exactly as it would a real one."""
+    derived = hashlib.scrypt(
+        plain.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=64,
+        maxmem=64 * 1024 * 1024,
+    )
+    return f"scrypt${salt.hex()}${derived.hex()}"
 
 
 def _run(driver, tool, action, params, user_id="acct_admin"):
@@ -197,6 +220,154 @@ def test_update_or_disable_missing_account_is_not_found(datastore) -> None:
     )
     assert not dis.ok
     assert dis.error_class == "not_found"
+
+
+# --- authenticate (login cutover, ADR-0144) ---------------------------------
+
+
+def _last_login(conn, account_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT last_login_at FROM workbench_account WHERE id = %s", (account_id,)
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _seed_account(driver, username, password, role="customer_service_rep", disabled=False):
+    created = _run(
+        driver, "toee_workbench_admin", "create_account",
+        {"username": username, "password_hash": _scrypt_hash(password), "role": role},
+    )
+    account_id = created.data["account_id"]
+    if disabled:
+        _run(driver, "toee_workbench_admin", "disable_account", {"account_id": account_id})
+    return account_id
+
+
+def test_authenticate_valid_credentials_returns_public_account_and_records_last_login(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "loginrep", "CorrectHorse9!")
+    assert _last_login(conn, account_id) is None  # never logged in yet
+
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "loginrep", "password": "CorrectHorse9!"},
+    )
+    assert result.ok
+    acct = result.data["account"]
+    assert acct["account_id"] == account_id
+    assert acct["username"] == "loginrep"
+    assert acct["role"] == "customer_service_rep"
+    assert acct["status"] == "active"
+    # The stored hash NEVER rides the authenticate result.
+    assert "password_hash" not in acct
+    assert "password" not in result.data
+    # Success records last_login_at (resolves M-1) in the same transaction.
+    assert acct["last_login_at"] is not None
+    assert _last_login(conn, account_id) is not None
+
+
+def test_authenticate_bad_password_is_generic_unauthenticated_and_leaves_last_login(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "loginrep2", "CorrectHorse9!")
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "loginrep2", "password": "wrong-password"},
+    )
+    assert not result.ok
+    assert result.error_class == "unauthenticated"
+    # A rejected login does not touch last_login_at (the handler raised -> rollback).
+    assert _last_login(conn, account_id) is None
+
+
+def test_authenticate_unknown_user_is_the_same_generic_failure(datastore) -> None:
+    # No user-enumeration: an unknown username returns the SAME class as a bad
+    # password, so neither status nor body leaks which (in-memory 401 parity).
+    driver, _, _ = datastore
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "nobody-here", "password": "whatever-Pass1!"},
+    )
+    assert not result.ok
+    assert result.error_class == "unauthenticated"
+
+
+def test_authenticate_disabled_account_is_policy_blocked_even_with_right_password(
+    datastore,
+) -> None:
+    # Disabled is checked before the password (in-memory order) and blocks login;
+    # the BFF maps policy_blocked -> 403 "account disabled".
+    driver, _, _ = datastore
+    _seed_account(driver, "gone", "CorrectHorse9!", disabled=True)
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "gone", "password": "CorrectHorse9!"},
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+
+def test_authenticate_needs_no_actor_it_establishes_one(datastore) -> None:
+    # Pre-auth: no acting account exists yet, so authenticate is fail-open on actor
+    # (unlike the governed admin writes); it must succeed with user_id=None.
+    driver, _, _ = datastore
+    _seed_account(driver, "preauth", "CorrectHorse9!")
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "preauth", "password": "CorrectHorse9!"},
+        user_id=None,
+    )
+    assert result.ok
+    assert result.data["account"]["username"] == "preauth"
+
+
+def test_authenticate_accepts_a_typescript_generated_hash(datastore) -> None:
+    # Cross-runtime guard (ADR-0144): a hash produced by the TS hashPassword must
+    # verify in Python, or login would reject every real account.
+    driver, _, _ = datastore
+    _run(
+        driver, "toee_workbench_admin", "create_account",
+        {"username": "tsuser", "password_hash": TS_GENERATED_HASH, "role": "customer_service_rep"},
+    )
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "tsuser", "password": TS_HASH_PASSWORD},
+    )
+    assert result.ok
+    assert result.data["account"]["username"] == "tsuser"
+
+
+def test_authenticate_never_writes_an_audit_row_or_leaks_the_hash(datastore) -> None:
+    # Login is recorded by last_login_at, not a governed audit row (in-memory
+    # parity), and the stored hash appears nowhere in the result or the audit log.
+    driver, conn, _ = datastore
+    stored_hash = _scrypt_hash("CorrectHorse9!")
+    created = _run(
+        driver, "toee_workbench_admin", "create_account",
+        {"username": "audituser", "password_hash": stored_hash, "role": "customer_service_rep"},
+    )
+    account_id = created.data["account_id"]
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "audituser", "password": "CorrectHorse9!"},
+    )
+    assert result.ok
+    assert stored_hash not in json.dumps(result.data)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'authenticate'"
+        )
+        assert cur.fetchone()[0] == 0
+        # Only the create_account audit exists; authenticate writes none.
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE target_id = %s", (account_id,)
+        )
+        assert cur.fetchone()[0] == 1
 
 
 # --- knowledge ops ----------------------------------------------------------

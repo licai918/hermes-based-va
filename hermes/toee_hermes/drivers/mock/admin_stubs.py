@@ -173,5 +173,16 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 ),
                 "disabled": True,
             },
+            # Deterministic no-op (ADR-0144): the mock verifies nothing and is never
+            # an auth authority — a real login surface must run TOOL_BACKEND=datastore.
+            "authenticate": lambda params, context: {
+                "account": {
+                    "account_id": _read_string(
+                        params, "username", default="account_stub"
+                    ),
+                    "role": "customer_service_rep",
+                    "status": "active",
+                },
+            },
         },
     }

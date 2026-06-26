@@ -36,6 +36,17 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_read", "get_thread")).toBe(true);
   });
 
+  it("exposes authenticate on toee_workbench_admin for the login cutover (ADR-0144)", () => {
+    expect(TOOL_CATALOG.toee_workbench_admin).toEqual([
+      "list_accounts",
+      "create_account",
+      "update_account_role",
+      "disable_account",
+      "authenticate",
+    ]);
+    expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
+  });
+
   it("contains exactly the 15 v1 tool names", () => {
     expect([...TOOL_NAMES].sort()).toEqual(
       [

@@ -50,5 +50,6 @@ provides_tools:
   - toee_workbench_admin__create_account
   - toee_workbench_admin__update_account_role
   - toee_workbench_admin__disable_account
+  - toee_workbench_admin__authenticate
 provides_hooks:
   - pre_llm_call

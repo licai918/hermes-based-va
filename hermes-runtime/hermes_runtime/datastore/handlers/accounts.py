@@ -7,6 +7,8 @@ never return ``password_hash``.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import TYPE_CHECKING, Any
 
 from psycopg.rows import dict_row
@@ -14,6 +16,13 @@ from psycopg.rows import dict_row
 from toee_hermes.errors import ToolDriverError
 
 from ._common import insert_audit, new_id, read_string, serialize_row
+
+# scrypt KDF parameters — must match the workbench TS hashPassword (Node
+# scryptSync defaults) so a hash written by the BFF verifies here (ADR-0144).
+_SCRYPT_N = 16384
+_SCRYPT_R = 8
+_SCRYPT_P = 1
+_SCRYPT_MAXMEM = 64 * 1024 * 1024
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -45,7 +54,7 @@ def _account_row(conn, account_id: str) -> Any:
     """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT id, username, role, status, created_at, updated_at"
+            "SELECT id, username, role, status, created_at, updated_at, last_login_at"
             " FROM workbench_account WHERE id = %s",
             (account_id,),
         )
@@ -104,7 +113,7 @@ def _list_accounts(conn, params: dict[str, Any], context: "ToolExecutionContext"
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT id, username, role, status, created_at, updated_at
+            SELECT id, username, role, status, created_at, updated_at, last_login_at
             FROM workbench_account ORDER BY created_at
             """
         )
@@ -146,6 +155,80 @@ def _update_account_role(conn, params: dict[str, Any], context: "ToolExecutionCo
     }
 
 
+def _verify_password(plain: str, stored: str) -> bool:
+    """Constant-time scrypt verify of ``plain`` against a stored ``scrypt$salt$hash``.
+
+    Mirrors the workbench TS ``verifyPassword`` exactly (same format, same scrypt
+    params, same length-checked timing-safe compare) so a hash written by either
+    runtime verifies in the other. A malformed stored hash returns False rather
+    than raising, so a corrupt row is a failed login, never a 502.
+    """
+    parts = stored.split("$")
+    if len(parts) != 3:
+        return False
+    scheme, salt_hex, hash_hex = parts
+    if scheme != "scrypt" or not salt_hex or not hash_hex:
+        return False
+    try:
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(hash_hex)
+    except ValueError:
+        return False
+    if not salt or not expected:
+        return False
+    try:
+        actual = hashlib.scrypt(
+            plain.encode("utf-8"),
+            salt=salt,
+            n=_SCRYPT_N,
+            r=_SCRYPT_R,
+            p=_SCRYPT_P,
+            dklen=len(expected),
+            maxmem=_SCRYPT_MAXMEM,
+        )
+    except (ValueError, OverflowError):  # pragma: no cover - defensive on bad params
+        return False
+    return hmac.compare_digest(actual, expected)
+
+
+def _authenticate(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Pre-auth login verification for the workbench login path (ADR-0144).
+
+    Reads the stored scrypt hash, verifies it server-side, and on success returns
+    the public account (``_account_row`` — NEVER the hash) while recording
+    ``last_login_at`` in the same transaction (resolves M-1). This is *pre-auth*:
+    no acting account exists yet, so it does NOT call :func:`_require_actor` — it
+    establishes the actor. Unknown user and bad password raise the SAME governed
+    ``unauthenticated`` (BFF -> 401) so neither leaks which (in-memory parity); a
+    disabled account is blocked *before* the password check (``policy_blocked`` ->
+    403), matching the in-memory order. The handler never returns or logs the hash.
+    """
+    username = read_string(params, "username")
+    password = params.get("password")
+    if username is None or not isinstance(password, str) or not password:
+        # A malformed attempt is still a credential failure, not a 502, and stays
+        # indistinguishable from a wrong password (no shape/word leak).
+        raise ToolDriverError("unauthenticated", "invalid credentials.")
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT id, status, password_hash FROM workbench_account WHERE username = %s",
+            (username,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise ToolDriverError("unauthenticated", "invalid credentials.")
+    if row["status"] == "disabled":
+        raise ToolDriverError("policy_blocked", "account disabled.")
+    if not _verify_password(password, row["password_hash"]):
+        raise ToolDriverError("unauthenticated", "invalid credentials.")
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE workbench_account SET last_login_at = now() WHERE id = %s",
+            (row["id"],),
+        )
+    return {"account": _account_row(conn, row["id"])}
+
+
 def _disable_account(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     actor = _require_actor(context)
     account_id = read_string(params, "account_id", "accountId")
@@ -181,5 +264,6 @@ def account_handlers() -> dict[str, dict[str, Any]]:
             "create_account": _create_account,
             "update_account_role": _update_account_role,
             "disable_account": _disable_account,
+            "authenticate": _authenticate,
         }
     }

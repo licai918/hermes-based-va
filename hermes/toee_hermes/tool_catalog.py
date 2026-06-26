@@ -58,6 +58,7 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "create_account",
         "update_account_role",
         "disable_account",
+        "authenticate",
     ),
 }
 

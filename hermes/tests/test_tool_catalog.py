@@ -52,6 +52,18 @@ def test_workbench_read_exposes_get_thread_for_case_thread_context() -> None:
     assert is_tool_action("toee_workbench_read", "get_thread") is True
 
 
+def test_workbench_admin_exposes_authenticate_for_login_cutover() -> None:
+    # ADR-0144 extends ADR-0069 with the server-side login verification action.
+    assert TOOL_CATALOG["toee_workbench_admin"] == (
+        "list_accounts",
+        "create_account",
+        "update_account_role",
+        "disable_account",
+        "authenticate",
+    )
+    assert is_tool_action("toee_workbench_admin", "authenticate") is True
+
+
 def test_is_tool_name_accepts_known_and_rejects_unknown() -> None:
     assert is_tool_name("toee_identity_lookup") is True
     assert is_tool_name("toee_unknown") is False

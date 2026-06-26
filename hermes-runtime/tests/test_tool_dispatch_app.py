@@ -333,6 +333,74 @@ def test_dispatch_admin_write_without_actor_is_denied(datastore) -> None:
         assert cur.fetchone()[0] == 0
 
 
+def test_dispatch_authenticate_verifies_login_end_to_end(datastore) -> None:
+    # End-to-end (ADR-0144) login cutover: seed an account via the governed
+    # create_account, then dispatch authenticate with NO actor_account_id — it is
+    # pre-auth and fail-open on actor (it establishes the actor). Valid creds return
+    # the public account (with last_login_at, never the hash); a bad password is a
+    # governed `unauthenticated` (HTTP 200, ok False; BFF -> 401). Skip-if-no-DB.
+    import hashlib
+
+    def _scrypt_hash(plain: str, salt: bytes = b"\x02" * 16) -> str:
+        derived = hashlib.scrypt(
+            plain.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=64,
+            maxmem=64 * 1024 * 1024,
+        )
+        return f"scrypt${salt.hex()}${derived.hex()}"
+
+    driver, _, _ = datastore
+    client = _client_with_driver(driver, profile="supervisor_admin")
+    stored = _scrypt_hash("RightPass1!")
+    client.post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_admin",
+            "action": "create_account",
+            "params": {
+                "username": "e2e_login",
+                "password_hash": stored,
+                "role": "customer_service_rep",
+            },
+            "actor_account_id": "acct_admin_e2e",
+        },
+    )
+
+    ok = client.post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_admin",
+            "action": "authenticate",
+            "params": {"username": "e2e_login", "password": "RightPass1!"},
+        },
+    )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["ok"] is True
+    account = body["data"]["account"]
+    assert account["username"] == "e2e_login"
+    assert account["last_login_at"] is not None
+    assert "password_hash" not in account
+    # The stored hash never appears anywhere in the dispatched response.
+    assert "password_hash" not in ok.text
+    assert stored not in ok.text
+
+    bad = client.post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_admin",
+            "action": "authenticate",
+            "params": {"username": "e2e_login", "password": "WRONG"},
+        },
+    )
+    assert bad.status_code == 200
+    bad_body = bad.json()
+    assert bad_body["ok"] is False
+    assert bad_body["error"]["class"] == "unauthenticated"
+
+
 def test_dispatch_rejects_malformed_body() -> None:
     # Missing tool/action is a transport/shape problem, not a tool outcome → 400.
     response = _client().post(

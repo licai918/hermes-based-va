@@ -51,6 +51,7 @@ export const TOOL_CATALOG = {
     "create_account",
     "update_account_role",
     "disable_account",
+    "authenticate",
   ],
 } as const satisfies Record<string, readonly string[]>;
 
