@@ -7,10 +7,14 @@ generation lives here, not in :mod:`hermes_runtime.tool_dispatch_app` — while
 reusing that app's bearer auth and ``actor_account_id`` convention verbatim.
 
 AIP-136 custom method, like ``tools:dispatch``. The turn is synchronous (Fork B1)
-and runs the unbound ``internal_copilot`` draft seam
+and runs the unbound ``internal_copilot`` seam
 (:func:`hermes_runtime.copilot_turn.make_copilot_run_turn`), so it is structurally
-no-send (ADR-0035/0067). Auth and request-shape problems are 4xx (parity with
-``tool_dispatch_app``); a governed turn failure would ride a 200 ``{ok: false}``.
+no-send (ADR-0035/0067). The ``channel`` selects the turn mode: the three draft
+channels (sms/email/internal_note) return a per-channel draft envelope and record a
+``draft_generated`` audit; ``chat`` (Slice 4, #39) returns a ``{reply, provenance}``
+conversational reply and records no audit (parity with the in-memory handleChat).
+Auth and request-shape problems are 4xx (parity with ``tool_dispatch_app``); a
+governed turn failure would ride a 200 ``{ok: false}``.
 """
 
 from __future__ import annotations
@@ -29,9 +33,12 @@ from hermes_runtime.tool_dispatch_app import bearer_authorized
 # resource-shaped REST path under /v1.
 AGENT_TURN_PATH = "/v1/agent:turn"
 
-# The draft channels the BFF selects (ADR-0147). All three are wired end-to-end as
-# of Slice 2 (sms/email/internal_note), each with its own per-channel envelope.
-VALID_CHANNELS = frozenset({"sms", "email", "internal_note"})
+# The turn modes the BFF selects (ADR-0147). The three draft channels (sms/email/
+# internal_note, Slice 2) each return a per-channel draft envelope and record a
+# draft_generated audit. `chat` (Slice 4, #39) is a conversational reply mode: it
+# returns a `{reply, provenance}` envelope and records NO audit — parity with the
+# in-memory handleChat, which writes none (a chat reply is not a formal draft).
+VALID_CHANNELS = frozenset({"sms", "email", "internal_note", "chat"})
 
 # run_turn(*, channel, case_id, prompt) -> {"draft", "model", "profile"}. The one
 # model boundary: tests inject a deterministic callable; production defaults to the
@@ -107,7 +114,7 @@ def add_agent_turn_route(
         if not isinstance(channel, str) or channel not in VALID_CHANNELS:
             return JSONResponse(
                 status_code=400,
-                content={"error": "channel must be one of sms, email, internal_note"},
+                content={"error": "channel must be one of sms, email, internal_note, chat"},
             )
         if not isinstance(case_id, str) or not case_id:
             return JSONResponse(
@@ -125,14 +132,17 @@ def add_agent_turn_route(
 
         result = runner(channel=channel, case_id=case_id, prompt=prompt)
 
-        # The draft is the agent's final_response (Fork E1); provenance records the
+        # The text is the agent's final_response (Fork E1); provenance records the
         # model boundary + the (structurally no-send) profile that produced it.
         # The per-channel envelope mirrors the in-process toee_copilot_draft tool
         # output byte-for-byte (ADR-0147 Slice 2) so the BFF body has store-path
         # parity: sms/email key on `channel`, email adds `subject`, internal_note
-        # keys on `kind` (no channel).
-        if channel == "internal_note":
-            data: dict[str, Any] = {"kind": "internal_note", "draft": result["draft"]}
+        # keys on `kind` (no channel). `chat` (Slice 4) keys on `reply` instead — a
+        # conversational reply, not a draft.
+        if channel == "chat":
+            data: dict[str, Any] = {"reply": result["draft"]}
+        elif channel == "internal_note":
+            data = {"kind": "internal_note", "draft": result["draft"]}
         elif channel == "email":
             data = {
                 "channel": "email",
@@ -145,10 +155,13 @@ def add_agent_turn_route(
 
         # Option (i), #47: record draft_generated server-side on SUCCESS only, in the
         # governed datastore audit (no row on a 4xx shape error above, and none if the
-        # turn raised before here). Mock mode is a no-op sink.
-        _record_draft_generated(
-            driver, case_id=case_id, channel=channel, actor=actor_account_id
-        )
+        # turn raised before here). Mock mode is a no-op sink. `chat` is EXCLUDED: a
+        # conversational reply is not a draft, so it records no audit — parity with the
+        # in-memory handleChat, which writes none (Slice 4, #39).
+        if channel != "chat":
+            _record_draft_generated(
+                driver, case_id=case_id, channel=channel, actor=actor_account_id
+            )
         return JSONResponse(content={"ok": True, "data": data})
 
     return app

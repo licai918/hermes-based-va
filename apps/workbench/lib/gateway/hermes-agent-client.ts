@@ -1,9 +1,11 @@
 // Server-side HTTP client for the per-profile Hermes agent-turn API (ADR-0147).
 // Sibling to HermesApiClient: where that POSTs a `{ tool, action, params }`
-// envelope to the deterministic `POST /v1/tools:dispatch`, this POSTs a draft
-// request to `POST /v1/agent:turn` — a *genuine* (LLM) agent turn that returns a
-// reply draft. Same per-profile bearer + `actor_account_id` convention; the draft
-// is the agent's final_response (Fork E1), never a send (the internal_copilot
+// envelope to the deterministic `POST /v1/tools:dispatch`, this POSTs a turn
+// request to `POST /v1/agent:turn` — a *genuine* (LLM) agent turn. Two modes ride
+// the one route: `generateDraft` returns a per-channel reply draft (sms/email/
+// internal_note); `chatReply` (Slice 4, #39) returns a conversational reply for
+// /api/copilot/chat. Same per-profile bearer + `actor_account_id` convention; the
+// text is the agent's final_response (Fork E1), never a send (the internal_copilot
 // profile structurally cannot send, ADR-0035/0067). A governed turn failure
 // arrives as `{ ok: false, error: { class, message } }` (HTTP 200, ADR-0020); only
 // transport/auth problems are non-2xx. Both surface as a thrown HermesApiError so
@@ -33,7 +35,7 @@ export interface HermesAgentClientConfig {
   fetchImpl?: FetchLike;
 }
 
-type TurnSuccess = { ok: true; data: AgentDraft };
+type TurnSuccess = { ok: true; data: unknown };
 type TurnFailure = { ok: false; error?: { class?: string; message?: string } };
 type TurnBody = TurnSuccess | TurnFailure;
 
@@ -66,6 +68,30 @@ export class HermesAgentClient {
       case_id: input.caseId,
     };
     if (input.prompt) payload.prompt = input.prompt;
+    return (await this.postTurn(payload)) as AgentDraft;
+  }
+
+  // Run a conversational chat turn for a case (ADR-0147 Slice 4, #39). The staff
+  // member's `message` rides as the prompt; the endpoint frames it as `channel:
+  // "chat"` (a conversational reply, not a draft → no audit) and returns the agent's
+  // final_response under `data.reply`. Throws HermesApiError on a transport/governed
+  // failure, like generateDraft.
+  async chatReply(input: { caseId: string; message: string }): Promise<string> {
+    const data = (await this.postTurn({
+      channel: "chat",
+      case_id: input.caseId,
+      prompt: input.message,
+    })) as { reply?: unknown };
+    return typeof data.reply === "string" ? data.reply : "";
+  }
+
+  // Shared transport for both turn modes: POST the bearer-authed envelope (with the
+  // baked-in actor when configured), then unwrap the governed body — `data` on
+  // success, a thrown HermesApiError on a non-2xx transport failure or an
+  // `ok: false` governed failure (ADR-0020/0104).
+  private async postTurn(
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
     if (this.actorAccountId) payload.actor_account_id = this.actorAccountId;
 
     const res = await this.fetchImpl(`${this.baseUrl}${AGENT_TURN_PATH}`, {

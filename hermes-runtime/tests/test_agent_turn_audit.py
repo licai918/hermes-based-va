@@ -123,6 +123,25 @@ def test_draft_generated_detail_is_the_channel_action(datastore, channel, detail
     assert [e["details"] for e in drafts] == [{"detail": detail}]
 
 
+def test_chat_turn_records_no_audit(datastore) -> None:
+    # ADR-0147 Slice 4 (#39): the conversational chat turn-mode writes NO
+    # draft_generated audit — parity with the in-memory handleChat, which audits
+    # nothing. Only the three formal draft channels record draft_generated (above);
+    # a chat reply is not a draft, so a successful chat turn leaves the audit log
+    # untouched even against the real datastore writer.
+    driver, _, _ = datastore
+    case_id = _make_case(driver)
+
+    resp = _client(driver).post(
+        AGENT_TURN_PATH,
+        headers=_auth(),
+        json={"channel": "chat", "case_id": case_id, "actor_account_id": "acct_rep_7"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert _draft_audit_entries(driver, case_id) == []
+
+
 def test_failed_turn_records_no_audit(datastore) -> None:
     # No audit on failure: when the turn raises before producing a draft, the route
     # never reaches the (post-success) audit write, so no draft_generated row lands.

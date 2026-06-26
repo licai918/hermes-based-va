@@ -12,10 +12,11 @@ send tool, so the booted turn cannot send to a customer (ADR-0067) — there is 
 runtime guard to forget. The agent still holds the copilot *read* tools
 (``toee_workbench_read``, ``toee_knowledge_search``, …) to ground the draft.
 
-The ``channel`` selects a per-channel system message (Slice 2): a short SMS reply,
-an email body (with a subject alongside), or a staff-facing internal note. The
-booted tool set is identical across channels, so the structural no-send invariant
-holds for all three.
+The ``channel`` selects a per-channel system message: a short SMS reply, an email
+body (with a subject alongside), a staff-facing internal note (Slice 2), or a
+conversational ``chat`` reply (Slice 4, #39 — the staff-facing copilot conversation,
+not a customer draft). The booted tool set is identical across all of them, so the
+structural no-send invariant holds for chat exactly as for the draft channels.
 
 Provider seam (Fork C1, mock-first ADR-0137), in precedence order:
 
@@ -61,10 +62,12 @@ _DEFAULT_MAX_ITERATIONS = 12
 # system message); the derivation peels it off so the body is the draft text.
 _SUBJECT_LINE_PREFIX = "subject:"
 
-# Per-channel system messages (ADR-0147 Slice 2). The channel selects how the same
-# unbound internal_copilot turn is framed — short SMS reply, email body, or a
-# staff-facing internal note. Each instructs "propose only, never send"; the agent
-# has no send tool regardless (the structural no-send invariant, ADR-0035/0067).
+# Per-channel system messages (ADR-0147 Slice 2 drafts; Slice 4 adds `chat`). The
+# channel selects how the same unbound internal_copilot turn is framed — short SMS
+# reply, email body, staff-facing internal note, or (Slice 4) a conversational chat
+# reply that helps the staff member work the case. Each instructs "propose only,
+# never send"; the agent has no send tool regardless (the structural no-send
+# invariant, ADR-0035/0067).
 _SYSTEM_MESSAGES = {
     "sms": (
         "You are a Toee Tire support copilot drafting a customer SMS reply for a "
@@ -81,6 +84,16 @@ _SYSTEM_MESSAGES = {
         "You are a Toee Tire support copilot drafting an internal case note for "
         "staff — never shown to the customer. Summarize the situation and the "
         "suggested next step plainly for a colleague. Output only the note text."
+    ),
+    # Slice 4 (#39): /api/copilot/chat. A conversational copilot turn — the reply is
+    # the agent's final_response (relabeled `reply` by the endpoint), not a per-channel
+    # draft. If the staff member asks for a customer reply the agent provides the
+    # suggested text for them to review/edit/send; it can never send (no send tool).
+    "chat": (
+        "You are a Toee Tire support copilot helping a staff member work a customer "
+        "support case. Answer their question about the case concisely and helpfully. "
+        "If they ask you to draft a customer reply, provide the suggested reply text "
+        "for them to review, edit, and send themselves. Never send anything yourself."
     ),
 }
 
@@ -127,12 +140,19 @@ def _derive_email_subject_and_body(final_response: str, case_id: str) -> tuple[s
 def _user_message(channel: str, case_id: str, prompt: Optional[str]) -> str:
     # case_id is an internal identifier, not customer PII; the agent gathers any
     # customer detail itself via its governed read tools (ADR-0147 decision 2).
+    if channel == "chat":
+        # Chat is single-shot (the in-memory handleChat contract): the prompt IS the
+        # staff member's message about the case — conversational, not "draft a reply".
+        base = f"A staff member is working case {case_id} and asks:"
+        return f"{base} {prompt}".strip() if prompt else f"Help the staff member with case {case_id}."
     base = f"Draft a {channel} reply for case {case_id}."
     return f"{base} {prompt}".strip() if prompt else base
 
 
 def _stub_draft(channel: str, case_id: str) -> str:
     """A deterministic keyless draft so the endpoint serves without a model/key."""
+    if channel == "chat":
+        return f"Looking at case {case_id} now - how can I help with it?"
     return f"[draft:{channel}] Thanks for reaching out about case {case_id} - we're on it."
 
 

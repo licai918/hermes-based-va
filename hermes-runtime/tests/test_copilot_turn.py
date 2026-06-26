@@ -359,3 +359,93 @@ def test_internal_note_turn_yields_draft_and_no_subject() -> None:
     assert result["draft"].strip() == "Internal note."
     assert "subject" not in result
     assert result["profile"] == INTERNAL
+
+
+# --- Slice 4: the conversational `chat` turn-mode (ADR-0147, closes #39) ----------
+# /api/copilot/chat cuts over onto the SAME unbound internal_copilot agent-turn seam
+# the drafts use, but framed conversationally (not "draft a reply") — the in-memory
+# handleChat is single-shot (one message + case context -> one reply, no history), so
+# the cutover is the draft path's twin with a chat system message. The reply is the
+# turn's final_response; no subject is derived; the structural no-send invariant holds
+# verbatim (same boot), proven below under a real multi-step loop.
+
+
+def test_chat_channel_has_a_distinct_conversational_system_message() -> None:
+    # Chat is framed differently from the three draft channels (decision: chat helps
+    # the staff member work the case, not "draft a {channel} reply"). Non-empty and
+    # distinct from every draft channel's message.
+    chat_message = _system_message("chat")
+    assert isinstance(chat_message, str) and chat_message.strip()
+    draft_messages = {_system_message(c) for c in ("sms", "email", "internal_note")}
+    assert chat_message not in draft_messages
+
+
+def test_scripted_chat_turn_returns_final_response_as_reply() -> None:
+    # Single-shot parity (Fork E1, reused): the agent's final assistant message IS the
+    # chat reply. A scripted completion drives the real AIAgent loop (booted
+    # internal_copilot, unbound) and its final_response comes back as the draft text
+    # the endpoint relabels `reply`. No subject is produced for chat.
+    reply = "Case case_ar_urgent is an open SMS order-status case — the customer is waiting on tracking."
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": reply}])
+
+    result = run_turn(channel="chat", case_id="case_ar_urgent", prompt="what's going on here?")
+
+    assert result["draft"].strip() == reply
+    assert "subject" not in result
+    assert result["profile"] == INTERNAL
+    assert result["model"] == SCRIPTED_MODEL
+
+
+def test_chat_default_provider_is_a_deterministic_keyless_stub() -> None:
+    # Mock-first (ADR-0137): with no completions and no key, the chat turn still yields
+    # a deterministic, non-empty reply (a local stub), so the endpoint serves chat
+    # keyless in local dev / CI exactly like the draft channels.
+    run_turn = make_copilot_run_turn()
+
+    result = run_turn(channel="chat", case_id="case_x", prompt="help")
+
+    assert isinstance(result["draft"], str) and result["draft"].strip()
+    assert result["profile"] == INTERNAL
+    assert result["model"] == SCRIPTED_MODEL
+
+
+def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> None:
+    # Security crux for chat (ADR-0067/0035): the no-send invariant must hold for the
+    # chat path too, against a REAL multi-step loop, not just at boot. A chat turn
+    # boots the SAME unbound internal_copilot set (no send tool), so a scripted send
+    # tool_call is rejected — never admitted, never dispatched — and the turn falls
+    # through to proposed conversational text. No send is ever executed.
+    booted = boot_profile(INTERNAL)
+    assert "toee_textline_reply__send_message" not in booted.tool_names
+
+    reply = "I can't send messages — here's a suggested reply for you to review and send."
+    turn = run_scripted_agent(
+        user_message=_user_message("chat", "c1", "just send the customer an apology"),
+        system_message=_system_message("chat"),
+        scripted_completions=[
+            {
+                "tool_calls": [
+                    {
+                        "name": "toee_textline_reply__send_message",
+                        "arguments": {"conversation_id": "conv1", "body": "sneaky auto-send"},
+                    }
+                ]
+            },
+            {"content": reply},
+        ],
+        governed_tool_names=booted.tool_names,
+    )
+
+    send_results = [
+        m
+        for m in turn["messages"]
+        if isinstance(m, dict)
+        and m.get("role") == "tool"
+        and m.get("name") == "toee_textline_reply__send_message"
+    ]
+    assert send_results, "the send tool_call should produce a (rejection) tool result"
+    rejection = send_results[0]["content"]
+    assert "does not exist" in rejection  # rejected, not dispatched to a driver
+    available = rejection.split("Available tools:", 1)[-1]
+    assert "toee_textline_reply" not in available
+    assert turn["final_response"].strip() == reply

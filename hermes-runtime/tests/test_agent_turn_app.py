@@ -206,6 +206,59 @@ def test_agent_turn_audit_is_a_noop_without_a_datastore_driver() -> None:
     assert response.json()["ok"] is True
 
 
+# ADR-0147 Slice 4 (#39): the conversational `chat` turn-mode. Unlike the three
+# draft channels, chat returns a `{reply, provenance}` envelope (a conversational
+# reply, not a per-channel draft) and records NO draft_generated audit — parity with
+# the in-memory handleChat, which writes none (the no-audit invariant is pinned
+# server-side in test_agent_turn_audit::test_chat_turn_records_no_audit).
+def test_agent_turn_chat_returns_a_reply_envelope() -> None:
+    response = _client().post(
+        AGENT_TURN_PATH,
+        headers=_auth(),
+        json={"channel": "chat", "case_id": "case_ar_urgent", "actor_account_id": "acct_rep_7"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    # Exhaustive key-set: chat is EXACTLY {reply, provenance} — it keys on `reply`
+    # (not `channel`/`draft`/`kind`/`subject`), so a future drift toward a draft
+    # envelope breaks here.
+    assert set(body["data"]) == {"reply", "provenance"}
+    assert body["data"]["reply"] == "draft for case_ar_urgent"
+    assert body["data"]["provenance"] == {"model": "scripted", "profile": "internal_copilot"}
+
+
+def test_agent_turn_chat_threads_message_as_prompt_to_run_turn() -> None:
+    captured: dict = {}
+
+    def run_turn(*, channel: str, case_id: str, prompt: str | None = None) -> dict:
+        captured.update(channel=channel, case_id=case_id, prompt=prompt)
+        return {"draft": "ok", "model": "scripted", "profile": "internal_copilot"}
+
+    response = _client(run_turn).post(
+        AGENT_TURN_PATH,
+        headers=_auth(),
+        json={"channel": "chat", "case_id": "c1", "prompt": "what's going on?"},
+    )
+    assert response.status_code == 200
+    assert captured == {"channel": "chat", "case_id": "c1", "prompt": "what's going on?"}
+
+
+def test_agent_turn_chat_end_to_end_default_provider_boots_internal_copilot() -> None:
+    # The chat seam end to end with the default scripted/stub provider: boots
+    # internal_copilot UNBOUND and returns a non-empty reply + internal_copilot
+    # provenance over HTTP, keyless — exactly like the draft end-to-end test.
+    app = FastAPI()
+    add_agent_turn_route(app, api_token=API_TOKEN)
+    response = TestClient(app).post(
+        AGENT_TURN_PATH, headers=_auth(), json={"channel": "chat", "case_id": "case_x"}
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert isinstance(data["reply"], str) and data["reply"].strip()
+    assert data["provenance"]["profile"] == "internal_copilot"
+
+
 def test_agent_turn_end_to_end_email_default_provider_includes_subject() -> None:
     # The email seam end to end with the default scripted/stub provider: boots
     # internal_copilot unbound and returns a {channel:email, subject, draft} envelope

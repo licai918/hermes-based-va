@@ -2,9 +2,9 @@
 
 > **Status: Accepted** (2026-06-26). Promoted from Proposed after the Slice 1
 > tracer (commit `8fbc4a0`) landed and passed review (verdict: approve). The forks
-> below are resolved as recommended (A1/B1/C1/D1/E1). Realizes the drafts half of
-> Slice 36 (#39) and resolves the #41 deferral; built incrementally per the sliced
-> plan below.
+> below are resolved as recommended (A1/B1/C1/D1/E1). Realizes both halves of
+> Slice 36 (#39) — drafts (Slices 1–3 + #47) and chat (Slice 4) — and resolves the
+> #41 drafts deferral; built incrementally per the sliced plan below.
 >
 > **Slice 1 review amendments (accepted):**
 > 1. **No-auto-send is pinned by allowlist-equality, not a two-tool denylist.** The
@@ -330,6 +330,29 @@ tracer proved `GET /api/copilot/cases` end-to-end against `MockDriver`.
   `handleChat` (today a deterministic stub) onto the same `agent:turn` route, reusing the
   draft-card path. (Optional within #41; listed because it reuses everything Slice 1–3
   build and finishes the agent-turn cutover.)
+  - **Build status (2026-06-26) — landed; closes #39.** Chat is **single-shot**: the
+    in-memory `handleChat` contract is one `message` + a selected case → one reply, with
+    **no conversation history** (it ignores history entirely; its reply was a fixed
+    template), so the cutover mirrors `handleDraftViaApi` rather than inventing a
+    multi-turn protocol. The minimal endpoint extension is a fourth **`chat` turn-mode**
+    on `agent:turn` (no `messages`/history array was needed): it boots the SAME unbound
+    `internal_copilot` turn as the drafts, with a conversational system message (Slice 4),
+    returns a `{reply, provenance}` envelope (vs the draft channels' `{channel,…,draft}`),
+    and **records NO `draft_generated` audit** — parity with `handleChat`, which audits
+    nothing (a chat reply is not a draft event). `handleChatViaApi` (env-gated on the same
+    `HERMES_COPILOT_API_*` pair, in-memory fallback unchanged) preserves the stub surface
+    byte-for-byte: 400 empty message, the `needs_case` idle state (200, no network), 404
+    via the `get_case` pre-read (which also yields the case `channel`), and the
+    `{state, reply, draftCard?}` body with the same `/draft|sms/i` + SMS-channel gating.
+    The SMS `draftCard` reuses the chat reply itself (the agent's suggested reply,
+    surfaced into the editable card) — **not** a second, audit-writing draft turn — so the
+    no-audit parity holds. The **structural no-send invariant holds for chat** (same boot,
+    no send tool), proven under a real multi-step loop
+    (`test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop`) and the
+    server-side no-audit by `test_chat_turn_records_no_audit`. With drafts already
+    complete (Slices 1–3 + #47), chat finishes **both halves** of Slice 36 / **#39** —
+    chat and drafts now both run on the agent-turn API, not `tools:dispatch`. (#41, the
+    drafts-only deferral, was resolved by Slices 1–3 + #47.)
 - **Later / separate ADRs:** persistence (Fork D2), streaming (Fork B2), the cloud
   slice (Slice 37 / #40: containerize the per-profile servers incl. the agent route,
   Secret Manager `OPENROUTER_API_KEY`), and the audit-store cutover sub-fork.
