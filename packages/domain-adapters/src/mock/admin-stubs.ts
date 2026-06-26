@@ -56,6 +56,13 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       status: "resolved",
     }),
+    send_textline_message: (params) => ({
+      message: {
+        messageId: "msg_stub",
+        conversationId: readStringParam(params, "caseId", "thread_stub"),
+        body: readStringParam(params, "body", ""),
+      },
+    }),
   },
   toee_copilot_draft: {
     draft_sms: () => ({ channel: "sms", draft: "[stub SMS draft]" }),

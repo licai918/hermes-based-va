@@ -31,6 +31,7 @@ export const TOOL_CATALOG = {
     "update_priority",
     "update_contact_reason",
     "resolve_case",
+    "send_textline_message",
   ],
   toee_copilot_draft: ["draft_sms", "draft_email", "draft_internal_note"],
   toee_workbench_read: ["get_case", "list_cases", "get_audit_log", "get_thread"],

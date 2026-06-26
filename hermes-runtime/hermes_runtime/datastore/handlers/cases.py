@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from psycopg.rows import dict_row
 
+from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
 from toee_hermes.errors import ToolDriverError
 
 from ._common import insert_audit, new_id, read_string, serialize_row
@@ -354,6 +355,98 @@ def _update_contact_reason(
     }
 
 
+def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:
+    """The live (unexpired) SMS session on ``thread_id``, if any."""
+    if not thread_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM sms_session WHERE customer_thread_id = %s"
+            " AND expires_at > now() ORDER BY created_at DESC LIMIT 1",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _send_textline_message(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Governed employee-confirmed Textline send (ADR-0083/0035 composite seam).
+
+    Validates SMS-session + assignee gating, captures the outbound via the mock
+    Textline sender (ponytail: live ``make_textline_reply_sender`` deferred until
+    ``TEXTLINE_ACCESS_TOKEN`` is wired for workbench sends), mirrors a
+    ``message_turn``, and appends a ``textline_send`` audit row atomically.
+    """
+    case_id = _require_case_id(params)
+    actor = _require_actor(context)
+    body = read_string(params, "body")
+    if body is None:
+        raise ToolDriverError("unexpected_error", "body is required.")
+    media_url = read_string(params, "media_url", "mediaUrl")
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM cases WHERE id = %s", (case_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ToolDriverError("not_found", f"case {case_id} not found.")
+
+    thread_id = row.get("customer_thread_id")
+    channel = row.get("channel") or ""
+    assignee = row.get("assignee_account_id")
+    if (
+        channel != "sms"
+        or assignee != actor
+        or not _thread_sms_active(conn, thread_id)
+    ):
+        raise ToolDriverError(
+            "policy_blocked", "case not eligible for Textline send"
+        )
+
+    conversation_id = thread_id or ""
+    # ponytail: mock capture only — swap for make_textline_reply_sender when creds land.
+    sent = _send_message(
+        TextlineMockData(),
+        {
+            "conversation_id": conversation_id,
+            "body": body,
+            "media_url": media_url,
+        },
+    )
+    session_id = _active_sms_session_id(conn, thread_id)
+    if session_id is None:
+        raise ToolDriverError(
+            "policy_blocked", "case not eligible for Textline send"
+        )
+
+    turn_id = new_id("mt")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO message_turn
+                (id, sms_session_id, customer_thread_id, direction, author, body,
+                 auto_handled)
+            VALUES (%s, %s, %s, 'outbound', 'workbench', %s, FALSE)
+            """,
+            (turn_id, session_id, thread_id, body),
+        )
+        cur.execute(
+            "UPDATE cases SET last_activity_at = now() WHERE id = %s",
+            (case_id,),
+        )
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=actor,
+        action="textline_send",
+        target_type="case",
+        target_id=case_id,
+        details={"detail": body},
+    )
+    return {"message": sent}
+
+
 def _resolve_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
     _require_actor(context)
@@ -501,6 +594,7 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "update_priority": _update_priority,
             "update_contact_reason": _update_contact_reason,
             "resolve_case": _resolve_case,
+            "send_textline_message": _send_textline_message,
         },
         "toee_workbench_read": {
             "get_case": _get_case,

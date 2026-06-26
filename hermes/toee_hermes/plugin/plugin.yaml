@@ -31,6 +31,7 @@ provides_tools:
   - toee_case_manage__update_priority
   - toee_case_manage__update_contact_reason
   - toee_case_manage__resolve_case
+  - toee_case_manage__send_textline_message
   - toee_copilot_draft__draft_sms
   - toee_copilot_draft__draft_email
   - toee_copilot_draft__draft_internal_note

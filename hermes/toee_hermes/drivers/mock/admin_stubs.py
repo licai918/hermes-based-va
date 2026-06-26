@@ -101,6 +101,15 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 ),
                 "status": "resolved",
             },
+            "send_textline_message": lambda params, context: {
+                "message": {
+                    "message_id": "msg_stub",
+                    "conversation_id": _read_string(
+                        params, "case_id", "caseId", default="thread_stub"
+                    ),
+                    "body": _read_string(params, "body", default=""),
+                },
+            },
         },
         "toee_copilot_draft": {
             "draft_sms": lambda params, context: {
