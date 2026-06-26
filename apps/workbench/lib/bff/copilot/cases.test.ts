@@ -88,12 +88,18 @@ const apiCaseRow = {
   last_activity_at: "2026-06-01T13:00:00+00:00",
 };
 
+// The acting account baked into a write client (ADR-0141). Reads pass no actor
+// (fail-open); writes must, so the write-path helpers below set this.
+const WRITE_ACTOR = "seed-rep";
+
 function apiClient(
   fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
+  actorAccountId?: string,
 ): HermesApiClient {
   return new HermesApiClient({
     baseUrl: "http://copilot.internal",
     token: "tok",
+    actorAccountId,
     fetchImpl,
   });
 }
@@ -590,8 +596,11 @@ type SentDispatch = {
   tool: string;
   action: string;
   params: Record<string, unknown>;
+  actor_account_id?: string;
 };
 
+// Write clients bake in WRITE_ACTOR so the governed mutation passes the fail-closed
+// actor guard (dispatchWrite) and the dispatched body carries actor_account_id.
 function writeClient(
   caseValue: unknown,
   mutationData: unknown,
@@ -602,7 +611,7 @@ function writeClient(
     capture?.(sent);
     const data = sent.action === "get_case" ? { case: caseValue } : mutationData;
     return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
-  });
+  }, WRITE_ACTOR);
 }
 
 function denyOn(action: string, errorClass: string): HermesApiClient {
@@ -619,7 +628,7 @@ function denyOn(action: string, errorClass: string): HermesApiClient {
     return new Response(JSON.stringify({ ok: true, data: { case: apiCaseRow } }), {
       status: 200,
     });
-  });
+  }, WRITE_ACTOR);
 }
 
 const sup = () => session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
@@ -645,6 +654,8 @@ describe("handleClaimViaApi", () => {
     const sent = claim as SentDispatch | null;
     expect(sent?.tool).toBe("toee_case_manage");
     expect(sent?.params).toEqual({ case_id: "case_api" });
+    // I1 positive parity: the governed write carries the acting account.
+    expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
   });
 
   it("is idempotent when the actor already holds the case", async () => {
@@ -675,6 +686,19 @@ describe("handleClaimViaApi", () => {
   it("maps a governed denial to its per-class status", async () => {
     const res = await handleClaimViaApi(denyOn("claim_case", "policy_blocked"), "case_api", deps());
     expect(res.status).toBe(403);
+  });
+
+  it("maps a datastore conflict (race past the pre-read) to 409", async () => {
+    // The BFF pre-read is no longer the sole conflict guard (I2): a concurrent
+    // claim that slips past it is denied atomically by the datastore with a
+    // governed `conflict`, which must surface as 409 — not a silent 200 steal.
+    const res = await handleClaimViaApi(denyOn("claim_case", "conflict"), "case_api", deps());
+    expect(res.status).toBe(409);
+  });
+
+  it("maps a datastore not_found (delete race) to 404", async () => {
+    const res = await handleClaimViaApi(denyOn("claim_case", "not_found"), "case_api", deps());
+    expect(res.status).toBe(404);
   });
 });
 
@@ -717,6 +741,7 @@ describe("handleAssignViaApi (supervisor/admin only)", () => {
     expect(body.case.assigneeAccountId).toBe("seed-rep");
     const sent = assign as SentDispatch | null;
     expect(sent?.params).toEqual({ case_id: "case_api", assignee_id: "seed-rep" });
+    expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
   });
 
   it("400s a missing assigneeAccountId", async () => {
@@ -759,6 +784,7 @@ describe("handleResolveViaApi", () => {
     expect(body.case.status).toBe("resolved");
     const sent = resolve as SentDispatch | null;
     expect(sent?.params).toEqual({ case_id: "case_api" });
+    expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
   });
 
   it("404s an unknown case", async () => {
@@ -803,6 +829,7 @@ describe("handlePriorityViaApi (supervisor/admin only)", () => {
     expect(body.case.urgent).toBe(false);
     const sent = pr as SentDispatch | null;
     expect(sent?.params).toEqual({ case_id: "case_api", priority: "normal" });
+    expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
   });
 
   it("400s a non-boolean urgent", async () => {
@@ -846,6 +873,7 @@ describe("handleContactReasonViaApi", () => {
     expect(body.case.contactReason).toBe("warranty");
     const sent = cr as SentDispatch | null;
     expect(sent?.params).toEqual({ case_id: "case_api", contact_reason: "warranty" });
+    expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
   });
 
   it("400s an empty contact reason", async () => {
@@ -864,5 +892,59 @@ describe("handleContactReasonViaApi", () => {
       "missing",
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// I1 (ADR-0141 fail-closed actor): defense-in-depth in the BFF. A governed write
+// dispatched through a client with NO actor is denied before it ever calls the
+// mutation — so a write route that forgot to wire session.accountId can't
+// reintroduce a NULL-actor governed write — while reads stay fail-open.
+describe("governed case writes require an actor (BFF defense-in-depth)", () => {
+  // No actorAccountId. get_case (the pre-read) succeeds so the write reaches — and
+  // is stopped at — its actor guard, not the 404/role gates; `seen` records every
+  // dispatched action so a test can assert the mutation never fired.
+  function actorlessClient(seen: string[]): HermesApiClient {
+    return apiClient(async (_url, init) => {
+      const sent = JSON.parse(init.body as string) as SentDispatch;
+      seen.push(sent.action);
+      return new Response(
+        JSON.stringify({ ok: true, data: { case: apiCaseRow } }),
+        { status: 200 },
+      );
+    });
+  }
+
+  it("rejects a claim and never dispatches the mutation", async () => {
+    const seen: string[] = [];
+    const res = await handleClaimViaApi(actorlessClient(seen), "case_api", deps());
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { errorClass?: string }).errorClass).toBe(
+      "policy_blocked",
+    );
+    expect(seen).not.toContain("claim_case");
+  });
+
+  it("rejects an assign once the role gate passes and never dispatches the mutation", async () => {
+    const seen: string[] = [];
+    const res = await handleAssignViaApi(
+      jsonReq({ assigneeAccountId: "seed-rep" }),
+      actorlessClient(seen),
+      "case_api",
+      deps(sup()),
+    );
+    expect(res.status).toBe(403);
+    expect(seen).not.toContain("assign_case");
+  });
+
+  it("still allows a read with no actor (reads stay fail-open)", async () => {
+    const res = await handleGetCaseViaApi(
+      apiClient(async () =>
+        new Response(JSON.stringify({ ok: true, data: { case: apiCaseRow } }), {
+          status: 200,
+        }),
+      ),
+      "case_api",
+    );
+    expect(res.status).toBe(200);
   });
 });

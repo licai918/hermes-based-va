@@ -292,7 +292,11 @@ export async function handleClaimViaApi(
     if (held !== null && held !== accountId) {
       return problem(409, "case already assigned to another account");
     }
-    const result = await client.dispatch("toee_case_manage", "claim_case", {
+    // dispatchWrite (not dispatch): a governed write must carry the actor. The
+    // datastore is the authoritative conflict gate (the pre-read above is just a
+    // fast 404/409 path); a race that slips past it surfaces as a governed
+    // `conflict` -> 409 through the catch below.
+    const result = await client.dispatchWrite("toee_case_manage", "claim_case", {
       case_id: caseId,
     });
     return mappedCaseResponse(result);
@@ -315,7 +319,7 @@ export async function handleAssignViaApi(
     if ((await dispatchGetCaseData(client, caseId)) == null) {
       return problem(404, CASE_NOT_FOUND);
     }
-    const result = await client.dispatch("toee_case_manage", "assign_case", {
+    const result = await client.dispatchWrite("toee_case_manage", "assign_case", {
       case_id: caseId,
       assignee_id: assigneeAccountId,
     });
@@ -333,7 +337,7 @@ export async function handleResolveViaApi(
     if ((await dispatchGetCaseData(client, caseId)) == null) {
       return problem(404, CASE_NOT_FOUND);
     }
-    const result = await client.dispatch("toee_case_manage", "resolve_case", {
+    const result = await client.dispatchWrite("toee_case_manage", "resolve_case", {
       case_id: caseId,
     });
     return mappedCaseResponse(result);
@@ -358,7 +362,7 @@ export async function handlePriorityViaApi(
     }
     // store.ts keeps a boolean `urgent`; the datastore stores a free urgency label
     // that _read_model maps back to urgent (ADR-0064). Map true->urgent / false->normal.
-    const result = await client.dispatch("toee_case_manage", "update_priority", {
+    const result = await client.dispatchWrite("toee_case_manage", "update_priority", {
       case_id: caseId,
       priority: urgent ? "urgent" : "normal",
     });
@@ -380,7 +384,7 @@ export async function handleContactReasonViaApi(
     if ((await dispatchGetCaseData(client, caseId)) == null) {
       return problem(404, CASE_NOT_FOUND);
     }
-    const result = await client.dispatch(
+    const result = await client.dispatchWrite(
       "toee_case_manage",
       "update_contact_reason",
       { case_id: caseId, contact_reason: contactReason },

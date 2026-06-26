@@ -1,11 +1,15 @@
 // Governed failure classification for Domain Adapter Tool execution.
 // Dispatch-level classes (`unknown_tool`, `unknown_action`, `policy_blocked`)
-// extend the runtime driver classes from ADR-0136. `unexpected_error` covers
-// driver throws that are not classified by the driver itself.
+// extend the runtime driver classes from ADR-0136. `not_found`/`conflict` are
+// datastore resource-state denials (a missing or contended row), which the
+// workbench BFF maps to 404/409. `unexpected_error` covers driver throws that are
+// not classified by the driver itself.
 export type ToolErrorClass =
   | "unknown_tool"
   | "unknown_action"
   | "policy_blocked"
+  | "not_found"
+  | "conflict"
   | "auth_expired"
   | "vendor_timeout"
   | "composio_api_error"

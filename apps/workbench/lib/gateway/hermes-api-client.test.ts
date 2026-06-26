@@ -131,3 +131,47 @@ describe("HermesApiClient.dispatch", () => {
     ).rejects.toBeInstanceOf(HermesApiError);
   });
 });
+
+describe("HermesApiClient.dispatchWrite", () => {
+  it("dispatches the governed write when an actor is configured", async () => {
+    let captured: RequestInit | undefined;
+    const client = new HermesApiClient({
+      baseUrl: BASE,
+      token: TOKEN,
+      actorAccountId: "acct_rep_7",
+      fetchImpl: async (_url, init) => {
+        captured = init;
+        return okResponse({ claimed: true });
+      },
+    });
+
+    const data = await client.dispatchWrite("toee_case_manage", "claim_case", {
+      case_id: "c1",
+    });
+
+    expect(data).toEqual({ claimed: true });
+    if (!captured) throw new Error("expected fetch to be called");
+    expect(JSON.parse(captured.body as string)).toMatchObject({
+      actor_account_id: "acct_rep_7",
+    });
+  });
+
+  it("fails closed (governed policy_blocked, no network) without an actor", async () => {
+    // I1: a write with no acting account must never reach the server — the audit
+    // (and, for claim/resolve, the mutation) would otherwise attribute to NULL.
+    let called = false;
+    const client = new HermesApiClient({
+      baseUrl: BASE,
+      token: TOKEN,
+      fetchImpl: async () => {
+        called = true;
+        return okResponse({});
+      },
+    });
+
+    await expect(
+      client.dispatchWrite("toee_case_manage", "claim_case", { case_id: "c1" }),
+    ).rejects.toMatchObject({ errorClass: "policy_blocked" });
+    expect(called).toBe(false);
+  });
+});

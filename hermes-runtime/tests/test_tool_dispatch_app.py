@@ -210,6 +210,57 @@ def test_dispatch_actor_attributes_the_audit_actor_end_to_end(datastore) -> None
     assert claim["account_id"] == "acct_actor_e2e"
 
 
+def test_dispatch_governed_write_without_actor_is_denied(datastore) -> None:
+    # I1 regression end-to-end (ADR-0141): a governed case write dispatched with NO
+    # actor_account_id is a governed denial (HTTP 200, ok False), and it leaves NO
+    # mutation and NO NULL-actor audit row behind — the silent wrong-success the
+    # cutover must not allow. Reads stay fail-open; only writes require the actor.
+    from toee_hermes.execute import execute_tool
+    from toee_hermes.tool_gate import ToolExecutionContext
+
+    driver, _, _ = datastore
+    case_id = execute_tool(
+        tool="toee_case",
+        action="create_case",
+        params={"contact_reason": "x"},
+        context=ToolExecutionContext(profile="internal_copilot"),
+        driver=driver,
+    ).data["case_id"]
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_case_manage",
+            "action": "claim_case",
+            "params": {"case_id": case_id},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    case = execute_tool(
+        tool="toee_workbench_read",
+        action="get_case",
+        params={"case_id": case_id},
+        context=ToolExecutionContext(profile="internal_copilot"),
+        driver=driver,
+    ).data["case"]
+    assert case["assignee_account_id"] is None
+    assert case["status"] == "open"
+
+    entries = execute_tool(
+        tool="toee_workbench_read",
+        action="get_audit_log",
+        params={"case_id": case_id},
+        context=ToolExecutionContext(profile="internal_copilot"),
+        driver=driver,
+    ).data["entries"]
+    assert [e for e in entries if e["action"] == "claim_case"] == []
+
+
 def test_dispatch_rejects_malformed_body() -> None:
     # Missing tool/action is a transport/shape problem, not a tool outcome → 400.
     response = _client().post(

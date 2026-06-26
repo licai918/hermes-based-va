@@ -4,7 +4,9 @@
 // permanence intent and the ADR-0059/0136 ToolErrorClass vocabulary (plus the
 // HermesApiClient's transport_error):
 //
-//   policy_blocked        -> 403  Tool Gate denial (employee not permitted)
+//   policy_blocked        -> 403  Tool Gate denial / write without an attributed actor
+//   not_found             -> 404  governed read/write of a row that does not exist
+//   conflict              -> 409  contended write (e.g. claim of an already-held case)
 //   unknown_tool/action   -> 500  BFF<->profile contract bug, not the user's fault
 //   vendor_timeout        -> 504  upstream integration timed out (retryable)
 //   configuration_missing -> 503  a required integration is not wired yet
@@ -20,6 +22,8 @@ import { HermesApiError } from "./hermes-api-client";
 
 const STATUS_BY_CLASS: Record<string, number> = {
   policy_blocked: 403,
+  not_found: 404,
+  conflict: 409,
   unknown_tool: 500,
   unknown_action: 500,
   vendor_timeout: 504,

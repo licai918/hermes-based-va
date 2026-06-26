@@ -213,3 +213,98 @@ def test_unknown_datastore_tool_is_governed_configuration_missing(datastore) -> 
     result = _run(driver, "toee_copilot_draft", "draft_sms", {})
     assert not result.ok
     assert result.error_class == "configuration_missing"
+
+
+def test_governed_case_write_requires_an_actor(datastore) -> None:
+    # I1 (ADR-0141 fail-closed actor): the cutover's whole point is actor-attributed
+    # governed writes, so a toee_case_manage write with NO actor must be a governed
+    # denial — no mutation, no NULL-actor audit row — never a silent 200. Covers
+    # claim (the actor IS the mutation source) and assign (actor is audit-only; the
+    # assignee still rides the body), the two distinct shapes among the five writes.
+    driver, _, _ = datastore
+    case_id = _run(driver, "toee_case", "create_case", {"contact_reason": "x"}).data[
+        "case_id"
+    ]
+
+    claim = _run(driver, "toee_case_manage", "claim_case", {"case_id": case_id})
+    assert not claim.ok
+    assert claim.error_class == "policy_blocked"
+
+    assign = _run(
+        driver,
+        "toee_case_manage",
+        "assign_case",
+        {"case_id": case_id, "assignee_id": "acct_2"},
+    )
+    assert not assign.ok
+    assert assign.error_class == "policy_blocked"
+
+    # Neither denied write mutated the case...
+    case = _run(driver, "toee_workbench_read", "get_case", {"case_id": case_id}).data[
+        "case"
+    ]
+    assert case["assignee_account_id"] is None
+    assert case["status"] == "open"
+    # ...nor wrote any audit row (a NULL-actor governed audit is exactly what I1 bans).
+    entries = _run(
+        driver, "toee_workbench_read", "get_audit_log", {"case_id": case_id}
+    ).data["entries"]
+    assert entries == []
+
+
+def test_claim_is_atomic_no_silent_steal_and_idempotent(datastore) -> None:
+    # I2 (ADR-0079): the claim conflict guard lives in SQL, not a check-then-act
+    # pre-read. Account A claims an unassigned case and gets it (assignee=A,
+    # in_progress); a second claim by B on the now-A-held case is a governed
+    # conflict — no last-write-wins steal — and writes no audit row; A re-claiming
+    # its own case stays idempotent.
+    driver, _, _ = datastore
+    case_id = _run(driver, "toee_case", "create_case", {"contact_reason": "x"}).data[
+        "case_id"
+    ]
+
+    first = _run(
+        driver, "toee_case_manage", "claim_case", {"case_id": case_id},
+        _ctx(user_id="acct_a"),
+    )
+    assert first.ok
+    assert first.data["case"]["assignee_account_id"] == "acct_a"
+    assert first.data["case"]["status"] == "in_progress"
+
+    steal = _run(
+        driver, "toee_case_manage", "claim_case", {"case_id": case_id},
+        _ctx(user_id="acct_b"),
+    )
+    assert not steal.ok
+    assert steal.error_class == "conflict"
+
+    # B neither stole the case nor wrote a claim audit row.
+    case = _run(driver, "toee_workbench_read", "get_case", {"case_id": case_id}).data[
+        "case"
+    ]
+    assert case["assignee_account_id"] == "acct_a"
+    audit = _run(
+        driver, "toee_workbench_read", "get_audit_log", {"case_id": case_id}
+    ).data["entries"]
+    claim_actors = [e["account_id"] for e in audit if e["action"] == "claim_case"]
+    assert claim_actors == ["acct_a"]
+
+    again = _run(
+        driver, "toee_case_manage", "claim_case", {"case_id": case_id},
+        _ctx(user_id="acct_a"),
+    )
+    assert again.ok
+    assert again.data["case"]["assignee_account_id"] == "acct_a"
+
+
+def test_claim_missing_case_is_governed_not_found(datastore) -> None:
+    # I2: a claim on a non-existent case is a governed not_found (the BFF maps it to
+    # 404, store-path CASE_NOT_FOUND parity), distinct from the held-by-another
+    # conflict, so rowcount 0 is classified rather than swallowed.
+    driver, _, _ = datastore
+    res = _run(
+        driver, "toee_case_manage", "claim_case", {"case_id": "case_missing"},
+        _ctx(user_id="acct_a"),
+    )
+    assert not res.ok
+    assert res.error_class == "not_found"

@@ -89,4 +89,25 @@ export class HermesApiClient {
     }
     return body.data;
   }
+
+  // Dispatch a governed *write*, fail-closed on a missing actor (ADR-0141).
+  // Unlike `dispatch` (reads fail-open: an absent actor just omits attribution),
+  // a write with no acting account would let the server attribute the audit — and,
+  // for claim/resolve, the mutation itself — to NULL. Refuse before the network
+  // call so a write route that forgot to wire the actor is denied here too; the
+  // datastore enforces the same rule, this is defense-in-depth. The thrown
+  // `policy_blocked` maps to 403 via hermesErrorToProblem.
+  async dispatchWrite(
+    tool: string,
+    action: string,
+    params: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    if (!this.actorAccountId) {
+      throw new HermesApiError(
+        "policy_blocked",
+        "a governed case write requires an attributed actor",
+      );
+    }
+    return this.dispatch(tool, action, params);
+  }
 }

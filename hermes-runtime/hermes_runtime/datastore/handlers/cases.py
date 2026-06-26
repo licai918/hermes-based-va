@@ -28,6 +28,24 @@ def _require_case_id(params: dict[str, Any]) -> str:
     return case_id
 
 
+def _require_actor(context: "ToolExecutionContext") -> str:
+    """The acting workbench account for a governed write, or a governed denial.
+
+    A ``toee_case_manage`` write is the point of actor-attributed audit (ADR-0029/
+    0141): the actor rides ``ToolExecutionContext.user_id``, which the BFF asserts
+    under the shared bearer. Trusting an absent actor would, for claim/resolve,
+    write a NULL mutation *and* a NULL-actor audit row while still returning
+    success — a silent wrong-success. Fail closed at this one shared boundary so
+    every write handler is protected at once: no attributed actor, no write.
+    """
+    actor = context.user_id
+    if not actor:
+        raise ToolDriverError(
+            "policy_blocked", "A governed case write requires an attributed actor."
+        )
+    return actor
+
+
 def _ensure_exists(conn, case_id: str) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT 1 FROM cases WHERE id = %s", (case_id,))
@@ -199,26 +217,39 @@ def _update_case(conn, params: dict[str, Any], context: "ToolExecutionContext") 
 
 def _claim_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
-    _ensure_exists(conn, case_id)
-    # The claiming employee is the acting account; fall back to an explicit param.
-    account_id = context.user_id or read_string(params, "assignee_id", "assigneeId")
+    account_id = _require_actor(context)
     with conn.cursor() as cur:
-        # store.ts claimCase moves an open case to in_progress on claim; mirror it
-        # so the API-path queue state matches the in-memory store (ADR-0079/0141).
+        # Atomic claim (ADR-0079): the conflict guard lives in the WHERE clause, not
+        # a prior read, so two reps who both pre-read the same unassigned case can't
+        # both win — the loser's UPDATE matches no row. ``assignee_account_id = %s``
+        # keeps a self re-claim idempotent. store.ts claimCase moves an open case to
+        # in_progress on claim; mirror it for API-path/queue parity (ADR-0079/0141).
         cur.execute(
             """
             UPDATE cases SET
-                assignee_account_id = COALESCE(%s, assignee_account_id),
+                assignee_account_id = %s,
                 status = CASE WHEN status = 'open' THEN 'in_progress' ELSE status END,
                 last_activity_at = now()
             WHERE id = %s
+              AND (assignee_account_id IS NULL OR assignee_account_id = %s)
             """,
-            (account_id, case_id),
+            (account_id, case_id, account_id),
+        )
+        claimed = cur.rowcount == 1
+    if not claimed:
+        # rowcount 0: distinguish a missing case (not_found -> 404, store-path
+        # CASE_NOT_FOUND parity) from one already held by another account
+        # (conflict -> 409, no silent steal). The raise rolls back the unit of work
+        # (PostgresDriver), so a denied claim leaves no mutation and no audit row.
+        if _status(conn, case_id) is None:
+            raise ToolDriverError("not_found", f"case {case_id} not found.")
+        raise ToolDriverError(
+            "conflict", f"case {case_id} is already held by another account."
         )
     insert_audit(
         conn,
         profile=context.profile,
-        account_id=context.user_id,
+        account_id=account_id,
         action="claim_case",
         target_type="case",
         target_id=case_id,
@@ -231,6 +262,7 @@ def _claim_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -
 
 def _assign_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
+    _require_actor(context)
     _ensure_exists(conn, case_id)
     assignee_id = read_string(params, "assignee_id", "assigneeId")
     if assignee_id is None:
@@ -266,6 +298,7 @@ def _assign_case(conn, params: dict[str, Any], context: "ToolExecutionContext") 
 
 def _update_priority(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
+    _require_actor(context)
     _ensure_exists(conn, case_id)
     # case_manage's "priority" maps to the case urgency column: ADR-0064 names the
     # adjustable field urgency, while ADR-0065 keeps the manage-action vocabulary.
@@ -296,6 +329,7 @@ def _update_contact_reason(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
     case_id = _require_case_id(params)
+    _require_actor(context)
     _ensure_exists(conn, case_id)
     contact_reason = read_string(params, "contact_reason", "contactReason") or "general"
     with conn.cursor() as cur:
@@ -322,6 +356,7 @@ def _update_contact_reason(
 
 def _resolve_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
+    _require_actor(context)
     _ensure_exists(conn, case_id)
     with conn.cursor() as cur:
         cur.execute(
