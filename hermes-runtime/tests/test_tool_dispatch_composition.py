@@ -95,3 +95,26 @@ def test_built_app_denies_tool_outside_its_profile(monkeypatch) -> None:
     body = response.json()
     assert body["ok"] is False
     assert body["error"]["class"] == "policy_blocked"
+
+
+def test_built_app_serves_agent_turn_route(monkeypatch) -> None:
+    # ADR-0147 Fork A1: the same per-profile server serves BOTH tools:dispatch and
+    # agent:turn behind one bearer. Bearer is enforced (401), and an authed turn
+    # boots internal_copilot UNBOUND and returns a scripted draft + provenance.
+    _configure(monkeypatch, profile="internal_copilot")
+    client = TestClient(build_tool_dispatch_app())
+
+    assert (
+        client.post("/v1/agent:turn", json={"channel": "sms", "case_id": "c1"}).status_code
+        == 401
+    )
+
+    response = client.post(
+        "/v1/agent:turn",
+        headers={"Authorization": "Bearer dev-token"},
+        json={"channel": "sms", "case_id": "case_x"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["provenance"]["profile"] == "internal_copilot"

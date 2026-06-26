@@ -35,6 +35,19 @@ DISPATCH_PATH = "/v1/tools:dispatch"
 _BEARER_PREFIX = "Bearer "
 
 
+def bearer_authorized(request: Request, api_token: str) -> bool:
+    """Constant-time, fail-closed bearer check shared by the per-profile routes.
+
+    A missing token config, a missing/garbled header, or a mismatch is unauthorized
+    (mirrors the gateway's internal-job secret, ADR-0106). Extracted so the
+    deterministic ``tools:dispatch`` route and the ``agent:turn`` route (ADR-0147)
+    enforce the *same* auth from one source of truth.
+    """
+    header = request.headers.get("authorization", "")
+    token = header[len(_BEARER_PREFIX) :] if header.startswith(_BEARER_PREFIX) else ""
+    return bool(api_token) and bool(token) and hmac.compare_digest(token, api_token)
+
+
 def profile_allowlist_gate(profile: str) -> ToolGate:
     """A Tool Gate that denies any tool outside ``profile``'s allowlist.
 
@@ -86,12 +99,9 @@ def create_tool_dispatch_app(
 
     @app.post(DISPATCH_PATH)
     async def dispatch(request: Request) -> Response:
-        # Bearer auth, constant-time and fail-closed (mirrors the gateway's
-        # internal-job secret, ADR-0106): a missing token config or a header
-        # mismatch is 401 and the tool never runs.
-        header = request.headers.get("authorization", "")
-        token = header[len(_BEARER_PREFIX) :] if header.startswith(_BEARER_PREFIX) else ""
-        if not api_token or not token or not hmac.compare_digest(token, api_token):
+        # Bearer auth, constant-time and fail-closed (ADR-0106): a missing token
+        # config or a header mismatch is 401 and the tool never runs.
+        if not bearer_authorized(request, api_token):
             return Response(status_code=401)
 
         try:

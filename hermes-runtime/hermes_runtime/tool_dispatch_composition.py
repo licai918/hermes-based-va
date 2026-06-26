@@ -26,6 +26,7 @@ from fastapi import FastAPI
 
 from toee_hermes.plugin.profiles import PROFILE_ENV_VAR, PROFILES
 
+from hermes_runtime.agent_turn_app import add_agent_turn_route
 from hermes_runtime.tool_dispatch_app import create_tool_dispatch_app
 
 # Per-process bearer the BFF presents (ADR-0141). One token per profile home; the
@@ -62,4 +63,10 @@ def build_tool_dispatch_app() -> FastAPI:
     # Driver defaults to select_tool_driver() inside create_tool_dispatch_app:
     # TOOL_BACKEND=mock (default) or datastore (ADR-0140). The profile-allowlist
     # gate is the default, so the deployment's fixed profile bounds the surface.
-    return create_tool_dispatch_app(api_token=api_token, profile=profile)
+    app = create_tool_dispatch_app(api_token=api_token, profile=profile)
+    # ADR-0147 Fork A1: the same per-profile server also serves agent:turn (the LLM
+    # draft seam) behind the same bearer. The route boots internal_copilot unbound
+    # regardless of host profile — the draft capability is structurally no-send
+    # (ADR-0035/0067) — keeping the deterministic dispatch app above LLM-free.
+    add_agent_turn_route(app, api_token=api_token)
+    return app
