@@ -261,6 +261,78 @@ def test_dispatch_governed_write_without_actor_is_denied(datastore) -> None:
     assert [e for e in entries if e["action"] == "claim_case"] == []
 
 
+def test_dispatch_admin_write_attributes_audit_actor_end_to_end(datastore) -> None:
+    # End-to-end (ADR-0141) on the Supervisor Admin surface: an HTTP dispatch under
+    # the supervisor_admin profile carrying actor_account_id runs a governed
+    # create_account through the real datastore, and the audit row it writes is
+    # attributed to that actor — proving the actor flows request -> context -> audit
+    # for admin governance, not just copilot case writes. Skip-if-no-DB.
+    driver, conn, _ = datastore
+    response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_admin",
+            "action": "create_account",
+            "params": {
+                "username": "e2e_admin_user",
+                "password_hash": "scrypt$dead$beef",
+                "role": "customer_service_rep",
+            },
+            "actor_account_id": "acct_admin_e2e",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    account_id = body["data"]["account_id"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id FROM workbench_audit_log"
+            " WHERE action = 'create_account' AND target_id = %s",
+            (account_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "acct_admin_e2e"
+
+
+def test_dispatch_admin_write_without_actor_is_denied(datastore) -> None:
+    # I1 regression end-to-end on the admin surface: a governed create_account with
+    # NO actor_account_id is a governed denial (HTTP 200, ok False, policy_blocked)
+    # that leaves NO account row and NO NULL-actor audit row behind.
+    driver, conn, _ = datastore
+    response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_admin",
+            "action": "create_account",
+            "params": {
+                "username": "noactor_admin_user",
+                "password_hash": "scrypt$dead$beef",
+                "role": "customer_service_rep",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_account WHERE username = %s",
+            ("noactor_admin_user",),
+        )
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'create_account'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
 def test_dispatch_rejects_malformed_body() -> None:
     # Missing tool/action is a transport/shape problem, not a tool outcome → 400.
     response = _client().post(
