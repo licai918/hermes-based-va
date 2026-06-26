@@ -401,6 +401,70 @@ def test_dispatch_authenticate_verifies_login_end_to_end(datastore) -> None:
     assert bad_body["error"]["class"] == "unauthenticated"
 
 
+def test_dispatch_knowledge_write_attributes_audit_actor_end_to_end(datastore) -> None:
+    # End-to-end (ADR-0141/0145) on the KnowledgeOps surface: a supervisor_admin
+    # dispatch of a governed update_policy_slot carrying actor_account_id writes the
+    # audit attributed to that actor. The six slots are seeded by the 0003 migration.
+    driver, conn, _ = datastore
+    response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_knowledge_ops",
+            "action": "update_policy_slot",
+            "params": {"slot_id": "order-delivery", "draft_text": "Confirm order number."},
+            "actor_account_id": "acct_know_e2e",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["slot"]["status"] == "draft"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id FROM workbench_audit_log"
+            " WHERE action = 'update_policy_slot' AND target_id = %s",
+            ("order-delivery",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "acct_know_e2e"
+
+
+def test_dispatch_knowledge_write_without_actor_is_denied(datastore) -> None:
+    # I1 regression end-to-end on the KnowledgeOps surface: a governed
+    # update_policy_slot with NO actor_account_id is a governed denial that leaves
+    # the slot unchanged and writes NO audit row.
+    driver, conn, _ = datastore
+    response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_knowledge_ops",
+            "action": "update_policy_slot",
+            "params": {"slot_id": "order-delivery", "draft_text": "should not persist"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, draft_text FROM workbench_policy_slot WHERE slot_id = %s",
+            ("order-delivery",),
+        )
+        status, draft_text = cur.fetchone()
+        assert status == "empty"
+        assert draft_text is None
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'update_policy_slot'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
 def test_dispatch_rejects_malformed_body() -> None:
     # Missing tool/action is a transport/shape problem, not a tool outcome → 400.
     response = _client().post(

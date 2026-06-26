@@ -370,53 +370,138 @@ def test_authenticate_never_writes_an_audit_row_or_leaks_the_hash(datastore) -> 
         assert cur.fetchone()[0] == 1
 
 
-# --- knowledge ops ----------------------------------------------------------
+# --- knowledge ops (ADR-0145 authoring table) ------------------------------
 
 
-def test_policy_slots_overlay_stored_versions(datastore) -> None:
+def _seed_published_history(conn, slot_id, published_text):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_policy_slot_history (id, slot_id, published_text)"
+            " VALUES (%s, %s, %s)",
+            (f"pshist_{uuid.uuid4().hex}", slot_id, published_text),
+        )
+    conn.commit()
+
+
+def test_policy_slots_lists_six_kebab_placeholders_in_order(datastore) -> None:
     driver, _, _ = datastore
-    # All six Required Operational Policy Slots are always present (ADR-0003).
+    # listSlots() parity: the six Required Operational Policy Slots (ADR-0003) keyed
+    # by the kebab UI ids the store uses, in the fixed list order, empty at onboarding.
     slots = _run(driver, "toee_knowledge_ops", "get_policy_slots", {}).data["slots"]
-    keys = {s["key"] for s in slots}
-    assert "business_hours_service_boundaries" in keys
-    assert len(slots) == 6
-    boundary = next(s for s in slots if s["key"] == "business_hours_service_boundaries")
-    assert boundary["status"] == "empty"
+    assert [s["slot_id"] for s in slots] == [
+        "business-hours",
+        "payment-methods",
+        "order-delivery",
+        "accounting-inquiry",
+        "returns-exchanges",
+        "exception-scripts",
+    ]
+    assert all(s["status"] == "empty" for s in slots)
+    # The full PolicySlot read model is projected (no leaked columns).
+    assert set(slots[0]) == {
+        "slot_id", "title", "status", "draft_text", "published_text",
+        "owner", "review_date", "has_gap_prompt",
+    }
 
-    # A draft version overlays the placeholder.
-    upd = _run(
+
+def test_save_draft_sets_text_and_flips_empty_to_draft(datastore) -> None:
+    driver, conn, _ = datastore
+    res = _run(
         driver, "toee_knowledge_ops", "update_policy_slot",
-        {"slot": "business_hours_service_boundaries", "content": "Mon-Fri 8-5"},
+        {"slot_id": "returns-exchanges", "draft_text": "Returns within 30 days.", "owner": "ops"},
     )
-    assert upd.data["state"] == "draft"
+    slot = res.data["slot"]
+    assert slot["status"] == "draft"
+    assert slot["draft_text"] == "Returns within 30 days."
+    assert slot["owner"] == "ops"
+    # Governed write -> actor-attributed audit (the store lacked this; ADR-0145).
+    assert _audit_actor(conn, "policy_slot", "returns-exchanges", "update_policy_slot") == "acct_admin"
 
+
+def test_save_draft_unknown_slot_is_not_found(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(
+        driver, "toee_knowledge_ops", "update_policy_slot",
+        {"slot_id": "ghost-slot", "draft_text": "x"},
+    )
+    assert not result.ok
+    assert result.error_class == "not_found"
+
+
+def test_save_draft_without_actor_is_denied_no_mutation(datastore) -> None:
+    # I1 parity on the knowledge surface: no attributed actor -> policy_blocked, no
+    # mutation, no NULL-actor audit row.
+    driver, conn, _ = datastore
+    result = _run(
+        driver, "toee_knowledge_ops", "update_policy_slot",
+        {"slot_id": "order-delivery", "draft_text": "should not persist"},
+        user_id="",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
     slots = _run(driver, "toee_knowledge_ops", "get_policy_slots", {}).data["slots"]
-    boundary = next(s for s in slots if s["key"] == "business_hours_service_boundaries")
-    assert boundary["status"] == "draft"
-    assert boundary["content"] == "Mon-Fri 8-5"
+    order = next(s for s in slots if s["slot_id"] == "order-delivery")
+    assert order["status"] == "empty"
+    assert order["draft_text"] is None
+    assert _audit_actions(conn, "policy_slot", "order-delivery") == []
 
 
-def test_policy_slot_lifecycle_submit_then_promote(datastore) -> None:
+def test_submit_for_eval_pending_then_conflict_and_not_found(datastore) -> None:
+    driver, conn, _ = datastore
+    _run(
+        driver, "toee_knowledge_ops", "update_policy_slot",
+        {"slot_id": "order-delivery", "draft_text": "Confirm order number first."},
+    )
+    submitted = _run(driver, "toee_knowledge_ops", "submit_for_eval", {"slot_id": "order-delivery"})
+    assert submitted.data["slot"]["status"] == "pending_eval"
+    assert _audit_actor(conn, "policy_slot", "order-delivery", "submit_for_eval") == "acct_admin"
+
+    # A known slot with no draft -> conflict (409), not not_found (store parity).
+    no_draft = _run(driver, "toee_knowledge_ops", "submit_for_eval", {"slot_id": "returns-exchanges"})
+    assert no_draft.error_class == "conflict"
+    # An unknown slot -> not_found (404).
+    unknown = _run(driver, "toee_knowledge_ops", "submit_for_eval", {"slot_id": "ghost-slot"})
+    assert unknown.error_class == "not_found"
+
+
+def test_rollback_no_previous_is_conflict_and_unknown_is_not_found(datastore) -> None:
+    driver, _, _ = datastore
+    # Fresh slot: no published history -> conflict (409).
+    no_prev = _run(driver, "toee_knowledge_ops", "rollback_published_policy", {"slot_id": "payment-methods"})
+    assert no_prev.error_class == "conflict"
+    unknown = _run(driver, "toee_knowledge_ops", "rollback_published_policy", {"slot_id": "ghost-slot"})
+    assert unknown.error_class == "not_found"
+
+
+def test_rollback_restores_previous_published_text(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_published_history(conn, "business-hours", "Open Mon-Fri 9am-5pm.")
+    res = _run(driver, "toee_knowledge_ops", "rollback_published_policy", {"slot_id": "business-hours"})
+    slot = res.data["slot"]
+    assert slot["status"] == "published"
+    assert slot["published_text"] == "Open Mon-Fri 9am-5pm."
+    assert _audit_actor(conn, "policy_slot", "business-hours", "rollback_published_policy") == "acct_admin"
+    # The history entry was popped: a second rollback now finds nothing.
+    again = _run(driver, "toee_knowledge_ops", "rollback_published_policy", {"slot_id": "business-hours"})
+    assert again.error_class == "conflict"
+
+
+def test_eval_promote_publishes_pending_knowledge_version(datastore) -> None:
+    # The eval publish-gate (knowledge_version) is a SEPARATE model from the
+    # authoring table and is decoupled from it (ADR-0145 divergence #2). Seed a
+    # pending_eval version directly and promote it -- proving publish_pending_slot
+    # still works for #44 without touching the authoring path.
     driver, conn, _ = datastore
     slot = "payment_payment_link_rules"
-    _run(driver, "toee_knowledge_ops", "update_policy_slot", {"slot": slot, "content": "links only"})
-    submitted = _run(driver, "toee_knowledge_ops", "submit_for_eval", {"slot": slot})
-    assert submitted.data["status"] == "pending_eval"
-
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO knowledge_version (id, slot_key, content, status, version)"
+            " VALUES (%s, %s, %s, 'pending_eval', 1)",
+            (f"kv_{uuid.uuid4().hex}", slot, "links only"),
+        )
     promoted = _run(driver, "toee_eval_review", "promote_pending_policy", {"slot": slot})
     assert promoted.data["promoted"] is True
     assert promoted.data["status"] == "published"
-
-    slots = _run(driver, "toee_knowledge_ops", "get_policy_slots", {}).data["slots"]
-    assert next(s for s in slots if s["key"] == slot)["status"] == "published"
-    assert "update_policy_slot" in _audit_actions(conn, "policy_slot", slot)
-
-
-def test_update_policy_slot_rejects_unknown_slot(datastore) -> None:
-    driver, _, _ = datastore
-    result = _run(driver, "toee_knowledge_ops", "update_policy_slot", {"slot": "not_a_slot", "content": "x"})
-    assert not result.ok
-    assert result.error_class == "unexpected_error"
 
 
 # --- eval review ------------------------------------------------------------

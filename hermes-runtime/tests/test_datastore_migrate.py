@@ -104,6 +104,30 @@ def test_workbench_account_has_last_login_at_after_migrate(temp_schema_conn) -> 
     assert "workbench_account" in _tables_with_column(conn, schema, "last_login_at")
 
 
+def test_workbench_policy_slot_seeded_with_six_placeholders(temp_schema_conn) -> None:
+    # ADR-0145 knowledge-slots cutover (#43): the 0003 migration creates the
+    # authoring table + history and seeds the six Required Operational Policy Slots
+    # (ADR-0003) as empty placeholders, keyed by the kebab UI ids the store uses.
+    conn, schema = temp_schema_conn
+    run_migrations(conn)
+    tables = _tables_in(conn, schema)
+    assert {"workbench_policy_slot", "workbench_policy_slot_history"} <= tables
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT slot_id, status FROM workbench_policy_slot ORDER BY sort_order"
+        )
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == [
+        "business-hours",
+        "payment-methods",
+        "order-delivery",
+        "accounting-inquiry",
+        "returns-exchanges",
+        "exception-scripts",
+    ]
+    assert all(status == "empty" for _, status in rows)
+
+
 def test_retention_timestamp_columns_present(temp_schema_conn) -> None:
     conn, schema = temp_schema_conn
     run_migrations(conn)
