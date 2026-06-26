@@ -1,9 +1,23 @@
 # Copilot reply drafts generate over a per-profile agent-turn API, not tools:dispatch
 
-> **Status: Proposed.** Design + plan only, for sign-off before any build. This ADR
-> defines a contract and presents open forks; it implements nothing. Promote to
-> accepted (drop this line) once the forks below are resolved. Realizes the drafts
-> half of Slice 36 (#39) and resolves the #41 deferral.
+> **Status: Accepted** (2026-06-26). Promoted from Proposed after the Slice 1
+> tracer (commit `8fbc4a0`) landed and passed review (verdict: approve). The forks
+> below are resolved as recommended (A1/B1/C1/D1/E1). Realizes the drafts half of
+> Slice 36 (#39) and resolves the #41 deferral; built incrementally per the sliced
+> plan below.
+>
+> **Slice 1 review amendments (accepted):**
+> 1. **No-auto-send is pinned by allowlist-equality, not a two-tool denylist.** The
+>    tracer asserted only that two named send tools were absent; the invariant is
+>    now *the booted tool set equals the `internal_copilot` allowlist* (plus a
+>    frozen reviewed-snapshot tripwire), so adding **any** toolset to the profile
+>    breaks the test and forces re-review (see Governance frame; `test_copilot_turn`).
+> 2. **`draft_generated` audit moves server-side in Slice 3.** The sub-fork's
+>    "revisit when the audit store cuts over" trigger has arrived: audit-log reads
+>    and case-mutation writes are already server-side, so a BFF-written
+>    `draft_generated` is now *write-only in API mode*. Recording it server-side is
+>    scheduled for Slice 3 (with the real-provider endpoint); **not** implemented in
+>    the Slice 1–2 increment (see the sub-fork below).
 
 ## Context
 
@@ -84,6 +98,15 @@ already built — but only for the **External** Textline pipeline:
 agent booted under `internal_copilot` **structurally cannot send** — the send tool is
 never registered. No-auto-send is enforced by the existing profile allowlist, not a
 new guard. Confirmed sends remain the separate, human-initiated ADR-0083/0036 path.
+
+> **Amendment (Slice 1 review).** The invariant is pinned as **allowlist-equality**,
+> not the tracer's initial two-tool denylist: `test_copilot_turn` asserts the booted
+> tool set **equals** `allowlisted_tools(internal_copilot)` and that this allowlist
+> equals a frozen reviewed snapshot. So a denied send tool is caught (it is outside
+> the allowlist), *and* adding any new toolset to the profile — send-capable or not —
+> trips the test and forces re-review, rather than silently widening a draft agent's
+> reach. The channel never reaches `boot_profile`, so the booted set (and thus this
+> invariant) is channel-independent across sms/email/internal_note.
 
 ## Decision (recommended; forks below are vetoable)
 
@@ -211,6 +234,18 @@ result?** *Recommend E1.* (This is the subtlest fork — it reinterprets #41's "
   `agent:turn` endpoint records it, or (ii) a thin deterministic `toee_copilot_draft`
   audit-only handler records it (the E2 merit, without E2 doing generation). Recommend
   **(BFF writes it) for the tracer**, revisit when the audit store cuts over.
+  - **Amendment (accepted, Slice 1 review): the trigger has arrived — schedule the
+    move for Slice 3.** Audit-log **reads** and case-mutation **writes** are already
+    server-side (the #38 / ADR-0145/0146 cutovers), so the audit store the governed
+    surface reads back is no longer the BFF's in-memory store. A BFF-written
+    `draft_generated` is therefore **write-only in API mode**: it lands in a store the
+    governed audit-log read won't consult, so it cannot be read back through the
+    surface that now owns case audit. The fix is option (i) — the `agent:turn`
+    endpoint records `draft_generated` (`detail = <action>`) in the same governed
+    path, retiring the BFF write. This is **scheduled for Slice 3** alongside the
+    real-provider endpoint work and **not implemented in the Slice 1–2 increment**:
+    Slices 1–2 keep the BFF-written audit for store-path parity, accepting the
+    write-only gap until Slice 3 closes it.
 
 ## Proposed sliced implementation plan (TDD + review-gate rhythm)
 
@@ -238,11 +273,14 @@ tracer proved `GET /api/copilot/cases` end-to-end against `MockDriver`.
   and `handleDraftViaApi` to `email` (`{channel, subject, draft}`) and `internal_note`
   (`{kind, draft}`); assert shape parity with the mock for each; wire the `email`/`note`
   routes.
-- **Slice 3 — real provider wiring (keyed) + governed context reads.** Add the copilot
-  `run_turn` (OpenRouter when `OPENROUTER_API_KEY` present, ADR-0009; deterministic stub
-  otherwise), and a scripted **tool-call** completion proving the agent pulls case/thread
-  context via `toee_workbench_read` through real governed dispatch (catalog → gate →
-  driver → audit). No real network in CI (scripted/stub).
+- **Slice 3 — real provider wiring (keyed) + governed context reads + server-side
+  audit.** Add the copilot `run_turn` (OpenRouter when `OPENROUTER_API_KEY` present,
+  ADR-0009; deterministic stub otherwise), and a scripted **tool-call** completion
+  proving the agent pulls case/thread context via `toee_workbench_read` through real
+  governed dispatch (catalog → gate → driver → audit). No real network in CI
+  (scripted/stub). **Also record `draft_generated` server-side** here (the sub-fork
+  amendment): the `agent:turn` endpoint writes the audit in the governed path,
+  retiring the now write-only BFF audit.
 - **Slice 4 — `/api/copilot/chat` over the same endpoint (closes Slice 36 / #39).** Cut
   `handleChat` (today a deterministic stub) onto the same `agent:turn` route, reusing the
   draft-card path. (Optional within #41; listed because it reuses everything Slice 1–3
@@ -273,8 +311,9 @@ tracer proved `GET /api/copilot/cases` end-to-end against `MockDriver`.
 Design-only; nothing is implemented by this ADR. The Slice-1 tracer proves the contract
 end to end with **no model**: bearer/shape enforcement on `POST /v1/agent:turn`; a
 scripted `internal_copilot` unbound turn returning `{channel, draft, provenance}`; an
-assertion that the booted copilot tool set **excludes send tools** (the governance
-invariant); a `HermesAgentClient` contract test against a fake `fetch`; and an
+assertion that the booted copilot tool set **equals the `internal_copilot` allowlist**
+(allowlist-equality — the governance invariant, hardened in the Slice 1 review from the
+tracer's two-tool denylist); a `HermesAgentClient` contract test against a fake `fetch`; and an
 env-gated `sms` draft route that preserves the `draft_generated` audit, the `{ draft }`
 body, the 400/404/502 + ADR-0104 statuses, and the in-memory fallback. Subsequent
 slices add channels, the real OpenRouter boundary (keyed; scripted/stub in CI), and the

@@ -16,12 +16,31 @@ from __future__ import annotations
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.copilot_turn import SCRIPTED_MODEL, make_copilot_run_turn
-from toee_hermes.plugin.profiles import INTERNAL
+from toee_hermes.plugin.profiles import INTERNAL, allowlisted_tools
 
 # The two customer-facing write tools a draft agent must never hold (ADR-0067):
 # the Textline reply send and the Square payment link. Both are outside the
 # internal_copilot allowlist (ADR-0035) and so are never registered for the turn.
 SEND_TOOLSETS = ("toee_textline_reply", "toee_square_payment_link")
+
+# The internal_copilot allowlist this no-auto-send design was reviewed against
+# (ADR-0147 / ADR-0035). Frozen here as a tripwire snapshot: any toolset added to
+# (or removed from) the profile breaks the equality below, forcing a deliberate
+# re-review of the no-send guarantee instead of silently widening what a draft
+# agent can do. Keep in sync with PROFILE_TOOL_ALLOWLIST[INTERNAL] only via review.
+REVIEWED_INTERNAL_ALLOWLIST = frozenset(
+    {
+        "toee_knowledge_search",
+        "toee_shopify_read",
+        "toee_qbo_read",
+        "toee_easyroutes_read",
+        "toee_identity_lookup",
+        "toee_case_manage",
+        "toee_copilot_draft",
+        "toee_workbench_read",
+        "toee_customer_memory",
+    }
+)
 
 
 def _booted_toolsets(profile: str) -> set[str]:
@@ -34,9 +53,27 @@ def test_internal_copilot_agent_turn_excludes_send_tools() -> None:
     # THE governance invariant (ADR-0067/0035/0147): no-auto-send is structural.
     # A draft agent booted unbound under internal_copilot has no send tool in its
     # registered set, so it cannot send — enforced by non-registration, not a guard.
+    # The channel never reaches boot_profile, so this booted set is channel-
+    # independent: it is the no-send invariant for sms/email/internal_note alike.
     toolsets = _booted_toolsets(INTERNAL)
+
+    # (1) Denylist (kept from the tracer): the two named customer-send /
+    # external-payment toolsets are never booted for a draft turn.
     for send in SEND_TOOLSETS:
         assert send not in toolsets, f"{send} must not be booted for a draft turn"
+
+    # (2) Allowlist-equality: the booted set is EXACTLY internal_copilot's declared
+    # allowlist — boot registers nothing beyond what the profile declares, so the
+    # structural no-send rests entirely on that declaration (no transitive drift).
+    assert toolsets == set(allowlisted_tools(INTERNAL))
+
+    # (3) Allowlist tripwire: the declared allowlist still equals the reviewed
+    # snapshot. (2) on its own can't catch a send tool *added to the allowlist* —
+    # the booted set would grow to match and stay equal — so pinning the
+    # declaration to a frozen reviewed set is what makes adding (or removing) ANY
+    # toolset break this test and force re-review of the no-send guarantee.
+    assert set(allowlisted_tools(INTERNAL)) == REVIEWED_INTERNAL_ALLOWLIST
+
     # ...and it DOES carry the copilot read tools it needs to gather case context
     # itself (ADR-0147 decision 2), so the draft is grounded, not blind.
     assert "toee_workbench_read" in toolsets
