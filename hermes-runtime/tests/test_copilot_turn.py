@@ -156,6 +156,25 @@ def test_email_turn_without_a_subject_line_falls_back_deterministically() -> Non
     assert result["profile"] == INTERNAL
 
 
+def test_email_turn_with_an_empty_subject_line_strips_it_and_uses_the_fallback() -> None:
+    # M2 (Slice 3 review): when the final_response leads with a BARE `Subject:` line
+    # (empty subject — a model that left it blank), the derivation must STILL strip
+    # that line from the body and fall back to the deterministic case-scoped subject.
+    # Previously the bare `Subject:` line leaked into the draft body the staff edits.
+    run_turn = make_copilot_run_turn(
+        scripted_completions=[
+            {"content": "Subject:\n\nHi there,\n\nWe're on it.\n\n- Toee Tire"}
+        ]
+    )
+
+    result = run_turn(channel="email", case_id="case_empty_subj")
+
+    assert result["subject"] == "Re: your Toee Tire case case_empty_subj"
+    assert result["draft"] == "Hi there,\n\nWe're on it.\n\n- Toee Tire"
+    assert "Subject:" not in result["draft"]  # the bare subject line is gone
+    assert result["profile"] == INTERNAL
+
+
 def test_email_subject_is_derived_from_a_leading_subject_line() -> None:
     # Slice 3: the real subject derivation. When the turn's final_response leads with
     # a `Subject:` line, that line becomes the subject and the remaining text is the

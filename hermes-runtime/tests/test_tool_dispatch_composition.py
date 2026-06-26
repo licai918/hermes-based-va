@@ -118,3 +118,21 @@ def test_built_app_serves_agent_turn_route(monkeypatch) -> None:
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["provenance"]["profile"] == "internal_copilot"
+
+
+def test_agent_turn_route_is_internal_copilot_only(monkeypatch) -> None:
+    # ADR-0147 M3: the agent:turn LLM draft seam is mounted ONLY on the copilot
+    # (INTERNAL) server. A SUPERVISOR/EXTERNAL dispatch server still serves the
+    # deterministic surface (healthz/tools:dispatch) but NOT agent:turn — so the LLM
+    # route is absent (404) on a server that should never draft, even with the right
+    # bearer. Guards against the route silently widening to every per-profile server.
+    for profile in ("supervisor_admin", "customer_service_external"):
+        _configure(monkeypatch, profile=profile)
+        client = TestClient(build_tool_dispatch_app())
+        assert client.get("/healthz").status_code == 200  # deterministic surface stays
+        resp = client.post(
+            "/v1/agent:turn",
+            headers={"Authorization": "Bearer dev-token"},
+            json={"channel": "sms", "case_id": "c1"},
+        )
+        assert resp.status_code == 404, f"agent:turn must not be mounted on {profile}"

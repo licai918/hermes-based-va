@@ -95,25 +95,33 @@ def _derive_email_subject_and_body(final_response: str, case_id: str) -> tuple[s
     """Split an email turn's ``final_response`` into ``(subject, body)`` (Fork C1).
 
     The email system message asks the model to lead with a ``Subject: <subject>``
-    line; when the first non-blank line follows that convention, it becomes the
-    subject and the remaining text is the body (so the body the staff member edits
-    has no stray subject line). When it does not — the keyless stub, or a model that
-    skipped the convention — fall back to a deterministic case-scoped subject and
-    keep the whole response as the body, so ``{channel, subject, draft}`` always
-    holds and the scripted/stub path stays deterministic for tests.
+    line; when the first non-blank line follows that convention, that line is peeled
+    off the body — so the body the staff member edits never carries a stray
+    ``Subject:`` line — and its text becomes the subject. An EMPTY subject (a bare
+    ``Subject:`` line, or a model that left it blank) still strips that line from the
+    body but uses the deterministic case-scoped fallback subject (M2: previously the
+    bare ``Subject:`` line leaked into the body). When the first real line is not a
+    ``Subject:`` line at all (the keyless stub, or a model that skipped the
+    convention), fall back to the same subject and keep the whole response as the
+    body. Body handling is symmetric across both paths (``.strip()``), so
+    ``{channel, subject, draft}`` always holds and the scripted/stub path stays
+    deterministic for tests.
     """
     text = final_response or ""
-    for index, line in enumerate(text.splitlines()):
+    fallback_subject = f"Re: your Toee Tire case {case_id}"
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
         if not line.strip():
             continue  # skip leading blank lines to the first real line
         stripped = line.strip()
         if stripped.lower().startswith(_SUBJECT_LINE_PREFIX):
             subject = stripped[len(_SUBJECT_LINE_PREFIX) :].strip()
-            if subject:
-                body = "\n".join(text.splitlines()[index + 1 :]).strip()
-                return subject, body
-        break  # first real line is not a Subject: line -> fall back
-    return f"Re: your Toee Tire case {case_id}", text
+            body = "\n".join(lines[index + 1 :]).strip()
+            # Peel the Subject: line off the body either way; an empty subject uses
+            # the deterministic fallback so the bare line never survives in the draft.
+            return (subject or fallback_subject), body
+        break  # first real line is not a Subject: line -> fall back, keep whole body
+    return fallback_subject, text.strip()
 
 
 def _user_message(channel: str, case_id: str, prompt: Optional[str]) -> str:

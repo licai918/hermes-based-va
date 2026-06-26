@@ -24,7 +24,7 @@ import os
 
 from fastapi import FastAPI
 
-from toee_hermes.plugin.profiles import PROFILE_ENV_VAR, PROFILES
+from toee_hermes.plugin.profiles import INTERNAL, PROFILE_ENV_VAR, PROFILES
 
 from hermes_runtime.agent_turn_app import add_agent_turn_route
 from hermes_runtime.tool_backend import select_tool_driver
@@ -68,11 +68,14 @@ def build_tool_dispatch_app() -> FastAPI:
     # surface.
     driver = select_tool_driver()
     app = create_tool_dispatch_app(api_token=api_token, profile=profile, driver=driver)
-    # ADR-0147 Fork A1: the same per-profile server also serves agent:turn (the LLM
-    # draft seam) behind the same bearer. The route boots internal_copilot unbound
-    # regardless of host profile — the draft capability is structurally no-send
-    # (ADR-0035/0067) — keeping the deterministic dispatch app above LLM-free. The
-    # shared driver records the draft_generated audit server-side (#47, option i);
-    # mock-mode is a no-op sink.
-    add_agent_turn_route(app, api_token=api_token, driver=driver)
+    # ADR-0147 Fork A1 + M3: the agent:turn LLM draft seam is mounted ONLY on the
+    # copilot (INTERNAL) server — "the copilot server" the ADR scopes it to. The
+    # SUPERVISOR/EXTERNAL dispatch servers expose tools:dispatch but NOT this LLM
+    # route, so the draft capability can't be reached on a server that should never
+    # draft (the deterministic dispatch app stays LLM-free everywhere). On the copilot
+    # server the route boots internal_copilot unbound (structurally no-send,
+    # ADR-0035/0067) and the shared driver records the draft_generated audit
+    # server-side (#47, option i); mock-mode is a no-op sink.
+    if profile == INTERNAL:
+        add_agent_turn_route(app, api_token=api_token, driver=driver)
     return app

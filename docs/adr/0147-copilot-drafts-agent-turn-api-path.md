@@ -128,6 +128,14 @@ where possible.
      "channel", "draft", "provenance": { "model", "profile" } } }`, or `{ "ok": false,
      "error": { "class", "message" } }` on a governed failure (HTTP 200; ADR-0020/0104).
      Auth/shape problems are 4xx (parity with `tool_dispatch_app`).
+   - **Amendment (Slice 3 review, M3): the mount is INTERNAL-only.** Although the route
+     boots `internal_copilot` regardless of host profile, the composition root
+     (`tool_dispatch_composition.build_tool_dispatch_app`) mounts it **only when the
+     server's profile is `internal_copilot`** — "the copilot server" (Fork A1). The
+     SUPERVISOR/EXTERNAL per-profile dispatch servers expose `tools:dispatch` but
+     **not** `agent:turn` (POST → 404), so the LLM draft surface cannot be reached on a
+     server that should never draft, and the deterministic dispatch app stays LLM-free
+     on every profile. No behavior change for the copilot path.
 
 2. **The endpoint runs an unbound `internal_copilot` agent turn; the draft is the
    agent's `final_response`.** It boots `internal_copilot` **unbound** (`boot_profile`
@@ -294,6 +302,30 @@ tracer proved `GET /api/copilot/cases` end-to-end against `MockDriver`.
     audit-only handler) and reverses the intentional "`toee_copilot_draft` is not a
     datastore tool" contract; the BFF keeps writing its (write-only-in-API-mode)
     audit until #47 closes the gap.
+  - **Build status (2026-06-27) — #47 closed via option (i) + review hardening.** The
+    `agent:turn` endpoint now records `draft_generated` **server-side** through the
+    *existing* datastore writer (`PostgresDriver.record_audit` → `insert_audit`, the
+    same path the case-mutation cutover uses), attributed to the actor +
+    `internal_copilot`, with `details.detail = <draft_sms|draft_email|draft_internal_note>`
+    and `target_type='case'`/`target_id=<case_id>`, written in the datastore unit of
+    work (a no-op sink in mock mode — no crash). `handleDraftViaApi` **stops** writing
+    the in-memory `draft_generated` audit (the non-API `handleDraft` keeps its
+    in-memory write), so there is **exactly one** `draft_generated` per successful
+    API-mode draft and it surfaces via `toee_workbench_read.get_audit_log` (the
+    cut-over audit-log view). Option **(ii)** (a thin `toee_copilot_draft` audit-only
+    handler) was **not** taken — it would have reversed
+    `test_unknown_datastore_tool_is_governed_configuration_missing`. Proven by
+    `test_agent_turn_audit` (row on success per channel; none on a failed turn; read
+    back via `get_audit_log`) and the updated `drafts.test.ts` (no API-path
+    double-write). Slice 3 review **Minor** findings also resolved: **M3** — the
+    `agent:turn` route is mounted **INTERNAL-only** (decision 1 amendment); **M2** — an
+    empty `Subject:` line is stripped from the email body (deterministic fallback
+    subject), so the bare line never leaks into the draft. **M1 (known gap, DEFERRED to
+    #48):** `provenance.model` reports the *primary* model even when the per-completion
+    fallback served — `model = resolved.model` is captured before the turn while the
+    fallback swaps inside `make_fallback_openai_factory`, a wrapper the **External**
+    profile turn shares, so threading the served model out has cross-profile blast
+    radius beyond this increment. Tracked as a low-priority fidelity gap, not fixed here.
 - **Slice 4 — `/api/copilot/chat` over the same endpoint (closes Slice 36 / #39).** Cut
   `handleChat` (today a deterministic stub) onto the same `agent:turn` route, reusing the
   draft-card path. (Optional within #41; listed because it reuses everything Slice 1–3
