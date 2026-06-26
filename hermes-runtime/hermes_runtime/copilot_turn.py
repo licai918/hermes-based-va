@@ -17,10 +17,20 @@ an email body (with a subject alongside), or a staff-facing internal note. The
 booted tool set is identical across channels, so the structural no-send invariant
 holds for all three.
 
-Slices 1–2 are scripted-only (Fork C1, mock-first ADR-0137): tests inject
-completions via the existing :mod:`hermes_runtime.live` seam, and the keyless
-default runs a deterministic local stub, so dev/CI draft without a model or key.
-Real OpenRouter wiring is Slice 3.
+Provider seam (Fork C1, mock-first ADR-0137), in precedence order:
+
+1. ``scripted_completions`` injected (tests/eval) -> the deterministic
+   :mod:`hermes_runtime.live` scripted seam: a real ``AIAgent`` loop with no
+   model, network, or key.
+2. ``OPENROUTER_API_KEY`` present (or an explicit ``config``/``openai_factory``)
+   -> the real OpenRouter boundary (ADR-0009: deepseek primary / qwen fallback),
+   reusing :mod:`hermes_runtime.openrouter`'s config + per-completion fallback
+   verbatim — no new provider abstraction, the External precedent unbound.
+3. Otherwise -> a deterministic keyless stub completion, so local dev and CI draft
+   without a model or key, exactly as the dispatch server runs against MockDriver.
+
+``OPENROUTER_API_KEY`` is read only via :func:`resolve_openrouter_config` and is
+never logged.
 """
 
 from __future__ import annotations
@@ -30,11 +40,26 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 from toee_hermes.plugin.profiles import INTERNAL
 
 from hermes_runtime.boot import boot_profile
-from hermes_runtime.live import run_scripted_agent
+from hermes_runtime.live import run_agent_turn, run_scripted_agent
+from hermes_runtime.openrouter import (
+    OpenRouterConfig,
+    default_is_retryable,
+    make_fallback_openai_factory,
+    resolve_openrouter_config,
+)
 
 # Reported as the provenance model when no real LLM produced the draft (scripted
-# in tests, deterministic stub locally). Real model slugs arrive with Slice 3.
+# in tests, deterministic stub locally). A real keyed turn reports the resolved
+# OpenRouter model slug instead (ADR-0009).
 SCRIPTED_MODEL = "scripted"
+
+# Headroom for the reply iteration after a governed context-read tool call; caps a
+# runaway loop without truncating a normal draft turn (mirrors openrouter.py).
+_DEFAULT_MAX_ITERATIONS = 12
+
+# An email turn frames the subject on a leading ``Subject:`` line (see the email
+# system message); the derivation peels it off so the body is the draft text.
+_SUBJECT_LINE_PREFIX = "subject:"
 
 # Per-channel system messages (ADR-0147 Slice 2). The channel selects how the same
 # unbound internal_copilot turn is framed — short SMS reply, email body, or a
@@ -48,8 +73,9 @@ _SYSTEM_MESSAGES = {
     ),
     "email": (
         "You are a Toee Tire support copilot drafting a customer email reply for a "
-        "staff member to review and send themselves. Write a clear, courteous email "
-        "body with a greeting and sign-off. Output only the body text; never send it."
+        "staff member to review and send themselves. Put the subject on the first "
+        "line as 'Subject: <subject>', then a clear, courteous email body with a "
+        "greeting and sign-off. Output only the subject line and body; never send it."
     ),
     "internal_note": (
         "You are a Toee Tire support copilot drafting an internal case note for "
@@ -65,15 +91,29 @@ def _system_message(channel: str) -> str:
     return _SYSTEM_MESSAGES[channel]
 
 
-def _stub_subject(case_id: str) -> str:
-    """A deterministic keyless email subject (Fork C1).
+def _derive_email_subject_and_body(final_response: str, case_id: str) -> tuple[str, str]:
+    """Split an email turn's ``final_response`` into ``(subject, body)`` (Fork C1).
 
-    ponytail: the subject is a fixed template, not model-generated — the scripted/
-    keyless turn yields only a body. Ceiling: the subject ignores case content.
-    Upgrade path: Slice 3's real provider derives the subject from the model output
-    (e.g. a structured response or first-line convention) on this same seam.
+    The email system message asks the model to lead with a ``Subject: <subject>``
+    line; when the first non-blank line follows that convention, it becomes the
+    subject and the remaining text is the body (so the body the staff member edits
+    has no stray subject line). When it does not — the keyless stub, or a model that
+    skipped the convention — fall back to a deterministic case-scoped subject and
+    keep the whole response as the body, so ``{channel, subject, draft}`` always
+    holds and the scripted/stub path stays deterministic for tests.
     """
-    return f"Re: your Toee Tire case {case_id}"
+    text = final_response or ""
+    for index, line in enumerate(text.splitlines()):
+        if not line.strip():
+            continue  # skip leading blank lines to the first real line
+        stripped = line.strip()
+        if stripped.lower().startswith(_SUBJECT_LINE_PREFIX):
+            subject = stripped[len(_SUBJECT_LINE_PREFIX) :].strip()
+            if subject:
+                body = "\n".join(text.splitlines()[index + 1 :]).strip()
+                return subject, body
+        break  # first real line is not a Subject: line -> fall back
+    return f"Re: your Toee Tire case {case_id}", text
 
 
 def _user_message(channel: str, case_id: str, prompt: Optional[str]) -> str:
@@ -89,15 +129,25 @@ def _stub_draft(channel: str, case_id: str) -> str:
 
 
 def make_copilot_run_turn(
-    *, scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None
+    *,
+    scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
+    config: Optional[OpenRouterConfig] = None,
+    openai_factory: Any = None,
+    is_retryable: Callable[[BaseException], bool] = default_is_retryable,
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
 ) -> Callable[..., dict[str, Any]]:
     """Build the copilot draft ``run_turn``: an unbound ``internal_copilot`` turn.
 
     The returned ``run_turn(*, channel, case_id, prompt=None)`` boots
-    ``internal_copilot`` unbound, runs a real ``AIAgent`` loop against the scripted
-    provider seam, and returns ``{"draft", "model", "profile"}`` where ``draft`` is
-    the captured ``final_response`` (Fork E1). ``scripted_completions`` injects the
-    completion(s) in tests; absent, a deterministic keyless stub is used (Fork C1).
+    ``internal_copilot`` unbound, runs a real ``AIAgent`` loop against the resolved
+    provider, and returns ``{"draft", "model", "profile"}`` (email also carries
+    ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1).
+
+    Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
+    OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
+    is injected (ADR-0009, per-completion fallback) → a deterministic keyless stub.
+    Building never requires a key; tests inject scripted completions, so CI is
+    keyless. The key is read only by :func:`resolve_openrouter_config`, never logged.
     """
 
     def run_turn(*, channel: str, case_id: str, prompt: Optional[str] = None) -> dict[str, Any]:
@@ -105,27 +155,74 @@ def make_copilot_run_turn(
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
         booted = boot_profile(INTERNAL)
-        completions = (
-            scripted_completions
-            if scripted_completions is not None
-            else [{"content": _stub_draft(channel, case_id)}]
-        )
-        turn = run_scripted_agent(
-            user_message=_user_message(channel, case_id, prompt),
-            system_message=_system_message(channel),
-            scripted_completions=completions,
-            governed_tool_names=booted.tool_names,
-        )
-        result: dict[str, Any] = {
-            "draft": turn["final_response"],
-            "model": SCRIPTED_MODEL,
-            "profile": INTERNAL,
-        }
+        user_message = _user_message(channel, case_id, prompt)
+        system_message = _system_message(channel)
+
+        if scripted_completions is not None:
+            # Tests/eval: a real AIAgent loop with no model, network, or key.
+            turn = run_scripted_agent(
+                user_message=user_message,
+                system_message=system_message,
+                scripted_completions=scripted_completions,
+                governed_tool_names=booted.tool_names,
+            )
+            model = SCRIPTED_MODEL
+        else:
+            resolved = config
+            if resolved is None and openai_factory is None:
+                # No injected provider: route through real OpenRouter only when a
+                # key is configured (ADR-0009); a missing key falls through to the
+                # keyless stub below (resolve_openrouter_config fails closed).
+                try:
+                    resolved = resolve_openrouter_config()
+                except ValueError:
+                    resolved = None
+            if resolved is None and openai_factory is None:
+                # Keyless: a deterministic local stub completion through the same
+                # real loop, so the endpoint serves without a model or key.
+                turn = run_scripted_agent(
+                    user_message=user_message,
+                    system_message=system_message,
+                    scripted_completions=[{"content": _stub_draft(channel, case_id)}],
+                    governed_tool_names=booted.tool_names,
+                )
+                model = SCRIPTED_MODEL
+            else:
+                # Real OpenRouter (or an injected provider): wrap the client with
+                # per-completion fallback to the secondary model (ADR-0009), mirroring
+                # the External production turn — but booted internal_copilot UNBOUND.
+                resolved = resolved or resolve_openrouter_config()
+                base_factory = openai_factory
+                if base_factory is None:
+                    from openai import OpenAI
+
+                    base_factory = OpenAI
+                factory = make_fallback_openai_factory(
+                    base_factory=base_factory,
+                    fallback_model=resolved.fallback_model,
+                    is_retryable=is_retryable,
+                )
+                turn = run_agent_turn(
+                    user_message=user_message,
+                    system_message=system_message,
+                    base_url=resolved.base_url,
+                    api_key=resolved.api_key,
+                    model=resolved.model,
+                    max_iterations=max_iterations,
+                    openai_factory=factory,
+                    governed_tool_names=booted.tool_names,
+                )
+                model = resolved.model
+
+        draft = turn["final_response"]
+        result: dict[str, Any] = {"draft": draft, "model": model, "profile": INTERNAL}
         # Email carries a subject (the in-process mock returns {channel, subject,
-        # draft}); sms/internal_note do not. The endpoint shapes the per-channel
-        # envelope from these fields.
+        # draft}); the subject is derived from the turn's final_response, and the
+        # body becomes the draft. sms/internal_note key only on draft.
         if channel == "email":
-            result["subject"] = _stub_subject(case_id)
+            subject, body = _derive_email_subject_and_body(draft, case_id)
+            result["subject"] = subject
+            result["draft"] = body
         return result
 
     return run_turn

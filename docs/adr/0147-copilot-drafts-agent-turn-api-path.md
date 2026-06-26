@@ -281,6 +281,19 @@ tracer proved `GET /api/copilot/cases` end-to-end against `MockDriver`.
   (scripted/stub). **Also record `draft_generated` server-side** here (the sub-fork
   amendment): the `agent:turn` endpoint writes the audit in the governed path,
   retiring the now write-only BFF audit.
+  - **Build status (2026-06-26).** The real-model thirds **landed**: provider wiring
+    keyed off `OPENROUTER_API_KEY` (real OpenRouter / deepseek primary + qwen
+    fallback, keyless stub otherwise; provider injected so CI is keyless), the
+    governed `toee_workbench_read` context-read proof (catalog → gate → driver, the
+    read's result feeds back into a grounded draft), the multi-step **no-send
+    rejection** proof (a scripted send `tool_call` is rejected by the real loop, not
+    just at boot), and email **subject derivation** from `final_response` (the
+    `Subject:`-first-line convention; deterministic fallback). The **server-side
+    `draft_generated` audit is DEFERRED** to **#47** (`enhancement, ready-for-human`):
+    it needs the sub-fork veto below (endpoint-direct vs the thin `toee_copilot_draft`
+    audit-only handler) and reverses the intentional "`toee_copilot_draft` is not a
+    datastore tool" contract; the BFF keeps writing its (write-only-in-API-mode)
+    audit until #47 closes the gap.
 - **Slice 4 — `/api/copilot/chat` over the same endpoint (closes Slice 36 / #39).** Cut
   `handleChat` (today a deterministic stub) onto the same `agent:turn` route, reusing the
   draft-card path. (Optional within #41; listed because it reuses everything Slice 1–3

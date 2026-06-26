@@ -14,13 +14,33 @@ proves it.
 
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.copilot_turn import (
     SCRIPTED_MODEL,
     _system_message,
+    _user_message,
     make_copilot_run_turn,
 )
+from hermes_runtime.live import _scripted_openai_factory, run_scripted_agent
+from hermes_runtime.openrouter import OPENROUTER_PRIMARY_MODEL, OpenRouterConfig
 from toee_hermes.plugin.profiles import INTERNAL, allowlisted_tools
+
+
+@pytest.fixture(autouse=True)
+def _keyless_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fork C1 is keyed off OPENROUTER_API_KEY; clear it so the default-provider
+    # tests exercise the deterministic keyless stub even on a dev box that exports
+    # a real key — the real OpenRouter path is only ever reached via injected
+    # config/factory below, so CI never makes a network call.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+
+class _RetryableBoom(Exception):
+    """A test-only retryable error standing in for an OpenRouter primary outage."""
 
 # The two customer-facing write tools a draft agent must never hold (ADR-0067):
 # the Textline reply send and the Square payment link. Both are outside the
@@ -109,6 +129,8 @@ def test_default_provider_is_a_deterministic_keyless_stub() -> None:
 
     assert isinstance(result["draft"], str) and result["draft"].strip()
     assert result["profile"] == INTERNAL
+    # Keyless: provenance reports the scripted/stub model, never a real slug.
+    assert result["model"] == SCRIPTED_MODEL
 
 
 def test_per_channel_system_messages_are_distinct() -> None:
@@ -120,16 +142,191 @@ def test_per_channel_system_messages_are_distinct() -> None:
     assert len(set(messages)) == 3
 
 
-def test_email_turn_returns_a_subject() -> None:
+def test_email_turn_without_a_subject_line_falls_back_deterministically() -> None:
     # Email parity needs a subject — the in-process mock returns {channel, subject,
-    # draft}. The scripted/keyless turn supplies a deterministic one (Slice 3 wires
-    # the real model's subject); the body is still the agent's final_response.
+    # draft}. When the turn's final_response carries no `Subject:` line (the keyless
+    # stub, or a model that skipped the convention), the derivation falls back to a
+    # deterministic case-scoped subject and keeps the whole body as the draft.
     run_turn = make_copilot_run_turn(scripted_completions=[{"content": "Body text."}])
 
     result = run_turn(channel="email", case_id="case_email")
 
     assert result["draft"].strip() == "Body text."
-    assert isinstance(result["subject"], str) and result["subject"].strip()
+    assert result["subject"] == "Re: your Toee Tire case case_email"
+    assert result["profile"] == INTERNAL
+
+
+def test_email_subject_is_derived_from_a_leading_subject_line() -> None:
+    # Slice 3: the real subject derivation. When the turn's final_response leads with
+    # a `Subject:` line, that line becomes the subject and the remaining text is the
+    # body (the draft the staff member edits) — so the body has no stray subject
+    # line. Deterministic under the scripted path; the same seam serves the real model.
+    run_turn = make_copilot_run_turn(
+        scripted_completions=[
+            {"content": "Subject: Your order TOEE-1001 shipped\n\nHi there,\n\nIt's on the way.\n\n- Toee Tire"}
+        ]
+    )
+
+    result = run_turn(channel="email", case_id="case_email")
+
+    assert result["subject"] == "Your order TOEE-1001 shipped"
+    assert result["draft"] == "Hi there,\n\nIt's on the way.\n\n- Toee Tire"
+    assert result["profile"] == INTERNAL
+
+
+# --- Slice 3: governed context reads + the no-send invariant under a real loop ---
+
+
+def test_governed_workbench_read_executes_through_the_real_multistep_loop() -> None:
+    # THE core Slice 3 value (ADR-0147 decision 2): a copilot draft turn pulls case
+    # context itself via a governed read in a real multi-step AIAgent loop. Booting
+    # internal_copilot UNBOUND (exactly what make_copilot_run_turn composes) admits
+    # toee_workbench_read; a scripted get_case tool_call dispatches through the FULL
+    # governed path (catalog -> Tool Gate -> driver -> audit sink), its result feeds
+    # back, and a SECOND scripted completion returns the draft grounded in it (E1).
+    booted = boot_profile(INTERNAL)
+    assert "toee_workbench_read__get_case" in booted.tool_names  # the read is admitted
+
+    draft = "Hi! Your case c1 is open and we're on it - an update is on the way."
+    turn = run_scripted_agent(
+        user_message=_user_message("sms", "c1", None),
+        system_message=_system_message("sms"),
+        scripted_completions=[
+            {"tool_calls": [{"name": "toee_workbench_read__get_case", "arguments": {"case_id": "c1"}}]},
+            {"content": draft},
+        ],
+        governed_tool_names=booted.tool_names,
+    )
+
+    # The governed read actually executed: its tool-result message carries the real
+    # driver output, proving catalog -> gate -> driver ran inside the loop. (The
+    # datastore driver writes the audit ROW it commits — test_datastore_driver_cases;
+    # the keyless mock audit sink is a no-op, so here we prove execution + gating,
+    # not a persisted row.)
+    tool_results = [
+        m
+        for m in turn["messages"]
+        if isinstance(m, dict) and m.get("role") == "tool"
+    ]
+    read = next(m for m in tool_results if m.get("name") == "toee_workbench_read__get_case")
+    assert json.loads(read["content"]) == {"case_id": "c1", "status": "open"}
+
+    # ...and the draft is the post-read completion: the result fed back and the loop
+    # continued to a grounded final_response (a genuine multi-step turn, not a stub).
+    assert turn["final_response"].strip() == draft
+
+
+def test_a_send_tool_call_is_rejected_under_the_real_multistep_loop() -> None:
+    # Security crux (ADR-0067/0035): the no-send invariant must hold against a REAL
+    # multi-step loop, not just at boot. A scripted tool_call for the customer-send
+    # tool is rejected — it is not in the booted internal_copilot tool set, so it is
+    # never admitted (valid_tool_names) and never dispatched — and the turn falls
+    # through to proposed text. No send is ever executed.
+    booted = boot_profile(INTERNAL)
+    assert "toee_textline_reply__send_message" not in booted.tool_names
+
+    draft = "Here is a suggested reply for you to review and send."
+    turn = run_scripted_agent(
+        user_message=_user_message("sms", "c1", None),
+        system_message=_system_message("sms"),
+        scripted_completions=[
+            {
+                "tool_calls": [
+                    {
+                        "name": "toee_textline_reply__send_message",
+                        "arguments": {"conversation_id": "conv1", "body": "sneaky auto-send"},
+                    }
+                ]
+            },
+            {"content": draft},
+        ],
+        governed_tool_names=booted.tool_names,
+    )
+
+    # The send tool_call did NOT dispatch: its tool-result reports the tool does not
+    # exist for this session (rejected before any driver), and the available-tools
+    # list the rejection enumerates never includes the send toolset.
+    send_results = [
+        m
+        for m in turn["messages"]
+        if isinstance(m, dict)
+        and m.get("role") == "tool"
+        and m.get("name") == "toee_textline_reply__send_message"
+    ]
+    assert send_results, "the send tool_call should produce a (rejection) tool result"
+    rejection = send_results[0]["content"]
+    assert "does not exist" in rejection  # rejected, not dispatched to a driver
+    # The send toolset is not even offered: it is absent from the available-tools
+    # list the rejection enumerates (the prefix names the rejected tool; the gate
+    # is the available set after it).
+    available = rejection.split("Available tools:", 1)[-1]
+    assert "toee_textline_reply" not in available
+
+    # The turn still produced the proposed draft; no send happened.
+    assert turn["final_response"].strip() == draft
+
+
+# --- Slice 3: real OpenRouter provider wiring (Fork C1), proven keyless in CI ---
+
+
+def test_keyed_path_runs_through_the_real_openrouter_boundary_via_injected_provider() -> None:
+    # WITH a key (here: an injected config + scripted provider, so CI stays keyless),
+    # make_copilot_run_turn routes through the real run_agent_turn OpenRouter boundary
+    # booted internal_copilot UNBOUND, NOT the scripted/stub branch. Provenance reports
+    # the resolved model slug (ADR-0009 primary), proving the keyed path was taken.
+    run_turn = make_copilot_run_turn(
+        config=OpenRouterConfig(
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-or-test",
+            model=OPENROUTER_PRIMARY_MODEL,
+        ),
+        openai_factory=_scripted_openai_factory(
+            [{"content": "Drafted through the keyed OpenRouter path."}]
+        ),
+    )
+
+    result = run_turn(channel="sms", case_id="case_keyed")
+
+    assert result["draft"].strip() == "Drafted through the keyed OpenRouter path."
+    assert result["model"] == OPENROUTER_PRIMARY_MODEL  # real slug, not "scripted"
+    assert result["profile"] == INTERNAL
+
+
+def test_keyed_path_falls_back_to_the_secondary_model_on_a_retryable_error() -> None:
+    # ADR-0009 deepseek primary / qwen fallback, on the copilot turn: a retryable
+    # primary-model failure retries the same completion on the fallback model, so the
+    # draft is still produced. Reuses openrouter.py's per-completion fallback verbatim.
+    config = OpenRouterConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-test",
+        model="deepseek/primary",
+        fallback_model="qwen/fallback",
+    )
+    scripted = _scripted_openai_factory([{"content": "Draft served by the fallback model."}])
+    state = {"failed": False}
+
+    def base_factory(*args: object, **kwargs: object) -> object:
+        inner = scripted(*args, **kwargs)
+        serve = inner.chat.completions.create
+
+        def create(**call_kwargs: object) -> object:
+            if not state["failed"]:
+                state["failed"] = True
+                raise _RetryableBoom()
+            return serve(**call_kwargs)
+
+        inner.chat.completions.create = create
+        return inner
+
+    run_turn = make_copilot_run_turn(
+        config=config,
+        openai_factory=base_factory,
+        is_retryable=lambda exc: isinstance(exc, _RetryableBoom),
+    )
+
+    result = run_turn(channel="sms", case_id="case_fallback")
+
+    assert result["draft"].strip() == "Draft served by the fallback model."
     assert result["profile"] == INTERNAL
 
 

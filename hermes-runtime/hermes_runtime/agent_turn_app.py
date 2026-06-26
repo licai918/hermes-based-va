@@ -80,9 +80,10 @@ def add_agent_turn_route(
         prompt = prompt if isinstance(prompt, str) and prompt else None
 
         # actor_account_id rides the body like dispatch (ADR-0141 actor attribution);
-        # the BFF asserts the acting employee under the shared bearer. Slice 1 keeps
-        # the draft_generated audit on the BFF (ADR-0147 sub-fork), so the actor is
-        # accepted for forward-compat and not yet threaded into a server-side audit.
+        # the BFF asserts the acting employee under the shared bearer. The BFF still
+        # writes the draft_generated audit (ADR-0147 sub-fork); recording it
+        # server-side in the governed datastore audit is the deferred follow-up #47,
+        # so the actor is accepted for forward-compat but not yet threaded here.
         result = runner(channel=channel, case_id=case_id, prompt=prompt)
 
         # The draft is the agent's final_response (Fork E1); provenance records the

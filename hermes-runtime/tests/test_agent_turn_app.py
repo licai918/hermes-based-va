@@ -13,12 +13,21 @@ deterministic; the real scripted seam is proven in ``test_copilot_turn``.
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from hermes_runtime.agent_turn_app import AGENT_TURN_PATH, add_agent_turn_route
 
 API_TOKEN = "test-copilot-api-token"
+
+
+@pytest.fixture(autouse=True)
+def _keyless_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The default provider is keyed off OPENROUTER_API_KEY (Fork C1); clear it so the
+    # end-to-end default-provider tests below exercise the deterministic keyless stub
+    # even on a dev box that exports a real key — CI never makes a network call.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
 
 def _fake_run_turn(*, channel: str, case_id: str, prompt: str | None = None) -> dict:
