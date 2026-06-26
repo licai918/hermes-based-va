@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from toee_hermes.plugin.profiles import PROFILE_ENV_VAR, PROFILES
 
 from hermes_runtime.agent_turn_app import add_agent_turn_route
+from hermes_runtime.tool_backend import select_tool_driver
 from hermes_runtime.tool_dispatch_app import create_tool_dispatch_app
 
 # Per-process bearer the BFF presents (ADR-0141). One token per profile home; the
@@ -60,13 +61,18 @@ def build_tool_dispatch_app() -> FastAPI:
         )
     api_token = _require_env(DISPATCH_API_TOKEN_ENV)
 
-    # Driver defaults to select_tool_driver() inside create_tool_dispatch_app:
-    # TOOL_BACKEND=mock (default) or datastore (ADR-0140). The profile-allowlist
-    # gate is the default, so the deployment's fixed profile bounds the surface.
-    app = create_tool_dispatch_app(api_token=api_token, profile=profile)
+    # TOOL_BACKEND=mock (default) or datastore (ADR-0140) selects the driver once,
+    # shared by both routes so the agent:turn audit (option i, #47) lands in the same
+    # store the dispatch reads/writes use. The profile-allowlist gate is the default
+    # inside create_tool_dispatch_app, so the deployment's fixed profile bounds the
+    # surface.
+    driver = select_tool_driver()
+    app = create_tool_dispatch_app(api_token=api_token, profile=profile, driver=driver)
     # ADR-0147 Fork A1: the same per-profile server also serves agent:turn (the LLM
     # draft seam) behind the same bearer. The route boots internal_copilot unbound
     # regardless of host profile — the draft capability is structurally no-send
-    # (ADR-0035/0067) — keeping the deterministic dispatch app above LLM-free.
-    add_agent_turn_route(app, api_token=api_token)
+    # (ADR-0035/0067) — keeping the deterministic dispatch app above LLM-free. The
+    # shared driver records the draft_generated audit server-side (#47, option i);
+    # mock-mode is a no-op sink.
+    add_agent_turn_route(app, api_token=api_token, driver=driver)
     return app

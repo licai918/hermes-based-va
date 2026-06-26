@@ -184,6 +184,28 @@ def test_agent_turn_internal_note_data_keys_on_kind() -> None:
     assert data["provenance"]["profile"] == "internal_copilot"
 
 
+def test_agent_turn_audit_is_a_noop_without_a_datastore_driver() -> None:
+    # #47 option (i), mock-first sink: a driver lacking `record_audit` (the
+    # MockDriver) — or no driver at all — makes the server-side draft_generated audit
+    # a no-op. The draft still returns 200 with no crash, exactly like every other
+    # API-path governed write in mock mode (the persisted-row proof is the datastore
+    # test test_agent_turn_audit; here we only pin the no-op-doesn't-blow-up contract).
+    class _MockLikeDriver:  # stands in for MockDriver: no record_audit method
+        kind = "mock"
+
+    app = FastAPI()
+    add_agent_turn_route(
+        app, api_token=API_TOKEN, run_turn=_fake_run_turn, driver=_MockLikeDriver()
+    )
+    response = TestClient(app).post(
+        AGENT_TURN_PATH,
+        headers=_auth(),
+        json={"channel": "sms", "case_id": "c1", "actor_account_id": "a"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+
 def test_agent_turn_end_to_end_email_default_provider_includes_subject() -> None:
     # The email seam end to end with the default scripted/stub provider: boots
     # internal_copilot unbound and returns a {channel:email, subject, draft} envelope

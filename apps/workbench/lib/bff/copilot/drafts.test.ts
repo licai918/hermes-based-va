@@ -113,9 +113,12 @@ describe("handleDraft", () => {
 // ADR-0147 Slice 1–2: the draft generated over the per-profile agent-turn API
 // (the LLM seam) instead of the in-process mock, env-gated. It MUST preserve the
 // store path's surface byte-for-byte per channel: 400/404 caseId validation, the
-// `draft_generated` audit (detail = action), the channel-shaped `{ draft: ... }`
-// body (sms `{channel,draft}`, email `{channel,subject,draft}`, note `{kind,draft}`),
-// and the ADR-0104 error->HTTP mapping (governed failure -> 502, no audit).
+// channel-shaped `{ draft: ... }` body (sms `{channel,draft}`, email
+// `{channel,subject,draft}`, note `{kind,draft}`), and the ADR-0104 error->HTTP
+// mapping (governed failure -> 502). The `draft_generated` audit is recorded
+// SERVER-SIDE by the agent:turn endpoint now (#47, option i), so this path writes
+// NO in-memory audit — the proof of the row moves to a Python datastore test
+// (`test_agent_turn_audit`); here we prove the BFF no longer double-writes it.
 describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
   type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
   const SMS_DRAFT = {
@@ -157,7 +160,7 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
     };
   }
 
-  it("drafts an SMS, returns { draft: { channel, draft } } and audits draft_generated", async () => {
+  it("drafts an SMS, returns { draft: { channel, draft } } and writes NO in-memory audit (recorded server-side, #47)", async () => {
     let turnBody: Record<string, unknown> | undefined;
     const { agent, client } = clients(
       fakeFetch({ case_id: "case_api" }, (init) => {
@@ -172,7 +175,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "case_api", prompt: "reassure them" }),
       agent,
       client,
-      deps(),
       "draft_sms",
     );
 
@@ -181,10 +183,9 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
     expect(await res.json()).toEqual({
       draft: { channel: "sms", draft: SMS_DRAFT.draft },
     });
-    const entry = store
-      .getCaseAuditLog("case_api")
-      .find((e) => e.action === "draft_generated");
-    expect(entry?.detail).toBe("draft_sms");
+    // De-dup (#47, option i): the endpoint records draft_generated server-side, so
+    // the BFF must NOT also write its in-memory audit on the API path.
+    expect(actions("case_api")).not.toContain("draft_generated");
     // The agent-turn body carries the channel, case, prompt + acting account.
     expect(turnBody).toEqual({
       channel: "sms",
@@ -205,7 +206,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ prompt: "hi" }),
       agent,
       client,
-      deps(),
       "draft_sms",
     );
 
@@ -220,7 +220,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "missing" }),
       agent,
       client,
-      deps(),
       "draft_sms",
     );
 
@@ -245,7 +244,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "case_api" }),
       agent,
       client,
-      deps(),
       "draft_sms",
     );
 
@@ -270,7 +268,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "case_api" }),
       agent,
       client,
-      deps(),
       "draft_sms",
     );
 
@@ -303,7 +300,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "case_api" }),
       agent,
       client,
-      deps(),
       "draft_email",
     );
 
@@ -316,10 +312,8 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
         draft: EMAIL_DRAFT.draft,
       },
     });
-    const entry = store
-      .getCaseAuditLog("case_api")
-      .find((e) => e.action === "draft_generated");
-    expect(entry?.detail).toBe("draft_email");
+    // De-dup (#47): the email draft audit is recorded server-side, not in-memory.
+    expect(actions("case_api")).not.toContain("draft_generated");
   });
 
   it("drafts an internal note and returns { draft: { kind, draft } } (no channel, no provenance)", async () => {
@@ -333,7 +327,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "case_api" }),
       agent,
       client,
-      deps(),
       "draft_internal_note",
     );
 
@@ -342,10 +335,8 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
     expect(await res.json()).toEqual({
       draft: { kind: "internal_note", draft: NOTE_DRAFT.draft },
     });
-    const entry = store
-      .getCaseAuditLog("case_api")
-      .find((e) => e.action === "draft_generated");
-    expect(entry?.detail).toBe("draft_internal_note");
+    // De-dup (#47): the note draft audit is recorded server-side, not in-memory.
+    expect(actions("case_api")).not.toContain("draft_generated");
   });
 
   it("404s an unknown case for email without writing an audit", async () => {
@@ -355,7 +346,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "missing" }),
       agent,
       client,
-      deps(),
       "draft_email",
     );
 
@@ -378,7 +368,6 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
       draftReq({ caseId: "case_api" }),
       agent,
       client,
-      deps(),
       "draft_email",
     );
 

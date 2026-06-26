@@ -21,7 +21,7 @@ export const POST = withSession((req, { session }) => {
     const actorAccountId = session.accountId;
     const agent = new HermesAgentClient({ ...apiConfig, actorAccountId });
     const client = new HermesApiClient({ ...apiConfig, actorAccountId });
-    return handleDraftViaApi(req, agent, client, deps, "draft_internal_note");
+    return handleDraftViaApi(req, agent, client, "draft_internal_note");
   }
   return handleDraft(req, deps, "draft_internal_note");
 });

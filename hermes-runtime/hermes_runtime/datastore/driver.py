@@ -19,6 +19,7 @@ from toee_hermes.errors import ToolDriverError
 
 from .config import database_url
 from .handlers import DatastoreRegistry, build_datastore_registry
+from .handlers._common import insert_audit
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.execute import ToolRequest
@@ -84,6 +85,43 @@ class PostgresDriver:
                 result = handler(conn, request.params, context)
                 conn.commit()
                 return result
+            except Exception:
+                conn.rollback()
+                raise
+
+    def record_audit(
+        self,
+        *,
+        profile: str,
+        account_id: Optional[str],
+        action: str,
+        target_type: Optional[str],
+        target_id: Optional[str],
+        details: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """Write one Workbench Audit Log row in its own unit of work (ADR-0147 #47).
+
+        The ``agent:turn`` draft audit (option i) is not a gated tool dispatch — the
+        draft is the agent's ``final_response`` (Fork E1), not a tool result — so it
+        reuses the same :func:`insert_audit` the case handlers use and commits its own
+        single-row transaction here, mirroring how a handler's ``insert_audit`` commits
+        inside :meth:`execute`. Only the datastore driver carries this; the MockDriver
+        has no audit store, so the route's mock-mode write is a no-op (it checks for
+        this method's presence), exactly like every other governed write in mock mode.
+        """
+        with self._acquire() as conn:
+            try:
+                audit_id = insert_audit(
+                    conn,
+                    profile=profile,
+                    account_id=account_id,
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    details=details,
+                )
+                conn.commit()
+                return audit_id
             except Exception:
                 conn.rollback()
                 raise

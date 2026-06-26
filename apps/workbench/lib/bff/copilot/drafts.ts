@@ -53,18 +53,22 @@ export async function handleDraft(
 // Per-profile API variant of the draft (ADR-0147 Slice 1): the draft is generated
 // by a genuine unbound internal_copilot agent turn over `POST /v1/agent:turn` (the
 // LLM seam) instead of the in-process mock. It preserves the store path's surface
-// byte-for-byte — 400 missing caseId, 404 unknown case, the `draft_generated` audit
-// (detail = action), the `{ draft: { channel, draft } }` body — and maps a governed
-// or transport failure through the ADR-0104 per-class status (no audit on failure).
-// The 404 pre-read goes to the deterministic dispatch (the datastore is the source
-// of truth in API mode), mirroring the case-write cutover; the audit stays on the
-// BFF (ADR-0147 sub-fork). The route selects this only when HERMES_COPILOT_API_URL/
-// TOKEN are set, else it falls back to the in-memory `handleDraft`.
+// byte-for-byte — 400 missing caseId, 404 unknown case, the `{ draft: { channel,
+// draft } }` body — and maps a governed or transport failure through the ADR-0104
+// per-class status. The 404 pre-read goes to the deterministic dispatch (the
+// datastore is the source of truth in API mode), mirroring the case-write cutover.
+//
+// The `draft_generated` audit is recorded SERVER-SIDE by the agent:turn endpoint
+// (#47, option i: it reuses the datastore audit writer, so the row lands in the
+// Postgres `workbench_audit_log` the governed audit-log read now consults). This
+// path therefore does NOT write the in-memory audit — doing so would be a write-only
+// duplicate the cut-over audit-log view never reads. The non-API `handleDraft`
+// fallback keeps its in-memory `appendAudit` (store-path parity). The route selects
+// this only when HERMES_COPILOT_API_URL/TOKEN are set, else falls back to handleDraft.
 export async function handleDraftViaApi(
   req: Request,
   agent: HermesAgentClient,
   client: HermesApiClient,
-  deps: CopilotDeps,
   action: DraftAction,
 ): Promise<Response> {
   const body = await readJsonBody(req);
@@ -84,7 +88,6 @@ export async function handleDraftViaApi(
       caseId,
       prompt,
     });
-    appendAudit(deps, "draft_generated", { caseId, detail: action });
     // Store-path parity: the in-process handleDraft returns `{ draft: <tool data> }`
     // verbatim. Here the agent's per-channel envelope IS that data, so we pass it
     // through minus `provenance` (governance metadata the textarea never binds).
