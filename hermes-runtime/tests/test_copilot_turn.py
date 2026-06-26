@@ -15,7 +15,11 @@ proves it.
 from __future__ import annotations
 
 from hermes_runtime.boot import boot_profile
-from hermes_runtime.copilot_turn import SCRIPTED_MODEL, make_copilot_run_turn
+from hermes_runtime.copilot_turn import (
+    SCRIPTED_MODEL,
+    _system_message,
+    make_copilot_run_turn,
+)
 from toee_hermes.plugin.profiles import INTERNAL, allowlisted_tools
 
 # The two customer-facing write tools a draft agent must never hold (ADR-0067):
@@ -104,4 +108,38 @@ def test_default_provider_is_a_deterministic_keyless_stub() -> None:
     result = run_turn(channel="sms", case_id="case_x")
 
     assert isinstance(result["draft"], str) and result["draft"].strip()
+    assert result["profile"] == INTERNAL
+
+
+def test_per_channel_system_messages_are_distinct() -> None:
+    # ADR-0147 Slice 2: the single SMS-only system message is replaced by one per
+    # channel (sms short reply / email subject+body / internal note staff-facing),
+    # so each surface is framed differently. All three are non-empty and distinct.
+    messages = [_system_message(c) for c in ("sms", "email", "internal_note")]
+    assert all(isinstance(m, str) and m.strip() for m in messages)
+    assert len(set(messages)) == 3
+
+
+def test_email_turn_returns_a_subject() -> None:
+    # Email parity needs a subject — the in-process mock returns {channel, subject,
+    # draft}. The scripted/keyless turn supplies a deterministic one (Slice 3 wires
+    # the real model's subject); the body is still the agent's final_response.
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": "Body text."}])
+
+    result = run_turn(channel="email", case_id="case_email")
+
+    assert result["draft"].strip() == "Body text."
+    assert isinstance(result["subject"], str) and result["subject"].strip()
+    assert result["profile"] == INTERNAL
+
+
+def test_internal_note_turn_yields_draft_and_no_subject() -> None:
+    # The note envelope keys on `kind`, not a subject; the turn just yields the note
+    # text and the endpoint shapes {kind, draft}. No subject is produced.
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": "Internal note."}])
+
+    result = run_turn(channel="internal_note", case_id="case_note")
+
+    assert result["draft"].strip() == "Internal note."
+    assert "subject" not in result
     assert result["profile"] == INTERNAL

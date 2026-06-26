@@ -85,9 +85,14 @@ export async function handleDraftViaApi(
       prompt,
     });
     appendAudit(deps, "draft_generated", { caseId, detail: action });
-    // Store-path parity: only { channel, draft } reaches the client; provenance is
-    // governance metadata, not part of the draft body the textarea binds.
-    return json({ draft: { channel: data.channel, draft: data.draft } });
+    // Store-path parity: the in-process handleDraft returns `{ draft: <tool data> }`
+    // verbatim. Here the agent's per-channel envelope IS that data, so we pass it
+    // through minus `provenance` (governance metadata the textarea never binds).
+    // This covers all three channel shapes — sms/email `{channel,...}`, email's
+    // `subject`, note's `{kind,...}` — without per-channel branching, exactly
+    // mirroring the mock's per-channel tool output.
+    const { provenance: _provenance, ...draft } = data;
+    return json({ draft });
   } catch (err) {
     return hermesErrorToProblem(err);
   }

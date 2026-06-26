@@ -27,8 +27,8 @@ from hermes_runtime.tool_dispatch_app import bearer_authorized
 # resource-shaped REST path under /v1.
 AGENT_TURN_PATH = "/v1/agent:turn"
 
-# The draft channels the BFF selects (ADR-0147). Slice 1 wires SMS end-to-end;
-# email/internal_note are accepted by the contract but land in Slice 2.
+# The draft channels the BFF selects (ADR-0147). All three are wired end-to-end as
+# of Slice 2 (sms/email/internal_note), each with its own per-channel envelope.
 VALID_CHANNELS = frozenset({"sms", "email", "internal_note"})
 
 # run_turn(*, channel, case_id, prompt) -> {"draft", "model", "profile"}. The one
@@ -87,11 +87,21 @@ def add_agent_turn_route(
 
         # The draft is the agent's final_response (Fork E1); provenance records the
         # model boundary + the (structurally no-send) profile that produced it.
-        data = {
-            "channel": channel,
-            "draft": result["draft"],
-            "provenance": {"model": result["model"], "profile": result["profile"]},
-        }
+        # The per-channel envelope mirrors the in-process toee_copilot_draft tool
+        # output byte-for-byte (ADR-0147 Slice 2) so the BFF body has store-path
+        # parity: sms/email key on `channel`, email adds `subject`, internal_note
+        # keys on `kind` (no channel).
+        if channel == "internal_note":
+            data: dict[str, Any] = {"kind": "internal_note", "draft": result["draft"]}
+        elif channel == "email":
+            data = {
+                "channel": "email",
+                "subject": result["subject"],
+                "draft": result["draft"],
+            }
+        else:  # sms
+            data = {"channel": "sms", "draft": result["draft"]}
+        data["provenance"] = {"model": result["model"], "profile": result["profile"]}
         return JSONResponse(content={"ok": True, "data": data})
 
     return app

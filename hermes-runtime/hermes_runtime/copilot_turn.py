@@ -12,10 +12,15 @@ send tool, so the booted turn cannot send to a customer (ADR-0067) — there is 
 runtime guard to forget. The agent still holds the copilot *read* tools
 (``toee_workbench_read``, ``toee_knowledge_search``, …) to ground the draft.
 
-Slice 1 is scripted-only (Fork C1, mock-first ADR-0137): tests inject completions
-via the existing :mod:`hermes_runtime.live` seam, and the keyless default runs a
-deterministic local stub, so dev/CI draft without a model or key. Real OpenRouter
-wiring is Slice 3.
+The ``channel`` selects a per-channel system message (Slice 2): a short SMS reply,
+an email body (with a subject alongside), or a staff-facing internal note. The
+booted tool set is identical across channels, so the structural no-send invariant
+holds for all three.
+
+Slices 1–2 are scripted-only (Fork C1, mock-first ADR-0137): tests inject
+completions via the existing :mod:`hermes_runtime.live` seam, and the keyless
+default runs a deterministic local stub, so dev/CI draft without a model or key.
+Real OpenRouter wiring is Slice 3.
 """
 
 from __future__ import annotations
@@ -31,18 +36,44 @@ from hermes_runtime.live import run_scripted_agent
 # in tests, deterministic stub locally). Real model slugs arrive with Slice 3.
 SCRIPTED_MODEL = "scripted"
 
-# One short, plain, staff-reviewed SMS reply. The agent never sends; it proposes.
-# ponytail: Slice 1 wires SMS only — ADR-0147 Slice 2 adds the email (subject+body)
-# and internal-note (staff-facing) system messages on this same seam.
-_SMS_SYSTEM_MESSAGE = (
-    "You are a Toee Tire support copilot drafting a customer SMS reply for a staff "
-    "member to review and send themselves. Write one short, plain, friendly message. "
-    "Output only the suggested reply text; never send it yourself."
-)
+# Per-channel system messages (ADR-0147 Slice 2). The channel selects how the same
+# unbound internal_copilot turn is framed — short SMS reply, email body, or a
+# staff-facing internal note. Each instructs "propose only, never send"; the agent
+# has no send tool regardless (the structural no-send invariant, ADR-0035/0067).
+_SYSTEM_MESSAGES = {
+    "sms": (
+        "You are a Toee Tire support copilot drafting a customer SMS reply for a "
+        "staff member to review and send themselves. Write one short, plain, "
+        "friendly message. Output only the suggested reply text; never send it."
+    ),
+    "email": (
+        "You are a Toee Tire support copilot drafting a customer email reply for a "
+        "staff member to review and send themselves. Write a clear, courteous email "
+        "body with a greeting and sign-off. Output only the body text; never send it."
+    ),
+    "internal_note": (
+        "You are a Toee Tire support copilot drafting an internal case note for "
+        "staff — never shown to the customer. Summarize the situation and the "
+        "suggested next step plainly for a colleague. Output only the note text."
+    ),
+}
 
 
 def _system_message(channel: str) -> str:
-    return _SMS_SYSTEM_MESSAGE
+    # The route validates channel against VALID_CHANNELS before run_turn is called,
+    # so an unknown channel here is a programming error and should fail loudly.
+    return _SYSTEM_MESSAGES[channel]
+
+
+def _stub_subject(case_id: str) -> str:
+    """A deterministic keyless email subject (Fork C1).
+
+    ponytail: the subject is a fixed template, not model-generated — the scripted/
+    keyless turn yields only a body. Ceiling: the subject ignores case content.
+    Upgrade path: Slice 3's real provider derives the subject from the model output
+    (e.g. a structured response or first-line convention) on this same seam.
+    """
+    return f"Re: your Toee Tire case {case_id}"
 
 
 def _user_message(channel: str, case_id: str, prompt: Optional[str]) -> str:
@@ -85,10 +116,16 @@ def make_copilot_run_turn(
             scripted_completions=completions,
             governed_tool_names=booted.tool_names,
         )
-        return {
+        result: dict[str, Any] = {
             "draft": turn["final_response"],
             "model": SCRIPTED_MODEL,
             "profile": INTERNAL,
         }
+        # Email carries a subject (the in-process mock returns {channel, subject,
+        # draft}); sms/internal_note do not. The endpoint shapes the per-channel
+        # envelope from these fields.
+        if channel == "email":
+            result["subject"] = _stub_subject(case_id)
+        return result
 
     return run_turn

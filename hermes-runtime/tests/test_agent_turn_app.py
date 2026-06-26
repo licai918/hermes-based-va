@@ -29,6 +29,17 @@ def _fake_run_turn(*, channel: str, case_id: str, prompt: str | None = None) -> 
     }
 
 
+def _email_run_turn(*, channel: str, case_id: str, prompt: str | None = None) -> dict:
+    # Email turns additionally return a subject (Slice 2): the endpoint shapes it
+    # into the {channel, subject, draft} envelope.
+    return {
+        "draft": f"email body for {case_id}",
+        "subject": f"Subject for {case_id}",
+        "model": "scripted",
+        "profile": "internal_copilot",
+    }
+
+
 def _client(run_turn=_fake_run_turn) -> TestClient:
     app = FastAPI()
     add_agent_turn_route(app, api_token=API_TOKEN, run_turn=run_turn)
@@ -118,3 +129,52 @@ def test_agent_turn_end_to_end_default_provider_boots_internal_copilot() -> None
     assert body["ok"] is True
     assert isinstance(body["data"]["draft"], str) and body["data"]["draft"].strip()
     assert body["data"]["provenance"]["profile"] == "internal_copilot"
+
+
+# ADR-0147 Slice 2: the per-channel `data` envelope mirrors the in-process
+# toee_copilot_draft tool output byte-for-byte — sms/email key on `channel`, email
+# adds `subject`, internal_note keys on `kind` (no channel) — so the BFF body has
+# exact store-path parity for all three channels.
+def test_agent_turn_email_data_includes_subject() -> None:
+    response = _client(_email_run_turn).post(
+        AGENT_TURN_PATH,
+        headers=_auth(),
+        json={"channel": "email", "case_id": "case_e"},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["channel"] == "email"
+    assert data["subject"] == "Subject for case_e"
+    assert data["draft"] == "email body for case_e"
+    assert data["provenance"] == {"model": "scripted", "profile": "internal_copilot"}
+
+
+def test_agent_turn_internal_note_data_keys_on_kind() -> None:
+    response = _client().post(
+        AGENT_TURN_PATH,
+        headers=_auth(),
+        json={"channel": "internal_note", "case_id": "case_n"},
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    # Note envelope: {kind, draft} (+ provenance), and crucially NO `channel` key.
+    assert data["kind"] == "internal_note"
+    assert "channel" not in data
+    assert data["draft"] == "draft for case_n"
+    assert data["provenance"]["profile"] == "internal_copilot"
+
+
+def test_agent_turn_end_to_end_email_default_provider_includes_subject() -> None:
+    # The email seam end to end with the default scripted/stub provider: boots
+    # internal_copilot unbound and returns a {channel:email, subject, draft} envelope
+    # — proving the default run_turn supplies a subject (no KeyError) over HTTP.
+    app = FastAPI()
+    add_agent_turn_route(app, api_token=API_TOKEN)
+    response = TestClient(app).post(
+        AGENT_TURN_PATH, headers=_auth(), json={"channel": "email", "case_id": "case_x"}
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["channel"] == "email"
+    assert isinstance(data["subject"], str) and data["subject"].strip()
+    assert isinstance(data["draft"], str) and data["draft"].strip()

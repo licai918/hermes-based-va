@@ -12,10 +12,14 @@ import { HermesApiError, type FetchLike } from "./hermes-api-client";
 
 export type DraftChannel = "sms" | "email" | "internal_note";
 
-// The governed envelope's `data` for a draft turn: the channel echo, the draft
-// text, and provenance (model + the structurally-no-send profile that produced it).
+// The governed envelope's `data` for a draft turn: the per-channel draft payload
+// (mirroring the in-process toee_copilot_draft tool output — sms/email carry
+// `channel`, email adds `subject`, internal_note carries `kind`), the draft text,
+// and provenance (model + the structurally-no-send profile that produced it).
 export interface AgentDraft {
-  channel: string;
+  channel?: string;
+  kind?: string;
+  subject?: string;
   draft: string;
   provenance?: { model?: string; profile?: string };
 }
