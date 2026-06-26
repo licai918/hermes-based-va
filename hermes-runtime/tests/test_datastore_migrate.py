@@ -128,6 +128,19 @@ def test_workbench_policy_slot_seeded_with_six_placeholders(temp_schema_conn) ->
     assert all(status == "empty" for _, status in rows)
 
 
+def test_eval_run_has_governance_overlay_columns_after_migrate(temp_schema_conn) -> None:
+    # ADR-0146 eval-runs cutover (#44): the 0004 migration adds the overlapping
+    # governance flags (signed_off, promoted -- a single status column could not
+    # hold both) and the slot_key publish bridge. The live schema already applied
+    # 0001-0003, so a new migration, not an edit.
+    conn, schema = temp_schema_conn
+    run_migrations(conn)
+    for column in ("signed_off", "promoted", "slot_key"):
+        assert "eval_run" in _tables_with_column(conn, schema, column), (
+            f"eval_run must carry {column} after migrate (ADR-0146)"
+        )
+
+
 def test_retention_timestamp_columns_present(temp_schema_conn) -> None:
     conn, schema = temp_schema_conn
     run_migrations(conn)

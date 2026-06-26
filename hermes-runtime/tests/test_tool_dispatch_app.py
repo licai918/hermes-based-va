@@ -465,6 +465,98 @@ def test_dispatch_knowledge_write_without_actor_is_denied(datastore) -> None:
         assert cur.fetchone()[0] == 0
 
 
+def _seed_policy_publish_run(conn, run_id: str, slot_key: str) -> None:
+    """Seed a clean (promotable) policy_publish eval run gating ``slot_key``."""
+    from psycopg.types.json import Jsonb
+
+    report = {
+        "run_id": run_id, "suite": "policy_publish", "model_slug": "m",
+        "prompt_version": "p", "knowledge_version": "k",
+        "timestamp": "2026-06-01T00:00:00Z", "scenarios": [],
+        "summary": {"total": 1, "passed": 1, "failed_high": 0, "failed_medium": 0},
+        "signoff_required": False,
+    }
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO eval_run (id, suite, status, failed_high, report, slot_key)"
+            " VALUES (%s, 'policy_publish', 'recorded', 0, %s, %s)",
+            (run_id, Jsonb(report), slot_key),
+        )
+    conn.commit()
+
+
+def test_dispatch_eval_promote_publishes_and_attributes_audit_end_to_end(datastore) -> None:
+    # End-to-end (ADR-0146) on the eval surface: a supervisor_admin dispatch of a
+    # governed promote_pending_policy carrying actor_account_id runs the publish
+    # bridge through the real datastore -- the kebab authoring slot is published and
+    # the audit row is attributed to that actor (request -> context -> audit + bridge).
+    driver, conn, _ = datastore
+    client = _client_with_driver(driver, profile="supervisor_admin")
+    client.post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_knowledge_ops", "action": "update_policy_slot",
+            "params": {"slot_id": "business-hours", "draft_text": "Open 9-5"},
+            "actor_account_id": "acct_eval_e2e",
+        },
+    )
+    _seed_policy_publish_run(conn, "pp-e2e", "business_hours_service_boundaries")
+
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_eval_review", "action": "promote_pending_policy",
+            "params": {"run_id": "pp-e2e"},
+            "actor_account_id": "acct_eval_e2e",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, published_text FROM workbench_policy_slot WHERE slot_id = %s",
+            ("business-hours",),
+        )
+        assert cur.fetchone() == ("published", "Open 9-5")
+        cur.execute(
+            "SELECT account_id FROM workbench_audit_log"
+            " WHERE action = 'promote_pending_policy' AND target_id = %s",
+            ("pp-e2e",),
+        )
+        assert cur.fetchone()[0] == "acct_eval_e2e"
+
+
+def test_dispatch_eval_write_without_actor_is_denied(datastore) -> None:
+    # I1 regression end-to-end on the eval surface: a governed promote with NO
+    # actor_account_id is a governed denial (policy_blocked) that leaves the run
+    # un-promoted and writes NO audit row.
+    driver, conn, _ = datastore
+    _seed_policy_publish_run(conn, "pp-noactor", "business_hours_service_boundaries")
+    response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_eval_review", "action": "promote_pending_policy",
+            "params": {"run_id": "pp-noactor"},
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT promoted FROM eval_run WHERE id = %s", ("pp-noactor",))
+        assert cur.fetchone()[0] is False
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'promote_pending_policy'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
 def test_dispatch_rejects_malformed_body() -> None:
     # Missing tool/action is a transport/shape problem, not a tool outcome → 400.
     response = _client().post(

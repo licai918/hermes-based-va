@@ -486,52 +486,227 @@ def test_rollback_restores_previous_published_text(datastore) -> None:
     assert again.error_class == "conflict"
 
 
-def test_eval_promote_publishes_pending_knowledge_version(datastore) -> None:
-    # The eval publish-gate (knowledge_version) is a SEPARATE model from the
-    # authoring table and is decoupled from it (ADR-0145 divergence #2). Seed a
-    # pending_eval version directly and promote it -- proving publish_pending_slot
-    # still works for #44 without touching the authoring path.
-    driver, conn, _ = datastore
-    slot = "payment_payment_link_rules"
-    with conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO knowledge_version (id, slot_key, content, status, version)"
-            " VALUES (%s, %s, %s, 'pending_eval', 1)",
-            (f"kv_{uuid.uuid4().hex}", slot, "links only"),
-        )
-    promoted = _run(driver, "toee_eval_review", "promote_pending_policy", {"slot": slot})
-    assert promoted.data["promoted"] is True
-    assert promoted.data["status"] == "published"
+# --- eval review (ADR-0146 Postgres cutover; EvalStore parity) -------------
 
 
-# --- eval review ------------------------------------------------------------
+def _eval_report(
+    run_id, *, suite, failed_high=0, failed_medium=0, signoff_required=False,
+    timestamp="2026-06-01T00:00:00Z",
+):
+    # The on-disk ADR-0074 report shape the EvalStore (source of truth) projects.
+    total = 1 + failed_high + failed_medium
+    return {
+        "run_id": run_id,
+        "suite": suite,
+        "model_slug": "deepseek/deepseek-v4-pro",
+        "prompt_version": "persona-v1",
+        "knowledge_version": "kb-v1",
+        "timestamp": timestamp,
+        "scenarios": [],
+        "summary": {
+            "total": total, "passed": total - failed_high - failed_medium,
+            "failed_high": failed_high, "failed_medium": failed_medium,
+        },
+        "signoff_required": signoff_required,
+    }
 
 
-def _seed_eval_run(conn, run_id, suite="text_first_launch", status="passed", failed_high=0):
+def _seed_eval_run(
+    conn, run_id, *, suite="text_first_launch", failed_high=0, failed_medium=0,
+    signoff_required=False, signed_off=False, slot_key=None,
+    timestamp="2026-06-01T00:00:00Z",
+):
     from psycopg.types.json import Jsonb
 
+    report = _eval_report(
+        run_id, suite=suite, failed_high=failed_high, failed_medium=failed_medium,
+        signoff_required=signoff_required, timestamp=timestamp,
+    )
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO eval_run (id, suite, status, failed_high, report) VALUES (%s,%s,%s,%s,%s)",
-            (run_id, suite, status, failed_high, Jsonb({})),
+            "INSERT INTO eval_run"
+            " (id, suite, status, failed_high, report, signed_off, slot_key)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (run_id, suite, "recorded", failed_high, Jsonb(report), signed_off, slot_key),
         )
     conn.commit()
 
 
-def test_eval_review_list_get_and_sign_off(datastore) -> None:
+def _eval_slot(driver, slot_id):
+    slots = _run(driver, "toee_knowledge_ops", "get_policy_slots", {}).data["slots"]
+    return next(s for s in slots if s["slot_id"] == slot_id)
+
+
+def test_eval_runs_list_is_most_recent_first_with_summary_projection(datastore) -> None:
+    # listRuns parity: most-recent-first (timestamp desc), the compact summary read
+    # model, passed = no high AND no medium failures.
     driver, conn, _ = datastore
-    run_id = f"run_{uuid.uuid4().hex}"
-    _seed_eval_run(conn, run_id, status="failed", failed_high=0)
+    _seed_eval_run(conn, "r-old", timestamp="2026-06-01T00:00:00Z")
+    _seed_eval_run(
+        conn, "r-new", suite="policy_publish", failed_medium=1, signoff_required=True,
+        timestamp="2026-06-03T00:00:00Z",
+    )
+    runs = _run(driver, "toee_eval_review", "list_eval_runs", {}).data["runs"]
+    ids = [r["run_id"] for r in runs]
+    assert ids.index("r-new") < ids.index("r-old")  # most recent first
+    new = next(r for r in runs if r["run_id"] == "r-new")
+    assert new["passed"] is False  # one medium failure
+    assert new["failed_medium"] == 1
+    old = next(r for r in runs if r["run_id"] == "r-old")
+    assert old["passed"] is True
+    assert set(new) == {
+        "run_id", "suite", "timestamp", "passed", "failed_high", "failed_medium",
+        "knowledge_version", "prompt_version",
+    }
 
-    listed = _run(driver, "toee_eval_review", "list_eval_runs", {})
-    assert any(r["id"] == run_id for r in listed.data["runs"])
 
-    got = _run(driver, "toee_eval_review", "get_eval_run", {"run_id": run_id})
-    assert got.data["run"]["id"] == run_id
-    assert got.data["run"]["status"] == "failed"
+def test_get_eval_run_returns_full_report_with_overlay_and_404s_unknown(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "r1", suite="policy_publish")
+    run = _run(driver, "toee_eval_review", "get_eval_run", {"run_id": "r1"}).data["run"]
+    assert run["run_id"] == "r1"
+    assert run["suite"] == "policy_publish"
+    assert run["summary"]["failed_high"] == 0
+    # The governance overlay rides the report (not part of the on-disk shape).
+    assert run["signed_off"] is False
+    assert run["promoted"] is False
+    unknown = _run(driver, "toee_eval_review", "get_eval_run", {"run_id": "ghost"})
+    assert not unknown.ok
+    assert unknown.error_class == "not_found"
 
-    signed = _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": run_id})
-    assert signed.data["signed_off"] is True
 
-    got = _run(driver, "toee_eval_review", "get_eval_run", {"run_id": run_id})
-    assert got.data["run"]["status"] == "signed_off"
+def test_sign_off_medium_run_reflects_overlay_with_audit(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "pp1", suite="policy_publish", failed_medium=1, signoff_required=True)
+    res = _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "pp1"})
+    assert res.data["run"]["signed_off"] is True
+    assert _audit_actor(conn, "eval_run", "pp1", "sign_off_medium_failure") == "acct_admin"
+    # Reflected on a subsequent read, and idempotent (re-sign-off still succeeds).
+    again = _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "pp1"})
+    assert again.data["run"]["signed_off"] is True
+
+
+def test_sign_off_refuses_not_required_failed_high_and_not_found(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "clean", signoff_required=False)
+    _seed_eval_run(conn, "high", failed_high=1, signoff_required=True)
+    not_required = _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "clean"})
+    assert not_required.error_class == "conflict"  # no medium sign-off required (409)
+    failed_high = _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "high"})
+    assert failed_high.error_class == "conflict"  # high-severity blocks sign-off (409)
+    not_found = _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "ghost"})
+    assert not_found.error_class == "not_found"
+
+
+def test_sign_off_without_actor_is_denied_no_mutation(datastore) -> None:
+    # I1 parity on the eval surface: no attributed actor -> policy_blocked, the run
+    # stays not-signed-off and no NULL-actor audit row is written.
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "pp1", suite="policy_publish", failed_medium=1, signoff_required=True)
+    res = _run(
+        driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "pp1"}, user_id=""
+    )
+    assert res.error_class == "policy_blocked"
+    assert _run(
+        driver, "toee_eval_review", "get_eval_run", {"run_id": "pp1"}
+    ).data["run"]["signed_off"] is False
+    assert _audit_actions(conn, "eval_run", "pp1") == []
+
+
+def test_promote_refuses_non_policy_publish_failed_high_and_not_found(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "tfl", suite="text_first_launch")
+    _seed_eval_run(conn, "high", suite="policy_publish", failed_high=1)
+    not_promotable = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "tfl"})
+    assert not_promotable.error_class == "conflict"  # not a promotable policy_publish run
+    failed_high = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "high"})
+    assert failed_high.error_class == "conflict"  # high-severity blocks promotion
+    not_found = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "ghost"})
+    assert not_found.error_class == "not_found"
+
+
+def test_promote_blocks_until_signed_off_then_promotes_overlapping(datastore) -> None:
+    # promotePending parity: a medium policy_publish run is blocked until signed off,
+    # then promotes; signed_off and promoted are OVERLAPPING (both true after).
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "pp1", suite="policy_publish", failed_medium=1, signoff_required=True)
+    blocked = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp1"})
+    assert blocked.error_class == "conflict"  # medium must be signed off first
+    _run(driver, "toee_eval_review", "sign_off_medium_failure", {"run_id": "pp1"})
+    promoted = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp1"})
+    assert promoted.data["run"]["promoted"] is True
+    assert promoted.data["run"]["signed_off"] is True
+    assert _audit_actor(conn, "eval_run", "pp1", "promote_pending_policy") == "acct_admin"
+    # Idempotent: re-promote of an already-promoted run still succeeds.
+    assert _run(
+        driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp1"}
+    ).data["run"]["promoted"] is True
+
+
+def test_promote_without_actor_is_denied_no_mutation(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "pp1", suite="policy_publish")
+    res = _run(
+        driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp1"}, user_id=""
+    )
+    assert res.error_class == "policy_blocked"
+    assert _run(
+        driver, "toee_eval_review", "get_eval_run", {"run_id": "pp1"}
+    ).data["run"]["promoted"] is False
+    assert _audit_actions(conn, "eval_run", "pp1") == []
+
+
+def test_promote_publishes_authoring_slot_and_enables_rollback(datastore) -> None:
+    # ADR-0146 publish bridge (closes ADR-0145 divergence #2): a real authoring
+    # submit -> recorded policy_publish run -> promote PUBLISHES the kebab authoring
+    # slot, and a second cycle pushes the prior published text onto history so a
+    # later rollback restores it. The knowledge increment could not test this -- the
+    # publish path was decoupled, so rollback always 409'd on a fresh DB.
+    driver, conn, _ = datastore
+
+    # v1: author + submit business-hours (kebab); record a clean policy_publish run
+    # gating it (snake slot_key); promote -> publishes v1 onto workbench_policy_slot.
+    _run(
+        driver, "toee_knowledge_ops", "update_policy_slot",
+        {"slot_id": "business-hours", "draft_text": "v1 hours"},
+    )
+    _run(driver, "toee_knowledge_ops", "submit_for_eval", {"slot_id": "business-hours"})
+    _seed_eval_run(conn, "pp-v1", suite="policy_publish", slot_key="business_hours_service_boundaries")
+    promoted = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp-v1"})
+    assert promoted.data["run"]["promoted"] is True
+    slot = _eval_slot(driver, "business-hours")
+    assert slot["status"] == "published"
+    assert slot["published_text"] == "v1 hours"
+    # Only one publish so far -> no prior version on history -> rollback conflicts.
+    assert _run(
+        driver, "toee_knowledge_ops", "rollback_published_policy", {"slot_id": "business-hours"}
+    ).error_class == "conflict"
+
+    # v2: author + submit + record + promote -> pushes v1 to history, publishes v2.
+    _run(
+        driver, "toee_knowledge_ops", "update_policy_slot",
+        {"slot_id": "business-hours", "draft_text": "v2 hours"},
+    )
+    _run(driver, "toee_knowledge_ops", "submit_for_eval", {"slot_id": "business-hours"})
+    _seed_eval_run(conn, "pp-v2", suite="policy_publish", slot_key="business_hours_service_boundaries")
+    _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp-v2"})
+    assert _eval_slot(driver, "business-hours")["published_text"] == "v2 hours"
+
+    # Rollback now restores v1 from the history the publish bridge populated.
+    rolled = _run(
+        driver, "toee_knowledge_ops", "rollback_published_policy", {"slot_id": "business-hours"}
+    )
+    assert rolled.data["slot"]["status"] == "published"
+    assert rolled.data["slot"]["published_text"] == "v1 hours"
+
+
+def test_promote_policy_publish_without_slot_key_marks_run_only(datastore) -> None:
+    # A policy_publish run with no slot_key promotes (run marked) but publishes
+    # nothing -- the bridge engages only when the authoring link exists (ADR-0146
+    # divergence #2). No authoring slot is touched.
+    driver, conn, _ = datastore
+    _seed_eval_run(conn, "pp-nolink", suite="policy_publish")
+    promoted = _run(driver, "toee_eval_review", "promote_pending_policy", {"run_id": "pp-nolink"})
+    assert promoted.data["run"]["promoted"] is True
+    assert all(s["status"] == "empty" for s in
+               _run(driver, "toee_knowledge_ops", "get_policy_slots", {}).data["slots"])

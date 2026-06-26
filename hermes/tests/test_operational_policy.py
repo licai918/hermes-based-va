@@ -14,8 +14,10 @@ from pathlib import Path
 
 from eval_runner.fixtures import load_policy_slot_map
 from toee_hermes.operational_policy import (
+    POLICY_SLOT_ID_BY_KEY,
     REQUIRED_POLICY_SLOTS,
     SLOT_TITLES,
+    authoring_slot_id_for,
     placeholder_slots,
     policy_slots_payload,
 )
@@ -67,3 +69,31 @@ def test_payload_lists_six_empty_slots() -> None:
         slot["content"] == "" and slot["status"] == "empty"
         for slot in payload["slots"]
     )
+
+
+# The kebab UI ids the authoring table (workbench_policy_slot, ADR-0145) and the
+# in-memory KnowledgeStore key on, in ADR-0003 order — the other side of the
+# ADR-0146 divergence #1 bridge.
+EXPECTED_AUTHORING_IDS = (
+    "business-hours",
+    "payment-methods",
+    "order-delivery",
+    "accounting-inquiry",
+    "returns-exchanges",
+    "exception-scripts",
+)
+
+
+def test_policy_slot_id_bridge_is_total_and_bijective() -> None:
+    # ADR-0146 divergence #1: the snake eval-gate keys and the kebab authoring ids
+    # are bridged by one explicit map. It must cover every required slot and be 1:1,
+    # or a promote could publish the wrong authoring row (or none).
+    assert set(POLICY_SLOT_ID_BY_KEY) == set(REQUIRED_POLICY_SLOTS)
+    kebab = [POLICY_SLOT_ID_BY_KEY[key] for key in REQUIRED_POLICY_SLOTS]
+    assert kebab == list(EXPECTED_AUTHORING_IDS)
+    assert len(set(kebab)) == len(kebab)  # bijective: no two keys share an id
+
+
+def test_authoring_slot_id_for_resolves_known_and_refuses_unknown() -> None:
+    assert authoring_slot_id_for("business_hours_service_boundaries") == "business-hours"
+    assert authoring_slot_id_for("not_a_slot") is None

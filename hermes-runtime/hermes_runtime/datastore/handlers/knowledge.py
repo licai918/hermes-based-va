@@ -9,10 +9,11 @@ published-version history for rollback. ADR-0145 cuts this over from the in-memo
 its ``PolicySlot`` shape field-for-field. Writes are Supervisor governance: each is
 fail-closed on an attributed actor and appends a Workbench Audit Log row.
 
-``knowledge_version`` + :func:`publish_pending_slot` are the *separate* eval
-publish-gate model (ADR-0040), left untouched here and shared with
-``eval_review.promote_pending_policy`` (#44 territory). The authoring table and the
-publish gate are intentionally decoupled in this increment (ADR-0145 divergence #2).
+ADR-0145 left ``submit`` decoupled from any publish step; ADR-0146 connects them:
+promoting a ``policy_publish`` eval run now publishes the matching authoring slot
+(``eval_review._publish_authoring_slot``), pushing the prior ``published_text`` onto
+``workbench_policy_slot_history`` so :func:`_rollback_published_policy` has data. The
+old ``knowledge_version`` publish path is retired (promotion is runId-keyed now).
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Optional
 from psycopg.rows import dict_row
 
 from toee_hermes.errors import ToolDriverError
-from toee_hermes.operational_policy import REQUIRED_POLICY_SLOTS
 
 from ._common import insert_audit, read_string, serialize_row
 
@@ -225,49 +225,12 @@ def _rollback_published_policy(
     return {"slot": _slot_row(conn, slot_id)}
 
 
-# --- Eval publish-gate (ADR-0040) — separate model, left untouched (#44) --------
-# knowledge_version + publish_pending_slot are the eval publish-gate, shared with
-# eval_review.promote_pending_policy. They are NOT the authoring path above and are
-# intentionally decoupled from workbench_policy_slot in this increment (ADR-0145).
-
-
-def _require_known_slot(slot: Optional[str]) -> str:
-    if slot is None:
-        raise ToolDriverError("unexpected_error", "slot is required.")
-    if slot not in REQUIRED_POLICY_SLOTS:
-        raise ToolDriverError("unexpected_error", f'Unknown policy slot "{slot}" (ADR-0003).')
-    return slot
-
-
-def _latest_version(conn, slot: str) -> Optional[dict[str, Any]]:
-    with conn.cursor(row_factory=dict_row) as cur:
-        cur.execute(
-            "SELECT * FROM knowledge_version WHERE slot_key = %s ORDER BY version DESC LIMIT 1",
-            (slot,),
-        )
-        return cur.fetchone()
-
-
-def publish_pending_slot(conn, slot: Optional[str]) -> int:
-    """Promote a slot's latest ``pending_eval`` version to ``published``.
-
-    Shared with ``eval_review.promote_pending_policy`` (ADR-0040: publish is gated
-    by the eval review). Operates on ``knowledge_version``, the eval publish-gate
-    model — separate from the ``workbench_policy_slot`` authoring table (ADR-0145).
-    Returns the promoted version.
-    """
-    resolved = _require_known_slot(slot)
-    latest = _latest_version(conn, resolved)
-    if latest is None or latest["status"] != "pending_eval":
-        raise ToolDriverError(
-            "unexpected_error", f"no pending_eval policy to promote for slot {resolved}."
-        )
-    with conn.cursor() as cur:
-        cur.execute(
-            "UPDATE knowledge_version SET status = 'published', published_at = now() WHERE id = %s",
-            (latest["id"],),
-        )
-    return latest["version"]
+# The eval publish-gate that promotion now drives lives on workbench_policy_slot
+# (ADR-0146): a promoted policy_publish eval run publishes the matching authoring
+# slot via eval_review._publish_authoring_slot, pushing the prior published text to
+# workbench_policy_slot_history. The old knowledge_version publish path
+# (publish_pending_slot/_latest_version/_require_known_slot) is retired — promotion
+# is runId-keyed now (ADR-0146 resolves ADR-0145 divergences #1/#2).
 
 
 def knowledge_handlers() -> dict[str, dict[str, Any]]:

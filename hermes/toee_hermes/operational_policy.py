@@ -35,6 +35,22 @@ REQUIRED_POLICY_SLOTS: tuple[str, ...] = (
     "standard_exception_scripts",
 )
 
+# Bridge from the ADR-0003 snake slot keys (the eval-gate namespace: knowledge_version,
+# eval/policy_slot_map.yaml, REQUIRED_POLICY_SLOTS) to the kebab UI ids the authoring
+# table workbench_policy_slot keys on (ADR-0087/0145). The two namespaces coexist
+# (ADR-0145 divergence #1); this map is the single reconciliation point so a
+# cross-namespace lookup resolves to exactly one row. ADR-0146 promotion uses it to
+# publish the authoring slot a policy_publish eval run gates. A test binds it to
+# REQUIRED_POLICY_SLOTS so the two cannot drift.
+POLICY_SLOT_ID_BY_KEY: dict[str, str] = {
+    "business_hours_service_boundaries": "business-hours",
+    "payment_payment_link_rules": "payment-methods",
+    "order_delivery_guidance": "order-delivery",
+    "accounting_inquiry_guidance": "accounting-inquiry",
+    "returns_exchanges_stockout": "returns-exchanges",
+    "standard_exception_scripts": "exception-scripts",
+}
+
 # Human-readable slot titles, verbatim from ADR-0003. These name the policy *area*;
 # the policy text itself is KnowledgeOps-published business copy (PRD §213).
 SLOT_TITLES: dict[str, str] = {
@@ -72,6 +88,17 @@ class PolicySlot:
     owner: str | None = None
     review_date: str | None = None
     content: str = ""
+
+
+def authoring_slot_id_for(slot_key: str) -> str | None:
+    """Map an ADR-0003 snake slot key to the kebab authoring id, or ``None``.
+
+    The single kebab/snake reconciliation point (ADR-0146 divergence #1 bridge):
+    callers that resolve an eval-gate key to its ``workbench_policy_slot`` row use
+    this so a cross-namespace lookup never hits the wrong row. ``None`` for an
+    unknown key lets the caller refuse rather than guess.
+    """
+    return POLICY_SLOT_ID_BY_KEY.get(slot_key)
 
 
 def placeholder_slots() -> list[PolicySlot]:
