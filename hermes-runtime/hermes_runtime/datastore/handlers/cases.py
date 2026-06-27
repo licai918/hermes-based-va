@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from psycopg.rows import dict_row
 
+import os
+
+from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
 from toee_hermes.errors import ToolDriverError
 
 from ._common import insert_audit, new_id, read_string, serialize_row
@@ -354,6 +357,279 @@ def _update_contact_reason(
     }
 
 
+def _capture_textline_send(
+    conversation_id: str,
+    body: str,
+    media_url: Optional[str],
+) -> dict[str, Any]:
+    """Outbound Textline capture: live REST when ``TEXTLINE_ACCESS_TOKEN`` is set, else mock."""
+    token = (os.environ.get("TEXTLINE_ACCESS_TOKEN") or "").strip()
+    if token:
+        from hermes_runtime.textline_reply import (
+            TextlineSendError,
+            make_textline_reply_sender,
+            resolve_textline_config,
+        )
+
+        try:
+            send = make_textline_reply_sender(config=resolve_textline_config())
+            send(conversation_id, body)
+        except ValueError as exc:
+            raise ToolDriverError("configuration_missing", str(exc)) from exc
+        except TextlineSendError as exc:
+            raise ToolDriverError("vendor_timeout", str(exc)) from exc
+    return _send_message(
+        TextlineMockData(),
+        {
+            "conversation_id": conversation_id,
+            "body": body,
+            "media_url": media_url,
+        },
+    )
+
+
+def _auto_handled_outcome(
+    conn, thread_id: str
+) -> tuple[str, bool, str]:
+    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT tool_failure, summary FROM cases
+            WHERE customer_thread_id = %s
+              AND contact_reason IS DISTINCT FROM 'sales_outreach'
+            ORDER BY opened_at DESC LIMIT 1
+            """,
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return "auto_resolved", False, ""
+    tool_failure = bool(row.get("tool_failure"))
+    summary = (row.get("summary") or "").strip()
+    tool_summary = summary or ("tool_failure" if tool_failure else "")
+    return "escalated_to_case", tool_failure, tool_summary
+
+
+def _build_auto_handled_record(
+    conn,
+    thread_id: str,
+    *,
+    include_timeline: bool,
+) -> Optional[dict[str, Any]]:
+    """Map a fully auto-handled customer thread onto the AutoHandledRecord read model."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM customer_thread WHERE id = %s", (thread_id,))
+        thread = cur.fetchone()
+        if thread is None:
+            return None
+        cur.execute(
+            """
+            SELECT bool_and(auto_handled) AS all_auto
+            FROM message_turn WHERE customer_thread_id = %s
+            """,
+            (thread_id,),
+        )
+        agg = cur.fetchone()
+    if agg is None or not agg.get("all_auto"):
+        return None
+    channel = thread.get("channel") or "sms"
+    outcome, tool_failure, tool_summary = _auto_handled_outcome(conn, thread_id)
+    record: dict[str, Any] = {
+        "record_id": thread_id,
+        "channel": channel,
+        "identity_summary": _thread_identity_summary(conn, thread_id),
+        "last_message_preview": _thread_last_preview(conn, thread_id),
+        "last_activity_at": thread.get("last_interaction_at"),
+        "outcome": outcome,
+        "tool_summary": tool_summary,
+        "tool_failure": tool_failure,
+        "timeline": [],
+        # ponytail: tool-call evidence lives in Hermes Native Memory only; empty until
+        # a durable tool-call store lands in Postgres.
+        "tool_calls": [],
+    }
+    if include_timeline:
+        record["timeline"] = _thread_messages(conn, thread_id, channel)
+    return record
+
+
+def _list_auto_handled(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT ct.id
+            FROM customer_thread ct
+            WHERE EXISTS (
+                SELECT 1 FROM message_turn mt WHERE mt.customer_thread_id = ct.id
+            )
+            AND (
+                SELECT bool_and(auto_handled) FROM message_turn mt
+                WHERE mt.customer_thread_id = ct.id
+            ) IS TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM cases c
+                WHERE c.customer_thread_id = ct.id
+                  AND c.contact_reason = 'sales_outreach'
+            )
+            ORDER BY ct.last_interaction_at DESC
+            """
+        )
+        thread_ids = [row[0] for row in cur.fetchall()]
+    records = [
+        r
+        for tid in thread_ids
+        if (r := _build_auto_handled_record(conn, tid, include_timeline=False))
+        is not None
+    ]
+    return {"records": records}
+
+
+def _get_auto_handled(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    record_id = read_string(params, "record_id", "recordId")
+    if record_id is None:
+        raise ToolDriverError("unexpected_error", "record_id is required.")
+    record = _build_auto_handled_record(conn, record_id, include_timeline=True)
+    if record is None:
+        return {"record": None}
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=context.user_id,
+        action="audit_view",
+        target_type="auto_handled",
+        target_id=record_id,
+        details={"record_id": record_id},
+    )
+    return {"record": record}
+
+
+def _list_sales_outreach(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT * FROM cases WHERE contact_reason = 'sales_outreach'
+            ORDER BY last_activity_at DESC
+            """
+        )
+        rows = cur.fetchall()
+    return {"cases": [_read_model(conn, row) for row in rows]}
+
+
+def _get_sales_outreach(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    case_id = _require_case_id(params)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT * FROM cases WHERE id = %s AND contact_reason = 'sales_outreach'",
+            (case_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return {"case": None}
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=context.user_id,
+        action="audit_view",
+        target_type="case",
+        target_id=case_id,
+        details={"case_id": case_id},
+    )
+    return {"case": _read_model(conn, row)}
+
+
+def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:
+    """The live (unexpired) SMS session on ``thread_id``, if any."""
+    if not thread_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM sms_session WHERE customer_thread_id = %s"
+            " AND expires_at > now() ORDER BY created_at DESC LIMIT 1",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _send_textline_message(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Governed employee-confirmed Textline send (ADR-0083/0035 composite seam).
+
+    Validates SMS-session + assignee gating, captures the outbound via the mock
+    Textline sender (ponytail: live ``make_textline_reply_sender`` deferred until
+    ``TEXTLINE_ACCESS_TOKEN`` is wired for workbench sends), mirrors a
+    ``message_turn``, and appends a ``textline_send`` audit row atomically.
+    """
+    case_id = _require_case_id(params)
+    actor = _require_actor(context)
+    body = read_string(params, "body")
+    if body is None:
+        raise ToolDriverError("unexpected_error", "body is required.")
+    media_url = read_string(params, "media_url", "mediaUrl")
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute("SELECT * FROM cases WHERE id = %s", (case_id,))
+        row = cur.fetchone()
+    if row is None:
+        raise ToolDriverError("not_found", f"case {case_id} not found.")
+
+    thread_id = row.get("customer_thread_id")
+    channel = row.get("channel") or ""
+    assignee = row.get("assignee_account_id")
+    if (
+        channel != "sms"
+        or assignee != actor
+        or not _thread_sms_active(conn, thread_id)
+    ):
+        raise ToolDriverError(
+            "policy_blocked", "case not eligible for Textline send"
+        )
+
+    conversation_id = thread_id or ""
+    sent = _capture_textline_send(conversation_id, body, media_url)
+    session_id = _active_sms_session_id(conn, thread_id)
+    if session_id is None:
+        raise ToolDriverError(
+            "policy_blocked", "case not eligible for Textline send"
+        )
+
+    turn_id = new_id("mt")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO message_turn
+                (id, sms_session_id, customer_thread_id, direction, author, body,
+                 auto_handled)
+            VALUES (%s, %s, %s, 'outbound', 'workbench', %s, FALSE)
+            """,
+            (turn_id, session_id, thread_id, body),
+        )
+        cur.execute(
+            "UPDATE cases SET last_activity_at = now() WHERE id = %s",
+            (case_id,),
+        )
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=actor,
+        action="textline_send",
+        target_type="case",
+        target_id=case_id,
+        details={"detail": body},
+    )
+    return {"message": sent}
+
+
 def _resolve_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     case_id = _require_case_id(params)
     _require_actor(context)
@@ -501,11 +777,16 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "update_priority": _update_priority,
             "update_contact_reason": _update_contact_reason,
             "resolve_case": _resolve_case,
+            "send_textline_message": _send_textline_message,
         },
         "toee_workbench_read": {
             "get_case": _get_case,
             "list_cases": _list_cases,
             "get_audit_log": _get_audit_log,
             "get_thread": _get_thread,
+            "list_auto_handled": _list_auto_handled,
+            "get_auto_handled": _get_auto_handled,
+            "list_sales_outreach": _list_sales_outreach,
+            "get_sales_outreach": _get_sales_outreach,
         },
     }

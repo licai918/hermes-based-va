@@ -10,7 +10,8 @@ import { createInMemoryGatewayStore, type GatewayStore } from "../../gateway/sto
 import { createSeed } from "../../gateway/seed";
 import type { AuditAction } from "../../gateway/types";
 import type { CopilotDeps } from "./deps";
-import { handleTextlineSend } from "./messages";
+import { handleTextlineSend, handleTextlineSendViaApi } from "./messages";
+import { HermesApiClient } from "../../gateway/hermes-api-client";
 
 // After the seed's anchored timestamps (June 2026) so an appended reply sorts
 // last in the thread, matching real wall-clock sends.
@@ -122,5 +123,155 @@ describe("handleTextlineSend", () => {
     expect(res.status).toBe(502);
     expect(store.getThread("case_ar_urgent").length).toBe(before);
     expect(actions("case_ar_urgent")).not.toContain("textline_send");
+  });
+});
+
+// ADR-0141 / #42: governed Textline send over tools:dispatch. Preserves store-path
+// 400/404/403 ordering, returns { message }, and writes NO in-memory thread/audit
+// (mirror + textline_send audit land server-side).
+describe("handleTextlineSendViaApi", () => {
+  type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
+  type SentDispatch = {
+    tool: string;
+    action: string;
+    params: Record<string, unknown>;
+    actor_account_id?: string;
+  };
+
+  const WRITE_ACTOR = "seed-rep";
+  const eligibleCase = {
+    case_id: "case_api",
+    channel: "sms",
+    status: "in_progress",
+    assignee_account_id: WRITE_ACTOR,
+    thread_id: "thr_api",
+    sms_session_active: true,
+    urgent: false,
+    identity_summary: "",
+    contact_reason: "order_status",
+    opened_at: "2026-06-01T12:00:00+00:00",
+    last_activity_at: "2026-06-01T13:00:00+00:00",
+  };
+
+  function client(
+    caseValue: unknown,
+    mutationData: unknown,
+    capture?: (sent: SentDispatch) => void,
+  ): HermesApiClient {
+    return new HermesApiClient({
+      baseUrl: "http://copilot.internal",
+      token: "tok",
+      actorAccountId: WRITE_ACTOR,
+      fetchImpl: async (_url, init) => {
+        const sent = JSON.parse(init.body as string) as SentDispatch;
+        capture?.(sent);
+        const data =
+          sent.action === "get_case" ? { case: caseValue } : mutationData;
+        return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
+      },
+    });
+  }
+
+  it("sends on an eligible case and writes NO in-memory thread or audit", async () => {
+    let send: SentDispatch | null = null;
+    const res = await handleTextlineSendViaApi(
+      sendReq({ caseId: "case_api", body: "Your tires arrive today." }),
+      client(
+        eligibleCase,
+        {
+          message: {
+            message_id: "msg_abc",
+            conversation_id: "thr_api",
+            body: "Your tires arrive today.",
+          },
+        },
+        (sent) => {
+          if (sent.action === "send_textline_message") send = sent;
+        },
+      ),
+      deps(),
+    );
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as {
+      message: { messageId: string; body: string };
+    };
+    expect(payload.message.messageId).toBe("msg_abc");
+    expect(payload.message.body).toBe("Your tires arrive today.");
+    expect(actions("case_api")).not.toContain("textline_send");
+    const dispatched = send as SentDispatch | null;
+    expect(dispatched?.tool).toBe("toee_case_manage");
+    expect(dispatched?.action).toBe("send_textline_message");
+    expect(dispatched?.params).toEqual({
+      case_id: "case_api",
+      body: "Your tires arrive today.",
+    });
+    expect(dispatched?.actor_account_id).toBe(WRITE_ACTOR);
+  });
+
+  it("400s an empty body without network", async () => {
+    let called = false;
+    const res = await handleTextlineSendViaApi(
+      sendReq({ caseId: "case_api", body: "  " }),
+      new HermesApiClient({
+        baseUrl: "http://copilot.internal",
+        token: "tok",
+        actorAccountId: WRITE_ACTOR,
+        fetchImpl: async () => {
+          called = true;
+          return new Response("{}", { status: 200 });
+        },
+      }),
+      deps(),
+    );
+    expect(res.status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it("404s an unknown case", async () => {
+    const res = await handleTextlineSendViaApi(
+      sendReq({ caseId: "missing", body: "hello" }),
+      client(null, {}),
+      deps(),
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("403s when the case is not eligible (inactive SMS session)", async () => {
+    const res = await handleTextlineSendViaApi(
+      sendReq({ caseId: "case_api", body: "hello" }),
+      client({ ...eligibleCase, sms_session_active: false }, {}),
+      deps(),
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("502s on a governed send failure without in-memory audit", async () => {
+    const res = await handleTextlineSendViaApi(
+      sendReq({ caseId: "case_api", body: "hello" }),
+      new HermesApiClient({
+        baseUrl: "http://copilot.internal",
+        token: "tok",
+        actorAccountId: WRITE_ACTOR,
+        fetchImpl: async (_url, init) => {
+          const sent = JSON.parse(init.body as string) as SentDispatch;
+          if (sent.action === "send_textline_message") {
+            return new Response(
+              JSON.stringify({
+                ok: false,
+                error: { class: "unexpected_error", message: "boom" },
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response(
+            JSON.stringify({ ok: true, data: { case: eligibleCase } }),
+            { status: 200 },
+          );
+        },
+      }),
+      deps(),
+    );
+    expect(res.status).toBe(502);
+    expect(actions("case_api")).not.toContain("textline_send");
   });
 });

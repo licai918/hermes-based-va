@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiError } from "./hermes-api-client";
-import { mapAuditEntry, mapThreadMessage, mapWorkbenchCase } from "./hermes-map";
+import { mapAuditEntry, mapAutoHandledRecord, mapThreadMessage, mapWorkbenchCase } from "./hermes-map";
 
 const fullCaseRow = {
   id: "case_1",
@@ -151,5 +151,26 @@ describe("mapThreadMessage", () => {
     expect(() =>
       mapThreadMessage({ ...messageRow, created_at: "not-a-date" }),
     ).toThrow(HermesApiError);
+  });
+});
+
+describe("mapAutoHandledRecord", () => {
+  it("maps a snake_case auto-handled record", () => {
+    const record = mapAutoHandledRecord({
+      record_id: "ah_1",
+      channel: "sms",
+      identity_summary: "Verified: cust",
+      last_message_preview: "Thanks",
+      last_activity_at: "2026-06-01T12:00:00+00:00",
+      outcome: "auto_resolved",
+      tool_summary: "match_phone",
+      tool_failure: false,
+      timeline: [],
+      tool_calls: [],
+    });
+    expect(record.recordId).toBe("ah_1");
+    expect(record.channel).toBe("sms");
+    expect(record.toolFailure).toBe(false);
+    expect(record.lastActivityAt).toBe(Date.parse("2026-06-01T12:00:00+00:00"));
   });
 });

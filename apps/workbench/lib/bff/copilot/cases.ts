@@ -262,7 +262,7 @@ export async function handleContactReason(
 
 // The raw datastore case row, or null when the case does not exist (ADR-0020 empty
 // read). Throws HermesApiError on a governed/transport failure (caught by callers).
-async function dispatchGetCaseData(
+export async function dispatchGetCaseData(
   client: HermesApiClient,
   caseId: string,
 ): Promise<unknown | null> {

@@ -31,6 +31,10 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       messages: [],
     }),
+    list_auto_handled: () => ({ records: [] }),
+    get_auto_handled: () => ({ record: null }),
+    list_sales_outreach: () => ({ cases: [] }),
+    get_sales_outreach: () => ({ case: null }),
   },
   toee_case_manage: {
     claim_case: (params) => ({
@@ -55,6 +59,13 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
     resolve_case: (params) => ({
       caseId: readStringParam(params, "caseId", "case_stub"),
       status: "resolved",
+    }),
+    send_textline_message: (params) => ({
+      message: {
+        messageId: "msg_stub",
+        conversationId: readStringParam(params, "caseId", "thread_stub"),
+        body: readStringParam(params, "body", ""),
+      },
     }),
   },
   toee_copilot_draft: {

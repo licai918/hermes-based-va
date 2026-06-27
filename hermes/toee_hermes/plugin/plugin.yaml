@@ -31,6 +31,7 @@ provides_tools:
   - toee_case_manage__update_priority
   - toee_case_manage__update_contact_reason
   - toee_case_manage__resolve_case
+  - toee_case_manage__send_textline_message
   - toee_copilot_draft__draft_sms
   - toee_copilot_draft__draft_email
   - toee_copilot_draft__draft_internal_note
@@ -38,6 +39,10 @@ provides_tools:
   - toee_workbench_read__list_cases
   - toee_workbench_read__get_audit_log
   - toee_workbench_read__get_thread
+  - toee_workbench_read__list_auto_handled
+  - toee_workbench_read__get_auto_handled
+  - toee_workbench_read__list_sales_outreach
+  - toee_workbench_read__get_sales_outreach
   - toee_knowledge_ops__get_policy_slots
   - toee_knowledge_ops__update_policy_slot
   - toee_knowledge_ops__submit_for_eval
