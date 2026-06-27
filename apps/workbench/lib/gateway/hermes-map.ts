@@ -9,10 +9,12 @@ import { HermesApiError } from "./hermes-api-client";
 import type {
   AuditAction,
   AuditLogEntry,
+  AutoHandledRecord,
   CaseChannel,
   CaseStatus,
   ThreadAuthor,
   ThreadMessage,
+  ToolCallEvidence,
   WorkbenchCase,
 } from "./types";
 
@@ -135,4 +137,48 @@ export function mapAuditEntry(raw: unknown): AuditLogEntry {
   const detail = optionalDetail(r.details);
   if (detail) entry.detail = detail;
   return entry;
+}
+
+export function mapToolCallEvidence(raw: unknown): ToolCallEvidence {
+  const r = asObject(raw, "tool call evidence");
+  const evidence: ToolCallEvidence = {
+    tool: optionalString(r.tool),
+    action: optionalString(r.action),
+    inputSummary: optionalString(r.input_summary ?? r.inputSummary),
+    outputSummary: optionalString(r.output_summary ?? r.outputSummary),
+  };
+  const errorClass = nullableString(r.error_class ?? r.errorClass);
+  if (errorClass) evidence.errorClass = errorClass;
+  return evidence;
+}
+
+export function mapAutoHandledRecord(raw: unknown): AutoHandledRecord {
+  const r = asObject(raw, "auto-handled record");
+  const channel = r.channel;
+  if (!(CHANNELS as readonly unknown[]).includes(channel)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown auto-handled channel: ${String(channel)}`,
+    );
+  }
+  const timelineRaw = Array.isArray(r.timeline) ? r.timeline : [];
+  const toolCallsField = r.tool_calls ?? r.toolCalls;
+  const toolCallsRaw = Array.isArray(toolCallsField) ? toolCallsField : [];
+  return {
+    recordId: requiredString(r.record_id ?? r.recordId, "record_id"),
+    channel: channel as CaseChannel,
+    identitySummary: optionalString(r.identity_summary ?? r.identitySummary),
+    lastMessagePreview: optionalString(
+      r.last_message_preview ?? r.lastMessagePreview,
+    ),
+    lastActivityAt: isoToMs(
+      r.last_activity_at ?? r.lastActivityAt,
+      "last_activity_at",
+    ),
+    outcome: optionalString(r.outcome),
+    toolSummary: optionalString(r.tool_summary ?? r.toolSummary),
+    toolFailure: r.tool_failure === true || r.toolFailure === true,
+    timeline: timelineRaw.map(mapThreadMessage),
+    toolCalls: toolCallsRaw.map(mapToolCallEvidence),
+  };
 }

@@ -108,3 +108,33 @@ def test_send_textline_message_denies_ineligible_case(datastore) -> None:
     )
     assert not result.ok
     assert result.error_class == "policy_blocked"
+
+
+def test_send_textline_message_live_when_access_token_set(datastore, monkeypatch) -> None:
+    """When TEXTLINE_ACCESS_TOKEN is set, the composite handler POSTs to Textline."""
+    driver, conn, _ = datastore
+    thread_id = "thr_live"
+    case_id = "case_live"
+    actor = "acct_rep"
+    _seed_thread(conn, thread_id)
+    _seed_case(conn, case_id, thread_id, actor)
+
+    posts: list[tuple[str, dict, bytes]] = []
+
+    def fake_post(*, url: str, headers: dict, body: bytes) -> int:
+        posts.append((url, headers, body))
+        return 200
+
+    monkeypatch.setenv("TEXTLINE_ACCESS_TOKEN", "test-access-token")
+    monkeypatch.setattr("hermes_runtime.textline_reply._urllib_post", fake_post)
+
+    result = _run(
+        driver,
+        "send_textline_message",
+        {"case_id": case_id, "body": "Live outbound."},
+        _ctx(actor),
+    )
+    assert result.ok
+    assert len(posts) == 1
+    assert posts[0][1]["X-TGP-ACCESS-TOKEN"] == "test-access-token"
+    assert b"Live outbound." in posts[0][2]

@@ -32,8 +32,13 @@ describe("TOOL_CATALOG", () => {
       "list_cases",
       "get_audit_log",
       "get_thread",
+      "list_auto_handled",
+      "get_auto_handled",
+      "list_sales_outreach",
+      "get_sales_outreach",
     ]);
     expect(isToolAction("toee_workbench_read", "get_thread")).toBe(true);
+    expect(isToolAction("toee_workbench_read", "list_auto_handled")).toBe(true);
   });
 
   it("exposes authenticate on toee_workbench_admin for the login cutover (ADR-0144)", () => {

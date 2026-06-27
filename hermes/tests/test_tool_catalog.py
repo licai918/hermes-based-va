@@ -48,8 +48,13 @@ def test_workbench_read_exposes_get_thread_for_case_thread_context() -> None:
         "list_cases",
         "get_audit_log",
         "get_thread",
+        "list_auto_handled",
+        "get_auto_handled",
+        "list_sales_outreach",
+        "get_sales_outreach",
     )
     assert is_tool_action("toee_workbench_read", "get_thread") is True
+    assert is_tool_action("toee_workbench_read", "list_auto_handled") is True
 
 
 def test_workbench_admin_exposes_authenticate_for_login_cutover() -> None:

@@ -39,6 +39,10 @@ provides_tools:
   - toee_workbench_read__list_cases
   - toee_workbench_read__get_audit_log
   - toee_workbench_read__get_thread
+  - toee_workbench_read__list_auto_handled
+  - toee_workbench_read__get_auto_handled
+  - toee_workbench_read__list_sales_outreach
+  - toee_workbench_read__get_sales_outreach
   - toee_knowledge_ops__get_policy_slots
   - toee_knowledge_ops__update_policy_slot
   - toee_knowledge_ops__submit_for_eval

@@ -31,6 +31,10 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       messages: [],
     }),
+    list_auto_handled: () => ({ records: [] }),
+    get_auto_handled: () => ({ record: null }),
+    list_sales_outreach: () => ({ cases: [] }),
+    get_sales_outreach: () => ({ case: null }),
   },
   toee_case_manage: {
     claim_case: (params) => ({
