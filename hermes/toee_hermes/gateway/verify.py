@@ -39,27 +39,27 @@ def verify_textline_signature(
     signature: Optional[str],
     secret: str,
     event_time: Optional[str] = None,
+    event_type: Optional[str] = None,
 ) -> bool:
-    """Verify Textline webhook HMAC-SHA256 (hex).
+    """Verify Textline webhook signatures (hex).
 
-    Live Textline (TGP) sends ``X-Tgp-Event-Signature`` + ``X-Tgp-Event-Time`` and
-    signs ``{event_time}.{raw_body}`` over the exact request bytes. Legacy local
-    simulate uses ``X-Textline-Signature`` over the raw body only.
+    Live Textline (TGP) sends ``X-Tgp-Event-Signature``, ``X-Tgp-Event-Time``, and
+    ``X-Tgp-Event-Type``. Per Textline API docs, the signature is
+    ``SHA256({event_type}{event_time}{webhook_secret})`` — not HMAC and not over
+    the body. Legacy local simulate uses ``X-Textline-Signature`` =
+    HMAC-SHA256(raw body, secret).
     """
     sig = _normalize_signature(signature)
     if not sig or not secret:
         return False
+
+    if event_type and event_time:
+        expected = hashlib.sha256(
+            f"{event_type.strip()}{event_time.strip()}{secret}".encode("utf-8")
+        ).hexdigest()
+        return hmac.compare_digest(expected, sig)
+
     body = _body_bytes(raw_body)
     key = secret.encode("utf-8")
-    messages: list[bytes] = [body]
-    if event_time:
-        ts = event_time.strip().encode("utf-8")
-        # TGP live webhooks (Stripe-style timestamped payload).
-        messages = [ts + b"." + body, ts + b":" + body, body]
-    for message in messages:
-        expected = hmac.new(key, message, hashlib.sha256).hexdigest()
-        # compare_digest is constant time and length-safe, so an unequal-length
-        # signature can neither leak timing nor raise.
-        if hmac.compare_digest(expected, sig):
-            return True
-    return False
+    expected = hmac.new(key, body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig)

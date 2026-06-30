@@ -47,6 +47,7 @@ from hermes_runtime.gateway_store import (
 # simulate script uses the legacy X-Textline-Signature flat JSON shape.
 TGP_SIGNATURE_HEADER = "X-Tgp-Event-Signature"
 TGP_EVENT_TIME_HEADER = "X-Tgp-Event-Time"
+TGP_EVENT_TYPE_HEADER = "X-Tgp-Event-Type"
 LEGACY_SIGNATURE_HEADER = "X-Textline-Signature"
 
 # Local-dev shared-secret header for the internal agent-turn route (ADR-0106).
@@ -148,12 +149,15 @@ def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
     )
 
 
-def _webhook_signature_and_time(request: Request) -> tuple[Optional[str], Optional[str]]:
+def _webhook_signature_context(
+    request: Request,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
     signature = request.headers.get(TGP_SIGNATURE_HEADER) or request.headers.get(
         LEGACY_SIGNATURE_HEADER
     )
     event_time = request.headers.get(TGP_EVENT_TIME_HEADER)
-    return signature, event_time
+    event_type = request.headers.get(TGP_EVENT_TYPE_HEADER)
+    return signature, event_time, event_type
 
 
 def _never_duplicate(event_id: str) -> bool:
@@ -202,7 +206,7 @@ def create_app(
     async def textline_webhook(request: Request) -> Response:
         raw = await request.body()
         raw_text = raw.decode("utf-8")
-        signature, event_time = _webhook_signature_and_time(request)
+        signature, event_time, event_type = _webhook_signature_context(request)
         try:
             payload = json.loads(raw_text) if raw_text else {}
         except json.JSONDecodeError:
@@ -223,6 +227,7 @@ def create_app(
             resolved_at=clock(),
             is_duplicate=is_duplicate,
             event_time=event_time,
+            event_type=event_type,
         )
 
         # Opt-out is the only reply the gateway sends itself (compliance

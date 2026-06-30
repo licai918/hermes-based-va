@@ -25,10 +25,9 @@ $payload = @{
     conversation = @{ uuid = $ConversationId }
 }
 $rawBody = ($payload | ConvertTo-Json -Compress -Depth 6)
-$signedPayload = "$eventTime.$rawBody"
-
-$hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($secret))
-$sigBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($signedPayload))
+$eventType = "new_customer_post"
+$sha = [System.Security.Cryptography.SHA256]::Create()
+$sigBytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$eventType$eventTime$secret"))
 $signature = -join ($sigBytes | ForEach-Object { $_.ToString("x2") })
 
 Write-Host "POST $GatewayUrl/webhooks/textline (TGP new_customer_post)"

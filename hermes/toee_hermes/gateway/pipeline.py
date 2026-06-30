@@ -77,6 +77,7 @@ def process_inbound(
     is_duplicate: DuplicateCheck = lambda event_id: False,
     at_ms: Optional[float] = None,
     event_time: Optional[str] = None,
+    event_type: Optional[str] = None,
 ) -> InboundDecision:
     # Verify: reject unsigned/forged traffic before any processing (ADR-0021).
     if not verify_textline_signature(
@@ -84,6 +85,7 @@ def process_inbound(
         signature=signature,
         secret=secret,
         event_time=event_time,
+        event_type=event_type,
     ):
         return InboundDecision(status=401, action="reject", stage="verify")
 

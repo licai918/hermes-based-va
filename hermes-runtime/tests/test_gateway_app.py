@@ -85,9 +85,10 @@ def _tgp_new_customer_post(
     }
     raw_text = json.dumps(payload, separators=(",", ":"))
     raw = raw_text.encode("utf-8")
-    signed_payload = f"{event_time}.{raw_text}".encode("utf-8")
     headers = {
-        "X-Tgp-Event-Signature": _sign(signed_payload),
+        "X-Tgp-Event-Signature": hashlib.sha256(
+            f"new_customer_post{event_time}{WEBHOOK_SECRET}".encode("utf-8")
+        ).hexdigest(),
         "X-Tgp-Event-Time": event_time,
         "X-Tgp-Event-Type": "new_customer_post",
     }
