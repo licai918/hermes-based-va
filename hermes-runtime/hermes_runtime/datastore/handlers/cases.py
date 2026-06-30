@@ -560,14 +560,37 @@ def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:
     return row[0] if row else None
 
 
+def _textline_conversation_id(sms_session_id: str) -> str:
+    """Textline conversation UUID suffix on the gateway session key (ADR-0115).
+
+    ``sms_session:{thread_id}:{textline_uuid}`` — same peel as
+    :meth:`PostgresGatewayStore.load_context`.
+    """
+    return sms_session_id.rsplit(":", 1)[-1]
+
+
+def _resolve_sms_session_id(
+    conn, *, thread_id: Optional[str], case_session_id: Optional[str]
+) -> Optional[str]:
+    """Prefer the case-bound SMS session when still active, else the newest live one."""
+    if case_session_id:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM sms_session WHERE id = %s AND expires_at > now()",
+                (case_session_id,),
+            )
+            if cur.fetchone() is not None:
+                return case_session_id
+    return _active_sms_session_id(conn, thread_id)
+
+
 def _send_textline_message(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
     """Governed employee-confirmed Textline send (ADR-0083/0035 composite seam).
 
-    Validates SMS-session + assignee gating, captures the outbound via the mock
-    Textline sender (ponytail: live ``make_textline_reply_sender`` deferred until
-    ``TEXTLINE_ACCESS_TOKEN`` is wired for workbench sends), mirrors a
+    Validates SMS-session + assignee gating, sends via Textline when
+    ``TEXTLINE_ACCESS_TOKEN`` is set (else mock capture), mirrors a
     ``message_turn``, and appends a ``textline_send`` audit row atomically.
     """
     case_id = _require_case_id(params)
@@ -595,13 +618,18 @@ def _send_textline_message(
             "policy_blocked", "case not eligible for Textline send"
         )
 
-    conversation_id = thread_id or ""
-    sent = _capture_textline_send(conversation_id, body, media_url)
-    session_id = _active_sms_session_id(conn, thread_id)
+    session_id = _resolve_sms_session_id(
+        conn,
+        thread_id=thread_id,
+        case_session_id=row.get("sms_session_id"),
+    )
     if session_id is None:
         raise ToolDriverError(
             "policy_blocked", "case not eligible for Textline send"
         )
+
+    conversation_id = _textline_conversation_id(session_id)
+    sent = _capture_textline_send(conversation_id, body, media_url)
 
     turn_id = new_id("mt")
     with conn.cursor() as cur:
