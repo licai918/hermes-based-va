@@ -43,9 +43,11 @@ from hermes_runtime.gateway_store import (
     JobQueue,
 )
 
-# Provider signature header (ADR-0021). The route extracts it; the crypto core in
-# toee_hermes.gateway.verify stays provider-agnostic and header-name-agnostic.
-SIGNATURE_HEADER = "X-Textline-Signature"
+# Provider signature headers (ADR-0021). Live Textline (TGP) uses X-Tgp-*; local
+# simulate script uses the legacy X-Textline-Signature flat JSON shape.
+TGP_SIGNATURE_HEADER = "X-Tgp-Event-Signature"
+TGP_EVENT_TIME_HEADER = "X-Tgp-Event-Time"
+LEGACY_SIGNATURE_HEADER = "X-Textline-Signature"
 
 # Local-dev shared-secret header for the internal agent-turn route (ADR-0106).
 # Production verifies Cloud Tasks OIDC upstream instead.
@@ -70,12 +72,70 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
-    """Map the v1 Textline webhook JSON onto canonical inbound fields (ADR-0102).
+def _iso_from_unix_ts(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    The provider key names are resolved here (the route layer's job); normalization
-    of the phone and event shape happens downstream in ``to_inbound_channel_event``.
+
+def _parse_tgp_new_customer_post(payload: dict[str, Any]) -> TextlineInboundFields:
+    post = payload.get("post") if isinstance(payload.get("post"), dict) else {}
+    conversation = (
+        payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {}
+    )
+    creator = post.get("creator") if isinstance(post.get("creator"), dict) else {}
+    customer = (
+        conversation.get("customer")
+        if isinstance(conversation.get("customer"), dict)
+        else {}
+    )
+    attachments = post.get("attachments")
+    media_urls: Optional[list[str]] = None
+    if isinstance(attachments, list):
+        urls = [
+            str(item.get("url"))
+            for item in attachments
+            if isinstance(item, dict) and item.get("url")
+        ]
+        media_urls = urls or None
+    from_phone = str(creator.get("phone_number") or customer.get("phone_number") or "")
+    conversation_id = str(
+        post.get("conversation_uuid") or conversation.get("uuid") or ""
+    )
+    return TextlineInboundFields(
+        event_id=str(post.get("uuid", "")),
+        conversation_id=conversation_id,
+        from_phone=from_phone,
+        body=str(post.get("body", "")),
+        received_at=_iso_from_unix_ts(post.get("created_at")),
+        raw_event_type="new_customer_post",
+        media_urls=media_urls,
+    )
+
+
+def is_ignored_tgp_webhook(payload: dict[str, Any]) -> bool:
+    """Non-customer TGP posts ack 200 without agent work (ADR-0102)."""
+    if payload.get("webhook") != "new_customer_post":
+        return False
+    post = payload.get("post") if isinstance(payload.get("post"), dict) else {}
+    if post.get("is_whisper"):
+        return True
+    creator = post.get("creator") if isinstance(post.get("creator"), dict) else {}
+    return creator.get("type") != "customer"
+
+
+def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
+    """Map Textline webhook JSON onto canonical inbound fields (ADR-0102).
+
+    Supports live TGP ``new_customer_post`` webhooks and the legacy flat JSON used
+    by ``scripts/simulate-textline-webhook.ps1``.
     """
+    if payload.get("webhook") == "new_customer_post":
+        return _parse_tgp_new_customer_post(payload)
     media = payload.get("media_urls")
     return TextlineInboundFields(
         event_id=str(payload.get("id", "")),
@@ -86,6 +146,14 @@ def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
         raw_event_type=str(payload.get("type", "")),
         media_urls=list(media) if isinstance(media, list) else None,
     )
+
+
+def _webhook_signature_and_time(request: Request) -> tuple[Optional[str], Optional[str]]:
+    signature = request.headers.get(TGP_SIGNATURE_HEADER) or request.headers.get(
+        LEGACY_SIGNATURE_HEADER
+    )
+    event_time = request.headers.get(TGP_EVENT_TIME_HEADER)
+    return signature, event_time
 
 
 def _never_duplicate(event_id: str) -> bool:
@@ -134,7 +202,7 @@ def create_app(
     async def textline_webhook(request: Request) -> Response:
         raw = await request.body()
         raw_text = raw.decode("utf-8")
-        signature = request.headers.get(SIGNATURE_HEADER)
+        signature, event_time = _webhook_signature_and_time(request)
         try:
             payload = json.loads(raw_text) if raw_text else {}
         except json.JSONDecodeError:
@@ -142,8 +210,11 @@ def create_app(
         if not isinstance(payload, dict):
             payload = {}
 
+        if is_ignored_tgp_webhook(payload):
+            return Response(status_code=200)
+
         decision = process_inbound(
-            raw_body=raw_text,
+            raw_body=raw,
             signature=signature,
             secret=webhook_secret,
             fields=parse_textline_fields(payload),
@@ -151,6 +222,7 @@ def create_app(
             rate_limiter=rate_limiter,
             resolved_at=clock(),
             is_duplicate=is_duplicate,
+            event_time=event_time,
         )
 
         # Opt-out is the only reply the gateway sends itself (compliance

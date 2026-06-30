@@ -60,6 +60,44 @@ def _post_signed(client: TestClient, raw: bytes):
     )
 
 
+def _tgp_new_customer_post(
+    *,
+    body: str = "Hi",
+    phone: str = "+17786803250",
+    event_id: str = "evt-tgp-1",
+    conversation_id: str = "conv-tgp-1",
+    event_time: str = "1782844993",
+) -> tuple[bytes, dict[str, str]]:
+    payload = {
+        "webhook": "new_customer_post",
+        "post": {
+            "body": body,
+            "created_at": int(event_time),
+            "uuid": event_id,
+            "conversation_uuid": conversation_id,
+            "is_whisper": False,
+            "creator": {
+                "type": "customer",
+                "phone_number": phone,
+            },
+        },
+        "conversation": {"uuid": conversation_id},
+    }
+    raw_text = json.dumps(payload, separators=(",", ":"))
+    raw = raw_text.encode("utf-8")
+    signed_payload = f"{event_time}.{raw_text}".encode("utf-8")
+    headers = {
+        "X-Tgp-Event-Signature": _sign(signed_payload),
+        "X-Tgp-Event-Time": event_time,
+        "X-Tgp-Event-Type": "new_customer_post",
+    }
+    return raw, headers
+
+
+def _post_tgp_signed(client: TestClient, raw: bytes, headers: dict[str, str]):
+    return client.post("/webhooks/textline", content=raw, headers=headers)
+
+
 def test_webhook_rejects_request_without_a_valid_signature() -> None:
     client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
     raw = b'{"event":"message.created"}'
@@ -84,6 +122,30 @@ def test_webhook_accepts_a_request_signed_with_the_shared_secret() -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_webhook_accepts_live_tgp_new_customer_post() -> None:
+    store = InMemoryGatewayStore()
+    queue = InMemoryJobQueue()
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    client = TestClient(app)
+    raw, headers = _tgp_new_customer_post(
+        body="Hi",
+        phone="7786803250",
+        event_id="evt-tgp-live",
+        conversation_id="7931e83f-96d9-4070-9ca4-081bcf36afd0",
+    )
+
+    response = _post_tgp_signed(client, raw, headers)
+
+    assert response.status_code == 200
+    assert [(p.event_id, p.conversation_id) for p in queue.payloads] == [
+        ("evt-tgp-live", "7931e83f-96d9-4070-9ca4-081bcf36afd0")
+    ]
+    context = store.load_context("evt-tgp-live")
+    assert context is not None
+    assert context.from_phone == "+17786803250"
+    assert context.inbound_body_ref
 
 
 def test_opt_out_inbound_acks_200_and_sends_one_fixed_confirmation() -> None:
