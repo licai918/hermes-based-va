@@ -132,3 +132,19 @@ def test_gateway_turn_runner_delivers_fallback_not_the_blocked_body() -> None:
 
     assert sent == [("conv-A", "Sorry.")]
     assert "LEAK" not in sent[0][1]
+
+
+def test_gateway_turn_runner_invokes_on_reply_sent_after_delivery() -> None:
+    mirrored: list[tuple[object, str]] = []
+    runner = make_gateway_turn_runner(
+        reply_sender=lambda conv, text: None,
+        run_turn=lambda context, body: _send_turn(
+            conversation_id=context.conversation_id, body="Shipped!", final_response="x"
+        ),
+        on_reply_sent=lambda ctx, text: mirrored.append((ctx, text)),
+    )
+    ctx = SimpleNamespace(conversation_id="conv-A")
+
+    runner(ctx, "Where is my order?")
+
+    assert mirrored == [(ctx, "Shipped!")]

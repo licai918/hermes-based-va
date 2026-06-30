@@ -32,6 +32,10 @@ RunTurn = Callable[[Any, str], Mapping[str, Any]]
 # for the opt-out confirmation (gateway_app.ReplySender).
 ReplySender = Callable[[str, str], None]
 
+# Optional hook after a reply is delivered (context, reply text) — mirrors to the
+# durable store for Workbench Case Thread Context when wired (ADR-0082/0140).
+OnReplySent = Callable[[Any, str], None]
+
 
 def run_gateway_turn(
     *,
@@ -73,7 +77,10 @@ def outbound_reply_text(turn: Mapping[str, Any]) -> str:
 
 
 def make_gateway_turn_runner(
-    *, reply_sender: ReplySender, run_turn: RunTurn
+    *,
+    reply_sender: ReplySender,
+    run_turn: RunTurn,
+    on_reply_sent: Optional[OnReplySent] = None,
 ) -> Callable[[Any, str], None]:
     """Compose the model-agnostic async reply path into a gateway ``TurnRunner``.
 
@@ -85,6 +92,9 @@ def make_gateway_turn_runner(
 
     def turn_runner(context: Any, inbound_body: str) -> None:
         turn = run_turn(context, inbound_body)
-        reply_sender(context.conversation_id, outbound_reply_text(turn))
+        reply = outbound_reply_text(turn)
+        reply_sender(context.conversation_id, reply)
+        if on_reply_sent is not None:
+            on_reply_sent(context, reply)
 
     return turn_runner

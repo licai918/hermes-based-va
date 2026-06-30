@@ -295,6 +295,40 @@ class PostgresGatewayStore:
                 row = cur.fetchone()
         return row[0] if row else None
 
+    def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None:
+        """Mirror a successful agent SMS reply into message_turn for Workbench (ADR-0082)."""
+        if not body.strip():
+            return
+        session_id = context.sms_session_id
+        thread_id = context.customer_thread_id
+        if not session_id or not thread_id:
+            return
+        turn_id = new_id("mt")
+        with self._connect() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO message_turn
+                            (id, sms_session_id, customer_thread_id, direction,
+                             author, body, auto_handled)
+                        VALUES (%s, %s, %s, 'outbound', 'hermes', %s, FALSE)
+                        """,
+                        (turn_id, session_id, thread_id, body),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE cases SET last_activity_at = now()
+                        WHERE customer_thread_id = %s
+                          AND status IN ('open', 'in_progress')
+                        """,
+                        (thread_id,),
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
 
 def _ensure_open_case(
     cur,

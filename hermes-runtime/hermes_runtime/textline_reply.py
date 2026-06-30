@@ -3,15 +3,13 @@
 The gateway delivers one customer-facing reply per turn through a ``ReplySender``
 ``(conversation_id, body)``. In production that send is the Textline REST API:
 
-    POST {base_url}/api/conversations.json
+    POST {base_url}/api/conversation/{conversation_uuid}.json
     X-TGP-ACCESS-TOKEN: <Textline Developer API access token>
-    {"uuid": "<conversation uuid>", "comment": {"body": "<message text>"}}
+    {"comment": {"body": "<message text>"}}
 
-The base URL (``https://application.textline.com/``), the ``X-TGP-ACCESS-TOKEN``
-auth header, and the ``api/conversations.json`` endpoint are confirmed by the dltHub
-Textline API source and Ibexa Connect's "Message a Conversation" action. The exact
-request-body field names are the one detail to confirm against a live Textline
-account before go-live; they are isolated in :func:`_build_payload` for that reason.
+``api/conversations.json`` (plural) is the "message a phone number" action and
+requires ``phone_number``; replying inside an existing thread uses the singular
+``api/conversation/{uuid}.json`` route (Textline Developer API / textline-php).
 
 The HTTP transport is injected (default: stdlib ``urllib.request``, no new runtime
 dependency) so the sender is unit-testable without the network. A non-2xx response
@@ -35,7 +33,8 @@ TEXTLINE_ACCESS_TOKEN_HEADER = "X-TGP-ACCESS-TOKEN"
 # Textline hosted REST API; overridable for a proxy via env.
 TEXTLINE_DEFAULT_BASE_URL = "https://application.textline.com/"
 
-_CONVERSATIONS_PATH = "api/conversations.json"
+def _conversation_message_path(conversation_id: str) -> str:
+    return f"api/conversation/{conversation_id}.json"
 
 _ACCESS_TOKEN_ENV = "TEXTLINE_ACCESS_TOKEN"
 _BASE_URL_ENV = "TEXTLINE_API_BASE_URL"
@@ -73,15 +72,9 @@ def resolve_textline_config() -> TextlineConfig:
     return TextlineConfig(base_url=base_url, access_token=access_token)
 
 
-def _build_payload(conversation_id: str, body: str) -> bytes:
-    """Serialize the "message a conversation" request body.
-
-    Field names per the Textline Developer API "message a conversation" action;
-    confirm against a live account before go-live.
-    """
-    return json.dumps(
-        {"uuid": conversation_id, "comment": {"body": body}}
-    ).encode("utf-8")
+def _build_payload(body: str) -> bytes:
+    """Serialize the reply body for ``POST api/conversation/{uuid}.json``."""
+    return json.dumps({"comment": {"body": body}}).encode("utf-8")
 
 
 def _urllib_post(*, url: str, headers: dict, body: bytes) -> int:
@@ -109,12 +102,14 @@ def make_textline_reply_sender(
 
     def send(conversation_id: str, body: str) -> None:
         resolved = config or resolve_textline_config()
-        url = resolved.base_url.rstrip("/") + "/" + _CONVERSATIONS_PATH
+        url = resolved.base_url.rstrip("/") + "/" + _conversation_message_path(
+            conversation_id
+        )
         headers = {
             TEXTLINE_ACCESS_TOKEN_HEADER: resolved.access_token,
             "Content-Type": "application/json",
         }
-        status = post(url=url, headers=headers, body=_build_payload(conversation_id, body))
+        status = post(url=url, headers=headers, body=_build_payload(body))
         if not 200 <= status < 300:
             raise TextlineSendError(
                 f"Textline rejected the reply to conversation {conversation_id} "

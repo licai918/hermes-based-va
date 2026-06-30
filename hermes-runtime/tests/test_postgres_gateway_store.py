@@ -176,6 +176,49 @@ def test_load_context_and_inbound_body_round_trip(datastore) -> None:
     assert store.load_inbound_body(persisted.inbound_body_ref) == "Round trip body"
 
 
+def test_persist_agent_outbound_writes_hermes_message_turn(datastore) -> None:
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    from toee_hermes.gateway.agent_turn import AgentTurnContext
+    from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+    from toee_hermes.gateway.normalize import InboundChannelEvent
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    event = InboundChannelEvent(
+        channel="textline_sms",
+        provider="textline",
+        event_id="evt-out-1",
+        conversation_id="conv-out-1",
+        from_phone="+15559876543",
+        body="Need help with tires",
+        received_at="2026-01-01T00:00:00Z",
+        raw_event_type="message.created",
+        media_urls=None,
+    )
+    decision = InboundDecision(
+        status=200,
+        action="enqueue",
+        stage="accept",
+        event=event,
+        snapshot=SessionIdentitySnapshot(
+            outcome="unmatched_caller", resolved_at="2026-01-01T00:00:00Z"
+        ),
+    )
+    context, _ = store.persist_accepted_inbound(decision)
+    store.persist_agent_outbound(context, "We have 225/65R17 in stock.")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT direction, author, body FROM message_turn
+            WHERE customer_thread_id = %s AND author = 'hermes'
+            """,
+            (context.customer_thread_id,),
+        )
+        row = cur.fetchone()
+    assert row == ("outbound", "hermes", "We have 225/65R17 in stock.")
+
+
 def test_webhook_through_create_app_writes_case(datastore) -> None:
     driver, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)

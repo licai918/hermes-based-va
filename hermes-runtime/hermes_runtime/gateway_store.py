@@ -39,6 +39,8 @@ class GatewayStore(Protocol):
 
     def load_inbound_body(self, inbound_body_ref: str) -> Optional[str]: ...
 
+    def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None: ...
+
 
 class JobQueue(Protocol):
     """Async agent-turn dispatch seam (Cloud Tasks in production, ADR-0105)."""
@@ -99,6 +101,11 @@ class InMemoryGatewayStore:
 
     def load_inbound_body(self, inbound_body_ref: str) -> Optional[str]:
         return self._message_turns.get(inbound_body_ref)
+
+    def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None:
+        # In-memory substrate: no Workbench read model; keep a ref for tests.
+        ref = f"message_turn:{context.sms_session_id}:{context.event_id}:out"
+        self._message_turns[ref] = body
 
     def is_duplicate(self, event_id: str) -> bool:
         return event_id in self._contexts
