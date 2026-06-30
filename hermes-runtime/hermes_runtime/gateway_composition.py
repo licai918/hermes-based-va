@@ -26,8 +26,11 @@ Launch (the function is an ASGI app factory)::
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
+
+from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
 
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
@@ -48,6 +51,18 @@ WEBHOOK_SECRET_ENV = "TEXTLINE_WEBHOOK_SECRET"
 # gateway_app.INTERNAL_JOB_SECRET_HEADER.
 INTERNAL_JOB_SECRET_ENV = "INTERNAL_JOB_SECRET"
 
+# Canonical External profile home (ADR-0139): restricts Hermes built-ins to the
+# customer-service tool surface configured in hermes/profiles/customer_service_external.
+_EXTERNAL_PROFILE_HOME = (
+    Path(__file__).resolve().parents[2] / "hermes" / "profiles" / EXTERNAL
+)
+
+
+def _apply_external_profile_env() -> None:
+    """Point Hermes at the External Customer Service profile home (ADR-0139/0034)."""
+    os.environ["HERMES_HOME"] = str(_EXTERNAL_PROFILE_HOME)
+    os.environ[PROFILE_ENV_VAR] = EXTERNAL
+
 
 def _require_env(name: str) -> str:
     value = (os.environ.get(name) or "").strip()
@@ -67,6 +82,7 @@ def build_gateway_app() -> FastAPI:
     """
     webhook_secret = _require_env(WEBHOOK_SECRET_ENV)
     internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
+    _apply_external_profile_env()
 
     # Resolved once at boot so a misconfiguration fails fast instead of on the first
     # webhook (rotation therefore requires a restart).

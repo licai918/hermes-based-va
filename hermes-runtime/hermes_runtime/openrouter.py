@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -167,6 +168,7 @@ def make_openrouter_run_turn(
     openai_factory: Any = None,
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+    tools_exclusive: bool = True,
 ) -> Callable[[Any, str], Mapping[str, Any]]:
     """Build the production ``run_turn``: a conversation-bound governed turn over OpenRouter.
 
@@ -200,13 +202,14 @@ def make_openrouter_run_turn(
         )
         return run_agent_turn(
             user_message=inbound_body,
-            system_message=system_message,
+            system_message=system_message or EXTERNAL_CUSTOMER_SERVICE_PERSONA,
             base_url=resolved.base_url,
             api_key=resolved.api_key,
             model=resolved.model,
             max_iterations=max_iterations,
             openai_factory=factory,
             governed_tool_names=booted.tool_names,
+            tools_exclusive=tools_exclusive,
         )
 
     return run_turn
