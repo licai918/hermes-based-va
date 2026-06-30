@@ -2,7 +2,7 @@
 
 This runbook chains the local-first paths (ADR-0142) so a new developer can reach a
 working Workbench in about 30 minutes. **Tier B** is the full Postgres + dual
-dispatch + Workbench API path â€” the target of Increment 1. **Tier A** is the
+dispatch + Workbench API path â€?the target of Increment 1. **Tier A** is the
 fast in-memory demo when you only need UI smoke without Docker.
 
 See also: [`local-datastore.md`](local-datastore.md), [`local-dispatch-servers.md`](local-dispatch-servers.md), repo-root [`.env.example`](../../.env.example).
@@ -24,7 +24,7 @@ cd hermes-runtime && uv sync
 
 ---
 
-## Tier A â€” in-memory quick demo (~5 min)
+## Tier A â€?in-memory quick demo (~5 min)
 
 No Docker, no dispatch servers. The Workbench BFF uses in-memory stores (ADR-0137).
 
@@ -40,11 +40,11 @@ Use Tier A for UI-only work. For Postgres-backed API mode, continue to Tier B.
 
 ---
 
-## Tier B â€” full local API path (~30 min)
+## Tier B â€?full local API path (~30 min)
 
 Four terminals after one-time setup. All commands assume repo root unless noted.
 
-### Terminal 1 â€” Postgres + schema
+### Terminal 1 â€?Postgres + schema
 
 ```bash
 docker compose up -d postgres
@@ -64,12 +64,12 @@ cd hermes-runtime
 uv run python -m hermes_runtime.datastore.migrate
 ```
 
-First run prints `applied migrations: â€¦, 0005_dev_bootstrap`. Re-runs print
+First run prints `applied migrations: â€? 0005_dev_bootstrap`. Re-runs print
 `no pending migrations` (bootstrap inserts are idempotent).
 
 Details: [`local-datastore.md`](local-datastore.md).
 
-### Terminal 2 â€” Internal Copilot dispatch (port 8081)
+### Terminal 2 â€?Internal Copilot dispatch (port 8081)
 
 PowerShell:
 
@@ -87,7 +87,7 @@ TOEE_HERMES_PROFILE=internal_copilot DISPATCH_API_TOKEN=dev-copilot-token \
   --factory --host 127.0.0.1 --port 8081
 ```
 
-### Terminal 3 â€” Supervisor Admin dispatch (port 8082)
+### Terminal 3 â€?Supervisor Admin dispatch (port 8082)
 
 PowerShell:
 
@@ -107,12 +107,12 @@ TOEE_HERMES_PROFILE=supervisor_admin DISPATCH_API_TOKEN=dev-admin-token \
 
 Details: [`local-dispatch-servers.md`](local-dispatch-servers.md).
 
-### Terminal 4 â€” Workbench BFF
+### Terminal 4 â€?Workbench BFF
 
 Create `apps/workbench/.env.local`:
 
 ```bash
-# Session cookie signing (optional locally â€” same value as the dev fallback in
+# Session cookie signing (optional locally â€?same value as the dev fallback in
 # apps/workbench/lib/auth/session-secret.ts when unset).
 WORKBENCH_SESSION_SECRET=workbench-dev-session-secret-change-me
 
@@ -150,7 +150,7 @@ Demo cases seeded for the copilot queue:
 
 | Case ID | Notes |
 | --- | --- |
-| `case_ar_urgent` | Urgent SMS, active session â€” good for queue + Textline send after claim |
+| `case_ar_urgent` | Urgent SMS, active session â€?good for queue + Textline send after claim |
 | `case_toolfail` | Urgent billing, `tool_failure` flag |
 
 Thread previews and identity summaries follow `apps/workbench/lib/gateway/seed.ts`.
@@ -177,7 +177,7 @@ curl http://127.0.0.1:8082/healthz   # -> {"status":"ok"}
 ### 3. Knowledge slots (admin)
 
 1. Log in as `admin` (or use an admin session).
-2. Open **Admin â†’ Knowledge**.
+2. Open **Admin â†?Knowledge**.
 3. Confirm six policy slots (empty placeholders from migration `0003_knowledge_slots`).
 
 ### 4. Case queue (copilot)
@@ -190,7 +190,7 @@ curl http://127.0.0.1:8082/healthz   # -> {"status":"ok"}
 
 1. Open `case_ar_urgent`.
 2. Claim the case.
-3. Use **Draft SMS** â€” should succeed (mock Textline path; no live Textline token required).
+3. Use **Draft SMS** â€?should succeed (mock Textline path; no live Textline token required).
 
 ### 6. Audit row
 
@@ -219,26 +219,26 @@ Governed writes append rows in the same transaction (ADR-0029/0085).
 | --- | --- |
 | Port **5432** in use | Stop other Postgres or remap the host port in `docker-compose.yml`. |
 | Docker **not healthy** | Start Docker Desktop; `docker inspect -f '{{.State.Health.Status}}' toee-va-postgres` should be `healthy`. |
-| `error during connect ... dockerDesktopLinuxEngine` | Docker engine not running â€” start Docker Desktop. |
-| `dial tcp [::1]:2375 ... refused` | Stale `DOCKER_HOST` â€” unset it or set `DOCKER_CONTEXT=desktop-linux`. |
+| `error during connect ... dockerDesktopLinuxEngine` | Docker engine not running â€?start Docker Desktop. |
+| `dial tcp [::1]:2375 ... refused` | Stale `DOCKER_HOST` â€?unset it or set `DOCKER_CONTEXT=desktop-linux`. |
 | Login works in Tier A but not Tier B | Confirm Terminal 3 (admin dispatch) is up with `TOOL_BACKEND=datastore` and `HERMES_ADMIN_API_*` is set in `.env.local`. |
 | Empty copilot queue in Tier B | Re-run migrate; confirm `0005_dev_bootstrap` applied and copilot server uses `TOOL_BACKEND=datastore`. |
-| Dispatch **401** | Bearer token mismatch â€” `HERMES_*_API_TOKEN` must equal that server's `DISPATCH_API_TOKEN`. |
+| Dispatch **401** | Bearer token mismatch â€?`HERMES_*_API_TOKEN` must equal that server's `DISPATCH_API_TOKEN`. |
 
 More detail: [`local-datastore.md`](local-datastore.md) (Postgres), [`local-dispatch-servers.md`](local-dispatch-servers.md) (dispatch).
 
 ---
 
-## Optional â€” not required for Tier B
+## Optional â€?not required for Tier B
 
 These are deferred or optional for local Tier B:
 
 | Topic | Notes |
 | --- | --- |
 | **#45 lockout** | API-path login does not yet enforce in-memory brute-force lockout (ADR-0144 M-2). Repeated bad passwords are not throttled when the admin API is configured. |
-| **OpenRouter** | Agent-turn / LLM drafts against live models need `OPENROUTER_API_KEY` on the gateway path â€” not required for queue, login, or mock Textline send. |
+| **OpenRouter** | Agent-turn / LLM drafts against live models need `OPENROUTER_API_KEY` on the gateway path â€?not required for queue, login, or mock Textline send. |
 | **Live Textline** | Outbound SMS uses the mock Textline capture in local dev; `TEXTLINE_ACCESS_TOKEN` is for production/live integration. |
-| **Gateway** | Inbound Textline webhook + async agent turn (`pnpm dev:gateway`) is Increment 3 â€” not part of this runbook. |
+| **Gateway** | Inbound Textline webhook + async agent turn — see [`local-gateway.md`](local-gateway.md) (`pnpm dev:gateway` is a stub; use uvicorn). |
 
 Cloud SQL, Cloud Run, and Secret Manager wiring remain Slice 37 (#40).
 
