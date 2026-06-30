@@ -9,6 +9,7 @@ import json
 from starlette.testclient import TestClient
 
 from hermes_runtime.gateway_app import create_app
+from hermes_runtime.gateway_store import InMemoryJobQueue
 from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from toee_hermes.execute import execute_tool
@@ -71,7 +72,8 @@ def test_persist_accepted_inbound_creates_workbench_case(datastore) -> None:
         ),
     )
 
-    context = store.persist_accepted_inbound(decision)
+    context, created = store.persist_accepted_inbound(decision)
+    assert created is True
     assert context.event_id == "evt-case-1"
 
     listed = execute_tool(
@@ -91,6 +93,87 @@ def test_persist_accepted_inbound_creates_workbench_case(datastore) -> None:
             (context.inbound_body_ref,),
         )
         assert cur.fetchone()[0] == "Where is my order 10444?"
+
+
+def test_persist_is_idempotent_on_duplicate_event_id(datastore) -> None:
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    from toee_hermes.gateway.normalize import InboundChannelEvent
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    event = InboundChannelEvent(
+        channel="textline_sms",
+        provider="textline",
+        event_id="evt-idem-1",
+        conversation_id="conv-idem-1",
+        from_phone="+15559876543",
+        body="First message",
+        received_at="2026-01-01T00:00:00Z",
+        raw_event_type="message.created",
+        media_urls=None,
+    )
+    decision = InboundDecision(
+        status=200,
+        action="enqueue",
+        stage="accept",
+        event=event,
+        snapshot=None,
+    )
+
+    _, created_first = store.persist_accepted_inbound(decision)
+    _, created_second = store.persist_accepted_inbound(decision)
+    assert created_first is True
+    assert created_second is False
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s",
+            ("evt-idem-1",),
+        )
+        assert cur.fetchone()[0] == 1
+
+
+def test_load_context_and_inbound_body_round_trip(datastore) -> None:
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+    from toee_hermes.gateway.normalize import InboundChannelEvent
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    event = InboundChannelEvent(
+        channel="textline_sms",
+        provider="textline",
+        event_id="evt-rt-1",
+        conversation_id="conv-rt-1",
+        from_phone="+15551112222",
+        body="Round trip body",
+        received_at="2026-01-01T00:00:00Z",
+        raw_event_type="message.created",
+        media_urls=None,
+    )
+    decision = InboundDecision(
+        status=200,
+        action="enqueue",
+        stage="accept",
+        event=event,
+        snapshot=SessionIdentitySnapshot(
+            outcome="verified_customer",
+            resolved_at="2026-01-01T00:00:00Z",
+            shopify_customer_id="gid://shopify/Customer/99",
+        ),
+    )
+
+    persisted, _ = store.persist_accepted_inbound(decision)
+    loaded = store.load_context("evt-rt-1")
+
+    assert loaded is not None
+    assert loaded.event_id == persisted.event_id
+    assert loaded.conversation_id == "conv-rt-1"
+    assert loaded.from_phone == "+15551112222"
+    assert loaded.inbound_body_ref == persisted.inbound_body_ref
+    assert loaded.session_identity_snapshot is not None
+    assert loaded.session_identity_snapshot.outcome == "verified_customer"
+    assert store.load_inbound_body(persisted.inbound_body_ref) == "Round trip body"
 
 
 def test_webhook_through_create_app_writes_case(datastore) -> None:
@@ -123,11 +206,12 @@ def test_webhook_through_create_app_writes_case(datastore) -> None:
 def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     driver, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)
+    queue = InMemoryJobQueue()
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         driver=driver,
         store=store,
-        queue=LocalDispatchingJobQueue(store=store, turn_runner=lambda *_: None),
+        queue=queue,
         is_duplicate=store.is_duplicate,
     )
     client = TestClient(app)
@@ -141,6 +225,7 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))
         assert cur.fetchone()[0] == 1
+    assert len(queue.payloads) == 1
 
     assert client.post(
         "/webhooks/textline",
@@ -150,3 +235,4 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))
         assert cur.fetchone()[0] == 1
+    assert len(queue.payloads) == 1

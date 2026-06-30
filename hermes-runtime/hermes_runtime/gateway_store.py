@@ -33,7 +33,7 @@ class GatewayStore(Protocol):
 
     def persist_accepted_inbound(
         self, decision: InboundDecision
-    ) -> AgentTurnContext: ...
+    ) -> tuple[AgentTurnContext, bool]: ...
 
     def load_context(self, event_id: str) -> Optional[AgentTurnContext]: ...
 
@@ -74,13 +74,14 @@ class InMemoryGatewayStore:
 
     def persist_accepted_inbound(
         self, decision: InboundDecision
-    ) -> AgentTurnContext:
+    ) -> tuple[AgentTurnContext, bool]:
         event = decision.event
         if not decision.enqueue or event is None:
             raise ValueError(
                 "persist_accepted_inbound requires an accepted (enqueue) decision; "
                 f"got action={decision.action!r}."
             )
+        created = event.event_id not in self._contexts
         thread_id = self._thread_id(event.from_phone)
         session_id = self._session_id(thread_id, event.conversation_id)
         body_ref = self._persist_inbound_turn(session_id, event)
@@ -91,7 +92,7 @@ class InMemoryGatewayStore:
             inbound_body_ref=body_ref,
         )
         self._contexts[context.event_id] = context
-        return context
+        return context, created
 
     def load_context(self, event_id: str) -> Optional[AgentTurnContext]:
         return self._contexts.get(event_id)

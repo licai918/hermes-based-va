@@ -167,8 +167,9 @@ def create_app(
         # enqueue the minimal async job (ADR-0105/0107). Only enqueue decisions get
         # here; opt-out/duplicate/rate-limited/retry never start a turn.
         if decision.action == "enqueue":
-            context = store.persist_accepted_inbound(decision)
-            queue.enqueue(to_job_payload(context))
+            context, created = store.persist_accepted_inbound(decision)
+            if created:
+                queue.enqueue(to_job_payload(context))
 
         return Response(status_code=decision.status)
 

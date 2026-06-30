@@ -110,7 +110,7 @@ class PostgresGatewayStore:
 
     def persist_accepted_inbound(
         self, decision: InboundDecision
-    ) -> AgentTurnContext:
+    ) -> tuple[AgentTurnContext, bool]:
         event = decision.event
         if not decision.enqueue or event is None:
             raise ValueError(
@@ -201,9 +201,12 @@ class PostgresGatewayStore:
                             (id, event_id, customer_thread_id, sms_session_id,
                              inbound_message_turn_id)
                         VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (event_id) DO NOTHING
+                        RETURNING event_id
                         """,
                         (context_id, event.event_id, thread_id, session_id, turn_id),
                     )
+                    created = cur.fetchone() is not None
 
                     _ensure_open_case(
                         cur,
@@ -217,12 +220,23 @@ class PostgresGatewayStore:
                 conn.rollback()
                 raise
 
-        return build_agent_turn_context(
-            decision,
-            sms_session_id=session_id,
-            customer_thread_id=thread_id,
-            inbound_body_ref=body_ref,
-        )
+        if created:
+            return (
+                build_agent_turn_context(
+                    decision,
+                    sms_session_id=session_id,
+                    customer_thread_id=thread_id,
+                    inbound_body_ref=body_ref,
+                ),
+                True,
+            )
+
+        loaded = self.load_context(event.event_id)
+        if loaded is None:
+            raise RuntimeError(
+                f"agent_turn_context conflict for {event.event_id!r} but row missing"
+            )
+        return loaded, False
 
     def load_context(self, event_id: str) -> Optional[AgentTurnContext]:
         with self._connect() as conn:
