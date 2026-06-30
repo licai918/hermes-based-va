@@ -5,7 +5,9 @@
 // Copilot Gateway (bottom). This is the only stateful, network-touching component
 // in the feature — every child is presentational and receives data + callbacks.
 // It fetches the queue on mount and on filter change, loads a thread on
-// selection, and refetches both after any governed mutation.
+// selection, refetches both after any governed mutation, and polls silently
+// every few seconds while the tab is visible so inbound SMS updates appear
+// without a manual refresh.
 import { useCallback, useEffect, useState } from "react";
 import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import * as copilot from "@/lib/api/copilot-client";
@@ -19,6 +21,11 @@ import { ThreadContext } from "./ThreadContext";
 import type { QueueFilter } from "./QueueFilters";
 
 type Thread = { case: WorkbenchCase; messages: ThreadMessage[] };
+
+type LoadOpts = { silent?: boolean };
+
+// ponytail: client poll while Copilot is open; pause when tab hidden (no SSE/WebSocket yet)
+const POLL_MS = 4_000;
 
 function isSupervisorOrAdmin(role: WorkbenchRoleId): boolean {
   return role === WORKBENCH_ROLES.supervisor || role === WORKBENCH_ROLES.admin;
@@ -55,24 +62,24 @@ export function CopilotDashboard({
     [showError],
   );
 
-  const loadCases = useCallback(async () => {
-    setLoadingCases(true);
+  const loadCases = useCallback(async (opts?: LoadOpts) => {
+    if (!opts?.silent) setLoadingCases(true);
     try {
       const { cases: next } = await copilot.listCases(filter);
       setCases(next);
     } catch (err) {
-      surface(err, "Failed to load the case queue");
+      if (!opts?.silent) surface(err, "Failed to load the case queue");
     } finally {
-      setLoadingCases(false);
+      if (!opts?.silent) setLoadingCases(false);
     }
   }, [filter, surface]);
 
   const loadThread = useCallback(
-    async (caseId: string) => {
+    async (caseId: string, opts?: LoadOpts) => {
       try {
         setThread(await copilot.getThread(caseId));
       } catch (err) {
-        surface(err, "Failed to load the case thread");
+        if (!opts?.silent) surface(err, "Failed to load the case thread");
       }
     },
     [surface],
@@ -90,10 +97,29 @@ export function CopilotDashboard({
     void loadThread(selectedCaseId);
   }, [selectedCaseId, loadThread]);
 
-  const refresh = useCallback(async () => {
-    await loadCases();
-    if (selectedCaseId !== null) await loadThread(selectedCaseId);
-  }, [loadCases, loadThread, selectedCaseId]);
+  const refresh = useCallback(
+    async (opts?: LoadOpts) => {
+      await loadCases(opts);
+      if (selectedCaseId !== null) await loadThread(selectedCaseId, opts);
+    },
+    [loadCases, loadThread, selectedCaseId],
+  );
+
+  useEffect(() => {
+    function poll() {
+      if (document.hidden) return;
+      void refresh({ silent: true });
+    }
+    const id = window.setInterval(poll, POLL_MS);
+    function onVisibility() {
+      if (!document.hidden) void refresh({ silent: true });
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [refresh]);
 
   async function mutate(action: () => Promise<unknown>, fallback: string) {
     try {
