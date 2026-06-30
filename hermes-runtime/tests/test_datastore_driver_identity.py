@@ -83,3 +83,38 @@ def test_get_email_link_status_linked_and_unlinked(datastore) -> None:
 
     unlinked = _run(driver, "get_email_link_status", {"shopify_customer_id": "gid://shopify/Customer/9999"})
     assert unlinked.data["status"] == "unlinked"
+
+
+def test_match_phone_shopify_fallback_creates_identity_link(datastore, monkeypatch) -> None:
+    driver, conn, _ = datastore
+    from hermes_runtime.datastore import shopify_identity
+
+    monkeypatch.setattr(
+        "hermes_runtime.datastore.handlers.identity.lookup_shopify_customers_by_phone",
+        lambda phone: [
+            shopify_identity.ShopifyPhoneMatch(
+                shopify_customer_id="gid://shopify/Customer/9001",
+                display_name="Hot Wheel Tire Service Inc.",
+            )
+        ]
+        if phone == "+15195917455"
+        else [],
+    )
+
+    result = _run(driver, "match_phone", {"phone": "+15195917455"})
+    assert result.ok
+    assert result.data["outcome"] == "verified_customer"
+    assert result.data["shopify_customer_id"] == "gid://shopify/Customer/9001"
+    assert result.data["company_name"] == "Hot Wheel Tire Service Inc."
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT shopify_customer_id FROM identity_link
+            WHERE channel = %s AND channel_identity = %s
+            """,
+            ("sms", "+15195917455"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "gid://shopify/Customer/9001"

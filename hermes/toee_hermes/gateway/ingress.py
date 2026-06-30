@@ -37,6 +37,7 @@ class SessionIdentitySnapshot:
     resolved_at: str
     shopify_customer_id: Optional[str] = None
     shopify_customer_ids: Optional[list[str]] = None
+    display_name: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -53,10 +54,12 @@ def _to_snapshot(data: object, resolved_at: str) -> SessionIdentitySnapshot:
     outcome = record.get("outcome")
     at = record.get("resolved_at") or resolved_at
     if outcome == "verified_customer":
+        company_name = record.get("company_name")
         return SessionIdentitySnapshot(
             outcome="verified_customer",
             resolved_at=at,
             shopify_customer_id=record.get("shopify_customer_id"),
+            display_name=company_name if isinstance(company_name, str) else None,
         )
     if outcome == "ambiguous_phone_match":
         return SessionIdentitySnapshot(

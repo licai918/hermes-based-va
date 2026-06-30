@@ -149,7 +149,11 @@ When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemo
 **Honest limits (unchanged):**
 
 - Restarting an **in-memory** gateway drops context; Postgres mode survives restarts.
-- **Identity lookup** with `datastore` reads `identity_link` in Postgres, not mock fixtures. Seed a row for each real customer phone (see below) or inbound shows as *Unmatched Caller*.
+- **Identity lookup** with `datastore` reads `identity_link` in Postgres first. When
+  `INTEGRATION_DRIVER=composio` and Shopify is linked, ingress falls back to a
+  Composio Shopify customer phone lookup and auto-writes `identity_link` on a
+  single match. Without a Shopify registered phone on file, inbound still acks as
+  *Unmatched Caller*. Manual seed (below) remains valid for dev overrides.
 - The async agent turn still routes **business tools** through the plugin's `INTEGRATION_DRIVER` (mock/composio), not `TOOL_BACKEND`. Case rows for inbound are opened at persist time so Workbench shows the thread immediately; agent `create_case` during the turn still uses mock unless you wire Composio + future composite driver work.
 - A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS, a working `TEXTLINE_ACCESS_TOKEN` + real `conversation_id`.
 - Cloud Tasks replace `LocalDispatchingJobQueue` in a later slice (#40).
@@ -171,6 +175,11 @@ When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemo
    cd hermes-runtime
    uv run uvicorn hermes_runtime.gateway_composition:build_gateway_app --factory --host 127.0.0.1 --port 8080
    ```
+
+   For Shopify ingress phone match, set
+   `COMPOSIO_TOOLKIT_VERSION_SHOPIFY=20260506_00` (or newer) in `hermes-runtime/.env`
+   so Composio exposes `SHOPIFY_GET_CUSTOMERS_SEARCH`. The placeholder `00000000_00`
+   toolkit only lists customers and cannot search by phone.
 
 5. Simulate or receive inbound SMS (below). Open Workbench copilot queue — a new case with the inbound preview should appear (alongside any `0005_dev_bootstrap` demo cases unless you delete them).
 

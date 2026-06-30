@@ -32,6 +32,7 @@ def test_verified_phone_produces_verified_snapshot() -> None:
         outcome="verified_customer",
         resolved_at=RESOLVED_AT,
         shopify_customer_id="gid://shopify/Customer/1001",
+        display_name="Acme Fleet",
     )
 
 

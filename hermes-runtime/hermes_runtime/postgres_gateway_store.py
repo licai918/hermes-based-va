@@ -124,9 +124,9 @@ class PostgresGatewayStore:
         body_ref = turn_id
 
         snapshot = decision.snapshot
-        shopify_id: Optional[str] = None
+        thread_label: Optional[str] = None
         if snapshot is not None and snapshot.outcome == "verified_customer":
-            shopify_id = snapshot.shopify_customer_id
+            thread_label = snapshot.display_name or snapshot.shopify_customer_id
 
         context_id = new_id("agent_ctx")
         snapshot_id = f"snap:{event.event_id}"
@@ -149,7 +149,7 @@ class PostgresGatewayStore:
                             updated_at = now()
                         RETURNING id
                         """,
-                        (thread_id, _SMS_CHANNEL, event.from_phone, shopify_id),
+                        (thread_id, _SMS_CHANNEL, event.from_phone, thread_label),
                     )
                     thread_id = cur.fetchone()[0]
 
