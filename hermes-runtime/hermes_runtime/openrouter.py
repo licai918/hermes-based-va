@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from toee_hermes.gateway.ingress import snapshot_as_identity_dict
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
 from toee_hermes.plugin.profiles import EXTERNAL
 
@@ -195,10 +196,15 @@ def make_openrouter_run_turn(
             fallback_model=resolved.fallback_model,
             is_retryable=is_retryable,
         )
+        snapshot = getattr(context, "session_identity_snapshot", None)
+        identity = (
+            snapshot_as_identity_dict(snapshot) if snapshot is not None else None
+        )
         booted = boot_profile(
             EXTERNAL,
             conversation_id=context.conversation_id,
             sms_session_id=getattr(context, "sms_session_id", None),
+            identity=identity,
         )
         return run_agent_turn(
             user_message=inbound_body,

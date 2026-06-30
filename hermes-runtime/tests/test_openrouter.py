@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+
 import pytest
 
 from hermes_runtime.live import _scripted_openai_factory
@@ -254,6 +256,7 @@ def test_make_openrouter_run_turn_falls_back_to_the_secondary_model_on_retryable
     assert outbound_reply_text(turn) == body
 
 
+
 def test_make_openrouter_run_turn_runs_a_bound_governed_turn_via_injected_provider() -> None:
     # The production run_turn wiring: resolved OpenRouter config + a profile booted
     # bound to the conversation (ADR-0107) drive a real AIAgent loop and governed
@@ -289,3 +292,44 @@ def test_make_openrouter_run_turn_runs_a_bound_governed_turn_via_injected_provid
     )
 
     assert outbound_reply_text(turn) == body
+
+
+def test_run_turn_passes_reloaded_snapshot_into_profile_boot(monkeypatch) -> None:
+    import hermes_runtime.openrouter as openrouter_mod
+
+    captured: dict[str, object] = {}
+    real_boot = openrouter_mod.boot_profile
+
+    def capture(profile: str, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_boot(profile, **kwargs)
+
+    monkeypatch.setattr(openrouter_mod, "boot_profile", capture)
+    config = OpenRouterConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-test",
+        model=OPENROUTER_PRIMARY_MODEL,
+    )
+    run_turn = make_openrouter_run_turn(
+        config=config,
+        openai_factory=_scripted_openai_factory([{"content": "Hi there."}]),
+    )
+    context = SimpleNamespace(
+        conversation_id="conv-778",
+        sms_session_id="sms_session:thr:conv-778",
+        session_identity_snapshot=SessionIdentitySnapshot(
+            outcome="verified_customer",
+            resolved_at="2026-06-30T12:00:00Z",
+            shopify_customer_id="gid://shopify/Customer/1019382595648",
+            display_name="Hello",
+        ),
+    )
+
+    run_turn(context, "Where is my order?")
+
+    identity = captured.get("identity")
+    assert isinstance(identity, dict)
+    assert identity["outcome"] == "verified_customer"
+    assert identity["shopify_customer_id"] == "gid://shopify/Customer/1019382595648"
+    assert identity["company_name"] == "Hello"
+

@@ -98,6 +98,8 @@ def _register(
     provider_factory: ProviderFactory,
     driver: Optional[ToolDriver] = None,
     gate: Optional[ToolGate] = None,
+    session_identity: Optional[Any] = None,
+    memory_preferences: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Register a profile's allowlisted tools + the injection hook.
 
@@ -130,7 +132,18 @@ def _register(
             handler=handler,
         )
 
-    ctx.register_hook("pre_llm_call", make_pre_llm_call_hook())
+    if session_identity is not None or memory_preferences:
+        hook = make_pre_llm_call_hook(
+            snapshot_provider=(
+                (lambda _sid: session_identity) if session_identity is not None else None
+            ),
+            memory_provider=(
+                (lambda _sid: memory_preferences) if memory_preferences else None
+            ),
+        )
+    else:
+        hook = make_pre_llm_call_hook()
+    ctx.register_hook("pre_llm_call", hook)
 
 
 def register(ctx: Any) -> None:
@@ -143,22 +156,32 @@ def register(ctx: Any) -> None:
 
 
 def register_turn(
-    ctx: Any, *, conversation_id: str, sms_session_id: Optional[str] = None
+    ctx: Any,
+    *,
+    conversation_id: str,
+    sms_session_id: Optional[str] = None,
+    identity: Optional[Any] = None,
+    memory_preferences: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Register for one async Textline turn bound to ``conversation_id`` (ADR-0107).
 
     The gateway embedding calls this after the internal job reloads + verifies the
     inbound binding; every governed dispatch then carries the binding, and the
     turn-binding gate rejects a ``toee_textline_reply.send_message`` aimed at any
-    other conversation (ADR-0066).
+    other conversation (ADR-0066). ``identity`` is the ingress Session Identity
+    Snapshot (ADR-0043) closed over for Tool Gate authorization and ``pre_llm_call``
+    injection (ADR-0140).
     """
     _register(
         ctx,
         provider_factory=lambda profile: _make_context_provider(
             profile,
+            identity=identity,
             conversation_id=conversation_id,
             sms_session_id=sms_session_id,
         ),
+        session_identity=identity,
+        memory_preferences=memory_preferences,
     )
 
 
@@ -185,6 +208,7 @@ def register_eval(
         ),
         driver=driver,
         gate=gate,
+        session_identity=identity,
     )
 
 
