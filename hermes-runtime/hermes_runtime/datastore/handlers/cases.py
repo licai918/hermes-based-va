@@ -18,6 +18,11 @@ import os
 from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
 from toee_hermes.errors import ToolDriverError
 
+from toee_hermes.identity.summary import (
+    display_name_from_match_result,
+    format_identity_summary,
+)
+
 from ._common import insert_audit, new_id, read_string, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -68,21 +73,43 @@ def _status(conn, case_id: str) -> Optional[str]:
 _URGENT_URGENCIES = {"urgent", "high"}
 
 
+def _thread_display_name(conn, channel: str, channel_identity: str) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT match_result FROM session_identity_snapshot
+            WHERE channel = %s AND channel_identity = %s
+              AND match_result->>'outcome' = 'verified_customer'
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """,
+            (channel, channel_identity),
+        )
+        row = cur.fetchone()
+    return display_name_from_match_result(row[0]) if row else None
+
+
 def _thread_identity_summary(conn, thread_id: Optional[str]) -> str:
-    """ADR-0082 identity summary: the linked Shopify customer, else the channel id."""
+    """ADR-0082 identity summary: verified Shopify customer name + phone, else phone."""
     if not thread_id:
         return ""
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT channel_identity, shopify_customer_id FROM customer_thread WHERE id = %s",
+            "SELECT channel, channel_identity, shopify_customer_id"
+            " FROM customer_thread WHERE id = %s",
             (thread_id,),
         )
         row = cur.fetchone()
     if row is None:
         return ""
-    if row.get("shopify_customer_id"):
-        return f"Verified: {row['shopify_customer_id']}"
-    return row.get("channel_identity") or ""
+    channel_identity = row.get("channel_identity") or ""
+    shopify_customer_id = row.get("shopify_customer_id")
+    display_name = _thread_display_name(conn, row.get("channel") or "sms", channel_identity)
+    return format_identity_summary(
+        channel_identity=channel_identity,
+        shopify_customer_id=shopify_customer_id,
+        display_name=display_name,
+    )
 
 
 def _thread_last_preview(conn, thread_id: Optional[str]) -> str:

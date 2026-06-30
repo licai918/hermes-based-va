@@ -134,7 +134,7 @@ def test_persist_is_idempotent_on_duplicate_event_id(datastore) -> None:
 
 
 def test_load_context_and_inbound_body_round_trip(datastore) -> None:
-    _, conn, _ = datastore
+    driver, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)
     from toee_hermes.gateway.ingress import SessionIdentitySnapshot
     from toee_hermes.gateway.normalize import InboundChannelEvent
@@ -160,6 +160,7 @@ def test_load_context_and_inbound_body_round_trip(datastore) -> None:
             outcome="verified_customer",
             resolved_at="2026-01-01T00:00:00Z",
             shopify_customer_id="gid://shopify/Customer/99",
+            display_name="Round Trip Customer",
         ),
     )
 
@@ -173,7 +174,31 @@ def test_load_context_and_inbound_body_round_trip(datastore) -> None:
     assert loaded.inbound_body_ref == persisted.inbound_body_ref
     assert loaded.session_identity_snapshot is not None
     assert loaded.session_identity_snapshot.outcome == "verified_customer"
+    assert loaded.session_identity_snapshot.display_name == "Round Trip Customer"
     assert store.load_inbound_body(persisted.inbound_body_ref) == "Round trip body"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT shopify_customer_id FROM customer_thread WHERE channel_identity = %s",
+            ("+15551112222",),
+        )
+        assert cur.fetchone()[0] == "gid://shopify/Customer/99"
+        cur.execute(
+            "SELECT match_result FROM session_identity_snapshot WHERE event_id = %s",
+            ("evt-rt-1",),
+        )
+        match_result = cur.fetchone()[0]
+    assert match_result["company_name"] == "Round Trip Customer"
+
+    listed = execute_tool(
+        tool="toee_workbench_read",
+        action="list_cases",
+        params={},
+        context=ToolExecutionContext(profile="internal_copilot"),
+        driver=driver,
+    )
+    case = next(c for c in listed.data["cases"] if c["thread_id"] == persisted.customer_thread_id)
+    assert case["identity_summary"] == "Verified: Round Trip Customer · +1 (555) 111-2222"
 
 
 def test_persist_agent_outbound_writes_hermes_message_turn(datastore) -> None:

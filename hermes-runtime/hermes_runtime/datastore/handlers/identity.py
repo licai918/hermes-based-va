@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._common import new_id, read_string
 from ..shopify_identity import ShopifyPhoneMatch, lookup_shopify_customers_by_phone
+from toee_hermes.identity.summary import display_name_from_match_result
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -90,6 +91,62 @@ def _shopify_phone_fallback(
     )
 
 
+def _display_name_from_snapshots(
+    conn, channel: str, channel_identity: str
+) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT match_result FROM session_identity_snapshot
+            WHERE channel = %s AND channel_identity = %s
+              AND match_result->>'outcome' = 'verified_customer'
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """,
+            (channel, channel_identity),
+        )
+        row = cur.fetchone()
+    return display_name_from_match_result(row[0]) if row else None
+
+
+def _enrich_company_name_from_shopify(
+    channel: str,
+    channel_identity: str,
+    shopify_customer_id: str,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if result.get("company_name") or channel != _PHONE_CHANNEL:
+        return result
+    matches = lookup_shopify_customers_by_phone(channel_identity)
+    if not matches:
+        return result
+    for match in matches:
+        if match.shopify_customer_id == shopify_customer_id:
+            result["company_name"] = match.display_name
+            break
+    return result
+
+
+def _verified_from_link(
+    conn,
+    channel: str,
+    channel_identity: str,
+    shopify_customer_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": shopify_customer_id,
+    }
+    company = _display_name_from_snapshots(conn, channel, channel_identity)
+    if company:
+        result["company_name"] = company
+    result = _enrich_company_name_from_shopify(
+        channel, channel_identity, shopify_customer_id, result
+    )
+    return _with_resolved_at(result, params)
+
+
 def _match(conn, channel: str, channel_identity: str | None, params: dict[str, Any]) -> Any:
     if channel_identity is None:
         return _with_resolved_at({"outcome": "unmatched_caller"}, params)
@@ -110,9 +167,7 @@ def _match(conn, channel: str, channel_identity: str | None, params: dict[str, A
             return fallback
         return _with_resolved_at({"outcome": "unmatched_caller"}, params)
     if len(ids) == 1:
-        return _with_resolved_at(
-            {"outcome": "verified_customer", "shopify_customer_id": ids[0]}, params
-        )
+        return _verified_from_link(conn, channel, channel_identity, ids[0], params)
     # More than one candidate customer: never auto-merge in v1 (ADR-0044). The
     # "phone" outcome name is the established contract the mock also uses for email.
     return _with_resolved_at(

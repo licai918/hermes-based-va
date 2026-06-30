@@ -47,6 +47,8 @@ def _snapshot_to_json(snapshot: SessionIdentitySnapshot) -> dict[str, Any]:
         data["shopify_customer_id"] = snapshot.shopify_customer_id
     if snapshot.shopify_customer_ids:
         data["shopify_customer_ids"] = list(snapshot.shopify_customer_ids)
+    if snapshot.display_name:
+        data["company_name"] = snapshot.display_name
     return data
 
 
@@ -59,10 +61,14 @@ def _snapshot_from_json(data: object, *, fallback_at: str) -> Optional[SessionId
     resolved_at = data.get("resolved_at") if isinstance(data.get("resolved_at"), str) else fallback_at
     if outcome == "verified_customer":
         shopify_id = data.get("shopify_customer_id")
+        display_name = data.get("company_name")
+        if not isinstance(display_name, str):
+            display_name = data.get("display_name")
         return SessionIdentitySnapshot(
             outcome=outcome,
             resolved_at=resolved_at,
             shopify_customer_id=shopify_id if isinstance(shopify_id, str) else None,
+            display_name=display_name if isinstance(display_name, str) else None,
         )
     if outcome == "ambiguous_phone_match":
         ids = data.get("shopify_customer_ids")
@@ -124,9 +130,9 @@ class PostgresGatewayStore:
         body_ref = turn_id
 
         snapshot = decision.snapshot
-        thread_label: Optional[str] = None
+        thread_shopify_id: Optional[str] = None
         if snapshot is not None and snapshot.outcome == "verified_customer":
-            thread_label = snapshot.display_name or snapshot.shopify_customer_id
+            thread_shopify_id = snapshot.shopify_customer_id
 
         context_id = new_id("agent_ctx")
         snapshot_id = f"snap:{event.event_id}"
@@ -149,7 +155,7 @@ class PostgresGatewayStore:
                             updated_at = now()
                         RETURNING id
                         """,
-                        (thread_id, _SMS_CHANNEL, event.from_phone, thread_label),
+                        (thread_id, _SMS_CHANNEL, event.from_phone, thread_shopify_id),
                     )
                     thread_id = cur.fetchone()[0]
 

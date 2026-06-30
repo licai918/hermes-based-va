@@ -7,6 +7,7 @@ from toee_hermes.identity.shopify_phone import (
     filter_customers_by_phone,
     shopify_customer_gid,
 )
+from toee_hermes.identity.summary import format_identity_summary, format_phone_display
 
 
 def test_shopify_customer_gid_normalizes_numeric_id() -> None:
@@ -30,3 +31,32 @@ def test_customer_display_name_prefers_company() -> None:
         )
         == "Acme Fleet"
     )
+
+
+def test_format_phone_display_north_america() -> None:
+    assert format_phone_display("+17786803250") == "+1 (778) 680-3250"
+
+
+def test_format_identity_summary_verified_name_and_phone() -> None:
+    assert (
+        format_identity_summary(
+            channel_identity="+17786803250",
+            shopify_customer_id="gid://shopify/Customer/1019382595648",
+            display_name="Hello",
+        )
+        == "Verified: Hello · +1 (778) 680-3250"
+    )
+
+
+def test_format_identity_summary_verified_gid_only_shows_phone() -> None:
+    assert (
+        format_identity_summary(
+            channel_identity="+17786803250",
+            shopify_customer_id="gid://shopify/Customer/1019382595648",
+        )
+        == "Verified: +1 (778) 680-3250"
+    )
+
+
+def test_format_identity_summary_unmatched_shows_phone_only() -> None:
+    assert format_identity_summary(channel_identity="+14165550101") == "+1 (416) 555-0101"
