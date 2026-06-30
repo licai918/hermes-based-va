@@ -72,15 +72,6 @@ def build_gateway_app() -> FastAPI:
     # webhook (rotation therefore requires a restart).
     reply_sender = make_textline_reply_sender(config=resolve_textline_config())
     run_turn = make_openrouter_run_turn(config=resolve_openrouter_config())
-    turn_runner = make_gateway_turn_runner(
-        reply_sender=reply_sender,
-        run_turn=run_turn,
-        on_reply_sent=(
-            (lambda ctx, text: store.persist_agent_outbound(ctx, text))
-            if backend == "datastore"
-            else None
-        ),
-    )
 
     # The store is the source of truth (ADR-0107); the local dispatcher reloads from
     # the same instance the internal route uses. When TOOL_BACKEND=datastore, persist
@@ -93,6 +84,16 @@ def build_gateway_app() -> FastAPI:
     else:
         store = InMemoryGatewayStore()
         driver = None
+
+    turn_runner = make_gateway_turn_runner(
+        reply_sender=reply_sender,
+        run_turn=run_turn,
+        on_reply_sent=(
+            (lambda ctx, text: store.persist_agent_outbound(ctx, text))
+            if backend == "datastore"
+            else None
+        ),
+    )
 
     queue = LocalDispatchingJobQueue(store=store, turn_runner=turn_runner)
 
