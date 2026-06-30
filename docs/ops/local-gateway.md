@@ -36,6 +36,8 @@ use your own values — never commit secrets.
 | `INTERNAL_JOB_SECRET` | yes | Shared secret for `/internal/jobs/agent-turn` (ADR-0106) |
 | `TEXTLINE_ACCESS_TOKEN` | yes | Outbound Textline replies (opt-out + agent turn, ADR-0083) |
 | `OPENROUTER_API_KEY` | yes | Live LLM for the async agent turn (ADR-0009) |
+| `TOOL_BACKEND` | for Workbench queue | Set to `datastore` so inbound SMS persists to Postgres and appears in the Workbench copilot queue (same DB as Tier B). Requires `docker compose up -d postgres` + migrations. |
+| `DATABASE_URL` | with `datastore` | Defaults to `postgresql://toee:toee@localhost:5432/toee_va` when unset. |
 
 Optional overrides (defaults are fine locally): `TEXTLINE_API_BASE_URL`, `OPENROUTER_BASE_URL`,
 `OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODEL`.
@@ -140,18 +142,82 @@ manually in local mode — that route exists for Cloud Tasks parity (ADR-0106).
 
 ## What store is used today
 
-`build_gateway_app` wires **`InMemoryGatewayStore`** and **`LocalDispatchingJobQueue`**
-(ADR-0105 local substrate, ADR-0140). Accepted inbound context lives **only in process memory**.
+When ``TOOL_BACKEND=datastore`` (recommended for Tier B + real inbound), ``build_gateway_app`` wires **`PostgresGatewayStore`** and **`PostgresDriver`** for ingress identity lookup. Accepted inbound turns write `customer_thread`, `sms_session`, `message_turn`, `session_identity_snapshot`, `agent_turn_context`, and an **open Follow-up Case** into the same Postgres database the Workbench BFF reads.
+
+When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemoryGatewayStore`** — inbound SMS does **not** appear in the Workbench queue.
+
+**Honest limits (unchanged):**
+
+- Restarting an **in-memory** gateway drops context; Postgres mode survives restarts.
+- **Identity lookup** with `datastore` reads `identity_link` in Postgres, not mock fixtures. Seed a row for each real customer phone (see below) or inbound shows as *Unmatched Caller*.
+- The async agent turn still routes **business tools** through the plugin's `INTEGRATION_DRIVER` (mock/composio), not `TOOL_BACKEND`. Case rows for inbound are opened at persist time so Workbench shows the thread immediately; agent `create_case` during the turn still uses mock unless you wire Composio + future composite driver work.
+- A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS, a working `TEXTLINE_ACCESS_TOKEN` + real `conversation_id`.
+- Cloud Tasks replace `LocalDispatchingJobQueue` in a later slice (#40).
+
+### Tier B: gateway + Workbench on the same Postgres
+
+1. Start Postgres and migrate (see [`local-e2e.md`](local-e2e.md) Terminal 1).
+2. Start dispatch servers + Workbench (Terminals 2–4) with `TOOL_BACKEND=datastore`.
+3. In `hermes-runtime/.env`, set:
+
+   ```bash
+   TOOL_BACKEND=datastore
+   # DATABASE_URL=postgresql://toee:toee@localhost:5432/toee_va
+   ```
+
+4. Boot the gateway (same env as dispatch):
+
+   ```powershell
+   cd hermes-runtime
+   uv run uvicorn hermes_runtime.gateway_composition:build_gateway_app --factory --host 127.0.0.1 --port 8080
+   ```
+
+5. Simulate or receive inbound SMS (below). Open Workbench copilot queue — a new case with the inbound preview should appear (alongside any `0005_dev_bootstrap` demo cases unless you delete them).
+
+#### Optional: real customer identity (Postgres)
+
+```sql
+INSERT INTO identity_link (id, channel, channel_identity, shopify_customer_id, match_status)
+VALUES ('link_real_1', 'sms', '+1YOUR_CUSTOMER_E164', 'gid://shopify/Customer/YOUR_ID', 'verified')
+ON CONFLICT DO NOTHING;
+```
+
+Replace `+1YOUR_CUSTOMER_E164` with the Textline `from` phone (E.164). Without this row, ingress still acks but `identity_summary` shows the raw phone.
+
+#### Optional: hide demo seed cases
+
+Migration `0005_dev_bootstrap` seeds `case_ar_urgent` and `case_toolfail`. To work with real inbound only:
+
+```sql
+DELETE FROM cases WHERE id IN ('case_ar_urgent', 'case_toolfail');
+DELETE FROM message_turn WHERE customer_thread_id IN ('thread_ar', 'thread_toolfail');
+DELETE FROM sms_session WHERE customer_thread_id IN ('thread_ar', 'thread_toolfail');
+DELETE FROM customer_thread WHERE id IN ('thread_ar', 'thread_toolfail');
+```
+
+Accounts (`rep` / `admin`) remain; only demo queue rows are removed.
+
+### Point Textline webhook at local gateway
+
+Textline must reach your machine on `/webhooks/textline`:
+
+1. Boot gateway on port **8080** (above).
+2. Expose with a tunnel, e.g. [ngrok](https://ngrok.com/): `ngrok http 8080`
+3. In Textline Developer settings, set webhook URL to `https://<tunnel-host>/webhooks/textline`.
+4. Set `TEXTLINE_WEBHOOK_SECRET` in `hermes-runtime/.env` to the **same secret** Textline uses to sign payloads.
+
+Production: deploy gateway to Cloud Run and point Textline at the service URL (see [`deploy-cloud-run.md`](deploy-cloud-run.md)). The old Cloud Run URL returning 404 is a different (legacy) service — update Textline to the new gateway URL.
+
+---
+
+## Previous in-memory-only note (superseded when TOOL_BACKEND=datastore)
+
+When using the default mock backend, `build_gateway_app` wired **`InMemoryGatewayStore`** only:
 
 **Honest limits:**
 
-- Inbound SMS simulation **does not** appear in the Workbench Postgres copilot queue
-  (`pnpm dev:workbench` Tier B). There is no shared datastore between gateway and Workbench yet.
-- Restarting the gateway **drops** in-memory context.
-- A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS,
-  a working `TEXTLINE_ACCESS_TOKEN` + real or sandbox `conversation_id`. Signature-only webhook
-  smoke succeeds without a model call; the async turn may log errors if tokens are fake.
-- Durable Postgres + Cloud Tasks replace the in-memory store/queue in a later slice (#40).
+- Inbound SMS simulation **did not** appear in the Workbench Postgres copilot queue.
+- Restarting the gateway **dropped** in-memory context.
 
 ---
 

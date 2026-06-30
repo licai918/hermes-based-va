@@ -99,6 +99,9 @@ class InMemoryGatewayStore:
     def load_inbound_body(self, inbound_body_ref: str) -> Optional[str]:
         return self._message_turns.get(inbound_body_ref)
 
+    def is_duplicate(self, event_id: str) -> bool:
+        return event_id in self._contexts
+
 
 class InMemoryJobQueue:
     """Records enqueued payloads in order so tests can assert dispatch."""

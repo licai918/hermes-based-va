@@ -14,8 +14,9 @@ assembled:
 It fails closed: a missing secret raises at boot rather than allowing an
 unauthenticated webhook, an unauthed model call, or a silently dropped reply. The
 Textline and OpenRouter connections are resolved once here (fail-fast), so rotating
-a credential requires a restart. The store and queue use the in-memory defaults
-until the durable Postgres/Cloud Tasks substrate is wired (ADR-0105/0140).
+a credential requires a restart. The store uses Postgres when ``TOOL_BACKEND=datastore``
+(same DB as Workbench Tier B); otherwise the in-memory defaults apply until Cloud
+Tasks is wired (ADR-0105/0140).
 
 Launch (the function is an ASGI app factory)::
 
@@ -32,10 +33,12 @@ from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
 from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.openrouter import make_openrouter_run_turn, resolve_openrouter_config
+from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from hermes_runtime.textline_reply import (
     make_textline_reply_sender,
     resolve_textline_config,
 )
+from hermes_runtime.tool_backend import resolve_tool_backend, select_tool_driver
 from hermes_runtime.turn_runner import make_gateway_turn_runner
 
 # Textline webhook signing secret (ADR-0021); consistent with TEXTLINE_ACCESS_TOKEN.
@@ -74,9 +77,17 @@ def build_gateway_app() -> FastAPI:
     )
 
     # The store is the source of truth (ADR-0107); the local dispatcher reloads from
-    # the same instance the internal route uses. The durable Postgres/Cloud Tasks
-    # substrate (ADR-0105/0140) replaces these two without touching the route.
-    store = InMemoryGatewayStore()
+    # the same instance the internal route uses. When TOOL_BACKEND=datastore, persist
+    # into the same Postgres Workbench reads (ADR-0140/0142); otherwise the in-memory
+    # substrate (ADR-0105 local dev without Docker).
+    backend = resolve_tool_backend()
+    if backend == "datastore":
+        store = PostgresGatewayStore()
+        driver = select_tool_driver("datastore")
+    else:
+        store = InMemoryGatewayStore()
+        driver = None
+
     queue = LocalDispatchingJobQueue(store=store, turn_runner=turn_runner)
 
     return create_app(
@@ -86,4 +97,6 @@ def build_gateway_app() -> FastAPI:
         turn_runner=turn_runner,
         store=store,
         queue=queue,
+        driver=driver,
+        is_duplicate=store.is_duplicate,
     )

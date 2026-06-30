@@ -101,6 +101,29 @@ def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
     assert captured["queue"]._store is captured["store"]
 
 
+def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    def _spy_create_app(**kwargs: object) -> FastAPI:
+        captured.update(kwargs)
+        return FastAPI()
+
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setattr(
+        "hermes_runtime.gateway_composition.create_app", _spy_create_app
+    )
+
+    build_gateway_app()
+
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+
+    assert isinstance(captured["store"], PostgresGatewayStore)
+    assert captured["driver"] is not None
+    assert callable(captured["is_duplicate"])
+
+
 @pytest.mark.parametrize("missing", list(REQUIRED_ENV))
 def test_build_gateway_app_fails_closed_when_a_required_secret_is_absent(
     _full_env: None, monkeypatch: pytest.MonkeyPatch, missing: str
