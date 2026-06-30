@@ -5,7 +5,7 @@
 // mutation is reported through a callback so the container owns the BFF calls and
 // refetches. Prior Auto-Handled turns stay visible but de-emphasized; the active
 // Human Intervention segment is highlighted.
-import { useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import type { ThreadAuthor, ThreadMessage, WorkbenchCase } from "@/lib/gateway/types";
 import { formatChannel, formatRelativeTime, formatStatus } from "@/lib/format";
@@ -23,6 +23,11 @@ function isSupervisorOrAdmin(role: WorkbenchRoleId): boolean {
 
 const META_ITEM: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "0.1rem" };
 const META_LABEL: React.CSSProperties = { fontSize: "0.7rem", textTransform: "uppercase", color: "#777" };
+const NEAR_BOTTOM_PX = 80;
+
+function isNearBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+}
 
 export function ThreadContext({
   case: workbenchCase,
@@ -52,6 +57,24 @@ export function ThreadContext({
   const [editingReason, setEditingReason] = useState(false);
   const [reasonDraft, setReasonDraft] = useState(c.contactReason);
   const [assignDraft, setAssignDraft] = useState("");
+  const timelineRef = useRef<HTMLOListElement>(null);
+  const stickToBottomRef = useRef(true);
+  const firstLoadRef = useRef(true);
+
+  useEffect(() => {
+    stickToBottomRef.current = true;
+    firstLoadRef.current = true;
+  }, [c.caseId]);
+
+  useLayoutEffect(() => {
+    const el = timelineRef.current;
+    if (el === null) return;
+    if (firstLoadRef.current || stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      stickToBottomRef.current = true;
+    }
+    firstLoadRef.current = false;
+  }, [messages]);
 
   function saveReason() {
     const next = reasonDraft.trim();
@@ -60,7 +83,10 @@ export function ThreadContext({
   }
 
   return (
-    <section aria-label="Case thread context" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <section
+      aria-label="Case thread context"
+      style={{ display: "flex", flexDirection: "column", minHeight: 0, height: "100%" }}
+    >
       <header
         style={{
           position: "sticky",
@@ -174,8 +200,22 @@ export function ThreadContext({
       </header>
 
       <ol
+        ref={timelineRef}
         aria-label="Thread timeline"
-        style={{ listStyle: "none", margin: 0, padding: "0.5rem 0.75rem", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.4rem" }}
+        onScroll={(e) => {
+          stickToBottomRef.current = isNearBottom(e.currentTarget);
+        }}
+        style={{
+          listStyle: "none",
+          margin: 0,
+          padding: "0.5rem 0.75rem",
+          flex: 1,
+          minHeight: 0,
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.4rem",
+        }}
       >
         {messages.map((m) => (
           <li

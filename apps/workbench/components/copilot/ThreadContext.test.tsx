@@ -165,4 +165,72 @@ describe("ThreadContext timeline", () => {
     expect(auto).toHaveAttribute("data-auto-handled", "true");
     expect(active).toHaveAttribute("data-active-segment", "true");
   });
+
+  it("scrolls to the bottom on first load and when new messages arrive near the bottom", () => {
+    const handlers = {
+      onClaim: vi.fn(),
+      onResolve: vi.fn(),
+      onSetPriority: vi.fn(),
+      onSetContactReason: vi.fn(),
+      onAssign: vi.fn(),
+    };
+    const baseProps = {
+      case: makeCase(),
+      accountId: "acct-1",
+      role: WORKBENCH_ROLES.rep,
+      now: NOW,
+      ...handlers,
+    };
+    const { rerender } = render(<ThreadContext {...baseProps} messages={[]} />);
+    const list = screen.getByRole("list", { name: /thread timeline/i });
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 900 });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 300 });
+
+    rerender(<ThreadContext {...baseProps} messages={makeMessages()} />);
+    expect(list.scrollTop).toBe(900);
+
+    list.scrollTop = 0;
+    fireEvent.scroll(list);
+    rerender(
+      <ThreadContext
+        {...baseProps}
+        messages={[
+          ...makeMessages(),
+          {
+            messageId: "m3",
+            threadId: "t1",
+            at: NOW,
+            author: "customer",
+            channel: "sms",
+            body: "Latest inbound",
+            autoHandled: false,
+            activeCaseSegment: true,
+          },
+        ]}
+      />,
+    );
+    expect(list.scrollTop).toBe(0);
+
+    list.scrollTop = 600;
+    fireEvent.scroll(list);
+    rerender(
+      <ThreadContext
+        {...baseProps}
+        messages={[
+          ...makeMessages(),
+          {
+            messageId: "m4",
+            threadId: "t1",
+            at: NOW + 1,
+            author: "hermes",
+            channel: "sms",
+            body: "Another reply",
+            autoHandled: false,
+            activeCaseSegment: true,
+          },
+        ]}
+      />,
+    );
+    expect(list.scrollTop).toBe(900);
+  });
 });

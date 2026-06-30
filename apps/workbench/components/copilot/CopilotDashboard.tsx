@@ -148,7 +148,15 @@ export function CopilotDashboard({
       </div>
 
       <div style={{ flex: "1 1 50%", minWidth: 0, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-        <div style={{ flex: "1 1 55%", minHeight: 0, overflowY: "auto", borderBottom: "1px solid #e2e2e2" }}>
+        <div
+          style={{
+            flex: "1 1 55%",
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+            borderBottom: "1px solid #e2e2e2",
+          }}
+        >
           {thread !== null ? (
             <ThreadContext
               case={thread.case}
