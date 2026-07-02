@@ -333,3 +333,43 @@ def test_run_turn_passes_reloaded_snapshot_into_profile_boot(monkeypatch) -> Non
     assert identity["shopify_customer_id"] == "gid://shopify/Customer/1019382595648"
     assert identity["company_name"] == "Hello"
 
+
+def test_run_turn_prepends_snapshot_into_user_message(monkeypatch) -> None:
+    import hermes_runtime.openrouter as openrouter_mod
+
+    captured: dict[str, str] = {}
+    real_run = openrouter_mod.run_agent_turn
+
+    def capture(*, user_message: str, **kwargs: object) -> dict[str, object]:
+        captured["user_message"] = user_message
+        return real_run(user_message=user_message, **kwargs)
+
+    monkeypatch.setattr(openrouter_mod, "run_agent_turn", capture)
+    config = OpenRouterConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-test",
+        model=OPENROUTER_PRIMARY_MODEL,
+    )
+    run_turn = make_openrouter_run_turn(
+        config=config,
+        openai_factory=_scripted_openai_factory([{"content": "Hi there."}]),
+    )
+    context = SimpleNamespace(
+        conversation_id="conv-778",
+        sms_session_id="sms_session:thr:conv-778",
+        session_identity_snapshot=SessionIdentitySnapshot(
+            outcome="verified_customer",
+            resolved_at="2026-06-30T12:00:00Z",
+            shopify_customer_id="gid://shopify/Customer/1019382595648",
+            display_name="Hello",
+        ),
+    )
+
+    run_turn(context, "Where is my order?")
+
+    user_message = captured["user_message"]
+    assert "Session Identity Snapshot:" in user_message
+    assert "verified_customer" in user_message
+    assert "1019382595648" in user_message
+    assert user_message.endswith("Where is my order?")
+

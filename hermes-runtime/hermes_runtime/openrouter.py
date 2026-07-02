@@ -21,6 +21,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from toee_hermes.gateway.ingress import snapshot_as_identity_dict
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
+from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -200,6 +201,11 @@ def make_openrouter_run_turn(
         identity = (
             snapshot_as_identity_dict(snapshot) if snapshot is not None else None
         )
+        # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
+        # AIAgent invokes hooks on the global singleton (discover_plugins → register).
+        # Prepend the snapshot here so the model sees verified identity (ADR-0140).
+        injected = render_injection(identity, None)
+        user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,
             conversation_id=context.conversation_id,
@@ -207,7 +213,7 @@ def make_openrouter_run_turn(
             identity=identity,
         )
         return run_agent_turn(
-            user_message=inbound_body,
+            user_message=user_message,
             system_message=system_message or EXTERNAL_CUSTOMER_SERVICE_PERSONA,
             base_url=resolved.base_url,
             api_key=resolved.api_key,
