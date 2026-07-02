@@ -156,6 +156,41 @@ def test_shopify_list_customer_orders_maps_each_item() -> None:
     _assert_one_to_one(client, "toee_shopify_read", "list_customer_orders", "ca_shopify")
 
 
+def test_shopify_list_customer_orders_strips_graphql_customer_id() -> None:
+    client = FakeComposioClient({"orders": []})
+    _run(
+        client,
+        "toee_shopify_read",
+        "list_customer_orders",
+        {},
+        _ctx(identity=_verified()),
+    )
+    assert client.calls[0]["params"] == {"customer_id": "1001", "status": "any"}
+
+
+def test_shopify_get_order_maps_nested_shopify_customer() -> None:
+    raw = {
+        "order": {
+            "order_number": 49299,
+            "customer": {"id": 6764623954003},
+            "line_items": [{"sku": "SKU1", "title": "Tire"}],
+        }
+    }
+    client = FakeComposioClient(raw)
+    out = _run(
+        client,
+        "toee_shopify_read",
+        "get_order",
+        {"order_number": "7157788934227"},
+        _ctx(identity=_verified()),
+    )
+    assert out == {
+        "order_number": "49299",
+        "customer_id": "gid://shopify/Customer/6764623954003",
+        "line_items": [{"sku": "SKU1", "title": "Tire"}],
+    }
+
+
 def test_shopify_search_products_returns_public_fields_only() -> None:
     raw = {
         "products": [
@@ -310,6 +345,50 @@ def test_qbo_get_ar_summary_maps_to_contract_shape() -> None:
         "total_balance": 1250.0,
     }
     _assert_one_to_one(client, "toee_qbo_read", "get_ar_summary", "ca_qbo")
+
+
+def test_qbo_get_ar_summary_parses_aged_receivables_report() -> None:
+    raw = {
+        "Rows": {
+            "Row": [
+                {
+                    "ColData": [
+                        {"value": "Acme Fleet"},
+                        {"value": ""},
+                        {"value": ""},
+                        {"value": ""},
+                        {"value": ""},
+                        {"value": ""},
+                        {"value": "125.50"},
+                    ]
+                },
+                {
+                    "type": "Section",
+                    "group": "GrandTotal",
+                    "Summary": {
+                        "ColData": [
+                            {"value": "TOTAL"},
+                            {"value": "8337.09"},
+                            {"value": "34332.85"},
+                            {"value": "-5748.30"},
+                            {"value": "-747.56"},
+                            {"value": "-15220.96"},
+                            {"value": "20953.12"},
+                        ]
+                    },
+                },
+            ]
+        }
+    }
+    client = FakeComposioClient(raw)
+    out = _run(
+        client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified())
+    )
+    assert out == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 1,
+        "total_balance": 20953.12,
+    }
 
 
 # --- square ------------------------------------------------------------------

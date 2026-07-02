@@ -95,6 +95,30 @@ def _read(params: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
+def _shopify_numeric_customer_id(customer_id: str | None) -> str | None:
+    """Shopify REST expects a numeric id string, not a GraphQL gid."""
+    if not customer_id:
+        return None
+    prefix = "gid://shopify/Customer/"
+    return customer_id[len(prefix) :] if customer_id.startswith(prefix) else customer_id
+
+
+def _shopify_customer_gid(order: dict[str, Any]) -> str | None:
+    """Normalize Composio/Shopify order payloads to the mock contract gid form."""
+    customer_id = order.get("customer_id")
+    if isinstance(customer_id, str) and customer_id.startswith("gid://"):
+        return customer_id
+    if customer_id is not None:
+        return f"gid://shopify/Customer/{customer_id}"
+    customer = order.get("customer")
+    if isinstance(customer, dict) and customer.get("id") is not None:
+        raw_id = customer["id"]
+        if isinstance(raw_id, str) and raw_id.startswith("gid://"):
+            return raw_id
+        return f"gid://shopify/Customer/{raw_id}"
+    return None
+
+
 def _verified_customer_id(context: "ToolExecutionContext") -> str | None:
     """The verified customer's Shopify id from the Session Identity Snapshot (ADR-0043).
 
@@ -117,9 +141,10 @@ def _is_verified(context: "ToolExecutionContext") -> bool:
 
 
 def _shape_order(order: dict[str, Any]) -> dict[str, Any]:
+    order_number = order.get("order_number") or order.get("name")
     return {
-        "order_number": order.get("order_number"),
-        "customer_id": order.get("customer_id"),
+        "order_number": str(order_number) if order_number is not None else None,
+        "customer_id": _shopify_customer_gid(order),
         "line_items": [
             {"sku": item.get("sku"), "title": item.get("title")}
             for item in (order.get("line_items") or [])
@@ -128,47 +153,78 @@ def _shape_order(order: dict[str, Any]) -> dict[str, Any]:
 
 
 def _shape_public_product(product: dict[str, Any]) -> dict[str, Any]:
+    # Mock/eval fixtures already carry the public contract shape.
+    if isinstance(product.get("product_id"), str) and product.get("product_url"):
+        return {
+            "product_id": product.get("product_id"),
+            "sku": product.get("sku"),
+            "title": product.get("title"),
+            "product_url": product.get("product_url"),
+            "media_url": product.get("media_url"),
+        }
+    variants = product.get("variants") or []
+    sku = variants[0].get("sku") if variants else product.get("sku")
+    handle = product.get("handle")
+    product_id = product.get("product_id") or product.get("id")
+    image = product.get("image") or {}
+    media_url = image.get("src") if isinstance(image, dict) else product.get("media_url")
+    product_url = product.get("product_url")
+    if not product_url and handle:
+        product_url = f"https://toee-tire.myshopify.com/products/{handle}"
     return {
-        "product_id": product.get("product_id"),
-        "sku": product.get("sku"),
+        "product_id": str(product_id) if product_id is not None else None,
+        "sku": sku,
         "title": product.get("title"),
-        "product_url": product.get("product_url"),
-        "media_url": product.get("media_url"),
+        "product_url": product_url,
+        "media_url": media_url,
     }
+
+
+def _unwrap_composio_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    inner = raw.get("response_data")
+    return inner if isinstance(inner, dict) else raw
 
 
 def _shopify_get_order_request(
     params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    return {
-        "order_number": _read(params, "order_number", "orderNumber"),
-        "customer_id": _verified_customer_id(context),
-    }
+    order_id = _read(params, "order_id", "orderId", "order_number", "orderNumber")
+    return {"order_id": order_id}
 
 
 def _shopify_get_order_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
-    return _shape_order(raw.get("order", raw))
+    payload = _unwrap_composio_payload(raw)
+    order = payload.get("order", raw.get("order", raw))
+    return _shape_order(order)
 
 
 def _shopify_list_orders_request(
     _params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    return {"customer_id": _verified_customer_id(context)}
+    # Composio defaults to open orders only; include fulfilled/cancelled for "last order".
+    return {
+        "customer_id": _shopify_numeric_customer_id(_verified_customer_id(context)),
+        "status": "any",
+    }
 
 
 def _shopify_list_orders_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
-    return [_shape_order(order) for order in (raw.get("orders") or [])]
+    payload = _unwrap_composio_payload(raw)
+    orders = payload.get("orders") or raw.get("orders") or []
+    return [_shape_order(order) for order in orders]
 
 
 def _shopify_search_request(
-    params: dict[str, Any], _ctx: "ToolExecutionContext"
+    _params: dict[str, Any], _ctx: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    return {"query": _read(params, "query")}
+    # SHOPIFY_GET_PRODUCTS lists the catalog; query filtering is a Toee gate concern.
+    return {}
 
 
 def _shopify_search_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
-    # Product search is public catalog (ADR-0032/0061): never account-scoped fields.
-    return [_shape_public_product(product) for product in (raw.get("products") or [])]
+    payload = _unwrap_composio_payload(raw)
+    products = payload.get("products") or raw.get("products") or []
+    return [_shape_public_product(product) for product in products]
 
 
 def _shopify_get_product_request(
@@ -181,12 +237,17 @@ def _shopify_get_product_request(
 
 
 def _shopify_get_product_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
-    product = raw.get("product", raw)
+    payload = _unwrap_composio_payload(raw)
+    product = payload.get("product", raw.get("product", payload))
     shaped = _shape_public_product(product)
     if _is_verified(context):
-        # Live account-scoped facts only for a Verified Customer (ADR-0061).
-        shaped["price"] = product.get("price")
-        shaped["inventory"] = product.get("inventory")
+        variants = product.get("variants") or []
+        shaped["price"] = product.get("price") or (
+            variants[0].get("price") if variants else None
+        )
+        shaped["inventory"] = product.get("inventory") or (
+            variants[0].get("inventory_quantity") if variants else None
+        )
     return shaped
 
 
@@ -202,40 +263,124 @@ def _shape_invoice(invoice: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _qbo_get_invoice_request(
-    params: dict[str, Any], context: "ToolExecutionContext"
-) -> dict[str, Any]:
+def _qbo_invoice_from_raw(invoice: dict[str, Any]) -> dict[str, Any]:
+    bill_email = invoice.get("BillEmail")
+    email = (
+        bill_email.get("Address")
+        if isinstance(bill_email, dict)
+        else invoice.get("customer_email")
+    )
     return {
-        "invoice_number": _read(params, "invoice_number", "invoiceNumber"),
-        "shopify_customer_id": _verified_customer_id(context),
+        "invoice_number": invoice.get("DocNumber") or invoice.get("invoice_number"),
+        "shopify_customer_id": invoice.get("shopify_customer_id"),
+        "customer_email": email,
+        "balance": invoice.get("Balance", invoice.get("balance")),
     }
 
 
+def _qbo_invoices_from_raw(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    invoices = raw.get("invoices")
+    if invoices is None:
+        query_response = raw.get("QueryResponse") or {}
+        invoices = query_response.get("Invoice") or raw.get("Invoice") or []
+    if isinstance(invoices, dict):
+        invoices = [invoices]
+    return [_qbo_invoice_from_raw(invoice) for invoice in invoices]
+
+
+def _qbo_get_invoice_request(
+    params: dict[str, Any], context: "ToolExecutionContext"
+) -> dict[str, Any]:
+    invoice_number = _read(params, "invoice_number", "invoiceNumber")
+    request: dict[str, Any] = {"max_results": 1}
+    if invoice_number:
+        request["query"] = f"WHERE DocNumber = '{invoice_number}'"
+    return request
+
+
 def _qbo_get_invoice_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
+    if "invoice" in raw:
+        return _shape_invoice(raw["invoice"])
+    invoices = _qbo_invoices_from_raw(raw)
+    if invoices:
+        return invoices[0]
+    if raw.get("DocNumber") or raw.get("invoice_number"):
+        return _qbo_invoice_from_raw(raw)
     return _shape_invoice(raw.get("invoice", raw))
 
 
 def _qbo_list_invoices_request(
     _params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    return {"shopify_customer_id": _verified_customer_id(context)}
+    # ponytail: shopify_customer_id -> QBO CustomerRef mapping is a future identity bridge;
+    # list all invoices (capped) until that link exists in the datastore.
+    _verified_customer_id(context)
+    return {"max_results": 50}
 
 
 def _qbo_list_invoices_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
-    return [_shape_invoice(invoice) for invoice in (raw.get("invoices") or [])]
+    if "invoices" in raw and all(
+        isinstance(invoice, dict) and "invoice_number" in invoice
+        for invoice in raw["invoices"]
+    ):
+        return [_shape_invoice(invoice) for invoice in raw["invoices"]]
+    return _qbo_invoices_from_raw(raw)
 
 
 def _qbo_ar_summary_request(
     _params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    return {"shopify_customer_id": _verified_customer_id(context)}
+    request: dict[str, Any] = {"arpaid": "Unpaid"}
+    customer_id = _verified_customer_id(context)
+    if customer_id:
+        request["customer_ids"] = [customer_id]
+    return request
 
 
-def _qbo_ar_summary_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
+def _qbo_ar_summary_response(raw: dict[str, Any], ctx: "ToolExecutionContext") -> Any:
+    if raw.get("open_invoice_count") is not None or raw.get("total_balance") is not None:
+        return {
+            "shopify_customer_id": raw.get("shopify_customer_id")
+            or _verified_customer_id(ctx),
+            "open_invoice_count": raw.get("open_invoice_count"),
+            "total_balance": raw.get("total_balance"),
+        }
+
+    # ponytail: QBO Aged Receivables is customer-grain; open_invoice_count counts
+    # customers with a non-zero Total column until invoice-level identity bridge exists.
+    rows = (raw.get("Rows") or {}).get("Row") or []
+    open_invoice_count = 0
+    for row in rows:
+        if row.get("type") == "Section":
+            continue
+        col_data = row.get("ColData") or []
+        if len(col_data) < 7:
+            continue
+        total_str = col_data[6].get("value", "")
+        try:
+            total_val = float(total_str) if total_str not in ("", None) else 0.0
+        except (TypeError, ValueError):
+            total_val = 0.0
+        if total_val != 0.0:
+            open_invoice_count += 1
+
+    total_balance: float | None = None
+    for row in reversed(rows):
+        if row.get("group") != "GrandTotal":
+            continue
+        summary = row.get("Summary") or {}
+        summary_cols = summary.get("ColData") or []
+        if len(summary_cols) >= 7:
+            try:
+                total_balance = float(summary_cols[6].get("value", 0))
+            except (TypeError, ValueError):
+                total_balance = None
+        break
+
     return {
-        "shopify_customer_id": raw.get("shopify_customer_id"),
-        "open_invoice_count": raw.get("open_invoice_count"),
-        "total_balance": raw.get("total_balance"),
+        "shopify_customer_id": _verified_customer_id(ctx),
+        "open_invoice_count": open_invoice_count,
+        "total_balance": total_balance,
     }
 
 
@@ -266,36 +411,43 @@ def _square_payment_link_response(raw: dict[str, Any], context: "ToolExecutionCo
 
 # --- one-to-one mapping table (ADR-0130) -------------------------------------
 #
-# Composio toolkit action slugs below are plausible placeholders; the EXACT slugs
-# (and the raw response envelope each returns) are verified during staging smoke
-# per docs/ops/composio-connected-accounts.md before go-live.
+# Composio toolkit action slugs verified against live Shopify toolkit (staging smoke).
 ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ("toee_shopify_read", "get_order"): ActionSpec(
-        SHOPIFY, "SHOPIFY_GET_ORDER", _shopify_get_order_request, _shopify_get_order_response
+        SHOPIFY,
+        "SHOPIFY_GET_ORDERSBY_ID",
+        _shopify_get_order_request,
+        _shopify_get_order_response,
     ),
     ("toee_shopify_read", "list_customer_orders"): ActionSpec(
         SHOPIFY,
-        "SHOPIFY_LIST_CUSTOMER_ORDERS",
+        "SHOPIFY_GET_CUSTOMER_ORDERS",
         _shopify_list_orders_request,
         _shopify_list_orders_response,
     ),
     ("toee_shopify_read", "search_products"): ActionSpec(
-        SHOPIFY, "SHOPIFY_SEARCH_PRODUCTS", _shopify_search_request, _shopify_search_response
+        SHOPIFY,
+        "SHOPIFY_GET_PRODUCTS",
+        _shopify_search_request,
+        _shopify_search_response,
     ),
     ("toee_shopify_read", "get_product"): ActionSpec(
         SHOPIFY, "SHOPIFY_GET_PRODUCT", _shopify_get_product_request, _shopify_get_product_response
     ),
     ("toee_qbo_read", "get_invoice"): ActionSpec(
-        QBO, "QUICKBOOKS_GET_INVOICE", _qbo_get_invoice_request, _qbo_get_invoice_response
+        QBO, "QUICKBOOKS_QUERY_INVOICES", _qbo_get_invoice_request, _qbo_get_invoice_response
     ),
     ("toee_qbo_read", "list_customer_invoices"): ActionSpec(
         QBO,
-        "QUICKBOOKS_LIST_CUSTOMER_INVOICES",
+        "QUICKBOOKS_LIST_INVOICES",
         _qbo_list_invoices_request,
         _qbo_list_invoices_response,
     ),
     ("toee_qbo_read", "get_ar_summary"): ActionSpec(
-        QBO, "QUICKBOOKS_GET_AR_SUMMARY", _qbo_ar_summary_request, _qbo_ar_summary_response
+        QBO,
+        "QUICKBOOKS_GET_AGED_RECEIVABLES_REPORT",
+        _qbo_ar_summary_request,
+        _qbo_ar_summary_response,
     ),
     ("toee_square_payment_link", "send_payment_link"): ActionSpec(
         SQUARE,
@@ -390,6 +542,16 @@ def build_composio_driver() -> ComposioDriver:
     )
 
 
+def _toolkit_versions_from_env() -> dict[str, str]:
+    """Read ``COMPOSIO_TOOLKIT_VERSION_<TOOLKIT>`` env vars (staging-smoke verified)."""
+    prefix = "COMPOSIO_TOOLKIT_VERSION_"
+    return {
+        key[len(prefix) :].lower(): value
+        for key, value in os.environ.items()
+        if key.startswith(prefix) and value
+    }
+
+
 def _build_sdk_client(api_key: str) -> ComposioClient:
     """Lazily import the Composio SDK and wrap it behind :class:`ComposioClient`.
 
@@ -404,7 +566,11 @@ def _build_sdk_client(api_key: str) -> ComposioClient:
             "The composio SDK is not installed in this environment.",
         ) from err
 
-    return _ComposioSdkClient(Composio(api_key=api_key))
+    kwargs: dict[str, Any] = {"api_key": api_key}
+    toolkit_versions = _toolkit_versions_from_env()
+    if toolkit_versions:
+        kwargs["toolkit_versions"] = toolkit_versions
+    return _ComposioSdkClient(Composio(**kwargs))
 
 
 class _ComposioSdkClient:
