@@ -19,7 +19,7 @@ CAPTURED_TGP_TYPE = "new_customer_post"
 CAPTURED_TGP_SIGNATURE = (
     "e652f939697ccb429ccbd4ab6c5bbacf002b7e5c2bc899112a2b0d6b72aa0fa9"
 )
-_CAPTURED_BODY = Path(__file__).resolve().parents[2] / ".tmp" / "ngrok-body-bytes.bin"
+_CAPTURED_BODY = Path(__file__).resolve().parent / "fixtures" / "ngrok-body-bytes.bin"
 
 
 def _sign_body(body: str, key: str = SECRET) -> str:
