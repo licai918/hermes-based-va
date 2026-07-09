@@ -28,7 +28,9 @@ def temp_schema_conn():
     from psycopg import sql
 
     try:
-        conn = psycopg.connect(database_url())
+        # connect_timeout so an unreachable/black-holed host (Docker down, IPv6
+        # localhost SYN drop) skips fast instead of hanging forever in select().
+        conn = psycopg.connect(database_url(), connect_timeout=2)
     except Exception as exc:  # OperationalError and friends -> no DB available.
         pytest.skip(f"no Postgres at DATABASE_URL: {exc}")
 
