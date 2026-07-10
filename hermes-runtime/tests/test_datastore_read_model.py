@@ -128,11 +128,44 @@ def test_get_case_computes_full_read_model_from_thread(datastore) -> None:
     # urgency "high" derives urgent=true (ADR-0064 urgency column -> WorkbenchCase.urgent).
     assert case["urgent"] is True
     # identitySummary reflects the linked Shopify customer on the thread.
-    assert case["identity_summary"] == "Verified: cust_900"
+    assert case["identity_summary"] == "Verified: cust_900 · +1 (555) 888-9999"
     # lastMessagePreview is the newest turn on the thread.
     assert case["last_message_preview"] == "the latest reply"
     # smsSessionActive is true while a live (unexpired) SMS session exists.
     assert case["sms_session_active"] is True
+
+
+def test_identity_summary_uses_snapshot_display_name_with_gid(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_thread(
+        conn,
+        thread_id="thr_snap",
+        channel_identity="+17786803250",
+        shopify_customer_id="gid://shopify/Customer/1019382595648",
+        messages=(("customer", "hi", False),),
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO session_identity_snapshot
+                (id, event_id, channel, channel_identity, match_result)
+            VALUES (%s, %s, %s, %s, %s::jsonb)
+            """,
+            (
+                "snap_thr_snap",
+                "evt_thr_snap",
+                "sms",
+                "+17786803250",
+                '{"outcome": "verified_customer", "shopify_customer_id":'
+                ' "gid://shopify/Customer/1019382595648",'
+                ' "company_name": "Hello"}',
+            ),
+        )
+    conn.commit()
+    _seed_case(conn, case_id="case_snap", thread_id="thr_snap")
+
+    case = _run(driver, "toee_workbench_read", "get_case", {"case_id": "case_snap"}).data["case"]
+    assert case["identity_summary"] == "Verified: Hello · +1 (778) 680-3250"
 
 
 def test_get_case_without_thread_returns_safe_read_model(datastore) -> None:
@@ -167,7 +200,7 @@ def test_list_cases_carries_read_model_fields(datastore) -> None:
     listed = _run(driver, "toee_workbench_read", "list_cases", {}).data["cases"]
     found = next(c for c in listed if c["case_id"] == "case_l")
     assert found["urgent"] is True
-    assert found["identity_summary"] == "+15550001111"
+    assert found["identity_summary"] == "+1 (555) 000-1111"
     assert found["last_message_preview"] == "hello"
     assert found["thread_id"] == "thr_l"
 

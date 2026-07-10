@@ -12,6 +12,7 @@ dependencies = [
     # toee_hermes.gateway.* decision logic and the embedded AIAgent turn.
     "fastapi",
     "psycopg[binary]>=3",
+    "composio>=0.15.0",
 ]
 
 # ADR-0101 / ADR-0139: the official Hermes core is pinned to an exact git rev and

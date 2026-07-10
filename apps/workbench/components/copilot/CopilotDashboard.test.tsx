@@ -98,4 +98,39 @@ describe("CopilotDashboard", () => {
       await screen.findByRole("region", { name: /case thread context/i }),
     ).toBeInTheDocument();
   });
+
+  it("polls queue and thread while the tab is visible", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(copilot.listCases).mockResolvedValue({
+      cases: [makeCase({ caseId: "c9", identitySummary: "Pick Me" })],
+    });
+    renderDashboard(WORKBENCH_ROLES.rep);
+    await waitFor(() => expect(copilot.listCases).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+    await waitFor(() => expect(copilot.getThread).toHaveBeenCalledTimes(1));
+
+    vi.advanceTimersByTime(4_000);
+    await waitFor(() => expect(copilot.listCases).toHaveBeenCalledTimes(2));
+    expect(copilot.getThread).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+  });
+
+  it("pauses polling while the tab is hidden", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderDashboard(WORKBENCH_ROLES.rep);
+    await waitFor(() => expect(copilot.listCases).toHaveBeenCalledTimes(1));
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    vi.advanceTimersByTime(4_000);
+    expect(copilot.listCases).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(copilot.listCases).toHaveBeenCalledTimes(2));
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    vi.useRealTimers();
+  });
 });

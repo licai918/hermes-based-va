@@ -20,14 +20,20 @@ def _run(driver, action, params, context=None):
     )
 
 
-def _seed_thread(conn, thread_id: str, *, sms_active: bool = True) -> str:
+def _seed_thread(
+    conn,
+    thread_id: str,
+    *,
+    sms_active: bool = True,
+    textline_conversation_id: str = "7931e83f-96d9-4070-9ca4-081bcf36afd0",
+) -> str:
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO customer_thread (id, channel, channel_identity)"
             " VALUES (%s, 'sms', '+15551230000')",
             (thread_id,),
         )
-        session_id = f"sess_{thread_id}"
+        session_id = f"sms_session:{thread_id}:{textline_conversation_id}"
         expiry = "now() + interval '1 hour'" if sms_active else "now() - interval '1 hour'"
         cur.execute(
             f"INSERT INTO sms_session (id, customer_thread_id, expires_at)"
@@ -38,15 +44,15 @@ def _seed_thread(conn, thread_id: str, *, sms_active: bool = True) -> str:
     return session_id
 
 
-def _seed_case(conn, case_id: str, thread_id: str, assignee: str) -> None:
+def _seed_case(conn, case_id: str, thread_id: str, assignee: str, session_id: str | None = None) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO cases
-                (id, channel, customer_thread_id, contact_reason, status, assignee_account_id)
-            VALUES (%s, 'sms', %s, 'order_status', 'in_progress', %s)
+                (id, channel, customer_thread_id, sms_session_id, contact_reason, status, assignee_account_id)
+            VALUES (%s, 'sms', %s, %s, 'order_status', 'in_progress', %s)
             """,
-            (case_id, thread_id, assignee),
+            (case_id, thread_id, session_id, assignee),
         )
     conn.commit()
 
@@ -56,8 +62,8 @@ def test_send_textline_message_mirrors_turn_and_audit(datastore) -> None:
     thread_id = "thr_send"
     case_id = "case_send"
     actor = "acct_rep"
-    _seed_thread(conn, thread_id)
-    _seed_case(conn, case_id, thread_id, actor)
+    session_id = _seed_thread(conn, thread_id)
+    _seed_case(conn, case_id, thread_id, actor, session_id)
 
     result = _run(
         driver,
@@ -67,7 +73,7 @@ def test_send_textline_message_mirrors_turn_and_audit(datastore) -> None:
     )
     assert result.ok
     msg = result.data["message"]
-    assert msg["conversation_id"] == thread_id
+    assert msg["conversation_id"] == "7931e83f-96d9-4070-9ca4-081bcf36afd0"
     assert msg["body"] == "Your tires arrive today."
 
     thread = execute_tool(
@@ -97,8 +103,8 @@ def test_send_textline_message_denies_ineligible_case(datastore) -> None:
     driver, conn, _ = datastore
     thread_id = "thr_inelig"
     case_id = "case_inelig"
-    _seed_thread(conn, thread_id, sms_active=False)
-    _seed_case(conn, case_id, thread_id, "acct_rep")
+    session_id = _seed_thread(conn, thread_id, sms_active=False)
+    _seed_case(conn, case_id, thread_id, "acct_rep", session_id)
 
     result = _run(
         driver,
@@ -110,14 +116,56 @@ def test_send_textline_message_denies_ineligible_case(datastore) -> None:
     assert result.error_class == "policy_blocked"
 
 
+def test_send_textline_message_prefers_case_bound_session(datastore) -> None:
+    """When several SMS sessions are live, reply on the case-bound conversation."""
+    driver, conn, _ = datastore
+    thread_id = "thr_multi_sess"
+    case_id = "case_multi_sess"
+    real_conv = "7931e83f-96d9-4070-9ca4-081bcf36afd0"
+    case_session = _seed_thread(
+        conn, thread_id, textline_conversation_id=real_conv
+    )
+    # A newer active session on the same thread (legacy simulate id) must not win.
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO sms_session (id, customer_thread_id, expires_at)"
+            " VALUES (%s, %s, now() + interval '1 hour')",
+            (
+                f"sms_session:{thread_id}:conv-newer-fake",
+                thread_id,
+            ),
+        )
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO cases
+                (id, channel, customer_thread_id, sms_session_id, contact_reason,
+                 status, assignee_account_id)
+            VALUES (%s, 'sms', %s, %s, 'order_status', 'in_progress', %s)
+            """,
+            (case_id, thread_id, case_session, "acct_rep"),
+        )
+    conn.commit()
+
+    result = _run(
+        driver,
+        "send_textline_message",
+        {"case_id": case_id, "body": "Bound session reply."},
+        _ctx("acct_rep"),
+    )
+    assert result.ok
+    assert result.data["message"]["conversation_id"] == real_conv
+
+
 def test_send_textline_message_live_when_access_token_set(datastore, monkeypatch) -> None:
     """When TEXTLINE_ACCESS_TOKEN is set, the composite handler POSTs to Textline."""
     driver, conn, _ = datastore
     thread_id = "thr_live"
     case_id = "case_live"
     actor = "acct_rep"
-    _seed_thread(conn, thread_id)
-    _seed_case(conn, case_id, thread_id, actor)
+    session_id = _seed_thread(conn, thread_id)
+    _seed_case(conn, case_id, thread_id, actor, session_id)
 
     posts: list[tuple[str, dict, bytes]] = []
 
@@ -136,5 +184,6 @@ def test_send_textline_message_live_when_access_token_set(datastore, monkeypatch
     )
     assert result.ok
     assert len(posts) == 1
+    assert "7931e83f-96d9-4070-9ca4-081bcf36afd0" in posts[0][0]
     assert posts[0][1]["X-TGP-ACCESS-TOKEN"] == "test-access-token"
     assert b"Live outbound." in posts[0][2]

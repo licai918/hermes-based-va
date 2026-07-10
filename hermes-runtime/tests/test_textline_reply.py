@@ -2,10 +2,9 @@
 
 The gateway delivers exactly one customer-facing reply per turn through a
 ``ReplySender`` (conversation_id, body). In production that send is the Textline
-REST API: ``POST https://application.textline.com/api/conversations.json`` with the
-conversation UUID + message body, authenticated by the ``X-TGP-ACCESS-TOKEN`` header
-(Textline Developer API access token). Sources: dltHub Textline API docs and Ibexa
-Connect's "Message a Conversation" action.
+REST API: ``POST https://application.textline.com/api/conversation/{uuid}.json``
+with the message body in ``comment.body``, authenticated by the ``X-TGP-ACCESS-TOKEN``
+header (Textline Developer API access token).
 
 The HTTP transport is injected so these tests never touch the network: they assert
 the request the sender builds and that a non-2xx response raises (a failed send must
@@ -92,11 +91,12 @@ def test_reply_sender_posts_the_message_to_the_bound_conversation() -> None:
 
     assert len(transport.calls) == 1
     call = transport.calls[0]
-    assert call["url"] == "https://application.textline.com/api/conversations.json"
+    assert call["url"] == (
+        "https://application.textline.com/api/conversation/conv-uuid-A.json"
+    )
     assert call["headers"][TEXTLINE_ACCESS_TOKEN_HEADER] == "tok-123"
     assert call["headers"]["Content-Type"] == "application/json"
     payload = json.loads(call["body"].decode("utf-8"))
-    assert payload["uuid"] == "conv-uuid-A"
     assert payload["comment"]["body"] == "Your order shipped today."
 
 

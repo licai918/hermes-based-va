@@ -128,6 +128,7 @@ def run_agent_turn(
     max_iterations: int,
     openai_factory: Any = None,
     governed_tool_names: Sequence[str] = (),
+    tools_exclusive: bool = False,
 ) -> dict[str, Any]:
     """Drive one real ``AIAgent`` turn against the given provider; capture the turn.
 
@@ -161,12 +162,14 @@ def run_agent_turn(
         )
         agent._disable_streaming = True
         if governed_tool_names:
-            # Admit the booted governed tools so the loop dispatches (not rejects)
-            # the tool call. The schema list sent to the model is moot when the
-            # provider is scripted — only the name allowlist matters there.
-            agent.valid_tool_names = set(agent.valid_tool_names or set()) | set(
-                governed_tool_names
-            )
+            # Gateway SMS turns must not inherit Hermes built-ins (terminal,
+            # read_file, …). Eval/scripted runs union them in for harness flexibility.
+            if tools_exclusive:
+                agent.valid_tool_names = set(governed_tool_names)
+            else:
+                agent.valid_tool_names = set(agent.valid_tool_names or set()) | set(
+                    governed_tool_names
+                )
         result = agent.run_conversation(user_message, system_message=system_message)
     finally:
         run_agent.OpenAI = original_openai

@@ -16,6 +16,8 @@ HTTP/model calls are lazy and never fire here).
 
 from __future__ import annotations
 
+import os
+
 import pytest
 from fastapi import FastAPI
 
@@ -99,6 +101,52 @@ def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
     assert isinstance(captured["queue"], LocalDispatchingJobQueue)
     assert captured["store"] is not None
     assert captured["queue"]._store is captured["store"]
+
+
+def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict = {}
+
+    def _spy_create_app(**kwargs: object) -> FastAPI:
+        captured.update(kwargs)
+        return FastAPI()
+
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setattr(
+        "hermes_runtime.gateway_composition.create_app", _spy_create_app
+    )
+
+    build_gateway_app()
+
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+
+    assert isinstance(captured["store"], PostgresGatewayStore)
+    assert captured["driver"] is not None
+    assert callable(captured["is_duplicate"])
+
+
+def test_build_gateway_app_applies_external_profile_home(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for key in ("HERMES_HOME", "TOEE_HERMES_PROFILE"):
+        monkeypatch.delenv(key, raising=False)
+
+    build_gateway_app()
+
+    from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
+
+    assert os.environ.get(PROFILE_ENV_VAR) == EXTERNAL
+    assert EXTERNAL in (os.environ.get("HERMES_HOME") or "")
+
+
+def test_clip_sms_reply_truncates_long_agent_text() -> None:
+    from hermes_runtime.turn_runner import clip_sms_reply
+
+    long_text = "word " * 200
+    clipped = clip_sms_reply(long_text)
+    assert len(clipped) <= 480
+    assert clipped.endswith("…")
 
 
 @pytest.mark.parametrize("missing", list(REQUIRED_ENV))

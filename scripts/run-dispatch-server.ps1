@@ -31,14 +31,27 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Load hermes-runtime/.env (TEXTLINE_ACCESS_TOKEN, DATABASE_URL, …) — same as run-gateway.ps1.
+$runtimeDir = Join-Path (Join-Path $PSScriptRoot "..") "hermes-runtime"
+$envFile = Join-Path $runtimeDir ".env"
+if (Test-Path $envFile) {
+    Get-Content $envFile | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith("#")) { return }
+        $eq = $line.IndexOf("=")
+        if ($eq -lt 1) { return }
+        $key = $line.Substring(0, $eq).Trim()
+        $val = $line.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        if ($key -and -not [Environment]::GetEnvironmentVariable($key)) {
+            [Environment]::SetEnvironmentVariable($key, $val)
+        }
+    }
+}
+
 $env:TOEE_HERMES_PROFILE = $Profile
 $env:DISPATCH_API_TOKEN = $Token
 $env:TOOL_BACKEND = $ToolBackend
 if ($DatabaseUrl) { $env:DATABASE_URL = $DatabaseUrl }
-
-# Nested Join-Path so this works on Windows PowerShell 5.1 (its Join-Path takes
-# only -Path/-ChildPath; the 3-arg form is PowerShell 7+ only).
-$runtimeDir = Join-Path (Join-Path $PSScriptRoot "..") "hermes-runtime"
 
 Write-Host "Starting tool-dispatch server: profile=$Profile backend=$ToolBackend http://127.0.0.1:$Port"
 Write-Host "  healthz:  http://127.0.0.1:$Port/healthz"

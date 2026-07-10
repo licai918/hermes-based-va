@@ -14,7 +14,7 @@ states that resolve to a snapshot and a ``200`` ack.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 from toee_hermes.errors import ToolErrorClass
 from toee_hermes.execute import ToolDriver, execute_tool
@@ -37,6 +37,7 @@ class SessionIdentitySnapshot:
     resolved_at: str
     shopify_customer_id: Optional[str] = None
     shopify_customer_ids: Optional[list[str]] = None
+    display_name: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -48,15 +49,32 @@ class IngressMatchResult:
     error_class: Optional[ToolErrorClass] = None
 
 
+def snapshot_as_identity_dict(snapshot: SessionIdentitySnapshot) -> dict[str, Any]:
+    """Session Identity Snapshot as the dict tools and ``pre_llm_call`` consume (ADR-0043)."""
+    data: dict[str, Any] = {
+        "outcome": snapshot.outcome,
+        "resolved_at": snapshot.resolved_at,
+    }
+    if snapshot.shopify_customer_id:
+        data["shopify_customer_id"] = snapshot.shopify_customer_id
+    if snapshot.shopify_customer_ids:
+        data["shopify_customer_ids"] = list(snapshot.shopify_customer_ids)
+    if snapshot.display_name:
+        data["company_name"] = snapshot.display_name
+    return data
+
+
 def _to_snapshot(data: object, resolved_at: str) -> SessionIdentitySnapshot:
     record = data if isinstance(data, dict) else {}
     outcome = record.get("outcome")
     at = record.get("resolved_at") or resolved_at
     if outcome == "verified_customer":
+        company_name = record.get("company_name")
         return SessionIdentitySnapshot(
             outcome="verified_customer",
             resolved_at=at,
             shopify_customer_id=record.get("shopify_customer_id"),
+            display_name=company_name if isinstance(company_name, str) else None,
         )
     if outcome == "ambiguous_phone_match":
         return SessionIdentitySnapshot(

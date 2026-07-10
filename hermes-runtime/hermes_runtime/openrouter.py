@@ -19,6 +19,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from toee_hermes.gateway.ingress import snapshot_as_identity_dict
+from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
+from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -167,6 +170,7 @@ def make_openrouter_run_turn(
     openai_factory: Any = None,
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+    tools_exclusive: bool = True,
 ) -> Callable[[Any, str], Mapping[str, Any]]:
     """Build the production ``run_turn``: a conversation-bound governed turn over OpenRouter.
 
@@ -193,20 +197,31 @@ def make_openrouter_run_turn(
             fallback_model=resolved.fallback_model,
             is_retryable=is_retryable,
         )
+        snapshot = getattr(context, "session_identity_snapshot", None)
+        identity = (
+            snapshot_as_identity_dict(snapshot) if snapshot is not None else None
+        )
+        # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
+        # AIAgent invokes hooks on the global singleton (discover_plugins → register).
+        # Prepend the snapshot here so the model sees verified identity (ADR-0140).
+        injected = render_injection(identity, None)
+        user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,
             conversation_id=context.conversation_id,
             sms_session_id=getattr(context, "sms_session_id", None),
+            identity=identity,
         )
         return run_agent_turn(
-            user_message=inbound_body,
-            system_message=system_message,
+            user_message=user_message,
+            system_message=system_message or EXTERNAL_CUSTOMER_SERVICE_PERSONA,
             base_url=resolved.base_url,
             api_key=resolved.api_key,
             model=resolved.model,
             max_iterations=max_iterations,
             openai_factory=factory,
             governed_tool_names=booted.tool_names,
+            tools_exclusive=tools_exclusive,
         )
 
     return run_turn

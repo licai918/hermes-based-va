@@ -56,6 +56,7 @@ def boot_profile(
     *,
     conversation_id: Optional[str] = None,
     sms_session_id: Optional[str] = None,
+    identity: Optional[Any] = None,
 ) -> BootedProfile:
     """Register the profile's allowlisted toee_* tools into a real PluginContext.
 
@@ -71,7 +72,10 @@ def boot_profile(
         return _boot(
             profile,
             lambda ctx: register_turn(
-                ctx, conversation_id=conversation_id, sms_session_id=sms_session_id
+                ctx,
+                conversation_id=conversation_id,
+                sms_session_id=sms_session_id,
+                identity=identity,
             ),
         )
     return _boot(profile, register)

@@ -24,7 +24,7 @@ Session Identity Snapshot for audit and Copilot context.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
 
 from toee_hermes.errors import ToolErrorClass
 from toee_hermes.execute import ToolDriver
@@ -67,7 +67,7 @@ class InboundDecision:
 
 def process_inbound(
     *,
-    raw_body: str,
+    raw_body: Union[str, bytes],
     signature: Optional[str],
     secret: str,
     fields: TextlineInboundFields,
@@ -76,10 +76,16 @@ def process_inbound(
     resolved_at: str,
     is_duplicate: DuplicateCheck = lambda event_id: False,
     at_ms: Optional[float] = None,
+    event_time: Optional[str] = None,
+    event_type: Optional[str] = None,
 ) -> InboundDecision:
     # Verify: reject unsigned/forged traffic before any processing (ADR-0021).
     if not verify_textline_signature(
-        raw_body=raw_body, signature=signature, secret=secret
+        raw_body=raw_body,
+        signature=signature,
+        secret=secret,
+        event_time=event_time,
+        event_type=event_type,
     ):
         return InboundDecision(status=401, action="reject", stage="verify")
 

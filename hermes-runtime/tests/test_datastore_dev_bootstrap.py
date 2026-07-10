@@ -60,7 +60,7 @@ def test_dev_bootstrap_seeds_accounts_and_cases(temp_schema_conn) -> None:
     urgent = next(c for c in listed.data["cases"] if c["case_id"] == "case_ar_urgent")
     assert urgent["urgent"] is True
     assert urgent["sms_session_active"] is True
-    assert urgent["identity_summary"] == "Verified: Westside Auto (acct 4471)"
+    assert urgent["identity_summary"] == "Verified: Westside Auto (acct 4471) · +1 (555) 447-1471"
     assert urgent["last_message_preview"]
 
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -30,6 +32,7 @@ from toee_hermes.gateway.agent_turn import (
 )
 from toee_hermes.gateway.normalize import TextlineInboundFields
 from toee_hermes.gateway.pipeline import DuplicateCheck, process_inbound
+from toee_hermes.gateway.verify import verify_textline_signature
 from toee_hermes.gateway.rate_limit import (
     InboundRateLimiter,
     create_inbound_rate_limiter,
@@ -43,9 +46,12 @@ from hermes_runtime.gateway_store import (
     JobQueue,
 )
 
-# Provider signature header (ADR-0021). The route extracts it; the crypto core in
-# toee_hermes.gateway.verify stays provider-agnostic and header-name-agnostic.
-SIGNATURE_HEADER = "X-Textline-Signature"
+# Provider signature headers (ADR-0021). Live Textline (TGP) uses X-Tgp-*; local
+# simulate script uses the legacy X-Textline-Signature flat JSON shape.
+TGP_SIGNATURE_HEADER = "X-Tgp-Event-Signature"
+TGP_EVENT_TIME_HEADER = "X-Tgp-Event-Time"
+TGP_EVENT_TYPE_HEADER = "X-Tgp-Event-Type"
+LEGACY_SIGNATURE_HEADER = "X-Textline-Signature"
 
 # Local-dev shared-secret header for the internal agent-turn route (ADR-0106).
 # Production verifies Cloud Tasks OIDC upstream instead.
@@ -70,12 +76,70 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
-    """Map the v1 Textline webhook JSON onto canonical inbound fields (ADR-0102).
+def _iso_from_unix_ts(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        ts = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    The provider key names are resolved here (the route layer's job); normalization
-    of the phone and event shape happens downstream in ``to_inbound_channel_event``.
+
+def _parse_tgp_new_customer_post(payload: dict[str, Any]) -> TextlineInboundFields:
+    post = payload.get("post") if isinstance(payload.get("post"), dict) else {}
+    conversation = (
+        payload.get("conversation") if isinstance(payload.get("conversation"), dict) else {}
+    )
+    creator = post.get("creator") if isinstance(post.get("creator"), dict) else {}
+    customer = (
+        conversation.get("customer")
+        if isinstance(conversation.get("customer"), dict)
+        else {}
+    )
+    attachments = post.get("attachments")
+    media_urls: Optional[list[str]] = None
+    if isinstance(attachments, list):
+        urls = [
+            str(item.get("url"))
+            for item in attachments
+            if isinstance(item, dict) and item.get("url")
+        ]
+        media_urls = urls or None
+    from_phone = str(creator.get("phone_number") or customer.get("phone_number") or "")
+    conversation_id = str(
+        post.get("conversation_uuid") or conversation.get("uuid") or ""
+    )
+    return TextlineInboundFields(
+        event_id=str(post.get("uuid", "")),
+        conversation_id=conversation_id,
+        from_phone=from_phone,
+        body=str(post.get("body", "")),
+        received_at=_iso_from_unix_ts(post.get("created_at")),
+        raw_event_type="new_customer_post",
+        media_urls=media_urls,
+    )
+
+
+def is_ignored_tgp_webhook(payload: dict[str, Any]) -> bool:
+    """Non-customer TGP posts ack 200 without agent work (ADR-0102)."""
+    if payload.get("webhook") != "new_customer_post":
+        return False
+    post = payload.get("post") if isinstance(payload.get("post"), dict) else {}
+    if post.get("is_whisper"):
+        return True
+    creator = post.get("creator") if isinstance(post.get("creator"), dict) else {}
+    return creator.get("type") != "customer"
+
+
+def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
+    """Map Textline webhook JSON onto canonical inbound fields (ADR-0102).
+
+    Supports live TGP ``new_customer_post`` webhooks and the legacy flat JSON used
+    by ``scripts/simulate-textline-webhook.ps1``.
     """
+    if payload.get("webhook") == "new_customer_post":
+        return _parse_tgp_new_customer_post(payload)
     media = payload.get("media_urls")
     return TextlineInboundFields(
         event_id=str(payload.get("id", "")),
@@ -86,6 +150,51 @@ def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
         raw_event_type=str(payload.get("type", "")),
         media_urls=list(media) if isinstance(media, list) else None,
     )
+
+
+def _webhook_signature_context(
+    request: Request,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    signature = request.headers.get(TGP_SIGNATURE_HEADER) or request.headers.get(
+        LEGACY_SIGNATURE_HEADER
+    )
+    event_time = request.headers.get(TGP_EVENT_TIME_HEADER)
+    event_type = request.headers.get(TGP_EVENT_TYPE_HEADER)
+    return signature, event_time, event_type
+
+
+# Opt-in replay window (seconds). The TGP signature covers only type+time+secret,
+# not the body, and never expires — so a leaked (signature, time, type) triple can
+# be replayed. Set TEXTLINE_MAX_SIGNATURE_AGE_SECONDS to reject stale events.
+_MAX_SIGNATURE_AGE_ENV = "TEXTLINE_MAX_SIGNATURE_AGE_SECONDS"
+
+
+def _now_unix() -> float:
+    return time.time()
+
+
+def _max_signature_age_seconds() -> Optional[int]:
+    raw = (os.environ.get(_MAX_SIGNATURE_AGE_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _tgp_event_is_stale(
+    event_time: Optional[str], max_age_seconds: Optional[int], now_unix: float
+) -> bool:
+    """True when an opted-in freshness window is exceeded (replay protection)."""
+    if not max_age_seconds or not event_time:
+        return False
+    try:
+        ts = int(str(event_time).strip())
+    except (TypeError, ValueError):
+        return False
+    return abs(now_unix - ts) > max_age_seconds
 
 
 def _never_duplicate(event_id: str) -> bool:
@@ -134,7 +243,7 @@ def create_app(
     async def textline_webhook(request: Request) -> Response:
         raw = await request.body()
         raw_text = raw.decode("utf-8")
-        signature = request.headers.get(SIGNATURE_HEADER)
+        signature, event_time, event_type = _webhook_signature_context(request)
         try:
             payload = json.loads(raw_text) if raw_text else {}
         except json.JSONDecodeError:
@@ -142,8 +251,25 @@ def create_app(
         if not isinstance(payload, dict):
             payload = {}
 
+        # Authenticate before any branch acts on the payload — a forged/unsigned
+        # request must never earn a 200, even the ignored-webhook short-circuit
+        # (process_inbound re-verifies; this is the fail-closed gate, ADR-0021).
+        if not verify_textline_signature(
+            raw_body=raw,
+            signature=signature,
+            secret=webhook_secret,
+            event_time=event_time,
+            event_type=event_type,
+        ):
+            return Response(status_code=401)
+        if _tgp_event_is_stale(event_time, _max_signature_age_seconds(), _now_unix()):
+            return Response(status_code=401)
+
+        if is_ignored_tgp_webhook(payload):
+            return Response(status_code=200)
+
         decision = process_inbound(
-            raw_body=raw_text,
+            raw_body=raw,
             signature=signature,
             secret=webhook_secret,
             fields=parse_textline_fields(payload),
@@ -151,6 +277,8 @@ def create_app(
             rate_limiter=rate_limiter,
             resolved_at=clock(),
             is_duplicate=is_duplicate,
+            event_time=event_time,
+            event_type=event_type,
         )
 
         # Opt-out is the only reply the gateway sends itself (compliance
@@ -167,8 +295,9 @@ def create_app(
         # enqueue the minimal async job (ADR-0105/0107). Only enqueue decisions get
         # here; opt-out/duplicate/rate-limited/retry never start a turn.
         if decision.action == "enqueue":
-            context = store.persist_accepted_inbound(decision)
-            queue.enqueue(to_job_payload(context))
+            context, created = store.persist_accepted_inbound(decision)
+            if created:
+                queue.enqueue(to_job_payload(context))
 
         return Response(status_code=decision.status)
 

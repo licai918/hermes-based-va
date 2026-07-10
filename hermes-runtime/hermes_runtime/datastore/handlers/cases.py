@@ -18,6 +18,11 @@ import os
 from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
 from toee_hermes.errors import ToolDriverError
 
+from toee_hermes.identity.summary import (
+    display_name_from_match_result,
+    format_identity_summary,
+)
+
 from ._common import insert_audit, new_id, read_string, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -68,21 +73,43 @@ def _status(conn, case_id: str) -> Optional[str]:
 _URGENT_URGENCIES = {"urgent", "high"}
 
 
+def _thread_display_name(conn, channel: str, channel_identity: str) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT match_result FROM session_identity_snapshot
+            WHERE channel = %s AND channel_identity = %s
+              AND match_result->>'outcome' = 'verified_customer'
+            ORDER BY captured_at DESC
+            LIMIT 1
+            """,
+            (channel, channel_identity),
+        )
+        row = cur.fetchone()
+    return display_name_from_match_result(row[0]) if row else None
+
+
 def _thread_identity_summary(conn, thread_id: Optional[str]) -> str:
-    """ADR-0082 identity summary: the linked Shopify customer, else the channel id."""
+    """ADR-0082 identity summary: verified Shopify customer name + phone, else phone."""
     if not thread_id:
         return ""
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT channel_identity, shopify_customer_id FROM customer_thread WHERE id = %s",
+            "SELECT channel, channel_identity, shopify_customer_id"
+            " FROM customer_thread WHERE id = %s",
             (thread_id,),
         )
         row = cur.fetchone()
     if row is None:
         return ""
-    if row.get("shopify_customer_id"):
-        return f"Verified: {row['shopify_customer_id']}"
-    return row.get("channel_identity") or ""
+    channel_identity = row.get("channel_identity") or ""
+    shopify_customer_id = row.get("shopify_customer_id")
+    display_name = _thread_display_name(conn, row.get("channel") or "sms", channel_identity)
+    return format_identity_summary(
+        channel_identity=channel_identity,
+        shopify_customer_id=shopify_customer_id,
+        display_name=display_name,
+    )
 
 
 def _thread_last_preview(conn, thread_id: Optional[str]) -> str:
@@ -560,14 +587,37 @@ def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:
     return row[0] if row else None
 
 
+def _textline_conversation_id(sms_session_id: str) -> str:
+    """Textline conversation UUID suffix on the gateway session key (ADR-0115).
+
+    ``sms_session:{thread_id}:{textline_uuid}`` — same peel as
+    :meth:`PostgresGatewayStore.load_context`.
+    """
+    return sms_session_id.rsplit(":", 1)[-1]
+
+
+def _resolve_sms_session_id(
+    conn, *, thread_id: Optional[str], case_session_id: Optional[str]
+) -> Optional[str]:
+    """Prefer the case-bound SMS session when still active, else the newest live one."""
+    if case_session_id:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM sms_session WHERE id = %s AND expires_at > now()",
+                (case_session_id,),
+            )
+            if cur.fetchone() is not None:
+                return case_session_id
+    return _active_sms_session_id(conn, thread_id)
+
+
 def _send_textline_message(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
     """Governed employee-confirmed Textline send (ADR-0083/0035 composite seam).
 
-    Validates SMS-session + assignee gating, captures the outbound via the mock
-    Textline sender (ponytail: live ``make_textline_reply_sender`` deferred until
-    ``TEXTLINE_ACCESS_TOKEN`` is wired for workbench sends), mirrors a
+    Validates SMS-session + assignee gating, sends via Textline when
+    ``TEXTLINE_ACCESS_TOKEN`` is set (else mock capture), mirrors a
     ``message_turn``, and appends a ``textline_send`` audit row atomically.
     """
     case_id = _require_case_id(params)
@@ -595,13 +645,18 @@ def _send_textline_message(
             "policy_blocked", "case not eligible for Textline send"
         )
 
-    conversation_id = thread_id or ""
-    sent = _capture_textline_send(conversation_id, body, media_url)
-    session_id = _active_sms_session_id(conn, thread_id)
+    session_id = _resolve_sms_session_id(
+        conn,
+        thread_id=thread_id,
+        case_session_id=row.get("sms_session_id"),
+    )
     if session_id is None:
         raise ToolDriverError(
             "policy_blocked", "case not eligible for Textline send"
         )
+
+    conversation_id = _textline_conversation_id(session_id)
+    sent = _capture_textline_send(conversation_id, body, media_url)
 
     turn_id = new_id("mt")
     with conn.cursor() as cur:
