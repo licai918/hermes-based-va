@@ -9,7 +9,12 @@ Postgres service container in a later slice.
 
 from __future__ import annotations
 
-from hermes_runtime.datastore.migrate import discover_migrations, run_migrations
+from hermes_runtime.datastore.migrate import (
+    DEV_ONLY_MIGRATIONS,
+    discover_migrations,
+    migrate_exclusions,
+    run_migrations,
+)
 
 # The ``temp_schema_conn`` fixture (throwaway schema, skip-if-no-DB) is shared
 # from tests/conftest.py.
@@ -148,3 +153,29 @@ def test_retention_timestamp_columns_present(temp_schema_conn) -> None:
     # Retention is enforced off created_at on these classes (ADR-0004/0116).
     for table in ("cases", "message_turn", "workbench_audit_log", "customer_memory_slot"):
         assert table in with_created, f"{table} must carry created_at for retention"
+
+
+def test_migrate_exclusions_skip_dev_seed_unless_opted_in(monkeypatch) -> None:
+    # The LOCAL DEV ONLY 0005_dev_bootstrap seed must not reach cloud/prod: the
+    # migrate() entrypoint excludes it by default, opted in via HERMES_APPLY_DEV_SEED.
+    monkeypatch.delenv("HERMES_APPLY_DEV_SEED", raising=False)
+    assert "0005_dev_bootstrap" in DEV_ONLY_MIGRATIONS
+    assert DEV_ONLY_MIGRATIONS <= migrate_exclusions()
+
+    for truthy in ("1", "true", "TRUE", "yes"):
+        monkeypatch.setenv("HERMES_APPLY_DEV_SEED", truthy)
+        assert "0005_dev_bootstrap" not in migrate_exclusions()
+
+    monkeypatch.setenv("HERMES_APPLY_DEV_SEED", "0")
+    assert "0005_dev_bootstrap" in migrate_exclusions()
+
+
+def test_run_migrations_excluding_dev_seed_leaves_cases_empty(temp_schema_conn) -> None:
+    conn, _ = temp_schema_conn
+    applied = run_migrations(conn, exclude=DEV_ONLY_MIGRATIONS)
+    assert "0005_dev_bootstrap" not in applied
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM cases")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM workbench_account")
+        assert cur.fetchone()[0] == 0
