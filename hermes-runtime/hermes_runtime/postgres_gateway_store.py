@@ -309,7 +309,9 @@ class PostgresGatewayStore:
         thread_id = context.customer_thread_id
         if not session_id or not thread_id:
             return
-        turn_id = new_id("mt")
+        # Deterministic id keyed by the inbound event so a re-dispatched turn
+        # mirrors at most one hermes reply (the gateway sends one reply per turn).
+        turn_id = f"{session_id}:{context.event_id}:out"
         with self._connect() as conn:
             try:
                 with conn.cursor() as cur:
@@ -319,6 +321,7 @@ class PostgresGatewayStore:
                             (id, sms_session_id, customer_thread_id, direction,
                              author, body, auto_handled)
                         VALUES (%s, %s, %s, 'outbound', 'hermes', %s, FALSE)
+                        ON CONFLICT (id) DO NOTHING
                         """,
                         (turn_id, session_id, thread_id, body),
                     )

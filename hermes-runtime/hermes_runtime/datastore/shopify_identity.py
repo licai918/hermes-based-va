@@ -7,6 +7,7 @@ new link. Returns ``None`` when Composio is not configured (mock / missing env).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,11 +19,15 @@ from toee_hermes.identity.shopify_phone import (
     shopify_customer_gid,
 )
 
+logger = logging.getLogger(__name__)
+
 _SEARCH_ACTION = "SHOPIFY_GET_CUSTOMERS_SEARCH"
 _LIST_ACTION = "SHOPIFY_GET_ALL_CUSTOMERS"
 _PAGE_SIZE = 250
-# ponytail: GET_ALL_CUSTOMERS paginated scan until match or catalog end; upgrade
-# path is SHOPIFY_GET_CUSTOMERS_SEARCH when the pinned Composio toolkit exposes it.
+# ponytail: GET_ALL_CUSTOMERS paginated scan runs on the webhook ack path, so it is
+# hard-capped at _MAX_SCAN_PAGES (~10k customers). The upgrade path is
+# SHOPIFY_GET_CUSTOMERS_SEARCH when the pinned Composio toolkit exposes it.
+_MAX_SCAN_PAGES = 40
 
 
 @dataclass(frozen=True)
@@ -120,9 +125,26 @@ def _search_queries(phone: str) -> list[str]:
     return ordered
 
 
+# A missing Composio action names the action slug alongside an absence marker;
+# require both so a generic vendor "not found" (no customer) doesn't get misread
+# as "search tool absent" and fall through to the full catalog scan.
+_MISSING_TOOL_MARKERS = (
+    "not found",
+    "does not exist",
+    "no such",
+    "unknown action",
+    "not available",
+    "unrecognized",
+    "no tool",
+    "invalid action",
+)
+
+
 def _is_missing_search_tool(err: ToolDriverError) -> bool:
     message = str(err).lower()
-    return "not found" in message or "tool_" in message
+    if _SEARCH_ACTION.lower() not in message:
+        return False
+    return any(marker in message for marker in _MISSING_TOOL_MARKERS)
 
 
 def _lookup_via_search(phone: str) -> list[ShopifyPhoneMatch] | None:
@@ -146,7 +168,7 @@ def _lookup_via_search(phone: str) -> list[ShopifyPhoneMatch] | None:
 
 def _lookup_via_pagination(phone: str) -> list[ShopifyPhoneMatch]:
     since_id = ""
-    while True:
+    for _page in range(_MAX_SCAN_PAGES):
         params: dict[str, Any] = {
             "limit": _PAGE_SIZE,
             "fields": "id,phone,first_name,last_name,company,default_address",
@@ -156,13 +178,20 @@ def _lookup_via_pagination(phone: str) -> list[ShopifyPhoneMatch]:
         raw = _execute_shopify(_LIST_ACTION, params)
         customers = _unwrap_customers(raw)
         if not customers:
-            break
+            return []
         matches = _shape_matches(customers, phone)
         if matches:
             return matches
         since_id = str(customers[-1].get("id") or "")
         if not since_id or len(customers) < _PAGE_SIZE:
-            break
+            return []
+    logger.warning(
+        "Shopify phone-match scan hit the %d-page cap (~%d customers) without a "
+        "match; pin COMPOSIO_TOOLKIT_VERSION_SHOPIFY so %s is available.",
+        _MAX_SCAN_PAGES,
+        _MAX_SCAN_PAGES * _PAGE_SIZE,
+        _SEARCH_ACTION,
+    )
     return []
 
 

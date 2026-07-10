@@ -329,66 +329,60 @@ def test_qbo_list_customer_invoices_maps_each_item() -> None:
     _assert_one_to_one(client, "toee_qbo_read", "list_customer_invoices", "ca_qbo")
 
 
-def test_qbo_get_ar_summary_maps_to_contract_shape() -> None:
-    raw = {
-        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
-        "open_invoice_count": 1,
-        "total_balance": 1250.0,
-    }
-    client = FakeComposioClient(raw)
-    out = _run(
-        client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified())
-    )
-    assert out == {
-        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
-        "open_invoice_count": 1,
-        "total_balance": 1250.0,
-    }
-    _assert_one_to_one(client, "toee_qbo_read", "get_ar_summary", "ca_qbo")
+def test_qbo_get_ar_summary_fails_closed_on_composio() -> None:
+    # The QBO Aged Receivables report is all-customer; a per-customer summary can't
+    # be derived without misattributing balances, so the live path is gated off.
+    client = FakeComposioClient({})
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified()))
+    assert excinfo.value.error_class == "configuration_missing"
+    assert client.calls == []  # never reached the backend
 
 
-def test_qbo_get_ar_summary_parses_aged_receivables_report() -> None:
+def test_qbo_get_invoice_hides_another_customers_invoice() -> None:
+    # A verified customer must not receive an invoice owned by a different customer.
     raw = {
-        "Rows": {
-            "Row": [
-                {
-                    "ColData": [
-                        {"value": "Acme Fleet"},
-                        {"value": ""},
-                        {"value": ""},
-                        {"value": ""},
-                        {"value": ""},
-                        {"value": ""},
-                        {"value": "125.50"},
-                    ]
-                },
-                {
-                    "type": "Section",
-                    "group": "GrandTotal",
-                    "Summary": {
-                        "ColData": [
-                            {"value": "TOTAL"},
-                            {"value": "8337.09"},
-                            {"value": "34332.85"},
-                            {"value": "-5748.30"},
-                            {"value": "-747.56"},
-                            {"value": "-15220.96"},
-                            {"value": "20953.12"},
-                        ]
-                    },
-                },
-            ]
+        "invoice": {
+            "invoice_number": "INV-OTHER",
+            "shopify_customer_id": "gid://shopify/Customer/9999",
+            "customer_email": "other@example.com",
+            "balance": 42.0,
         }
     }
     client = FakeComposioClient(raw)
-    out = _run(
-        client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified())
-    )
-    assert out == {
-        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
-        "open_invoice_count": 1,
-        "total_balance": 20953.12,
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(
+            client,
+            "toee_qbo_read",
+            "get_invoice",
+            {"invoice_number": "INV-OTHER"},
+            _ctx(identity=_verified()),
+        )
+    assert excinfo.value.error_class == "not_found"
+
+
+def test_qbo_list_customer_invoices_drops_other_customers() -> None:
+    raw = {
+        "invoices": [
+            {
+                "invoice_number": "INV-MINE",
+                "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+                "customer_email": "me@example.com",
+                "balance": 100.0,
+            },
+            {
+                "invoice_number": "INV-THEIRS",
+                "shopify_customer_id": "gid://shopify/Customer/9999",
+                "customer_email": "other@example.com",
+                "balance": 999.0,
+            },
+        ]
     }
+    client = FakeComposioClient(raw)
+    out = _run(
+        client, "toee_qbo_read", "list_customer_invoices", {}, _ctx(identity=_verified())
+    )
+    assert [inv["invoice_number"] for inv in out] == ["INV-MINE"]
 
 
 # --- square ------------------------------------------------------------------

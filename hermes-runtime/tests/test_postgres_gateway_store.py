@@ -244,6 +244,46 @@ def test_persist_agent_outbound_writes_hermes_message_turn(datastore) -> None:
     assert row == ("outbound", "hermes", "We have 225/65R17 in stock.")
 
 
+def test_persist_agent_outbound_is_idempotent_per_turn(datastore) -> None:
+    """A re-dispatched turn must not double-write the same hermes reply."""
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+    from toee_hermes.gateway.normalize import InboundChannelEvent
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    event = InboundChannelEvent(
+        channel="textline_sms",
+        provider="textline",
+        event_id="evt-out-idem",
+        conversation_id="conv-out-idem",
+        from_phone="+15559876543",
+        body="Need help",
+        received_at="2026-01-01T00:00:00Z",
+        raw_event_type="message.created",
+        media_urls=None,
+    )
+    decision = InboundDecision(
+        status=200,
+        action="enqueue",
+        stage="accept",
+        event=event,
+        snapshot=SessionIdentitySnapshot(
+            outcome="unmatched_caller", resolved_at="2026-01-01T00:00:00Z"
+        ),
+    )
+    context, _ = store.persist_accepted_inbound(decision)
+    store.persist_agent_outbound(context, "Reply once.")
+    store.persist_agent_outbound(context, "Reply once.")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM message_turn WHERE customer_thread_id = %s AND author = 'hermes'",
+            (context.customer_thread_id,),
+        )
+        assert cur.fetchone()[0] == 1
+
+
 def test_webhook_through_create_app_writes_case(datastore) -> None:
     driver, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)

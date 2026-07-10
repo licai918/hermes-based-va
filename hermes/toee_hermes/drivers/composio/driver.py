@@ -18,6 +18,7 @@ The module top level imports cleanly WITHOUT the ``composio`` SDK installed
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
@@ -288,100 +289,87 @@ def _qbo_invoices_from_raw(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return [_qbo_invoice_from_raw(invoice) for invoice in invoices]
 
 
+# The Composio QBO list actions are not customer-scoped at the vendor (no
+# Shopify->QBO CustomerRef bridge yet), so a verified customer could otherwise be
+# handed another customer's invoices. Scope the *response* to the authorized owner
+# by matching shopify_customer_id, and drop any invoice we cannot attribute to them
+# (fail-safe: never return unattributable financial data to a customer).
+def _invoice_owned_by_verified(
+    invoice: dict[str, Any], context: "ToolExecutionContext"
+) -> bool:
+    verified_id = _verified_customer_id(context)
+    return bool(verified_id) and invoice.get("shopify_customer_id") == verified_id
+
+
 def _qbo_get_invoice_request(
     params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
     invoice_number = _read(params, "invoice_number", "invoiceNumber")
     request: dict[str, Any] = {"max_results": 1}
     if invoice_number:
-        request["query"] = f"WHERE DocNumber = '{invoice_number}'"
+        # Sanitize before interpolating into the QBO query string (no quote breakout).
+        safe = re.sub(r"[^A-Za-z0-9_.\-]", "", invoice_number)
+        if safe:
+            request["query"] = f"WHERE DocNumber = '{safe}'"
     return request
 
 
-def _qbo_get_invoice_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
+def _qbo_get_invoice_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
     if "invoice" in raw:
-        return _shape_invoice(raw["invoice"])
-    invoices = _qbo_invoices_from_raw(raw)
-    if invoices:
-        return invoices[0]
-    if raw.get("DocNumber") or raw.get("invoice_number"):
-        return _qbo_invoice_from_raw(raw)
-    return _shape_invoice(raw.get("invoice", raw))
+        invoice = _shape_invoice(raw["invoice"])
+    else:
+        invoices = _qbo_invoices_from_raw(raw)
+        if invoices:
+            invoice = invoices[0]
+        elif raw.get("DocNumber") or raw.get("invoice_number"):
+            invoice = _qbo_invoice_from_raw(raw)
+        else:
+            invoice = _shape_invoice(raw.get("invoice", raw))
+    if not _invoice_owned_by_verified(invoice, context):
+        raise ToolDriverError("not_found", "No matching invoice for this customer.")
+    return invoice
 
 
 def _qbo_list_invoices_request(
     _params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    # ponytail: shopify_customer_id -> QBO CustomerRef mapping is a future identity bridge;
-    # list all invoices (capped) until that link exists in the datastore.
+    # Response is scoped to the verified owner (see _qbo_list_invoices_response); the
+    # capped fetch just bounds the page the vendor returns.
     _verified_customer_id(context)
     return {"max_results": 50}
 
 
-def _qbo_list_invoices_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
+def _qbo_list_invoices_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
     if "invoices" in raw and all(
         isinstance(invoice, dict) and "invoice_number" in invoice
         for invoice in raw["invoices"]
     ):
-        return [_shape_invoice(invoice) for invoice in raw["invoices"]]
-    return _qbo_invoices_from_raw(raw)
+        invoices = [_shape_invoice(invoice) for invoice in raw["invoices"]]
+    else:
+        invoices = _qbo_invoices_from_raw(raw)
+    return [inv for inv in invoices if _invoice_owned_by_verified(inv, context)]
+
+
+# Fail-closed: the QBO Aged Receivables report is an all-customer aggregate, so a
+# per-customer AR summary cannot be derived from it without misattributing other
+# customers' balances. Gate the Composio path off until a customer-scoped QBO
+# report (or an invoice-level Shopify->QBO bridge) exists; the mock driver still
+# serves a correctly scoped summary for dev/eval.
+_AR_SUMMARY_UNAVAILABLE = ToolDriverError(
+    "configuration_missing",
+    "Customer-scoped QuickBooks AR summary is unavailable on the live backend "
+    "until a per-customer QBO report is wired.",
+)
 
 
 def _qbo_ar_summary_request(
-    _params: dict[str, Any], context: "ToolExecutionContext"
+    _params: dict[str, Any], _ctx: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    request: dict[str, Any] = {"arpaid": "Unpaid"}
-    customer_id = _verified_customer_id(context)
-    if customer_id:
-        request["customer_ids"] = [customer_id]
-    return request
+    raise _AR_SUMMARY_UNAVAILABLE
 
 
 def _qbo_ar_summary_response(raw: dict[str, Any], ctx: "ToolExecutionContext") -> Any:
-    if raw.get("open_invoice_count") is not None or raw.get("total_balance") is not None:
-        return {
-            "shopify_customer_id": raw.get("shopify_customer_id")
-            or _verified_customer_id(ctx),
-            "open_invoice_count": raw.get("open_invoice_count"),
-            "total_balance": raw.get("total_balance"),
-        }
-
-    # ponytail: QBO Aged Receivables is customer-grain; open_invoice_count counts
-    # customers with a non-zero Total column until invoice-level identity bridge exists.
-    rows = (raw.get("Rows") or {}).get("Row") or []
-    open_invoice_count = 0
-    for row in rows:
-        if row.get("type") == "Section":
-            continue
-        col_data = row.get("ColData") or []
-        if len(col_data) < 7:
-            continue
-        total_str = col_data[6].get("value", "")
-        try:
-            total_val = float(total_str) if total_str not in ("", None) else 0.0
-        except (TypeError, ValueError):
-            total_val = 0.0
-        if total_val != 0.0:
-            open_invoice_count += 1
-
-    total_balance: float | None = None
-    for row in reversed(rows):
-        if row.get("group") != "GrandTotal":
-            continue
-        summary = row.get("Summary") or {}
-        summary_cols = summary.get("ColData") or []
-        if len(summary_cols) >= 7:
-            try:
-                total_balance = float(summary_cols[6].get("value", 0))
-            except (TypeError, ValueError):
-                total_balance = None
-        break
-
-    return {
-        "shopify_customer_id": _verified_customer_id(ctx),
-        "open_invoice_count": open_invoice_count,
-        "total_balance": total_balance,
-    }
+    raise _AR_SUMMARY_UNAVAILABLE  # unreachable (request fails closed); defense in depth
 
 
 # --- square mappers ----------------------------------------------------------

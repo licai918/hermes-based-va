@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -30,6 +32,7 @@ from toee_hermes.gateway.agent_turn import (
 )
 from toee_hermes.gateway.normalize import TextlineInboundFields
 from toee_hermes.gateway.pipeline import DuplicateCheck, process_inbound
+from toee_hermes.gateway.verify import verify_textline_signature
 from toee_hermes.gateway.rate_limit import (
     InboundRateLimiter,
     create_inbound_rate_limiter,
@@ -160,6 +163,40 @@ def _webhook_signature_context(
     return signature, event_time, event_type
 
 
+# Opt-in replay window (seconds). The TGP signature covers only type+time+secret,
+# not the body, and never expires — so a leaked (signature, time, type) triple can
+# be replayed. Set TEXTLINE_MAX_SIGNATURE_AGE_SECONDS to reject stale events.
+_MAX_SIGNATURE_AGE_ENV = "TEXTLINE_MAX_SIGNATURE_AGE_SECONDS"
+
+
+def _now_unix() -> float:
+    return time.time()
+
+
+def _max_signature_age_seconds() -> Optional[int]:
+    raw = (os.environ.get(_MAX_SIGNATURE_AGE_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _tgp_event_is_stale(
+    event_time: Optional[str], max_age_seconds: Optional[int], now_unix: float
+) -> bool:
+    """True when an opted-in freshness window is exceeded (replay protection)."""
+    if not max_age_seconds or not event_time:
+        return False
+    try:
+        ts = int(str(event_time).strip())
+    except (TypeError, ValueError):
+        return False
+    return abs(now_unix - ts) > max_age_seconds
+
+
 def _never_duplicate(event_id: str) -> bool:
     return False
 
@@ -213,6 +250,20 @@ def create_app(
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
+
+        # Authenticate before any branch acts on the payload — a forged/unsigned
+        # request must never earn a 200, even the ignored-webhook short-circuit
+        # (process_inbound re-verifies; this is the fail-closed gate, ADR-0021).
+        if not verify_textline_signature(
+            raw_body=raw,
+            signature=signature,
+            secret=webhook_secret,
+            event_time=event_time,
+            event_type=event_type,
+        ):
+            return Response(status_code=401)
+        if _tgp_event_is_stale(event_time, _max_signature_age_seconds(), _now_unix()):
+            return Response(status_code=401)
 
         if is_ignored_tgp_webhook(payload):
             return Response(status_code=200)

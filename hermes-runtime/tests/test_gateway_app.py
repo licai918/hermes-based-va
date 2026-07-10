@@ -436,3 +436,67 @@ def test_webhook_alone_drives_the_reply_through_the_local_dispatcher() -> None:
 
     # No internal-route call: the dispatcher alone drove the bound turn + reply.
     assert sent == [("conv-local", reply_body)]
+
+
+# --- verify-before-ignore + TGP freshness (ADR-0021 fail-closed) -------------
+
+def _tgp_whisper(*, event_time: str = "1782844993", signature: str | None = None):
+    """An ignored (whisper) TGP post; signature overridable to forge a bad one."""
+    payload = {
+        "webhook": "new_customer_post",
+        "post": {
+            "body": "internal note",
+            "created_at": int(event_time),
+            "uuid": "evt-whisper-1",
+            "conversation_uuid": "conv-w-1",
+            "is_whisper": True,
+            "creator": {"type": "agent"},
+        },
+        "conversation": {"uuid": "conv-w-1"},
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    valid = hashlib.sha256(
+        f"new_customer_post{event_time}{WEBHOOK_SECRET}".encode("utf-8")
+    ).hexdigest()
+    headers = {
+        "X-Tgp-Event-Signature": signature if signature is not None else valid,
+        "X-Tgp-Event-Time": event_time,
+        "X-Tgp-Event-Type": "new_customer_post",
+    }
+    return raw, headers
+
+
+def test_ignored_tgp_webhook_with_bad_signature_is_rejected() -> None:
+    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
+    raw, headers = _tgp_whisper(signature="deadbeef")
+    assert _post_tgp_signed(client, raw, headers).status_code == 401
+
+
+def test_ignored_tgp_webhook_with_valid_signature_still_acks_200() -> None:
+    store = InMemoryGatewayStore()
+    queue = InMemoryJobQueue()
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    raw, headers = _tgp_whisper()
+    assert _post_tgp_signed(TestClient(app), raw, headers).status_code == 200
+    assert queue.payloads == []  # ignored: no turn enqueued
+
+
+def test_tgp_event_is_stale_only_when_window_set_and_exceeded() -> None:
+    from hermes_runtime.gateway_app import _tgp_event_is_stale
+
+    now = 1_000_000
+    assert _tgp_event_is_stale("999950", 60, now) is False  # 50s old, within 60
+    assert _tgp_event_is_stale("999900", 60, now) is True   # 100s old, over 60
+    assert _tgp_event_is_stale("999900", None, now) is False  # window off
+    assert _tgp_event_is_stale(None, 60, now) is False        # no event_time
+
+
+def test_stale_tgp_webhook_rejected_when_window_configured(monkeypatch) -> None:
+    import hermes_runtime.gateway_app as gw
+
+    monkeypatch.setenv("TEXTLINE_MAX_SIGNATURE_AGE_SECONDS", "60")
+    # Freeze "now" far past the event's timestamp so the correctly-signed event is stale.
+    monkeypatch.setattr(gw, "_now_unix", lambda: 1782844993 + 3600)
+    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
+    raw, headers = _tgp_new_customer_post(event_time="1782844993")
+    assert _post_tgp_signed(client, raw, headers).status_code == 401
