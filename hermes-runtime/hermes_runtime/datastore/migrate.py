@@ -12,11 +12,25 @@ Run against the configured database::
 
 from __future__ import annotations
 
+import os
 from collections.abc import Collection
 from pathlib import Path
 
 # hermes-runtime/hermes_runtime/datastore/migrate.py -> hermes-runtime/migrations
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+
+# LOCAL DEV ONLY seeds (ADR-0142): demo accounts + cases. The migrate() entrypoint
+# excludes these by default so they never reach a cloud/prod database; local dev
+# opts in with HERMES_APPLY_DEV_SEED=1 (see docs/ops/local-e2e.md).
+DEV_ONLY_MIGRATIONS = frozenset({"0005_dev_bootstrap"})
+_APPLY_DEV_SEED_ENV = "HERMES_APPLY_DEV_SEED"
+
+
+def migrate_exclusions() -> frozenset[str]:
+    """Migrations migrate() skips by default: the dev seed unless opted in."""
+    if os.environ.get(_APPLY_DEV_SEED_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        return frozenset()
+    return DEV_ONLY_MIGRATIONS
 
 
 def discover_migrations(
@@ -78,14 +92,19 @@ def run_migrations(
 
 
 def migrate(url: str | None = None, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
-    """Connect to ``url`` (or the configured default) and apply pending migrations."""
+    """Connect to ``url`` (or the configured default) and apply pending migrations.
+
+    Excludes LOCAL-DEV-ONLY seeds (:data:`DEV_ONLY_MIGRATIONS`) unless the caller
+    opted in via ``HERMES_APPLY_DEV_SEED`` — so a cloud/prod migrate never seeds
+    demo data (ADR-0142).
+    """
     import psycopg
 
     from .config import database_url
 
     dsn = url or database_url()
     with psycopg.connect(dsn) as conn:
-        return run_migrations(conn, migrations_dir)
+        return run_migrations(conn, migrations_dir, exclude=migrate_exclusions())
 
 
 def main() -> None:

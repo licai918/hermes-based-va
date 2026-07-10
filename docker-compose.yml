@@ -2,6 +2,7 @@
 # local-first). Brings up a Postgres equivalent to the deferred Cloud SQL target
 # so the datastore, migrations, and per-profile API servers run end-to-end
 # locally. Apply schema with:  uv run python -m hermes_runtime.datastore.migrate
+# (prefix HERMES_APPLY_DEV_SEED=1 to also seed the local-dev demo accounts + cases).
 services:
   postgres:
     image: postgres:16

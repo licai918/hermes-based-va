@@ -57,11 +57,13 @@ docker inspect -f '{{.State.Health.Status}}' toee-va-postgres
 # -> healthy
 ```
 
-Apply migrations (includes dev bootstrap accounts + demo cases):
+Apply migrations. The dev bootstrap accounts + demo cases are LOCAL DEV ONLY and
+must be **opted in** with `HERMES_APPLY_DEV_SEED=1` -- a plain migrate applies
+schema only, so a cloud/prod migrate never seeds demo data:
 
 ```bash
 cd hermes-runtime
-uv run python -m hermes_runtime.datastore.migrate
+HERMES_APPLY_DEV_SEED=1 uv run python -m hermes_runtime.datastore.migrate
 ```
 
 First run prints `applied migrations: â€? 0005_dev_bootstrap`. Re-runs print
@@ -222,7 +224,7 @@ Governed writes append rows in the same transaction (ADR-0029/0085).
 | `error during connect ... dockerDesktopLinuxEngine` | Docker engine not running â€?start Docker Desktop. |
 | `dial tcp [::1]:2375 ... refused` | Stale `DOCKER_HOST` â€?unset it or set `DOCKER_CONTEXT=desktop-linux`. |
 | Login works in Tier A but not Tier B | Confirm Terminal 3 (admin dispatch) is up with `TOOL_BACKEND=datastore` and `HERMES_ADMIN_API_*` is set in `.env.local`. |
-| Empty copilot queue in Tier B | Re-run migrate; confirm `0005_dev_bootstrap` applied and copilot server uses `TOOL_BACKEND=datastore`. |
+| Empty copilot queue in Tier B | Re-run migrate **with `HERMES_APPLY_DEV_SEED=1`**; confirm `0005_dev_bootstrap` applied and copilot server uses `TOOL_BACKEND=datastore`. |
 | Dispatch **401** | Bearer token mismatch â€?`HERMES_*_API_TOKEN` must equal that server's `DISPATCH_API_TOKEN`. |
 
 More detail: [`local-datastore.md`](local-datastore.md) (Postgres), [`local-dispatch-servers.md`](local-dispatch-servers.md) (dispatch).

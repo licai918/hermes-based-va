@@ -33,6 +33,10 @@ First run prints `applied migrations: 0001_initial_schema`; a re-run prints
 `no pending migrations`. Connection comes from `DATABASE_URL` (see `.env.example`),
 defaulting to the docker-compose DSN above — no GCP credentials needed locally.
 
+The `0005_dev_bootstrap` seed (demo accounts + cases) is LOCAL DEV ONLY and is
+skipped unless you set `HERMES_APPLY_DEV_SEED=1`, so a cloud/prod migrate never
+seeds demo data (ADR-0142). Tier B walkthrough: [`local-e2e.md`](local-e2e.md).
+
 ## Datastore-backed tools (Slice 33 / #36)
 
 The `PostgresDriver` (`hermes_runtime/datastore/`) runs real SQL behind the

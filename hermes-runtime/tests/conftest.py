@@ -12,7 +12,7 @@ import uuid
 import pytest
 
 from hermes_runtime.datastore.config import database_url
-from hermes_runtime.datastore.migrate import run_migrations
+from hermes_runtime.datastore.migrate import DEV_ONLY_MIGRATIONS, run_migrations
 
 try:  # psycopg lives in the hermes-runtime venv (ADR-0142); guard for safety.
     import psycopg
@@ -58,11 +58,10 @@ def datastore(temp_schema_conn):
     so its writes land in the same isolated schema the test can read back.
     """
     conn, schema = temp_schema_conn
-    # Skip 0005_dev_bootstrap: it is LOCAL DEV ONLY and seeds demo cases
-    # (case_ar_urgent, case_toolfail) that would pollute these isolated schemas.
-    # Tests that need the seed use temp_schema_conn + run_migrations() directly
-    # (see test_datastore_dev_bootstrap.py).
-    run_migrations(conn, exclude={"0005_dev_bootstrap"})
+    # Skip the LOCAL DEV ONLY seed: its demo cases (case_ar_urgent, case_toolfail)
+    # would pollute these isolated schemas. Tests that need the seed use
+    # temp_schema_conn + run_migrations() directly (see test_datastore_dev_bootstrap.py).
+    run_migrations(conn, exclude=DEV_ONLY_MIGRATIONS)
     from hermes_runtime.datastore.driver import PostgresDriver
 
     return PostgresDriver(connection=conn), conn, schema
