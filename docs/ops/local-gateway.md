@@ -38,6 +38,7 @@ use your own values — never commit secrets.
 | `OPENROUTER_API_KEY` | yes | Live LLM for the async agent turn (ADR-0009) |
 | `TOOL_BACKEND` | for Workbench queue | Set to `datastore` so inbound SMS persists to Postgres and appears in the Workbench copilot queue (same DB as Tier B). Requires `docker compose up -d postgres` + migrations. |
 | `DATABASE_URL` | with `datastore` | Defaults to `postgresql://toee:toee@localhost:5432/toee_va` when unset. |
+| `TEXTLINE_MAX_SIGNATURE_AGE_SECONDS` | recommended in prod | Opt-in TGP replay window. The live TGP signature covers only `event_type + event_time + secret` (not the body, no expiry), so a leaked `(signature, time, type)` triple can be replayed. Set to reject events whose `X-Tgp-Event-Time` is outside ±N seconds of now. Suggested: `900` (15 min — covers Textline retries without leaving an open replay window). Unset = no freshness check. |
 
 Optional overrides (defaults are fine locally): `TEXTLINE_API_BASE_URL`, `OPENROUTER_BASE_URL`,
 `OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODEL`.
