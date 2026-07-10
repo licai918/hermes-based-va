@@ -17,11 +17,15 @@ The production deployment model that runs **Hermes Core** on Google Cloud Run an
 _Avoid_: Fixed infrastructure bundle, infrastructure-first provisioning
 
 **Hermes Native Memory**:
-The built-in Hermes memory system where Toee Tire stores conversation, customer, case, consent, and operational context for all profiles and channels. Toee Tire partitions it into the **Identity Graph**, conversation, operational, and **Customer Memory** layers.
-_Avoid_: Gemini memory store, parallel custom memory database, channel-specific memory silos
+The upstream Hermes conversation-memory system — `MEMORY.md`/`USER.md` agent notes and `session_search` transcript recall — providing per-profile conversational continuity only (ADR-0140). It is never the source of truth for business records; those live in the **Toee Business Datastore**.
+_Avoid_: business system-of-record, per-customer preference store, Gemini memory store, parallel custom memory database
+
+**Toee Business Datastore**:
+The Postgres system-of-record (ADR-0140, local-first per ADR-0142) holding the four memory layers: the **Identity Graph**, the conversation layer (**Customer Thread**, **SMS Session**, **MessageTurn**, **AgentTurnContext**), the operational layer (**Follow-up Case**, **Workbench Audit Log**, eval records), and **Customer Memory** preference slots — plus **Workbench Accounts** and knowledge publish state. Retention (ADR-0004) is enforced here.
+_Avoid_: Hermes Native Memory as storage substrate, per-channel databases, fixed day-one cloud bundle
 
 **Customer Memory**:
-The structured preference layer in **Hermes Native Memory** for durable service preferences. v1 slots are `contact_time_preference`, `channel_preference`, `delivery_habit_note`, and `communication_style_note`, bound through the **Identity Graph** to `shopifyCustomerId` when verified or provisionally to `channelIdentityId` when not. Provisional records merge onto the verified customer node when ingress identity first resolves to a **Verified Customer**. Runtime reads inject a compact preference block per turn; writes use governed customer-memory tools only.
+The structured preference layer in the **Toee Business Datastore** for durable service preferences. v1 slots are `contact_time_preference`, `channel_preference`, `delivery_habit_note`, and `communication_style_note`, bound through the **Identity Graph** to `shopifyCustomerId` when verified or provisionally to `channelIdentityId` when not. Provisional records merge onto the verified customer node when ingress identity first resolves to a **Verified Customer**. Runtime reads inject a compact preference block per turn; writes use governed customer-memory tools only.
 _Avoid_: Live order or AR facts, operational policy text, SMS opt-out consent, model-guessed account data, open-ended preference keys, autonomous inferred writes, overwriting verified slots on merge, model-writable preference injection
 
 **Hermes Integration Surface**:
