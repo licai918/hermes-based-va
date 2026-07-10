@@ -58,7 +58,11 @@ def datastore(temp_schema_conn):
     so its writes land in the same isolated schema the test can read back.
     """
     conn, schema = temp_schema_conn
-    run_migrations(conn)
+    # Skip 0005_dev_bootstrap: it is LOCAL DEV ONLY and seeds demo cases
+    # (case_ar_urgent, case_toolfail) that would pollute these isolated schemas.
+    # Tests that need the seed use temp_schema_conn + run_migrations() directly
+    # (see test_datastore_dev_bootstrap.py).
+    run_migrations(conn, exclude={"0005_dev_bootstrap"})
     from hermes_runtime.datastore.driver import PostgresDriver
 
     return PostgresDriver(connection=conn), conn, schema

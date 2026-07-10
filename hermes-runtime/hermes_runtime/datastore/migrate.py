@@ -12,16 +12,27 @@ Run against the configured database::
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from pathlib import Path
 
 # hermes-runtime/hermes_runtime/datastore/migrate.py -> hermes-runtime/migrations
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 
-def discover_migrations(migrations_dir: Path = MIGRATIONS_DIR) -> list[tuple[str, str]]:
-    """Return ``[(version, sql)]`` for every ``*.sql`` file, sorted by version."""
+def discover_migrations(
+    migrations_dir: Path = MIGRATIONS_DIR, *, exclude: Collection[str] = ()
+) -> list[tuple[str, str]]:
+    """Return ``[(version, sql)]`` for every ``*.sql`` file, sorted by version.
+
+    ``exclude`` drops migrations by version (file stem) — the test harness uses it
+    to skip the local-dev-only ``0005_dev_bootstrap`` seed in isolated schemas.
+    """
     files = sorted(migrations_dir.glob("*.sql"))
-    return [(path.stem, path.read_text(encoding="utf-8")) for path in files]
+    return [
+        (path.stem, path.read_text(encoding="utf-8"))
+        for path in files
+        if path.stem not in exclude
+    ]
 
 
 def _ensure_bookkeeping(cur) -> None:
@@ -35,13 +46,16 @@ def _ensure_bookkeeping(cur) -> None:
     )
 
 
-def run_migrations(conn, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
+def run_migrations(
+    conn, migrations_dir: Path = MIGRATIONS_DIR, *, exclude: Collection[str] = ()
+) -> list[str]:
     """Apply pending migrations on an open connection; return versions applied.
 
     Each migration runs in its own transaction (Postgres has transactional DDL),
     so a partial failure rolls back cleanly and leaves ``schema_migrations``
     accurate. The caller controls the connection (and therefore the search_path),
-    which lets tests target a throwaway schema.
+    which lets tests target a throwaway schema. ``exclude`` skips migrations by
+    version (see :func:`discover_migrations`).
     """
     with conn.cursor() as cur:
         _ensure_bookkeeping(cur)
@@ -50,7 +64,7 @@ def run_migrations(conn, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
         already_applied = {row[0] for row in cur.fetchall()}
 
     applied: list[str] = []
-    for version, sql in discover_migrations(migrations_dir):
+    for version, sql in discover_migrations(migrations_dir, exclude=exclude):
         if version in already_applied:
             continue
         with conn.cursor() as cur:
