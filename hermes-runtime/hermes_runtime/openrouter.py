@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
 from toee_hermes.gateway.ingress import snapshot_as_identity_dict
+from toee_hermes.gateway.normalize import normalize_e164
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
 from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
@@ -60,6 +61,23 @@ _RETRYABLE_ERROR_NAMES = frozenset(
         "APIError",
     }
 )
+
+
+def _with_channel_identity(
+    identity: Optional[dict[str, Any]], from_phone: str
+) -> dict[str, Any]:
+    """Merge the SMS channel identity (E.164) into the turn's identity dict (S01).
+
+    Runs at the turn boundary rather than in ``snapshot_as_identity_dict``: the
+    phone lives on ``AgentTurnContext``, not the Session Identity Snapshot. Always
+    returns a dict — even for an unmatched caller with no snapshot — so Customer
+    Memory binding (S02) has ingress-controlled channel identity to key off,
+    never a model-supplied tool param (RK-3).
+    """
+    merged = dict(identity) if identity else {}
+    merged["channel"] = "sms"
+    merged["channel_identity"] = normalize_e164(from_phone)
+    return merged
 
 
 @dataclass(frozen=True)
@@ -198,9 +216,12 @@ def make_openrouter_run_turn(
             is_retryable=is_retryable,
         )
         snapshot = getattr(context, "session_identity_snapshot", None)
-        identity = (
+        base_identity = (
             snapshot_as_identity_dict(snapshot) if snapshot is not None else None
         )
+        # S01: enrich with the caller's channel identity (E.164) here, where
+        # AgentTurnContext.from_phone is in scope — the snapshot alone never has it.
+        identity = _with_channel_identity(base_identity, context.from_phone)
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
         # Prepend the snapshot here so the model sees verified identity (ADR-0140).
