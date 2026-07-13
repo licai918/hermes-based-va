@@ -4,10 +4,14 @@ Persists the fixed four preference slots (ADR-0111) to ``customer_memory_slot``,
 bound to the verified Shopify customer id (Session Identity Snapshot, ADR-0043)
 or a canonical provisional channel key derived from context, fail-closed when no
 channel identity resolves (:func:`resolve_customer_memory_binding`, ADR-0112, PRD
-FR-5/S02). Open-ended keys are rejected, never silently stored. The four-slot enum
-and the binding resolver are both imported from the plugin so the datastore and
-mock paths share one source of truth: this is security-sensitive logic that must
-not drift between the two.
+FR-5/S02). Open-ended keys are rejected, never silently stored, and a value over
+``MEMORY_VALUE_MAX_LENGTH`` chars is rejected the same way (PRD FR-3). ``source``
+is derived from ``context.profile`` by :func:`resolve_memory_write_source`, never
+taken from the model-supplied tool params (RK-1); an optional ``evidence`` param
+(verbatim customer phrase) is persisted alongside the write for audit. The slot
+enum and both resolvers are imported from the plugin so the datastore and mock
+paths share one source of truth: this is security-sensitive logic that must not
+drift between the two.
 """
 
 from __future__ import annotations
@@ -16,7 +20,9 @@ from typing import TYPE_CHECKING, Any
 
 from toee_hermes.drivers.mock.memory import (
     MEMORY_PREFERENCE_SLOTS,
+    MEMORY_VALUE_MAX_LENGTH,
     resolve_customer_memory_binding,
+    resolve_memory_write_source,
 )
 from toee_hermes.errors import ToolDriverError
 
@@ -24,8 +30,6 @@ from ._common import new_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
-
-_DEFAULT_SOURCE = "unspecified"
 
 
 def _require_slot(params: dict[str, Any]) -> str:
@@ -41,36 +45,64 @@ def _require_slot(params: dict[str, Any]) -> str:
     return requested
 
 
-def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
-    slot = _require_slot(params)
+def _require_value(params: dict[str, Any]) -> str:
     value = params.get("value")
     if not isinstance(value, str):
         raise ToolDriverError(
             "unexpected_error", "upsert_preference requires a string value."
         )
-    raw_source = params.get("source")
-    source = raw_source if isinstance(raw_source, str) and raw_source else _DEFAULT_SOURCE
+    if len(value) > MEMORY_VALUE_MAX_LENGTH:
+        raise ToolDriverError(
+            "unexpected_error",
+            "Customer Memory rejects a value longer than "
+            f"{MEMORY_VALUE_MAX_LENGTH} characters.",
+        )
+    return value
+
+
+def _read_evidence(params: dict[str, Any]) -> str | None:
+    evidence = params.get("evidence")
+    if evidence is None:
+        return None
+    if not isinstance(evidence, str):
+        raise ToolDriverError(
+            "unexpected_error",
+            "upsert_preference evidence must be a string when provided.",
+        )
+    return evidence
+
+
+def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    slot = _require_slot(params)
+    value = _require_value(params)
+    evidence = _read_evidence(params)
+    # RK-1: source is framework-derived from context.profile (shared resolver, same
+    # as the mock twin), never the model-supplied params — any "source" the caller
+    # passed is ignored.
+    source = resolve_memory_write_source(context)
     binding_key, binding_kind = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO customer_memory_slot
-                (id, binding_key, binding_kind, slot_name, slot_value, source)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                (id, binding_key, binding_kind, slot_name, slot_value, source, evidence)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (binding_key, slot_name) DO UPDATE SET
                 slot_value = EXCLUDED.slot_value,
                 source = EXCLUDED.source,
+                evidence = EXCLUDED.evidence,
                 binding_kind = EXCLUDED.binding_kind,
                 updated_at = now(),
                 last_interaction_at = now()
             """,
-            (new_id("mem"), binding_key, binding_kind, slot, value, source),
+            (new_id("mem"), binding_key, binding_kind, slot, value, source, evidence),
         )
     return {
         "binding_key": binding_key,
         "slot": slot,
         "value": value,
         "source": source,
+        "evidence": evidence,
         "stored": True,
     }
 

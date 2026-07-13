@@ -31,6 +31,22 @@ MEMORY_PREFERENCE_SLOTS: tuple[str, ...] = (
     "communication_style_note",
 )
 
+# Framework-derived write sources (PRD FR-3, RK-1). ``customer_explicit`` and
+# ``employee_confirmed`` are set by :func:`resolve_memory_write_source`, never by
+# a model-supplied tool param. ``merged_provisional`` is reserved for the async
+# provisional-to-verified merge path (S10) and is not produced by either write
+# handler in this module -- it is listed here so the enum never needs a second
+# change when that path lands.
+MEMORY_SOURCE_VALUES: tuple[str, ...] = (
+    "customer_explicit",
+    "employee_confirmed",
+    "merged_provisional",
+)
+
+# ADR-0111 slots hold a short preference note (e.g. "after 2pm"), not free text;
+# PRD FR-3 caps the stored value so a write can't smuggle an essay into a slot.
+MEMORY_VALUE_MAX_LENGTH = 200
+
 
 @dataclass(frozen=True)
 class MemoryMockData:
@@ -75,6 +91,35 @@ def _read_string(params: dict[str, Any], *keys: str) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+def _require_value(params: dict[str, Any]) -> str:
+    """Resolve and validate ``value``: a string, capped at 200 chars (PRD FR-3)."""
+    value = params.get("value")
+    if not isinstance(value, str):
+        raise ToolDriverError(
+            "unexpected_error", "upsert_preference requires a string value."
+        )
+    if len(value) > MEMORY_VALUE_MAX_LENGTH:
+        raise ToolDriverError(
+            "unexpected_error",
+            "Customer Memory rejects a value longer than "
+            f"{MEMORY_VALUE_MAX_LENGTH} characters.",
+        )
+    return value
+
+
+def _read_evidence(params: dict[str, Any]) -> str | None:
+    """Resolve the optional ``evidence`` param (verbatim customer phrase)."""
+    evidence = params.get("evidence")
+    if evidence is None:
+        return None
+    if not isinstance(evidence, str):
+        raise ToolDriverError(
+            "unexpected_error",
+            "upsert_preference evidence must be a string when provided.",
+        )
+    return evidence
 
 
 def resolve_customer_memory_binding(
@@ -141,8 +186,39 @@ def resolve_customer_memory_binding(
     )
 
 
+def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
+    """Framework-derived ``source`` for a preference write (RK-1, PRD FR-3).
+
+    ONE shared resolver for both the mock and Postgres datastore handlers, same
+    reasoning as :func:`resolve_customer_memory_binding`: this is
+    security-sensitive governance logic that must not drift between the two.
+
+    Never taken from the model-supplied tool params -- the model cannot forge
+    ``customer_explicit`` for an inferred write. The External Customer Service
+    Profile always writes ``customer_explicit``; the Internal Copilot Profile
+    always writes ``employee_confirmed``. ``merged_provisional`` is set only by
+    the merge path (S10), never by this resolver. Any other profile is
+    fail-closed -- ``toee_customer_memory`` is not allowlisted outside these two
+    today (ADR-0034/35), so this is defense in depth, not a reachable path.
+    """
+    # Deferred import: same partially-initialized-package hazard documented on
+    # resolve_customer_memory_binding above.
+    from ...plugin.profiles import EXTERNAL, INTERNAL
+
+    if context.profile == EXTERNAL:
+        return "customer_explicit"
+    if context.profile == INTERNAL:
+        return "employee_confirmed"
+    raise ToolDriverError(
+        "policy_blocked",
+        f'Customer Memory writes are not permitted for profile "{context.profile}".',
+    )
+
+
 def create_memory_mock_handlers(
     data: MemoryMockData = memory_baseline_data,
+    *,
+    evidence_store: dict[str, dict[str, str]] | None = None,
 ) -> MockHandlerRegistry:
     """Build ``toee_customer_memory`` handlers backed by a per-binding store.
 
@@ -150,8 +226,19 @@ def create_memory_mock_handlers(
     in-memory writes persist across calls within one handler-set instance while
     staying isolated per identity binding. Each binding is lazily seeded from the
     injected baseline so a scenario ``memory_preset`` is honored on first read.
+
+    ``evidence_store``, when supplied, is mutated in place with each write's
+    ``evidence`` (``binding_key -> {slot: evidence}``) -- mirrors the datastore
+    handler's ``evidence`` column so a caller (a test, mainly) can prove evidence
+    is actually persisted and retrievable, not just echoed back on the same call
+    (PRD FR-3). Not exposed through ``get_preferences``, matching how ``source``
+    already isn't -- both are write-time governance/audit metadata, not part of
+    the live preference value re-injected into the prompt every turn (RK-2).
     """
     store: dict[str, dict[str, str]] = {}
+    evidence: dict[str, dict[str, str]] = (
+        {} if evidence_store is None else evidence_store
+    )
 
     def slots_for(binding_key: str) -> dict[str, str]:
         slots = store.get(binding_key)
@@ -167,21 +254,21 @@ def create_memory_mock_handlers(
         # (scenario 24). The Tool Gate — not this driver — enforces that the write
         # came from explicit customer language (ADR-0114).
         slot = _require_slot(params)
-        value = params.get("value")
-        if not isinstance(value, str):
-            raise ToolDriverError(
-                "unexpected_error", "upsert_preference requires a string value."
-            )
-        source = params.get("source")
-        if not isinstance(source, str):
-            source = None
+        value = _require_value(params)
+        write_evidence = _read_evidence(params)
+        # RK-1: source is framework-derived from context.profile, never the
+        # model-supplied params — any "source" the caller passed is ignored.
+        source = resolve_memory_write_source(context)
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key)[slot] = value
+        if write_evidence is not None:
+            evidence.setdefault(binding_key, {})[slot] = write_evidence
         return {
             "binding_key": binding_key,
             "slot": slot,
             "value": value,
             "source": source,
+            "evidence": write_evidence,
             "stored": True,
         }
 

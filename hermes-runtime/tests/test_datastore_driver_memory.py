@@ -18,12 +18,12 @@ VERIFIED = {
 }
 
 
-def _run(driver, action, params, *, identity=None):
+def _run(driver, action, params, *, identity=None, profile="customer_service_external"):
     return execute_tool(
         tool="toee_customer_memory",
         action=action,
         params=params,
-        context=ToolExecutionContext(profile="customer_service_external", identity=identity),
+        context=ToolExecutionContext(profile=profile, identity=identity),
         driver=driver,
     )
 
@@ -120,3 +120,101 @@ def test_non_string_value_is_governed_rejection(datastore) -> None:
                   {"key": "channel_preference", "value": 123, "channel_identity_id": "c4"})
     assert not result.ok
     assert result.error_class == "unexpected_error"
+
+
+# --- write discipline: framework source, value cap, evidence (S03, PRD FR-3) -
+
+
+def test_value_at_max_length_is_accepted(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "upsert_preference",
+                  {"key": "delivery_habit_note", "value": "x" * 200},
+                  identity=_PROVISIONAL_A)
+    assert result.ok
+
+
+def test_value_over_max_length_is_governed_rejection(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "upsert_preference",
+                  {"key": "delivery_habit_note", "value": "x" * 201},
+                  identity=_PROVISIONAL_A)
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+
+
+def test_source_param_cannot_be_forged(datastore) -> None:
+    # RK-1: source is framework-derived from context.profile, never the
+    # model-supplied tool param, even against the real Postgres path.
+    driver, _, _ = datastore
+    result = _run(
+        driver, "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "source": "merged_provisional",  # forged: reserved for the S10 merge path
+        },
+        identity=_PROVISIONAL_A,
+    )
+    assert result.ok
+    assert result.data["source"] == "customer_explicit"
+
+
+def test_internal_copilot_profile_resolves_employee_confirmed(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(
+        driver, "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "channel_identity_id": "case:ds-employee-confirmed",
+        },
+        profile="internal_copilot",
+    )
+    assert result.ok
+    assert result.data["source"] == "employee_confirmed"
+
+
+def test_evidence_is_persisted_and_retrievable(datastore) -> None:
+    driver, conn, _ = datastore
+    up = _run(
+        driver, "upsert_preference",
+        {
+            "key": "contact_time_preference",
+            "value": "after 2pm",
+            "evidence": "only text me after 2pm please",
+        },
+        identity=_PROVISIONAL_A,
+    )
+    assert up.ok
+    assert up.data["evidence"] == "only text me after 2pm please"
+
+    # Retrievable: read it straight back out of Postgres, not just the
+    # in-process response the handler happened to echo.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT evidence FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (up.data["binding_key"], "contact_time_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "only text me after 2pm please"
+
+
+def test_evidence_is_optional_and_defaults_to_null(datastore) -> None:
+    driver, conn, _ = datastore
+    up = _run(driver, "upsert_preference",
+              {"key": "channel_preference", "value": "sms"},
+              identity=_PROVISIONAL_A)
+    assert up.ok
+    assert up.data["evidence"] is None
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT evidence FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (up.data["binding_key"], "channel_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] is None

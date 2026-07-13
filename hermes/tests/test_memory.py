@@ -18,11 +18,15 @@ from toee_hermes.tool_gate import ToolExecutionContext
 VERIFIED_CUSTOMER_ID = "gid://shopify/Customer/1001"
 
 
-def _driver(data: MemoryMockData | None = None) -> MockDriver:
+def _driver(
+    data: MemoryMockData | None = None,
+    *,
+    evidence_store: dict[str, dict[str, str]] | None = None,
+) -> MockDriver:
     handlers = (
-        create_memory_mock_handlers()
+        create_memory_mock_handlers(evidence_store=evidence_store)
         if data is None
-        else create_memory_mock_handlers(data)
+        else create_memory_mock_handlers(data, evidence_store=evidence_store)
     )
     return MockDriver(handlers)
 
@@ -71,7 +75,6 @@ def test_upsert_records_explicit_preference() -> None:
         {
             "key": "contact_time_preference",
             "value": "after 2pm Eastern",
-            "source": "explicit_customer_statement",
         },
         _verified_ctx(),
     )
@@ -79,7 +82,7 @@ def test_upsert_records_explicit_preference() -> None:
     assert result.ok is True
     assert result.data["slot"] == "contact_time_preference"
     assert result.data["value"] == "after 2pm Eastern"
-    assert result.data["source"] == "explicit_customer_statement"
+    assert result.data["source"] == "customer_explicit"
     assert result.data["stored"] is True
     assert result.data["binding_key"] == VERIFIED_CUSTOMER_ID
 
@@ -94,7 +97,6 @@ def test_upsert_then_get_reflects_it() -> None:
         {
             "key": "contact_time_preference",
             "value": "after 2pm Eastern",
-            "source": "explicit_customer_statement",
         },
         ctx,
     )
@@ -111,7 +113,6 @@ def test_upsert_rejects_open_ended_key() -> None:
         {
             "key": "favorite_color",
             "value": "blue",
-            "source": "explicit_customer_statement",
         },
         _verified_ctx(),
     )
@@ -142,7 +143,6 @@ def test_slot_alias_is_accepted() -> None:
         {
             "slot": "communication_style_note",
             "value": "prefers brief replies",
-            "source": "explicit_customer_statement",
         },
         ctx,
     )
@@ -232,7 +232,6 @@ def test_round_trip_upsert_get_clear_get() -> None:
         {
             "key": "delivery_habit_note",
             "value": "leave at side door",
-            "source": "explicit_customer_statement",
         },
         ctx,
     )
@@ -262,7 +261,6 @@ def test_writes_isolated_by_verified_binding() -> None:
         {
             "key": "contact_time_preference",
             "value": "mornings",
-            "source": "explicit_customer_statement",
         },
         _verified_ctx("gid://shopify/Customer/1001"),
     )
@@ -284,7 +282,6 @@ def test_provisional_binding_uses_channel_identity_from_context() -> None:
         {
             "key": "channel_preference",
             "value": "sms",
-            "source": "explicit_customer_statement",
         },
         ctx,
     )
@@ -304,7 +301,6 @@ def test_provisional_bindings_isolated_by_channel_identity() -> None:
         {
             "key": "channel_preference",
             "value": "sms",
-            "source": "explicit_customer_statement",
         },
         _provisional_ctx("+14165550001"),
     )
@@ -322,7 +318,6 @@ def test_unmatched_caller_with_no_channel_identity_is_policy_blocked() -> None:
         {
             "key": "channel_preference",
             "value": "sms",
-            "source": "explicit_customer_statement",
         },
         _unmatched_ctx(),
     )
@@ -339,10 +334,107 @@ def test_external_profile_channel_identity_id_param_is_ignored() -> None:
         {
             "key": "channel_preference",
             "value": "sms",
-            "source": "explicit_customer_statement",
             "channel_identity_id": "+19998887777",
         },
         _unmatched_ctx(),
     )
     assert result.ok is False
     assert result.error_class == "policy_blocked"
+
+
+# --- write discipline: framework source, value cap, evidence (S03, PRD FR-3) -
+
+
+def test_upsert_value_at_max_length_is_accepted() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "delivery_habit_note", "value": "x" * 200},
+        _verified_ctx(),
+    )
+    assert result.ok is True
+
+
+def test_upsert_value_over_max_length_is_rejected() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "delivery_habit_note", "value": "x" * 201},
+        _verified_ctx(),
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_upsert_ignores_model_supplied_source_and_uses_framework_value() -> None:
+    # RK-1: the model could try to tag an inferred write as customer_explicit
+    # (or any other value) via the tool param — the framework must ignore it.
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "source": "employee_confirmed",  # forged: this context is external
+        },
+        _verified_ctx(),
+    )
+    assert result.ok is True
+    assert result.data["source"] == "customer_explicit"
+
+
+def test_upsert_internal_copilot_resolves_employee_confirmed() -> None:
+    ctx = ToolExecutionContext(profile="internal_copilot", identity=None)
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "channel_identity_id": "case:12345",
+        },
+        ctx,
+    )
+    assert result.ok is True
+    assert result.data["source"] == "employee_confirmed"
+
+
+def test_upsert_evidence_is_persisted_and_retrievable() -> None:
+    evidence_store: dict[str, dict[str, str]] = {}
+    driver = _driver(evidence_store=evidence_store)
+    ctx = _verified_ctx()
+
+    result = _call(
+        driver,
+        "upsert_preference",
+        {
+            "key": "contact_time_preference",
+            "value": "after 2pm Eastern",
+            "evidence": "only text me after 2pm eastern please",
+        },
+        ctx,
+    )
+    assert result.ok is True
+    assert result.data["evidence"] == "only text me after 2pm eastern please"
+
+    # Retrievable: the write survives past the call that made it, not just
+    # echoed back in the same response.
+    assert (
+        evidence_store[VERIFIED_CUSTOMER_ID]["contact_time_preference"]
+        == "only text me after 2pm eastern please"
+    )
+
+
+def test_upsert_without_evidence_stores_nothing() -> None:
+    evidence_store: dict[str, dict[str, str]] = {}
+    driver = _driver(evidence_store=evidence_store)
+
+    result = _call(
+        driver,
+        "upsert_preference",
+        {"key": "channel_preference", "value": "sms"},
+        _verified_ctx(),
+    )
+    assert result.ok is True
+    assert result.data["evidence"] is None
+    assert evidence_store == {}
