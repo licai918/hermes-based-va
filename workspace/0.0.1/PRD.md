@@ -71,6 +71,10 @@ policy slots.
 
 ## 4. Requirements
 
+> Each requirement's *Accept* line states the outcome; **§6 is the mechanism that
+> proves it** — how every memory layer is shown to be live (not mock), logically
+> correct, and bound to the right customer's content.
+
 ### 4.1 Customer Memory (this iteration — "M1")
 
 - **FR-1 Read injection.** At the start of each external customer-service turn
@@ -130,7 +134,10 @@ policy slots.
 ## 5. Scope for 0.0.1
 
 **In:** Section 4.1 (FR-1…FR-5) — Customer Memory activation across the external
-and Copilot surfaces, with tests + the memory eval package rerun.
+and Copilot surfaces, **plus the full acceptance & verification mechanism of §6**
+(layer-activation matrix, correctness suite, dormancy tripwire, eval package moved
+to the real path with the new isolation/merge/content-match scenarios). The tests
+are part of the 0.0.1 increment, not a follow-up.
 
 **Out (→ 0.0.2):** Section 4.2 (gbrain knowledge layer), gated on three spikes
 (latency, server API shape, deployment isolation) before commitment.
@@ -139,16 +146,91 @@ and Copilot surfaces, with tests + the memory eval package rerun.
 > ~5–7 days). M2 opens 0.0.2 after the spikes. Adjustable if you want both in
 > 0.0.1.
 
-## 6. Success metrics
+## 6. Acceptance & verification mechanism
 
-- A stated preference is correctly injected on the following turn (functional +
-  eval).
-- 100% of live-turn memory writes land in Postgres with a datastore audit row
-  (0% land in the ephemeral mock).
-- Provisional-then-verified flow carries preferences forward with verified-wins
-  conflict handling (eval scenario green).
-- No memory read/write can cross customer boundaries via model-supplied
-  parameters (security test green).
+The feature we are fixing was *dormant while its tests passed against a mock*.
+So acceptance is not "tests are green" — it is a mechanism that proves three
+things, and is engineered to **fail loudly if any of them regresses to the
+dormant state**.
+
+### 6.0 Four proof principles (every acceptance test obeys these)
+
+1. **Live, not mock.** Any assertion about persistence reads back **directly from
+   Postgres** (`SELECT` on the throwaway schema / dev DB) and asserts the audit
+   row's `driver.kind = "datastore"`. Asserting only a tool's return value does
+   **not** count — the mock returns the same shape.
+2. **Right content.** Any assertion about a read/injection compares the injected
+   block against **exactly what was stored for that binding key** — value match,
+   not just "a block appeared".
+3. **Right customer (positive isolation).** Isolation is proven by a *second*
+   customer in the same test who must **not** see the first's memory — in both
+   directions. Absence-for-A is not enough; presence-only-for-A is required.
+4. **Dormancy tripwire.** One guard test runs the live E2E with the composite
+   driver **disabled**; it must **fail** (write lands in mock, injection empty).
+   If this test ever passes, the activation has silently reverted — CI treats it
+   as a red.
+
+### 6.1 Memory-layer activation matrix (all four layers, one live turn)
+
+"All layers effective" is proven by a single end-to-end webhook run that touches
+every layer, because L4 binding *depends on* L1/L2. Each row has a live-path
+assertion and an observable pass signal.
+
+| Layer | Must be true in the live turn | Verified by | Pass signal |
+| --- | --- | --- | --- |
+| **L1 Identity Graph** | Caller resolves to the correct binding key (verified `shopifyCustomerId` / provisional `provisional:sms:{E.164}`) | E2E: one known-verified phone + one unmatched phone | `session_identity_snapshot.match_result.outcome` + chosen `binding_key` correct in DB |
+| **L2 Conversation** | Inbound persisted as thread / session / message_turn / agent_turn_context | E2E row asserts | rows present for the event |
+| **L3 Operational** | Follow-up case opened/updated; governed writes audited | E2E row asserts | `cases` row + `workbench_audit_log` row |
+| **L4 Customer Memory** | write → Postgres → inject on the next turn, for the right key | E2E two-round (state preference, then re-enter) | `customer_memory_slot` row **and** the value appears in round-2's injected block |
+
+### 6.2 Correctness rules (the logic judgments that must hold)
+
+| # | Rule | Level | Assertion |
+| --- | --- | --- | --- |
+| **R1** | Binding selection: verified → `shopifyCustomerId`; else → `provisional:sms:{E.164}` | unit + datastore | key chosen matches identity outcome |
+| **R2** | Content round-trip: injected value == stored value for that key | datastore + E2E | byte-match, not "block present" |
+| **R3** | Cross-customer isolation (both directions) | datastore + E2E | B never sees A's slot; A still sees own |
+| **R4** | Write discipline: only 4 slots; open-ended key rejected; value ≤ 200 chars; `source ∈ {customer_explicit, employee_confirmed, merged_provisional}`; no inference-write | unit + eval (scenario 26) | rejects invalid; model cannot self-write from tone/history |
+| **R5** | Merge three-state: (a) no-conflict merge, (b) conflict → verified wins + provisional value in `customer_memory_merge_audit.details`, (c) ambiguous → no merge; provisional rows deleted after (a)/(b) | datastore + E2E chain | audit row written; provisional gone; verified value intact |
+| **R6** | Fail-closed binding: no channel identity → `policy_blocked`; a model-supplied phone param cannot bind/read another caller | unit + security E2E | blocked; no cross-bind |
+
+### 6.3 Test levels & existing assets
+
+- **Unit (pure):** injection rendering, `provisional:sms:{E.164}` canonicalization,
+  slot/length/source validation.
+- **Datastore integration (throwaway schema, real Postgres):** handler round-trip,
+  merge SQL three-state, isolation query — same harness as
+  `test_postgres_gateway_store.py`.
+- **E2E (simulated Textline webhook → real Postgres):** the §6.1 matrix run; the
+  §6.2 R5 merge chain; the R3/R6 two-phone isolation/security run; the §6.0.4
+  dormancy tripwire.
+- **Eval (ADR-0117/0118):** scenarios `24-customer-memory-explicit-upsert`,
+  `25-customer-memory-honor-injected`, `26-customer-memory-no-inferred-write`
+  **exist but run on mock today** — move them to the real path, and **add** two
+  scenarios: `27-customer-memory-isolation` (R3) and
+  `28-customer-memory-merge-verified-wins` (R5b). These are 0.0.1 deliverables.
+
+### 6.4 Observability (verify against real traffic, not only tests)
+
+So a real conversation can be audited after the fact ("did this customer get
+*their* memory?"), the live turn records, per turn: the resolved `binding_key`,
+the injected **slot names** (never values — PII stays out of logs), and whether a
+merge fired. This rides the existing `workbench_audit_log` for the write/merge
+side; the read/inject side adds one compact turn note. Minimal and PII-safe.
+
+### 6.5 Definition of Done — go/no-go gate for 0.0.1
+
+0.0.1 is "done" only when each item below is checked **with pasted command
+output** (evidence before assertion):
+
+- [ ] §6.1 matrix: all four layers green in one live E2E run.
+- [ ] §6.2: R1–R6 all green at their stated levels.
+- [ ] §6.0.4 dormancy tripwire: confirmed **red** with the driver disabled.
+- [ ] Eval scenarios 24–28 green **on the real path** (not mock).
+- [ ] Anti-mock check: 100% of live-turn writes show `driver.kind = "datastore"`;
+      0 writes reach the mock store.
+- [ ] §6.4 observability note visible for a sample conversation, showing the
+      right binding_key + slot names.
 
 ## 7. Milestones
 
