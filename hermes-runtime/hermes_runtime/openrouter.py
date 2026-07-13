@@ -27,6 +27,7 @@ from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn
+from hermes_runtime.tool_backend import resolve_tool_backend, select_tool_driver
 
 # A non-tool-iterating turn still needs headroom for the reply iteration after a
 # governed tool call; this caps a runaway loop without truncating a normal turn.
@@ -78,6 +79,22 @@ def _with_channel_identity(
     merged["channel"] = "sms"
     merged["channel_identity"] = normalize_e164(from_phone)
     return merged
+
+
+def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_customer_memory`` to the Postgres datastore for the live turn (S04).
+
+    Only when the datastore backend is configured (``TOOL_BACKEND=datastore``):
+    otherwise return ``None`` so the tool stays on the shared mock driver and a mock
+    deployment never hard-depends on Postgres. Full no-DB graceful degradation is
+    S05's job; this seam just makes the injection conditional. ``select_tool_driver``
+    builds the ``PostgresDriver`` (psycopg stays in hermes-runtime); the plugin
+    overlay only ever sees a ``ToolDriver``, whose ``kind = "datastore"`` attributes
+    the audit rows (anti-mock, ADR-0140).
+    """
+    if resolve_tool_backend() != "datastore":
+        return None
+    return {"toee_customer_memory": select_tool_driver("datastore")}
 
 
 @dataclass(frozen=True)
@@ -232,6 +249,7 @@ def make_openrouter_run_turn(
             conversation_id=context.conversation_id,
             sms_session_id=getattr(context, "sms_session_id", None),
             identity=identity,
+            extra_drivers=_customer_memory_extra_drivers(),
         )
         return run_agent_turn(
             user_message=user_message,
