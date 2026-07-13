@@ -2,9 +2,10 @@
 
 The live external turn boots the profile with a per-tool ``extra_drivers`` overlay
 so ``toee_customer_memory`` routes to the Postgres datastore while every other tool
-keeps its mock/composio driver. Injection is conditional on the datastore backend
-being configured (``resolve_tool_backend() == "datastore"``); a mock deployment
-passes no overlay and the tool stays on mock (full no-DB degradation is S05).
+keeps its mock/composio driver. Injection is gated by
+:func:`hermes_runtime.tool_backend.memory_enabled` (S05's single source of truth,
+shared with the S07/S08 read gates); a mock/unset deployment passes no overlay and
+the tool stays on mock — the turn still completes with no hard Postgres dependency.
 
 ``psycopg``/``PostgresDriver`` live only in hermes-runtime — the plugin overlay
 only ever sees an object satisfying the ``ToolDriver`` protocol.
@@ -87,10 +88,21 @@ def test_run_turn_injects_the_datastore_driver_when_backend_is_datastore(monkeyp
     assert extra["toee_customer_memory"].kind == "datastore"
 
 
-def test_run_turn_passes_no_overlay_on_a_mock_deployment(monkeypatch) -> None:
-    # Scope boundary with S05: unset backend -> no overlay -> tool stays on mock,
-    # so a mock deployment never hard-depends on Postgres.
+def test_run_turn_passes_no_overlay_when_backend_is_unset(monkeypatch) -> None:
+    # S05/FR-7: unset backend -> memory_enabled() is False -> no overlay -> tool
+    # stays on mock, so a mock deployment never hard-depends on Postgres and the
+    # turn still completes (no exception raised).
     monkeypatch.delenv("TOOL_BACKEND", raising=False)
+
+    captured = _capture_extra_drivers(monkeypatch)
+
+    assert captured.get("extra_drivers") is None
+
+
+def test_run_turn_passes_no_overlay_when_backend_is_explicitly_mock(monkeypatch) -> None:
+    # Same S05 contract, spelled out for TOOL_BACKEND=mock (not just unset) per the
+    # brief's literal "unset / mock" wording.
+    monkeypatch.setenv("TOOL_BACKEND", "mock")
 
     captured = _capture_extra_drivers(monkeypatch)
 

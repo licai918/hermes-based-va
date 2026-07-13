@@ -51,6 +51,18 @@ def resolve_tool_backend(value: object = _UNSET) -> str:
     )
 
 
+def memory_enabled(value: object = _UNSET) -> bool:
+    """Whether Customer Memory is active for this deployment (S05, FR-7/RK-6).
+
+    True only when the datastore backend is configured (``TOOL_BACKEND=datastore``).
+    Single source of truth shared by the write overlay (S04's per-tool
+    ``extra_drivers`` injection) and the read injection gates (S07/S08): a
+    mock/unset deployment never hard-depends on Postgres — reads inject nothing,
+    writes stay on the ephemeral mock, and the turn still completes and replies.
+    """
+    return resolve_tool_backend(value) == "datastore"
+
+
 def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
     """Build the dispatch ToolDriver for ``backend`` (env-resolved when ``None``).
 

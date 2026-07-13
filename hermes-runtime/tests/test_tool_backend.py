@@ -19,7 +19,11 @@ from toee_hermes.drivers.mock import create_all_mock_handlers
 from toee_hermes.tool_catalog import is_tool_action
 
 from hermes_runtime.datastore.handlers import build_datastore_registry
-from hermes_runtime.tool_backend import resolve_tool_backend, select_tool_driver
+from hermes_runtime.tool_backend import (
+    memory_enabled,
+    resolve_tool_backend,
+    select_tool_driver,
+)
 
 
 def test_resolve_defaults_to_mock_when_unset_or_empty() -> None:
@@ -46,6 +50,29 @@ def test_select_datastore_driver_is_datastore_kind() -> None:
     # Constructed without a connection; DSN resolves lazily so no DB is needed.
     driver = select_tool_driver("datastore")
     assert driver.kind == "datastore"
+
+
+def test_memory_enabled_false_when_backend_unset_or_mock() -> None:
+    # S05/FR-7: Customer Memory is active only on the datastore backend; the
+    # single-source-of-truth signal the write overlay (S04) and read gates
+    # (S07/S08) share.
+    assert memory_enabled(None) is False
+    assert memory_enabled("") is False
+    assert memory_enabled("mock") is False
+
+
+def test_memory_enabled_true_when_backend_is_datastore() -> None:
+    assert memory_enabled("datastore") is True
+
+
+def test_memory_enabled_reads_the_env_var_when_called_with_no_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    assert memory_enabled() is False
+
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    assert memory_enabled() is True
 
 
 def test_datastore_registry_has_no_catalog_drift() -> None:

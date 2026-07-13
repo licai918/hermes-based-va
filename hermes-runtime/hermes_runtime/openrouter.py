@@ -27,7 +27,7 @@ from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn
-from hermes_runtime.tool_backend import resolve_tool_backend, select_tool_driver
+from hermes_runtime.tool_backend import memory_enabled, select_tool_driver
 
 # A non-tool-iterating turn still needs headroom for the reply iteration after a
 # governed tool call; this caps a runaway loop without truncating a normal turn.
@@ -84,15 +84,16 @@ def _with_channel_identity(
 def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
     """Route ``toee_customer_memory`` to the Postgres datastore for the live turn (S04).
 
-    Only when the datastore backend is configured (``TOOL_BACKEND=datastore``):
-    otherwise return ``None`` so the tool stays on the shared mock driver and a mock
-    deployment never hard-depends on Postgres. Full no-DB graceful degradation is
-    S05's job; this seam just makes the injection conditional. ``select_tool_driver``
-    builds the ``PostgresDriver`` (psycopg stays in hermes-runtime); the plugin
-    overlay only ever sees a ``ToolDriver``, whose ``kind = "datastore"`` attributes
-    the audit rows (anti-mock, ADR-0140).
+    Gated by :func:`hermes_runtime.tool_backend.memory_enabled` (S05) — the single
+    source of truth for whether Customer Memory is active, shared with the read
+    injection gates (S07/S08). ``False`` (mock/unset backend) returns ``None`` so
+    the tool stays on the shared mock driver and a mock deployment never
+    hard-depends on Postgres. ``select_tool_driver`` builds the ``PostgresDriver``
+    (psycopg stays in hermes-runtime); the plugin overlay only ever sees a
+    ``ToolDriver``, whose ``kind = "datastore"`` attributes the audit rows
+    (anti-mock, ADR-0140).
     """
-    if resolve_tool_backend() != "datastore":
+    if not memory_enabled():
         return None
     return {"toee_customer_memory": select_tool_driver("datastore")}
 
