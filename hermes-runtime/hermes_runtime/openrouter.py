@@ -19,6 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from toee_hermes.drivers.mock.memory import binding_key_from_identity
 from toee_hermes.gateway.ingress import snapshot_as_identity_dict
 from toee_hermes.gateway.normalize import normalize_e164
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
@@ -79,6 +80,49 @@ def _with_channel_identity(
     merged["channel"] = "sms"
     merged["channel_identity"] = normalize_e164(from_phone)
     return merged
+
+
+def _gateway_store() -> Any:
+    """Build the Postgres gateway store for the turn-time memory read (S06/S07).
+
+    Deferred import keeps ``psycopg`` out of a mock deployment's import path (same
+    reasoning as ``select_tool_driver``'s ``PostgresDriver`` branch); only reached
+    under :func:`memory_enabled`, so a mock/unset deployment never constructs it.
+    DSN-based, matching how S04 obtains its datastore driver.
+    """
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+
+    return PostgresGatewayStore()
+
+
+def _load_turn_memory(
+    identity: dict[str, Any], store: Optional[Any]
+) -> Optional[list[dict[str, Any]]]:
+    """Load this turn's Customer Memory preference slots for injection (S07, FR-1).
+
+    Gated by :func:`memory_enabled` (S05) — the same single source of truth as the
+    write overlay (S04): a mock/unset deployment reads nothing and the turn still
+    completes (FR-7/RK-6). The binding key comes from the ingress-controlled
+    ``identity`` via :func:`binding_key_from_identity` — the SAME core the write
+    path uses, so the read key is byte-identical to the stored key (R2 round-trip).
+
+    Read fail-closed: no resolvable binding injects nothing (never raises — unlike
+    the write tool's ``policy_blocked``). A datastore read error also degrades to
+    nothing, because memory is never a hard dependency of answering (FR-7).
+    """
+    if not memory_enabled():
+        return None
+    resolved = binding_key_from_identity(identity)
+    if resolved is None:
+        return None
+    binding_key, _kind = resolved
+    resolved_store = store if store is not None else _gateway_store()
+    try:
+        return resolved_store.load_customer_memory(binding_key)
+    except Exception:
+        # ponytail: swallow to None so a DB hiccup degrades to "no memory injected",
+        # never a failed reply (FR-7 / the hooks module's provider-error philosophy).
+        return None
 
 
 def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
@@ -207,6 +251,7 @@ def make_openrouter_run_turn(
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     tools_exclusive: bool = True,
+    store: Optional[Any] = None,
 ) -> Callable[[Any, str], Mapping[str, Any]]:
     """Build the production ``run_turn``: a conversation-bound governed turn over OpenRouter.
 
@@ -218,7 +263,10 @@ def make_openrouter_run_turn(
     secondary model (ADR-0009). ``config`` defaults to :func:`resolve_openrouter_config`
     (resolved per turn so a credential rotation is picked up); ``openai_factory``
     injects a deterministic provider in tests (the real OpenAI client is used
-    otherwise).
+    otherwise). ``store`` injects the gateway store for the turn-time Customer Memory
+    read (S07); when ``None`` a DSN-based :class:`PostgresGatewayStore` is built per
+    turn, but only under :func:`memory_enabled` (mock/unset deployments never touch
+    Postgres).
     """
 
     def run_turn(context: Any, inbound_body: str) -> Mapping[str, Any]:
@@ -242,8 +290,12 @@ def make_openrouter_run_turn(
         identity = _with_channel_identity(base_identity, context.from_phone)
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
-        # Prepend the snapshot here so the model sees verified identity (ADR-0140).
-        injected = render_injection(identity, None)
+        # Prepend the snapshot + Customer Memory here so the model sees verified
+        # identity and prior preferences (ADR-0140, S07/FR-1). The memory read is
+        # gated + fail-closed in _load_turn_memory (nothing injected when disabled,
+        # unbound, or the store errors).
+        memory = _load_turn_memory(identity, store)
+        injected = render_injection(identity, memory)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,

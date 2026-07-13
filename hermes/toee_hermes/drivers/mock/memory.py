@@ -122,43 +122,34 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
     return evidence
 
 
-def resolve_customer_memory_binding(
-    context: "ToolExecutionContext", params: dict[str, Any]
-) -> tuple[str, str]:
-    """Resolve ``(binding_key, binding_kind)`` from context, fail-closed (S02, FR-5).
+def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
+    """Pure identity dict -> ``(binding_key, binding_kind)`` core, or ``None``.
 
-    ONE shared resolver for both the mock and Postgres datastore handlers — kept
-    here since hermes-runtime already imports ``MEMORY_PREFERENCE_SLOTS`` from this
-    module as the single source of truth for the slot enum. This is
-    security-sensitive binding logic that must not drift between the two paths.
+    The security-sensitive derivation shared by BOTH the governed WRITE path
+    (:func:`resolve_customer_memory_binding`) and the turn-time READ injection
+    (openrouter/copilot, S07/S08): reads and writes MUST compute a byte-identical
+    key for a given identity or the memory round-trip silently returns nothing.
 
-    A verified Session Identity Snapshot (``context.identity["outcome"] ==
+    A verified Session Identity Snapshot (``identity["outcome"] ==
     "verified_customer"``) binds to its Shopify customer id, kind ``"verified"``.
     Otherwise the caller's ingress-controlled channel identity
-    (``context.identity["channel"]`` / ``["channel_identity"]``, S01) is
-    canonicalized to ``provisional:{channel}:{E.164}`` (e.g.
-    ``provisional:sms:+17786803250``), kind ``"provisional"`` — never a
-    model-supplied param, so the model cannot bind or read another caller's memory
-    by supplying a phone number as a tool argument (RK-3). A degenerate channel
-    identity (missing, empty, or normalizing to a bare ``"+"``) is treated as no
-    identity at all, not a shared bucket.
+    (``identity["channel"]`` / ``["channel_identity"]``, S01) is canonicalized to
+    ``provisional:{channel}:{E.164}`` (e.g. ``provisional:sms:+17786803250``), kind
+    ``"provisional"`` — never a model-supplied param (RK-3). A degenerate channel
+    identity (missing, empty, or normalizing to a bare ``"+"``) yields ``None``, not
+    a shared bucket.
 
-    ``channel_identity_id`` in ``params`` is honored only as a last resort on the
-    ``internal_copilot`` profile (employee-confirmed corrections over the unbound
-    workbench dispatch path, which carries no channel identity in context). Every
-    other profile — including external — ignores it entirely.
-
-    No resolvable identity at all raises a fail-closed ``policy_blocked``; the bare
-    shared ``"provisional"`` key from pre-S02 (a cross-customer leak) is gone.
+    Returns ``None`` when nothing resolves — the caller decides the fail-closed
+    policy: the write path raises ``policy_blocked``; the read path injects nothing.
     """
-    # Deferred imports: this module loads as part of ``drivers.mock``'s own
-    # package init (which ``toee_hermes.plugin`` imports in turn), so importing
-    # ``gateway``/``plugin.profiles`` at module scope here would re-enter that
-    # partially-initialized package during a cold import and raise ImportError.
+    # Deferred import: this module loads as part of ``drivers.mock``'s own package
+    # init (which ``toee_hermes.plugin`` imports in turn), so importing ``gateway``
+    # at module scope here would re-enter that partially-initialized package during
+    # a cold import and raise ImportError.
     from ...gateway.normalize import normalize_e164
-    from ...plugin.profiles import INTERNAL
 
-    identity = context.identity if isinstance(context.identity, dict) else {}
+    if not isinstance(identity, dict):
+        return None
 
     if identity.get("outcome") == "verified_customer":
         shopify_customer_id = identity.get("shopify_customer_id")
@@ -171,6 +162,35 @@ def resolve_customer_memory_binding(
         normalized = normalize_e164(channel_identity)
         if normalized != "+":
             return f"provisional:{channel}:{normalized}", "provisional"
+
+    return None
+
+
+def resolve_customer_memory_binding(
+    context: "ToolExecutionContext", params: dict[str, Any]
+) -> tuple[str, str]:
+    """Resolve ``(binding_key, binding_kind)`` for a WRITE, fail-closed (S02, FR-5).
+
+    Thin wrapper over :func:`binding_key_from_identity` (the shared pure core) that
+    adds the two write-only concerns: the ``internal_copilot`` param carve-out and
+    the fail-closed ``policy_blocked`` raise. Kept here since hermes-runtime already
+    imports ``MEMORY_PREFERENCE_SLOTS`` from this module as the single source of
+    truth for the slot enum.
+
+    ``channel_identity_id`` in ``params`` is honored only as a last resort on the
+    ``internal_copilot`` profile (employee-confirmed corrections over the unbound
+    workbench dispatch path, which carries no channel identity in context). Every
+    other profile — including external — ignores it entirely.
+
+    No resolvable identity at all raises a fail-closed ``policy_blocked``; the bare
+    shared ``"provisional"`` key from pre-S02 (a cross-customer leak) is gone.
+    """
+    # Deferred import: same partially-initialized-package hazard as the core above.
+    from ...plugin.profiles import INTERNAL
+
+    resolved = binding_key_from_identity(context.identity)
+    if resolved is not None:
+        return resolved
 
     if context.profile == INTERNAL:
         channel_identity_id = _read_string(

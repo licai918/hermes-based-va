@@ -11,7 +11,10 @@ cannot move the binding on the external profile).
 
 import pytest
 
-from toee_hermes.drivers.mock.memory import resolve_customer_memory_binding
+from toee_hermes.drivers.mock.memory import (
+    binding_key_from_identity,
+    resolve_customer_memory_binding,
+)
 from toee_hermes.errors import ToolDriverError
 from toee_hermes.tool_gate import ToolExecutionContext
 
@@ -129,3 +132,40 @@ def test_internal_copilot_without_param_or_context_is_policy_blocked() -> None:
     with pytest.raises(ToolDriverError) as exc_info:
         resolve_customer_memory_binding(_ctx(INTERNAL, identity=None), {})
     assert exc_info.value.error_class == "policy_blocked"
+
+
+# --- binding_key_from_identity: the pure core shared with the turn-time READ ---
+# resolve_customer_memory_binding is the WRITE-path wrapper (adds the copilot param
+# carve-out + fail-closed raise); binding_key_from_identity is the pure identity ->
+# (key, kind) core the S07/S08 turn-time reader calls, so the READ key is
+# byte-identical to the stored key. Read fail-closed = None, never a raise.
+
+
+def test_binding_key_from_identity_verified_returns_shopify_id() -> None:
+    identity = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": "gid://shopify/Customer/1001",
+        "channel": "sms",
+        "channel_identity": "+17786803250",
+    }
+    assert binding_key_from_identity(identity) == (
+        "gid://shopify/Customer/1001",
+        "verified",
+    )
+
+
+def test_binding_key_from_identity_provisional_returns_canonical_key() -> None:
+    identity = {"channel": "sms", "channel_identity": "(778) 680-3250"}
+    assert binding_key_from_identity(identity) == (
+        "provisional:sms:+17786803250",
+        "provisional",
+    )
+
+
+def test_binding_key_from_identity_returns_none_when_unresolvable() -> None:
+    # None (not a raise): the turn-time reader injects nothing; only the write
+    # wrapper turns a None core into a policy_blocked ToolDriverError.
+    assert binding_key_from_identity({}) is None
+    assert binding_key_from_identity({"channel": "sms", "channel_identity": ""}) is None
+    assert binding_key_from_identity({"channel": "sms"}) is None
+    assert binding_key_from_identity(None) is None
