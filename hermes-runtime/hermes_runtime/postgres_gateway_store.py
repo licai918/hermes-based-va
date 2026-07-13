@@ -301,6 +301,18 @@ class PostgresGatewayStore:
                 row = cur.fetchone()
         return row[0] if row else None
 
+    def load_customer_memory(self, binding_key: str) -> list[dict[str, Any]]:
+        """Indexed read of a binding key's preference slots (FR-1), in the
+        ``[{"slot": ..., "value": ...}, ...]`` shape ``hooks._render_memory`` expects."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT slot_name, slot_value FROM customer_memory_slot WHERE binding_key = %s",
+                    (binding_key,),
+                )
+                rows = cur.fetchall()
+        return [{"slot": name, "value": value} for name, value in rows]
+
     def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None:
         """Mirror a successful agent SMS reply into message_turn for Workbench (ADR-0082)."""
         if not body.strip():
