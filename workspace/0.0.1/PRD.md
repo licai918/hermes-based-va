@@ -329,17 +329,19 @@ are known constraints carried forward, not blockers.
 | **RK-11** | (M2) retrieval query (customer message) may leak PII into gbrain logs | 🟠 | In-design (M2) | FR-10: query sanitization + read-only + separate DB |
 | **RK-12** | (M2) synthesized retrieval relayed as fact (persona trusts tools) | 🟡 | In-design (M2) | FR-10: in-turn uses cited chunks, not synthesis |
 
-## 9. Open questions / dependencies
+## 9. Decisions & dependencies
 
-- **Copilot surface in 0.0.1?** Recommendation: yes, one milestone (8–12 days). If
-  timeline slips, ship the external surface first and follow with Copilot
-  injection inside 0.0.1 (external is where memory value is highest). Decision
-  needed.
-- **Product-owner sign-off (§6.6 product gate):** who signs the PAC UAT? Assumed
-  licai unless delegated.
-- **`evidence` field (FR-3):** adds one optional param to `toee_customer_memory
-  .upsert_preference` (verbatim customer phrase, audited). Confirm acceptable.
-- Confirm 0.0.1 = M1-only vs M1+M2 (recommendation: M1-only).
+Resolved (2026-07-10):
+
+- **Copilot surface ships in 0.0.1** — external + Copilot together, one milestone
+  (8–12 days).
+- **Product-owner sign-off** on the §6.6 product gate is **licai**.
+- **`evidence` field approved** — `toee_customer_memory.upsert_preference` gains
+  one optional `evidence` param (verbatim customer phrase, audited).
+- **0.0.1 = M1 only**; M2 (gbrain) opens 0.0.2.
+
+Dependencies:
+
 - Local Postgres must be running to exercise the datastore path
   (`docker compose up -d postgres` + migrate with `HERMES_APPLY_DEV_SEED`).
 - M2 depends on the three spikes passing before any commitment.
