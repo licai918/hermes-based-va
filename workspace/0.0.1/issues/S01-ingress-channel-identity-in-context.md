@@ -19,20 +19,32 @@ ingress-controlled context, never from a model-supplied tool parameter.
 For an unmatched/ambiguous caller there is **no phone in context**, so provisional
 binding today can only come from a model param (the RK-3 vulnerability).
 
-## Files (likely)
+## Interface (pin these exact keys — S02 consumes them)
 
-- `hermes/toee_hermes/gateway/ingress.py` — add the channel identity to the
-  identity dict (e.g. `channel: "sms"`, `channel_identity: "+1..."`).
-- `hermes/toee_hermes/plugin/__init__.py` — `_make_context_provider` /
-  `ToolExecutionContext` carries it through (already closes over `identity`).
-- `hermes/toee_hermes/tool_gate.py` (`ToolExecutionContext`) — confirm the field
-  exists or add it.
+The turn identity dict gains two keys: `"channel": "sms"` and
+`"channel_identity": "<E.164>"` (normalized). They ride `context.identity`, never
+a tool-schema param (model-invisible).
+
+## Files
+
+- `hermes-runtime/hermes_runtime/openrouter.py` — in `run_turn`, the phone is NOT
+  in the snapshot; enrich at the turn boundary. After
+  `identity = snapshot_as_identity_dict(snapshot)`, add
+  `identity["channel"] = "sms"` and
+  `identity["channel_identity"] = normalize_e164(context.from_phone)` (the
+  `AgentTurnContext` has `from_phone`). Pass this enriched `identity` to BOTH
+  `render_injection(...)` and `boot_profile(..., identity=identity)` — the latter
+  is what lands it on `ToolExecutionContext.identity` (via
+  `_make_context_provider`), where the memory handler reads it.
+- Handle `snapshot is None` (unmatched with no snapshot): still build an identity
+  dict carrying channel + channel_identity so provisional binding works.
+- reuse `normalize_e164` from `hermes/toee_hermes/gateway/normalize.py`.
 
 ## Approach
 
-- Carry the normalized E.164 the ingress pipeline already has (`from_phone`) into
-  the identity dict under a stable key.
-- Keep it model-invisible: it rides `context.identity`, not a tool schema param.
+- Keep `snapshot_as_identity_dict` unchanged (it only has the snapshot); do the
+  enrichment where `from_phone` is in scope (the turn boundary).
+- Copilot's channel-identity enrichment is a separate seam handled in S08.
 
 ## Acceptance
 
