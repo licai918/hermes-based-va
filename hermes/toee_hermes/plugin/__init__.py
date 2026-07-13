@@ -167,13 +167,25 @@ def _register(
     ctx.register_hook("pre_llm_call", hook)
 
 
-def register(ctx: Any) -> None:
+def register(ctx: Any, *, identity: Optional[Any] = None) -> None:
     """Register allowlisted Domain Adapter Tools + the injection hook for a profile.
 
     This is the Hermes plugin entry point (eval/replay + Copilot paths): the
     context carries no async turn binding, so the reply tool is unconstrained.
+
+    ``identity`` threads the turn's Session Identity Snapshot into the (unbound)
+    ToolExecutionContext so an identity-scoped write binds from context (S08): the
+    Copilot draft turn resolves the case's thread identity and passes it here, and
+    an employee-confirmed ``toee_customer_memory`` correction then binds to the SAME
+    identity-derived key the turn-time read used. Absent (the plugin entry point and
+    eval/replay call ``register(ctx)``) the context carries no identity, unchanged.
     """
-    _register(ctx, provider_factory=lambda profile: _make_context_provider(profile))
+    _register(
+        ctx,
+        provider_factory=lambda profile: _make_context_provider(
+            profile, identity=identity
+        ),
+    )
 
 
 def register_turn(

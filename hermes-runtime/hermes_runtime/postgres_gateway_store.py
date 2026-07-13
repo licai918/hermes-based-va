@@ -301,6 +301,43 @@ class PostgresGatewayStore:
                 row = cur.fetchone()
         return row[0] if row else None
 
+    def load_case_identity(self, case_id: str) -> Optional[dict[str, Any]]:
+        """Resolve a case's customer-thread identity for turn-time memory binding (S08).
+
+        The Copilot draft seam is bound to a ``case_id``, not a phone, so its binding
+        key is derived here: join the case to its ``customer_thread`` and return an
+        identity dict in the S02/S07 shape (``binding_key_from_identity``'s contract)
+        — verified on the thread's ``shopify_customer_id``, else provisional on its
+        channel identity. Returns ``None`` when the case is unknown or threadless, so
+        the read fail-closes to "inject nothing" rather than raising."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT t.channel, t.channel_identity, t.shopify_customer_id
+                    FROM cases c
+                    JOIN customer_thread t ON t.id = c.customer_thread_id
+                    WHERE c.id = %s
+                    """,
+                    (case_id,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        channel, channel_identity, shopify_customer_id = row
+        if shopify_customer_id:
+            return {
+                "outcome": "verified_customer",
+                "shopify_customer_id": shopify_customer_id,
+                "channel": channel,
+                "channel_identity": channel_identity,
+            }
+        return {
+            "outcome": "unmatched_caller",
+            "channel": channel,
+            "channel_identity": channel_identity,
+        }
+
     def load_customer_memory(self, binding_key: str) -> list[dict[str, Any]]:
         """Indexed read of a binding key's preference slots (FR-1), in the
         ``[{"slot": ..., "value": ...}, ...]`` shape ``hooks._render_memory`` expects."""

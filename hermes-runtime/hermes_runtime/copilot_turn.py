@@ -38,16 +38,20 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from toee_hermes.drivers.mock.memory import binding_key_from_identity
+from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import INTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
 from hermes_runtime.openrouter import (
     OpenRouterConfig,
+    _gateway_store,
     default_is_retryable,
     make_fallback_openai_factory,
     resolve_openrouter_config,
 )
+from hermes_runtime.tool_backend import memory_enabled
 
 # Reported as the provenance model when no real LLM produced the draft (scripted
 # in tests, deterministic stub locally). A real keyed turn reports the resolved
@@ -156,6 +160,46 @@ def _stub_draft(channel: str, case_id: str) -> str:
     return f"[draft:{channel}] Thanks for reaching out about case {case_id} - we're on it."
 
 
+def _load_case_memory(
+    case_id: str, store: Optional[Any]
+) -> tuple[Optional[dict[str, Any]], Optional[list[dict[str, Any]]]]:
+    """Resolve the case's thread identity and its Customer Memory slots (S08, FR-1).
+
+    The Copilot draft seam is bound to a ``case_id``, not a phone (S07's external
+    seam), so the binding key is derived from the case's ``customer_thread``: the
+    store resolves the thread's Shopify id (verified) or channel identity
+    (provisional) into an identity dict of the same shape S02/S07 use, and
+    :func:`binding_key_from_identity` — the SAME shared core the write path uses —
+    turns it into the byte-identical read key (R2 round-trip).
+
+    Gated by :func:`memory_enabled` (S05) and fail-closed like the external read
+    (S07): disabled, an unknown/threadless case, no resolvable binding, no slots, or
+    a datastore error all inject nothing and never raise — memory is never a hard
+    dependency of drafting (FR-7). The identity is returned even when there are no
+    slots so the turn's ToolExecutionContext still binds an employee-confirmed
+    correction write to the right key.
+    """
+    if not memory_enabled():
+        return None, None
+    resolved_store = store if store is not None else _gateway_store()
+    try:
+        identity = resolved_store.load_case_identity(case_id)
+    except Exception:
+        return None, None
+    if identity is None:
+        return None, None
+    resolved = binding_key_from_identity(identity)
+    if resolved is None:
+        return identity, None
+    binding_key, _kind = resolved
+    try:
+        return identity, resolved_store.load_customer_memory(binding_key)
+    except Exception:
+        # ponytail: swallow to None so a DB hiccup degrades to "no memory injected",
+        # never a failed draft (FR-7) — but keep identity for the write-binding.
+        return identity, None
+
+
 def make_copilot_run_turn(
     *,
     scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
@@ -163,6 +207,7 @@ def make_copilot_run_turn(
     openai_factory: Any = None,
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+    store: Optional[Any] = None,
 ) -> Callable[..., dict[str, Any]]:
     """Build the copilot draft ``run_turn``: an unbound ``internal_copilot`` turn.
 
@@ -179,12 +224,25 @@ def make_copilot_run_turn(
     """
 
     def run_turn(*, channel: str, case_id: str, prompt: Optional[str] = None) -> dict[str, Any]:
+        # S08/FR-1: resolve the case's thread identity + its Customer Memory slots
+        # (gated + fail-closed in _load_case_memory). Boot bound to that identity so
+        # an employee-confirmed correction write binds from context, and prepend the
+        # memory block so the draft is grounded in prior preferences.
+        identity, memory = _load_case_memory(case_id, store)
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
-        booted = boot_profile(INTERNAL)
-        user_message = _user_message(channel, case_id, prompt)
+        booted = boot_profile(INTERNAL, identity=identity)
         system_message = _system_message(channel)
+        base_user_message = _user_message(channel, case_id, prompt)
+        # Memory only — the case identity is not surfaced as a snapshot block (the
+        # agent gathers case detail via its governed read tools, ADR-0147 decision 2).
+        # render_injection returns None when there are no slots, so no binding / no
+        # slots / disabled injects nothing.
+        injected = render_injection(None, memory)
+        user_message = (
+            f"{injected}\n\n{base_user_message}" if injected else base_user_message
+        )
 
         if scripted_completions is not None:
             # Tests/eval: a real AIAgent loop with no model, network, or key.

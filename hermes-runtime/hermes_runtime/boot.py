@@ -72,6 +72,10 @@ def boot_profile(
     Memory persists to the datastore. The values are ``ToolDriver`` objects; the
     type is ``Any`` here so ``psycopg``/``PostgresDriver`` never reach this module.
     Only the bound (``register_turn``) path carries it — the live external turn.
+
+    ``identity`` on the UNBOUND path (Copilot draft turn, S08) threads the case's
+    thread identity into the ToolExecutionContext so an employee-confirmed memory
+    correction binds from context; the eval/replay callers pass none, unchanged.
     """
     from toee_hermes.plugin import register, register_turn
 
@@ -86,7 +90,7 @@ def boot_profile(
                 extra_drivers=extra_drivers,
             ),
         )
-    return _boot(profile, register)
+    return _boot(profile, lambda ctx: register(ctx, identity=identity))
 
 
 def boot_profile_eval(
