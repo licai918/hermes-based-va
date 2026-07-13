@@ -15,6 +15,7 @@ key is a deploy misconfiguration, never a silent fall-through to an unauthed cal
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
@@ -29,6 +30,8 @@ from toee_hermes.plugin.profiles import EXTERNAL
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn
 from hermes_runtime.tool_backend import memory_enabled, select_tool_driver
+
+logger = logging.getLogger(__name__)
 
 # A non-tool-iterating turn still needs headroom for the reply iteration after a
 # governed tool call; this caps a runaway loop without truncating a normal turn.
@@ -119,9 +122,17 @@ def _load_turn_memory(
     resolved_store = store if store is not None else _gateway_store()
     try:
         return resolved_store.load_customer_memory(binding_key)
-    except Exception:
+    except Exception as exc:
         # ponytail: swallow to None so a DB hiccup degrades to "no memory injected",
         # never a failed reply (FR-7 / the hooks module's provider-error philosophy).
+        # S11: WARN so the swallow isn't silent. binding_key + exception TYPE only —
+        # never str(exc)/traceback, which could echo back store-supplied content.
+        logger.warning(
+            "Customer Memory read failed binding_key=%s error_type=%s; "
+            "turn continues with no memory injected",
+            binding_key,
+            type(exc).__name__,
+        )
         return None
 
 
@@ -141,7 +152,7 @@ def _provisional_key_for(identity: dict[str, Any]) -> Optional[str]:
     return resolved[0] if resolved is not None else None
 
 
-def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) -> None:
+def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) -> bool:
     """Merge pre-verification provisional slots onto the verified record (S10/FR-4).
 
     Runs on the async turn — never ``process_inbound`` / the webhook ack (RK-5) — on
@@ -150,25 +161,67 @@ def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) ->
     exactly like the read: a disabled backend, a non-verified/ambiguous identity, an
     unresolvable channel key, or a store error degrades to "no merge" and the turn
     still replies (FR-7). A merge failure leaves the provisional rows intact to retry
-    on the next verified turn (the merge is idempotent), so swallowing is safe."""
+    on the next verified turn (the merge is idempotent), so swallowing is safe.
+
+    Returns whether a merge actually fired this turn (S11 observability): ``True``
+    only when the store reports it moved/overrode at least one provisional slot;
+    ``False`` on every skip, no-op, or swallowed error.
+    """
     if not memory_enabled():
-        return
+        return False
     verified = binding_key_from_identity(identity)
     # Only a verified single-customer resolution merges: an ambiguous or unmatched
     # identity resolves to kind "provisional" (or None) and is skipped (ADR-0112).
     if verified is None or verified[1] != "verified":
-        return
+        return False
     provisional_key = _provisional_key_for(identity)
     if provisional_key is None:
-        return
+        return False
     resolved_store = store if store is not None else _gateway_store()
     try:
-        resolved_store.merge_provisional_memory(provisional_key, verified[0])
-    except Exception:
+        merged = resolved_store.merge_provisional_memory(provisional_key, verified[0])
+    except Exception as exc:
         # ponytail: swallow so a merge hiccup never fails the reply; the provisional
         # rows survive and the next verified turn retries (FR-7, same philosophy as
         # the read).
-        return
+        # S11: WARN so the swallow isn't silent. Binding keys + exception TYPE only.
+        logger.warning(
+            "Customer Memory merge failed provisional_key=%s verified_key=%s "
+            "error_type=%s; provisional slots left intact for retry",
+            provisional_key,
+            verified[0],
+            type(exc).__name__,
+        )
+        return False
+    return merged is not None
+
+
+def _log_turn_memory(
+    identity: dict[str, Any],
+    memory: Optional[list[dict[str, Any]]],
+    merge_fired: bool,
+) -> None:
+    """Emit the compact per-turn Customer Memory observability line (S11, PRD §6.4).
+
+    So a real conversation can be audited after the fact ("did this customer get
+    THEIR memory?") without ever logging PII: records the resolved binding_key (an
+    identifier, not customer content), the injected slot NAMES only — never slot
+    values, which are customer-authored free text and the FR-6 persistent-injection
+    surface — and whether the S10 provisional->verified merge fired this turn.
+    Re-derives the binding key independently of :func:`_load_turn_memory` (cheap and
+    pure) so this note still fires when memory is disabled or the read itself failed.
+    """
+    resolved = binding_key_from_identity(identity)
+    binding_key = resolved[0] if resolved is not None else None
+    slot_names = [
+        slot.get("slot") for slot in (memory or []) if slot.get("slot") is not None
+    ]
+    logger.info(
+        "Customer Memory turn: binding_key=%s slots=%s merge_fired=%s",
+        binding_key,
+        slot_names,
+        merge_fired,
+    )
 
 
 def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
@@ -338,7 +391,7 @@ def make_openrouter_run_turn(
         # provisional slots onto the verified record BEFORE the read below, so the
         # just-merged preferences are injected on this same turn (PAC-3). No-op /
         # fail-closed when not verified or memory is disabled.
-        _merge_provisional_memory(identity, store)
+        merge_fired = _merge_provisional_memory(identity, store)
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
         # Prepend the snapshot + Customer Memory here so the model sees verified
@@ -346,6 +399,7 @@ def make_openrouter_run_turn(
         # gated + fail-closed in _load_turn_memory (nothing injected when disabled,
         # unbound, or the store errors).
         memory = _load_turn_memory(identity, store)
+        _log_turn_memory(identity, memory, merge_fired)
         injected = render_injection(identity, memory)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
