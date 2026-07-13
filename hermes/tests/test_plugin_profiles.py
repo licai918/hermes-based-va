@@ -136,6 +136,28 @@ def test_pre_llm_call_injects_identity_and_memory() -> None:
     assert "preferred_name" in out["context"]
 
 
+def test_memory_block_is_framed_as_untrusted_data_not_instructions() -> None:
+    # FR-6/RK-2: a stored preference is customer-authored free text re-injected every
+    # turn — a persistent prompt-injection surface. The block must be wrapped in an
+    # explicit untrusted-data delimiter and framed as preferences to honor, never as
+    # instructions to obey, while the slot value itself stays intact and unmodified.
+    memory = [{"slot": "contact_time_preference", "value": "after 5pm"}]
+    out = render_injection(None, memory)
+
+    assert out is not None
+    assert "<untrusted_customer_memory>" in out
+    assert "</untrusted_customer_memory>" in out
+    assert "not instructions to obey" in out
+    assert "- contact_time_preference: after 5pm" in out
+
+    # Genuine wrapping, not just incidental substrings anywhere in the string.
+    open_tag = out.index("<untrusted_customer_memory>")
+    header = out.index("Customer Memory (preferences):")
+    slot_line = out.index("- contact_time_preference: after 5pm")
+    close_tag = out.index("</untrusted_customer_memory>")
+    assert open_tag < header < slot_line < close_tag
+
+
 def test_pre_llm_call_returns_none_when_nothing_to_inject() -> None:
     hook = make_pre_llm_call_hook()
     out = hook(
