@@ -125,6 +125,52 @@ def _load_turn_memory(
         return None
 
 
+def _provisional_key_for(identity: dict[str, Any]) -> Optional[str]:
+    """This caller's provisional binding key from the SAME channel-identity fields.
+
+    A verified identity short-circuits :func:`binding_key_from_identity` to its
+    Shopify id, so to find the caller's PRE-verification provisional slots we derive
+    the provisional key from the channel fields alone (S01 always threads them on).
+    Byte-identical to the key the write path stored under while unverified (R2)."""
+    resolved = binding_key_from_identity(
+        {
+            "channel": identity.get("channel"),
+            "channel_identity": identity.get("channel_identity"),
+        }
+    )
+    return resolved[0] if resolved is not None else None
+
+
+def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) -> None:
+    """Merge pre-verification provisional slots onto the verified record (S10/FR-4).
+
+    Runs on the async turn — never ``process_inbound`` / the webhook ack (RK-5) — on
+    every verified ingress, so it also covers a manually-seeded identity link, not
+    only the first-ever verification. Gated by :func:`memory_enabled` and fail-closed
+    exactly like the read: a disabled backend, a non-verified/ambiguous identity, an
+    unresolvable channel key, or a store error degrades to "no merge" and the turn
+    still replies (FR-7). A merge failure leaves the provisional rows intact to retry
+    on the next verified turn (the merge is idempotent), so swallowing is safe."""
+    if not memory_enabled():
+        return
+    verified = binding_key_from_identity(identity)
+    # Only a verified single-customer resolution merges: an ambiguous or unmatched
+    # identity resolves to kind "provisional" (or None) and is skipped (ADR-0112).
+    if verified is None or verified[1] != "verified":
+        return
+    provisional_key = _provisional_key_for(identity)
+    if provisional_key is None:
+        return
+    resolved_store = store if store is not None else _gateway_store()
+    try:
+        resolved_store.merge_provisional_memory(provisional_key, verified[0])
+    except Exception:
+        # ponytail: swallow so a merge hiccup never fails the reply; the provisional
+        # rows survive and the next verified turn retries (FR-7, same philosophy as
+        # the read).
+        return
+
+
 def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
     """Route ``toee_customer_memory`` to the Postgres datastore for the live turn (S04).
 
@@ -288,6 +334,11 @@ def make_openrouter_run_turn(
         # S01: enrich with the caller's channel identity (E.164) here, where
         # AgentTurnContext.from_phone is in scope — the snapshot alone never has it.
         identity = _with_channel_identity(base_identity, context.from_phone)
+        # S10/FR-4: on a verified ingress, merge the caller's pre-verification
+        # provisional slots onto the verified record BEFORE the read below, so the
+        # just-merged preferences are injected on this same turn (PAC-3). No-op /
+        # fail-closed when not verified or memory is disabled.
+        _merge_provisional_memory(identity, store)
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
         # Prepend the snapshot + Customer Memory here so the model sees verified

@@ -350,6 +350,87 @@ class PostgresGatewayStore:
                 rows = cur.fetchall()
         return [{"slot": name, "value": value} for name, value in rows]
 
+    def merge_provisional_memory(
+        self, provisional_key: str, verified_key: str
+    ) -> Optional[dict[str, Any]]:
+        """Merge a caller's pre-verification provisional slots onto their verified
+        record, atomically and idempotently (ADR-0112, FR-4, R5). First writer of
+        ``customer_memory_merge_audit``.
+
+        Behavior: move each provisional slot onto ``verified_key`` with
+        ``source = merged_provisional``; **on slot conflict the verified value wins**
+        and the provisional value is recorded in the audit ``details.overridden``;
+        delete the provisional copies; write exactly one audit row. Evidence is
+        **carried forward** on a migrated slot (the verbatim customer phrase is the
+        slot's real provenance, and FR-3 wants every write to carry it); a conflicting
+        slot is not inserted, so the verified slot's own evidence is left intact.
+
+        Idempotency (RK-5): the provisional rows are locked ``FOR UPDATE`` as the
+        first statement, so two concurrent/repeat merges serialize here — the first
+        deletes the rows, the second's lock re-check then finds an empty set and is a
+        no-op. Exactly one audit row per transition, no double-apply, without a
+        uniqueness constraint on the audit table. Returns ``None`` when there was
+        nothing to merge.
+        # ponytail: FOR UPDATE serialization is sufficient at SMS volume; add a
+        # unique audit key only if a non-locking merge path ever appears.
+        """
+        with self._connect() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT slot_name, slot_value, evidence
+                        FROM customer_memory_slot
+                        WHERE binding_key = %s
+                        ORDER BY slot_name
+                        FOR UPDATE
+                        """,
+                        (provisional_key,),
+                    )
+                    provisional_rows = cur.fetchall()
+                    if not provisional_rows:
+                        conn.commit()  # release the lock / snapshot; nothing to merge
+                        return None
+
+                    moved: list[str] = []
+                    overridden: dict[str, str] = {}
+                    for slot_name, slot_value, evidence in provisional_rows:
+                        cur.execute(
+                            """
+                            INSERT INTO customer_memory_slot
+                                (id, binding_key, binding_kind, slot_name, slot_value,
+                                 source, evidence)
+                            VALUES (%s, %s, 'verified', %s, %s, 'merged_provisional', %s)
+                            ON CONFLICT (binding_key, slot_name) DO NOTHING
+                            RETURNING slot_name
+                            """,
+                            (new_id("mem"), verified_key, slot_name, slot_value, evidence),
+                        )
+                        if cur.fetchone() is not None:
+                            moved.append(slot_name)
+                        else:
+                            overridden[slot_name] = slot_value
+
+                    cur.execute(
+                        "DELETE FROM customer_memory_slot WHERE binding_key = %s",
+                        (provisional_key,),
+                    )
+
+                    details = {"moved": moved, "overridden": overridden}
+                    cur.execute(
+                        """
+                        INSERT INTO customer_memory_merge_audit
+                            (id, provisional_key, verified_key, details)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (new_id("merge"), provisional_key, verified_key, Jsonb(details)),
+                    )
+                conn.commit()
+                return {"moved": moved, "overridden": overridden}
+            except Exception:
+                conn.rollback()
+                raise
+
     def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None:
         """Mirror a successful agent SMS reply into message_turn for Workbench (ADR-0082)."""
         if not body.strip():
