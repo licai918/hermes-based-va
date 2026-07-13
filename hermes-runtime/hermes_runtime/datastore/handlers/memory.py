@@ -2,19 +2,25 @@
 
 Persists the fixed four preference slots (ADR-0111) to ``customer_memory_slot``,
 bound to the verified Shopify customer id (Session Identity Snapshot, ADR-0043)
-or a provisional channel key (ADR-0112). Open-ended keys are rejected, never
-silently stored. The four-slot enum is imported from the plugin so the datastore
-and mock paths share one source of truth.
+or a canonical provisional channel key derived from context, fail-closed when no
+channel identity resolves (:func:`resolve_customer_memory_binding`, ADR-0112, PRD
+FR-5/S02). Open-ended keys are rejected, never silently stored. The four-slot enum
+and the binding resolver are both imported from the plugin so the datastore and
+mock paths share one source of truth: this is security-sensitive logic that must
+not drift between the two.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from toee_hermes.drivers.mock.memory import MEMORY_PREFERENCE_SLOTS
+from toee_hermes.drivers.mock.memory import (
+    MEMORY_PREFERENCE_SLOTS,
+    resolve_customer_memory_binding,
+)
 from toee_hermes.errors import ToolDriverError
 
-from ._common import new_id, read_string
+from ._common import new_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -35,21 +41,6 @@ def _require_slot(params: dict[str, Any]) -> str:
     return requested
 
 
-def _resolve_binding(
-    context: "ToolExecutionContext", params: dict[str, Any]
-) -> tuple[str, str]:
-    """Return ``(binding_key, binding_kind)``: verified Shopify id else provisional."""
-    identity = context.identity
-    if isinstance(identity, dict) and identity.get("outcome") == "verified_customer":
-        shopify_customer_id = identity.get("shopify_customer_id")
-        if isinstance(shopify_customer_id, str) and shopify_customer_id:
-            return shopify_customer_id, "verified"
-    channel_identity_id = read_string(params, "channel_identity_id", "channelIdentityId")
-    if channel_identity_id is not None:
-        return f"provisional:{channel_identity_id}", "provisional"
-    return "provisional", "provisional"
-
-
 def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     slot = _require_slot(params)
     value = params.get("value")
@@ -59,7 +50,7 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
         )
     raw_source = params.get("source")
     source = raw_source if isinstance(raw_source, str) and raw_source else _DEFAULT_SOURCE
-    binding_key, binding_kind = _resolve_binding(context, params)
+    binding_key, binding_kind = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -86,7 +77,7 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
 
 def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     slot = _require_slot(params)
-    binding_key, _ = _resolve_binding(context, params)
+    binding_key, _ = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM customer_memory_slot WHERE binding_key = %s AND slot_name = %s",
@@ -96,7 +87,7 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
 
 
 def _get_preferences(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
-    binding_key, _ = _resolve_binding(context, params)
+    binding_key, _ = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT slot_name, slot_value FROM customer_memory_slot WHERE binding_key = %s",

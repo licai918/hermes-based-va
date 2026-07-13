@@ -3,8 +3,10 @@
 Implements the v1 Customer Memory actions over the fixed four preference slots of
 ADR-0111: open-ended keys are rejected rather than silently stored. Memory binds
 to the verified ``shopify_customer_id`` from the Session Identity Snapshot
-(``context.identity``, ADR-0043) or, when unverified, to a provisional channel
-binding (ADR-0112). Reads honor an injected baseline so a scenario ``memory_preset``
+(``context.identity``, ADR-0043) or, when unverified, to a canonical provisional
+channel key derived from context — fail-closed when no channel identity resolves,
+never a shared bucket (:func:`resolve_customer_memory_binding`, ADR-0112, PRD
+FR-5/S02). Reads honor an injected baseline so a scenario ``memory_preset``
 is reflected on first read (ADR-0113 lightweight injection). Writes are
 explicit-only: this driver never infers or fabricates a preference.
 """
@@ -75,28 +77,68 @@ def _read_string(params: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _resolve_binding_key(
+def resolve_customer_memory_binding(
     context: "ToolExecutionContext", params: dict[str, Any]
-) -> str:
-    """Bind to the verified ``shopify_customer_id``, else a provisional channel key.
+) -> tuple[str, str]:
+    """Resolve ``(binding_key, binding_kind)`` from context, fail-closed (S02, FR-5).
 
-    A verified Session Identity Snapshot binds memory to its Shopify customer id;
-    otherwise the binding is provisional and keyed by the channel identity supplied
-    in ``params`` (ADR-0112). Ambiguous matches never merge in v1, so they are not
-    split further here. With no channel identity, a single ``provisional`` bucket
-    is used.
+    ONE shared resolver for both the mock and Postgres datastore handlers — kept
+    here since hermes-runtime already imports ``MEMORY_PREFERENCE_SLOTS`` from this
+    module as the single source of truth for the slot enum. This is
+    security-sensitive binding logic that must not drift between the two paths.
+
+    A verified Session Identity Snapshot (``context.identity["outcome"] ==
+    "verified_customer"``) binds to its Shopify customer id, kind ``"verified"``.
+    Otherwise the caller's ingress-controlled channel identity
+    (``context.identity["channel"]`` / ``["channel_identity"]``, S01) is
+    canonicalized to ``provisional:{channel}:{E.164}`` (e.g.
+    ``provisional:sms:+17786803250``), kind ``"provisional"`` — never a
+    model-supplied param, so the model cannot bind or read another caller's memory
+    by supplying a phone number as a tool argument (RK-3). A degenerate channel
+    identity (missing, empty, or normalizing to a bare ``"+"``) is treated as no
+    identity at all, not a shared bucket.
+
+    ``channel_identity_id`` in ``params`` is honored only as a last resort on the
+    ``internal_copilot`` profile (employee-confirmed corrections over the unbound
+    workbench dispatch path, which carries no channel identity in context). Every
+    other profile — including external — ignores it entirely.
+
+    No resolvable identity at all raises a fail-closed ``policy_blocked``; the bare
+    shared ``"provisional"`` key from pre-S02 (a cross-customer leak) is gone.
     """
-    identity = context.identity
-    if isinstance(identity, dict) and identity.get("outcome") == "verified_customer":
+    # Deferred imports: this module loads as part of ``drivers.mock``'s own
+    # package init (which ``toee_hermes.plugin`` imports in turn), so importing
+    # ``gateway``/``plugin.profiles`` at module scope here would re-enter that
+    # partially-initialized package during a cold import and raise ImportError.
+    from ...gateway.normalize import normalize_e164
+    from ...plugin.profiles import INTERNAL
+
+    identity = context.identity if isinstance(context.identity, dict) else {}
+
+    if identity.get("outcome") == "verified_customer":
         shopify_customer_id = identity.get("shopify_customer_id")
         if isinstance(shopify_customer_id, str) and shopify_customer_id:
-            return shopify_customer_id
-    channel_identity_id = _read_string(
-        params, "channel_identity_id", "channelIdentityId"
+            return shopify_customer_id, "verified"
+
+    channel = identity.get("channel")
+    channel_identity = identity.get("channel_identity")
+    if isinstance(channel, str) and channel and isinstance(channel_identity, str):
+        normalized = normalize_e164(channel_identity)
+        if normalized != "+":
+            return f"provisional:{channel}:{normalized}", "provisional"
+
+    if context.profile == INTERNAL:
+        channel_identity_id = _read_string(
+            params, "channel_identity_id", "channelIdentityId"
+        )
+        if channel_identity_id is not None:
+            return f"provisional:{channel_identity_id}", "provisional"
+
+    raise ToolDriverError(
+        "policy_blocked",
+        "Customer Memory requires a resolvable channel identity; the turn has "
+        "none (fail-closed, ADR-0112 / PRD FR-5).",
     )
-    if channel_identity_id is not None:
-        return f"provisional:{channel_identity_id}"
-    return "provisional"
 
 
 def create_memory_mock_handlers(
@@ -133,7 +175,7 @@ def create_memory_mock_handlers(
         source = params.get("source")
         if not isinstance(source, str):
             source = None
-        binding_key = _resolve_binding_key(context, params)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key)[slot] = value
         return {
             "binding_key": binding_key,
@@ -148,7 +190,7 @@ def create_memory_mock_handlers(
     ) -> dict[str, Any]:
         # Clears one preference slot and acknowledges the removal.
         slot = _require_slot(params)
-        binding_key = _resolve_binding_key(context, params)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key).pop(slot, None)
         return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
@@ -157,7 +199,7 @@ def create_memory_mock_handlers(
     ) -> dict[str, Any]:
         # Returns the current preference slots for the active binding, honoring any
         # injected baseline (scenario 25).
-        binding_key = _resolve_binding_key(context, params)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         return {
             "binding_key": binding_key,
             "preferences": dict(slots_for(binding_key)),
