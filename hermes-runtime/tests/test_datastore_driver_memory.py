@@ -174,6 +174,55 @@ def test_internal_copilot_profile_resolves_employee_confirmed(datastore) -> None
     assert result.data["source"] == "employee_confirmed"
 
 
+def test_dispatch_route_correction_persists_but_misses_a_verified_customers_read_key(
+    datastore,
+) -> None:
+    """S15/PAC-4 real-path check: the Workbench ``/v1/tools:dispatch`` route
+    (``tool_dispatch_app.py``) never sets ``ToolExecutionContext.identity`` — it
+    only has ``tool``/``action``/``params``/``actor_account_id`` off the request body
+    (see ``dispatch()``) — so an employee correction can only bind via the
+    ``channel_identity_id`` param carve-out. That carve-out (``resolve_customer_
+    memory_binding``) unconditionally mints ``provisional:{channel_identity_id}``.
+
+    This reproduces that exact contract for a VERIFIED customer's case (profile
+    ``internal_copilot``, ``identity=None``, ``channel_identity_id`` = the case's
+    Shopify customer id — the only case-identifying value the dispatch route has).
+    The write DOES hit the real Postgres handler (driver routing works). But the
+    customer's own next external turn reads the bare ``shopify_customer_id``
+    (``openrouter._load_turn_memory`` -> ``binding_key_from_identity`` on a verified
+    identity, no prefix — see ``test_verified_identity_binds_to_shopify_customer_id``
+    above). The two keys never match, so the correction is NOT visible on the
+    customer's next turn even though the row is really in Postgres.
+    """
+    driver, conn, _ = datastore
+    shopify_customer_id = "gid://shopify/Customer/1001"
+
+    correction = _run(
+        driver, "upsert_preference",
+        {
+            "key": "contact_time_preference",
+            "value": "mornings only",
+            "channel_identity_id": shopify_customer_id,
+        },
+        profile="internal_copilot",
+    )
+    assert correction.ok
+    assert correction.data["source"] == "employee_confirmed"
+    # Persisted -- but under a "provisional:" key, never the bare Shopify id.
+    assert correction.data["binding_key"] == f"provisional:{shopify_customer_id}"
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT slot_value FROM customer_memory_slot WHERE binding_key = %s AND slot_name = %s",
+            (f"provisional:{shopify_customer_id}", "contact_time_preference"),
+        )
+        assert cur.fetchone() == ("mornings only",)  # the row is genuinely in Postgres
+
+    # The verified customer's own next external turn reads the BARE shopify id.
+    read_back = _run(driver, "get_preferences", {}, identity=VERIFIED)
+    assert read_back.data["binding_key"] == shopify_customer_id
+    assert "contact_time_preference" not in read_back.data["preferences"]
+
+
 def test_evidence_is_persisted_and_retrievable(datastore) -> None:
     driver, conn, _ = datastore
     up = _run(
