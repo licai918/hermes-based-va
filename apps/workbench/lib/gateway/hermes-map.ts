@@ -6,16 +6,18 @@
 // HermesApiErrors so a bad upstream surfaces on the ADR-0090 banner instead of
 // rendering garbage. Hand-written guards keep the BFF dependency-light.
 import { HermesApiError } from "./hermes-api-client";
-import type {
-  AuditAction,
-  AuditLogEntry,
-  AutoHandledRecord,
-  CaseChannel,
-  CaseStatus,
-  ThreadAuthor,
-  ThreadMessage,
-  ToolCallEvidence,
-  WorkbenchCase,
+import {
+  PREFERENCE_SLOTS,
+  type AuditAction,
+  type AuditLogEntry,
+  type AutoHandledRecord,
+  type CaseChannel,
+  type CaseStatus,
+  type CustomerPreferences,
+  type ThreadAuthor,
+  type ThreadMessage,
+  type ToolCallEvidence,
+  type WorkbenchCase,
 } from "./types";
 
 const CHANNELS: readonly CaseChannel[] = ["sms", "email", "voice"];
@@ -150,6 +152,21 @@ export function mapToolCallEvidence(raw: unknown): ToolCallEvidence {
   const errorClass = nullableString(r.error_class ?? r.errorClass);
   if (errorClass) evidence.errorClass = errorClass;
   return evidence;
+}
+
+// Whitelists the four v1 Customer Memory slots (ADR-0111) out of the raw
+// dispatch preference map. Deliberately a whitelist copy, not a validate-all: an
+// unrecognised key (e.g. a future slot, or `binding_key` if a caller forgot to
+// strip it) is silently dropped rather than rejected, since the whole point is
+// that only these four names ever cross the BFF boundary to the browser.
+export function mapPreferences(raw: unknown): CustomerPreferences {
+  const r = asObject(raw, "preferences");
+  const result: CustomerPreferences = {};
+  for (const slot of PREFERENCE_SLOTS) {
+    const value = r[slot];
+    if (typeof value === "string") result[slot] = value;
+  }
+  return result;
 }
 
 export function mapAutoHandledRecord(raw: unknown): AutoHandledRecord {

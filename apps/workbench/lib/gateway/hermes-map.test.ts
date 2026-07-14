@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiError } from "./hermes-api-client";
-import { mapAuditEntry, mapAutoHandledRecord, mapThreadMessage, mapWorkbenchCase } from "./hermes-map";
+import {
+  mapAuditEntry,
+  mapAutoHandledRecord,
+  mapPreferences,
+  mapThreadMessage,
+  mapWorkbenchCase,
+} from "./hermes-map";
 
 const fullCaseRow = {
   id: "case_1",
@@ -151,6 +157,41 @@ describe("mapThreadMessage", () => {
     expect(() =>
       mapThreadMessage({ ...messageRow, created_at: "not-a-date" }),
     ).toThrow(HermesApiError);
+  });
+});
+
+describe("mapPreferences", () => {
+  it("whitelists the four v1 slots (ADR-0111) and drops everything else", () => {
+    const p = mapPreferences({
+      binding_key: "cust_900",
+      contact_time_preference: "evenings",
+      channel_preference: "sms",
+      delivery_habit_note: "leave at side door",
+      communication_style_note: "prefers brief replies",
+      some_future_field: "should never surface",
+    });
+    expect(p).toEqual({
+      contact_time_preference: "evenings",
+      channel_preference: "sms",
+      delivery_habit_note: "leave at side door",
+      communication_style_note: "prefers brief replies",
+    });
+    expect(p).not.toHaveProperty("binding_key");
+    expect(p).not.toHaveProperty("some_future_field");
+  });
+
+  it("omits an absent slot rather than filling it with a default", () => {
+    const p = mapPreferences({ contact_time_preference: "evenings" });
+    expect(p).toEqual({ contact_time_preference: "evenings" });
+    expect(p).not.toHaveProperty("channel_preference");
+  });
+
+  it("maps an empty preference object to an empty result", () => {
+    expect(mapPreferences({})).toEqual({});
+  });
+
+  it("rejects a non-object payload as a contract violation (ADR-0070)", () => {
+    expect(() => mapPreferences(null)).toThrow(HermesApiError);
   });
 });
 

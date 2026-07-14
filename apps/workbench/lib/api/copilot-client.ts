@@ -8,6 +8,8 @@ import type {
   AssigneeFilterMode,
   AuditLogEntry,
   CaseStatus,
+  CustomerPreferences,
+  MemoryPreferenceSlot,
   ThreadMessage,
   WorkbenchCase,
 } from "../gateway/types";
@@ -83,6 +85,30 @@ export function setContactReason(
   contactReason: string,
 ): Promise<{ case: WorkbenchCase }> {
   return sendJson("POST", casePath(caseId, "contact-reason"), { contactReason });
+}
+
+// Customer Memory preferences (PAC-4/S17). The BFF passes case_id only -- the
+// dispatch server resolves the customer binding server-side (S16) -- and never
+// echoes a binding key back to the browser.
+export function getPreferences(
+  caseId: string,
+): Promise<{ preferences: CustomerPreferences }> {
+  return getJson(casePath(caseId, "preferences"));
+}
+
+export function upsertPreference(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+  value: string,
+): Promise<{ slot: MemoryPreferenceSlot; value: string; stored: boolean }> {
+  return sendJson("POST", casePath(caseId, "preferences"), { slot, value });
+}
+
+export function clearPreference(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+): Promise<{ slot: MemoryPreferenceSlot; cleared: boolean }> {
+  return sendJson("POST", casePath(caseId, "preferences/clear"), { slot });
 }
 
 export function draft(
