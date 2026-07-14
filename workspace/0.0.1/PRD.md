@@ -240,8 +240,9 @@ assertion and an observable pass signal.
   dormancy tripwire.
 - **Eval (ADR-0117/0118):** scenarios `24-customer-memory-explicit-upsert`,
   `25-customer-memory-honor-injected`, `26-customer-memory-no-inferred-write`
-  **exist but run on mock today** — move them to the real path, and **add** three
-  scenarios: `27-customer-memory-isolation` (R3), `28-customer-memory-merge-
+  stay on the **behavioral replay gate** (the launch-eval replay is DB-free by
+  design — a deterministic CI contract with no network/LLM/Postgres; ADR-0119),
+  and **add** three scenarios: `27-customer-memory-isolation` (R3), `28-customer-memory-merge-
   verified-wins` (R5b), and `29-customer-memory-injection-inert` (FR-6 / RK-2
   adversarial). These are 0.0.1 deliverables.
 
@@ -250,8 +251,15 @@ assertion and an observable pass signal.
 So a real conversation can be audited after the fact ("did this customer get
 *their* memory?"), the live turn records, per turn: the resolved `binding_key`,
 the injected **slot names** (never values — PII stays out of logs), and whether a
-merge fired. This rides the existing `workbench_audit_log` for the write/merge
-side; the read/inject side adds one compact turn note. Minimal and PII-safe.
+merge fired. **The audit trail (NFR-3 attributability) is:** the
+`customer_memory_slot` row's own `source` / `evidence` / `updated_at` columns
+(who/why/when per write), the dedicated `customer_memory_merge_audit` table (per
+merge), and a compact per-turn structured log note (binding_key + slot names +
+merge_fired) — **not** a per-write `workbench_audit_log` row. (Amended after
+implementation: the memory write is a customer-turn tool call with no employee
+actor, so it does not belong in the employee-facing `workbench_audit_log`; the
+slot metadata + merge table + turn log fully satisfy attributability.) Minimal
+and PII-safe.
 
 ### 6.5 Product acceptance criteria (business-observable, product-owner sign-off)
 
@@ -282,7 +290,12 @@ product owner's written sign-off on the UAT.
 - [ ] §6.1 matrix: all four layers green in one live E2E run.
 - [ ] §6.2: correctness rules R1–R6 all green at their stated levels.
 - [ ] §6.0.4 dormancy tripwire: confirmed **red** with the driver disabled.
-- [ ] Eval scenarios 24–29 green **on the real path** (not mock).
+- [ ] Real-path proof (live Postgres) green: the §6.1 matrix + R1–R6 datastore
+      tests + the E2E suite. (CI now provisions Postgres so these run in CI, not
+      only locally.)
+- [ ] Behavioral eval scenarios 24–29 green on the replay gate (24–26 existing,
+      27–29 added). (Amended: the launch-eval replay is DB-free by design; the
+      real-datastore proof lives in the line above, not in the eval gate.)
 - [ ] Anti-mock check: 100% of live-turn writes show `driver.kind = "datastore"`;
       0 writes reach the mock store.
 - [ ] §6.4 observability note visible for a sample conversation, showing the
