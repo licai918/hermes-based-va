@@ -3,6 +3,10 @@
 - **Prepared by:** S15 (engineering evidence-gathering pass — this document does
   **not** itself constitute sign-off)
 - **Prepared on branch:** `feat/0.0.1-customer-memory` @ `5e78af0` (S14 complete)
+- **Updated by:** S19 — PAC-4 was rebuilt (S16 backend fix, S17 BFF, S18 UI) and
+  proven end-to-end on real Postgres; Part 2 and the PAC-4 table row below now
+  read **implemented**, not the original needs-fix finding. See Part 2's
+  "Resolution (S19)" for the evidence. No other PAC's evidence or verdict changed.
 - **For:** licai (product owner, per PRD §9)
 - **Scope:** §6.5 product acceptance criteria PAC-1…PAC-7 and the §6.6 product gate.
   PAC-8 (M2 grounded knowledge) is out of scope for 0.0.1 — see PRD §6.5 and the
@@ -27,7 +31,7 @@ sign-off block at the bottom is empty and is yours to fill in after review.
 | **PAC-1** | Preference honored *in behavior*, not merely stored | `eval/scenarios/25-customer-memory-honor-injected.yaml` (real-LLM recorded transcript: `eval/transcripts/text_first_launch/25.json`) — the scenario's *real* discriminating check is `text.must_not_contain` (the reply must not re-ask for a contact time); `hermes-runtime/tests/test_e2e_memory_acceptance.py::test_matrix_all_four_layers_live_in_one_run` — real Postgres round-trip: a preference written in turn 1 is byte-verified in the injected prompt of turn 2; `test_openrouter_memory_injection.py::test_verified_turn_injects_the_stored_preference_round_trip` | The stored value reaches the prompt unmodified, and a real model does not contradict/re-ask for it. **Caveat:** the scenario's `memory_assertions.honor_injected_preference: true` field looks like the relevant check but is not one — `eval_runner/turn_result.py` sets it to `True` unconditionally whenever the scenario has *any* `memory_preset`, regardless of transcript content (a pre-existing "freebie" flagged in S14's own report). The `must_not_contain` phrase list is the only assertion that actually inspects the reply text. | **This is the PAC with the sharpest human judgment call.** Transcript 25 shows the model *acknowledging* the preference in its reasoning but not overtly acting on it in the reply (a delivery-status answer, not an SMS follow-up offer). Transcript 28 (`28-customer-memory-merge-verified-wins.yaml`) is a *better* concrete example of overt action: *"I've got you down for after 2pm Eastern for any calls, so I'll keep that in mind going forward."* Decide: does "doesn't violate + doesn't re-ask" satisfy PAC-1, or do you want to see the assistant proactively *offer* the in-window follow-up as PRD's example text implies? Read both real transcripts and judge. |
 | **PAC-2** | No over-recall / no creepiness; never claims unverified facts | None directly. Adjacent guards: eval 29 (adversarial injection-inert) and the `must_not_contain` lists in 25/27/28 catch specific *re-asking* phrases, not unprompted recitation | Nothing scripted currently asserts "the agent did not volunteer a stored preference out of the blue" | **Weakest automated coverage of all 7 PACs — no scenario targets this directly.** There is no eval scenario where the customer says nothing memory-related and we assert the agent stays silent about stored preferences. This needs a fresh read of transcripts (existing or a live run) specifically watching for unprompted recitation of preferences or unverified account claims. Recommend: if this matters for sign-off, ask engineering for one more scenario before you sign PAC-2, or accept transcript-only review as sufficient. |
 | **PAC-3** | Unmatched → verified continuity, honored without re-asking | `test_e2e_memory_acceptance.py::test_provisional_to_verified_merge_chain` — real Postgres: provisional write → verified re-entry → merge fires → preference appears in the injected block, provisional rows deleted, exactly one merge-audit row; `eval/scenarios/28-customer-memory-merge-verified-wins.yaml` (real-LLM transcript, conflict sub-case: verified value wins over what the customer just said — the reply *text itself* explicitly restates the correct one, independent of the non-discriminating `honor_injected_preference` field noted under PAC-1) | The merge is atomic, idempotent, and the *content* carries forward correctly into the next prompt | The mechanical proof is strong. What needs a human: read a transcript of the actual customer-facing exchange across the two turns (a real "before verification" turn and the "after verification" turn back to back) and confirm it reads as *seamless* conversationally — not just that the assertion passed. |
-| **PAC-4** | Employee sees + corrects a preference in Copilot; takes effect next turn | See **Part 2** below — this was the one open verification task in this brief | Driver-routing to Postgres is real (new test, real Postgres) | **This PAC cannot be walked through as a UAT today.** See Part 2 — there is no Workbench UI for it, and the one path that does exist has a binding-key defect for verified customers. This is not a "read the transcript and judge tone" gap; it is a "the feature is not usable yet" gap. |
+| **PAC-4** | Employee sees + corrects a preference in Copilot; takes effect next turn | See **Part 2** below (updated) — `test_dispatch_customer_memory_correction_binds_to_verified_customers_read_key` (S16, real Postgres, real HTTP dispatch route); `test_e2e_pac4_employee_correction.py::test_employee_correction_takes_effect_on_customers_next_turn` and `::test_employee_clear_removes_slot_from_customers_next_turn` (S19, real Postgres — chains the S16 employee write with the S07 customer read in one test each, correction and clear) | The full PAC-4 loop is now mechanically proven end-to-end: a Workbench employee correction/clear dispatched over the real HTTP route persists under the exact key the customer's own next external turn reads — not a dead provisional key, and not merely "the driver routes to Postgres" (S15's original, narrower check). | **Implemented.** The binding-key defect and the missing Workbench UI Part 2 originally found are both fixed (S16 backend, S17 BFF, S18 preferences panel). What automation cannot give you: a real-browser visual pass of the panel itself (S18 flagged its layout wants eyes-on verification) and your own live click-through on a real case — the literal walkthrough PRD §6.5 describes. See Part 2's "Resolution (S19)" for the full before/after. |
 | **PAC-5** | Never the wrong customer (≥2-customer walkthrough) | `test_e2e_memory_acceptance.py::test_cross_customer_isolation_both_directions` (2 verified customers, real Postgres, both directions — asserts customer B's *own* value is present **and** customer A's is absent, and vice versa); `test_customer_memory_datastore.py::test_get_preferences_never_leaks_across_binding_keys_either_direction`, `::test_load_customer_memory_never_leaks_across_binding_keys`, `::test_clear_preference_for_one_customer_does_not_touch_the_others_row`; `test_copilot_memory_injection.py::test_copilot_turn_never_sees_another_customers_block`; `eval/scenarios/27-customer-memory-isolation.yaml` (real-LLM transcript — the discriminating check is `text.must_not_contain` on customer A's phrase, same "freebie" caveat on `honor_injected_preference` as PAC-1 applies here too) | Strong, multi-level coverage: datastore query level, turn-injection level, and Copilot case level, all proven with real Postgres and presence-in-both-directions (not just absence) | This is the best-covered PAC. Your review here is more a confirmation pass than likely to surface a surprise: run (or read) the ≥2-customer UAT PRD asks for and confirm nothing outside the memory block (case lists, other tool reads) leaks cross-customer content — that surface is outside what these tests check. |
 | **PAC-6** | Clean experience for a brand-new (no-memory) customer | `test_e2e_memory_acceptance.py::test_no_datastore_turn_replies_without_memory_artifact` (no-DB turn completes, no artifact); the matrix test's first-turn assertion (`"Customer Memory" not in captured[0]`) for a verified customer with no stored slots yet; `test_openrouter_memory_injection.py::test_memory_disabled_injects_no_memory_block`, `::test_unresolvable_binding_injects_no_memory_block_without_raising`; `eval/scenarios/26-customer-memory-no-inferred-write.yaml` transcript incidentally shows a clean reply with no memory artifact | No empty `"Customer Memory:"` block, no error, on every "nothing to inject" path tested (disabled, no binding, no slots, read error) | Read one real transcript for an actual brand-new customer end to end and eyeball it — specifically watch for the untrusted-data fence (S09's `<untrusted_customer_memory>` wrapper) ever leaking into a reply, which only a real model run can catch (scripted tests can't). |
 | **PAC-7** | Write discipline felt (casual mention ≠ memory) | `eval/scenarios/26-customer-memory-no-inferred-write.yaml` (real-LLM transcript: an order-status question does not trigger a write — `forbid_inferred_upsert` + `forbidden_tools` both green); `hermes/tests/test_customer_memory_write_source.py`, `test_memory.py` (source is framework-set, never model-forgeable); S03 hard guards (only 4 slots, 200-char cap) | The `source` field cannot be forged, and one concrete "not a preference" scenario doesn't over-trigger | Scenario 26 is one scripted near-miss (an order-status question). A human should skim a broader UAT set for subtler phrasings — casual asides, hypotheticals ("I usually prefer mornings but today's fine") — that the one scripted scenario doesn't cover, and confirm the agent doesn't write on those either. |
@@ -37,11 +41,19 @@ sign-off block at the bottom is empty and is yours to fill in after review.
 
 ---
 
-## Part 2 — PAC-4 verification (the open question this brief was asked to resolve)
+## Part 2 — PAC-4 verification (RESOLVED — see "Resolution (S19)" below)
 
 **Question:** does an employee (Copilot) preference correction actually persist to
 Postgres `customer_memory_slot`, and does it reach the row the customer's own next
 turn will read?
+
+**This was open when S15 wrote the section below; it is closed as of S19.** The
+"What exists today" / "backend path" / "Original verdict" subsections are kept
+verbatim as the historical record of the defect that was found (both because the
+diagnosis is what motivated the S16–S18 fixes, and because it's the clearest
+existing explanation of the failure mode, useful if a similar bug ever recurs on a
+different tool). Skip to **"Resolution (S19)"** at the end of this Part for the
+current, accurate status.
 
 ### What exists today
 
@@ -124,7 +136,7 @@ ephemeral in-process `MockDriver`, regardless of any env var. This path
 correctly threads `context.identity` (so *if* it reached Postgres, the binding
 key would be right) — it is the mirror-image defect of (a).
 
-### Verdict
+### Original verdict (S15 — superseded by "Resolution (S19)" below)
 
 **PAC-4 employee-write persistence: needs-fix — not a simple "works" or "add
 `extra_drivers` and done."** Two independent, narrow gaps, neither of which is
@@ -149,19 +161,82 @@ None of this was implemented as part of S15 — S15's brief is verification and
 evidence-gathering, not a fix. This is flagged as a follow-up (see the spawned
 task).
 
+### Resolution (S19) — RESOLVED
+
+Both gaps above are closed, and a Workbench UI now exists:
+
+1. **Binding-key defect — fixed (S16, commit `262b2a3`).** `tool_dispatch_app.py`'s
+   `dispatch()` now resolves the case's identity via
+   `PostgresGatewayStore.load_case_identity(case_id)`, scoped to
+   `toee_customer_memory` only and gated by `memory_enabled()`; any error, a
+   missing `case_id`, or an unknown/threadless case fails closed to the
+   pre-existing param-carve-out/`policy_blocked` path, never a 500. A verified
+   customer's correction now binds to the bare `shopify_customer_id` — the SAME
+   key `openrouter._load_turn_memory` reads on that customer's next external turn
+   — proven on the real HTTP route by
+   `hermes-runtime/tests/test_tool_dispatch_app.py::test_dispatch_customer_memory_correction_binds_to_verified_customers_read_key`.
+2. **No Workbench UI — built (S17 BFF, commit `681a2d8`; S18 UI, commit
+   `7edb135`).** `apps/workbench` now has a `CustomerPreferences.tsx` panel wired
+   into the Copilot case view (fetches on case-select, refreshes after a mutate),
+   backed by two BFF routes mirroring the existing contact-reason pattern. A rep
+   can view, correct, and clear any of the four preference slots on a case.
+   `binding_key` is stripped from every browser-facing response (double defense:
+   the handler never reads it from params, and the BFF's `mapPreferences`
+   whitelists only slot name/value).
+3. **End-to-end chain proof — added (S19).**
+   `hermes-runtime/tests/test_e2e_pac4_employee_correction.py` (real Postgres, two
+   tests) chains the S16 employee write with the S07 customer read in ONE test
+   each, rather than trusting that each half's own separate test implies the
+   chain holds:
+   - `test_employee_correction_takes_effect_on_customers_next_turn` — an employee
+     correction dispatched over the real HTTP `/v1/tools:dispatch` route persists
+     under the customer's bare `shopify_customer_id` (asserted from the HTTP
+     response AND a direct Postgres read), and that SAME customer's next external
+     turn — from a *different* phone number, so the match is provably on the
+     Shopify id, not the channel — injects the corrected value into the exact
+     prompt handed to the model.
+   - `test_employee_clear_removes_slot_from_customers_next_turn` — the same chain
+     for `clear_preference`, proven as a genuine before/after transition (the slot
+     is shown present on one turn, then absent on a later turn after the employee
+     clears it) rather than a vacuous "it was never there" check.
+   - Genuinely RED-capable, not just decorative: reverting S16's identity
+     resolution (verified by hand while building this test — forcing
+     `_resolve_case_identity` to always return `None`, then restoring it) makes
+     both tests fail at the dispatch-response assertion (`ok` flips to `False`,
+     `error.class == "policy_blocked"`), exactly the pre-S16 failure mode.
+
+**PAC-4 verdict: implemented.** The loop PRD §6.5 asks for — a rep corrects or
+clears a preference in Copilot and it takes effect on the customer's very next
+turn — is now mechanically proven end to end on real Postgres, not just at the
+driver-routing level S15's original check reached.
+
+**What still needs a human (not automatable, same spirit as every other PAC in
+Part 1):**
+- A real-browser visual pass of the preferences panel — S18's own report flagged
+  the layout wants eyes-on verification (a flex-insert concern that only shows up
+  rendered, not in `vitest`).
+- A live click-through by licai: open a real case in Workbench, correct and clear
+  an actual preference through the UI itself (not the HTTP route directly), and
+  confirm the next customer turn reflects it — the literal walkthrough PRD §6.5
+  describes.
+
+Neither of these is an engineering gap; they are the same human half of UAT this
+document has deferred to licai from the start for every other PAC.
+
 ---
 
 ## Part 3 — Explicit "needs human review before sign-off" list
 
 In priority order:
 
-1. **PAC-4 cannot be signed off as-is.** The UAT walkthrough PRD asks for ("a rep
-   opens a case, sees preferences, corrects one, it takes effect next turn") is
-   not currently possible to perform — there is no UI, and the one reachable
-   backend path writes to a key the customer's next turn won't read for a
-   verified customer. You will need to decide: waive/defer PAC-4 for the 0.0.1
-   gate, or hold the gate until the two gaps in Part 2 are fixed and a real UI
-   exists.
+1. **PAC-4 is now implemented (S16–S19).** The backend binding-key defect and the
+   missing Workbench UI this section originally flagged are both fixed — see
+   Part 2's "Resolution (S19)" for the full evidence trail. The UAT walkthrough
+   PRD asks for ("a rep opens a case, sees preferences, corrects one, it takes
+   effect next turn") is mechanically proven end-to-end on real Postgres. What
+   remains before you sign PAC-4 below is the same kind of human pass every other
+   PAC in this list needs: a real-browser click-through of the preferences panel
+   on a real case, to confirm the rep experience feels right.
 2. **PAC-2** has no automated evidence targeting it directly (no scenario checks
    "does the agent stay quiet about memory when unprompted"). Read transcripts
    with this specifically in mind, or ask for one more scenario before signing.
