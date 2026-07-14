@@ -67,7 +67,7 @@ export function CustomerPreferences({
       aria-label="Customer preferences"
       style={{ display: "flex", flexDirection: "column", gap: "0.5rem", padding: "0.6rem 0.75rem" }}
     >
-      <h2 style={{ margin: 0, fontSize: "0.85rem" }}>Customer preferences</h2>
+      <h2 style={{ margin: 0 }}>Customer preferences</h2>
       {PREFERENCE_SLOTS.map((slot) => {
         const label = SLOT_LABELS[slot];
         const value = preferences[slot];
