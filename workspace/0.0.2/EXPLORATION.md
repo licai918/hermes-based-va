@@ -31,6 +31,39 @@ into `workspace/0.0.2/PRD.md` via brainstorm → PRD → slices.
 
 ---
 
+## ✅ Route decision (2026-07-14) — SELECTED
+
+Product owner (licai) selected the **"Govern + harden the shipped memory"** theme,
+right after the 0.0.1 PAC sign-off and PR #54 merge.
+
+**0.0.2 committed scope:**
+- **Candidate 1 — write-decision guardrail** at the **A + B + E + NFR-3** depth
+  (not D): prompt guard on the Copilot draft persona; a distinct `copilot_agent`
+  `source` value for AI-draft writes; a `no-inferred-write` copilot eval; and
+  persist the acting `actor_account_id` (NFR-3). Option **D** (propose→confirm) is
+  recorded as the future north star, **out of 0.0.2 scope**.
+- **Candidate 4 — remove the `channel_identity_id` carve-out** (lean (a):
+  context-only binding; it was a stopgap superseded by S16).
+- **Candidate 5 — carried-forward cleanups**, including the eval
+  `honor_injected_preference` freebie fix and a new `no-unprompted-recall`
+  scenario — the latter **discharges the PAC-2 eval-coverage follow-up** recorded
+  in the 0.0.1 UAT sign-off.
+
+**Stretch (only if capacity):** Candidate 7 (transparency) / Candidate 9
+(instrumentation).
+
+**Deferred:** Candidate 2 (knowledge layer) → its own **0.0.3** with a full
+spike→PRD cycle. Candidates 3 / 6 / 8 stay condition-gated (retention volume /
+load / channel rollout).
+
+**One ADR** covers the clustered governance surface: the new `source` value, the
+carve-out removal, and the actor-attribution column.
+
+**Next:** rebase this branch onto `main` (shipped 0.0.1) → point `workspace/CURRENT`
+at 0.0.2 → brainstorm → `workspace/0.0.2/PRD.md` → slices for Candidates 1 / 4 / 5.
+
+---
+
 ## Candidate 1 — Write-decision guardrail for Copilot memory writes (fully developed)
 
 ### Why
