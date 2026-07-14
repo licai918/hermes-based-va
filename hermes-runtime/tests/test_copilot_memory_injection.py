@@ -16,6 +16,8 @@ round-trip), and the test is order-independent (no global registry dispatch).
 
 from __future__ import annotations
 
+import logging
+
 from toee_hermes.execute import execute_tool
 from toee_hermes.plugin.profiles import EXTERNAL
 from toee_hermes.tool_gate import ToolExecutionContext
@@ -39,6 +41,16 @@ class _ExplodingStore:
         raise AssertionError(
             f"load_customer_memory must not be called (binding_key={binding_key!r})"
         )
+
+
+class _ReadRaisingStore:
+    """Case identity resolves fine; the memory read itself explodes (S11 parity)."""
+
+    def load_case_identity(self, case_id):
+        return {"outcome": "verified_customer", "shopify_customer_id": _SHOPIFY_ID}
+
+    def load_customer_memory(self, binding_key):
+        raise RuntimeError("read boom")
 
 
 def _seed_case(
@@ -240,3 +252,22 @@ def test_copilot_turn_for_an_unknown_case_injects_no_block(datastore, monkeypatc
     )
 
     assert "Customer Memory" not in user_message
+
+
+def test_copilot_memory_read_error_logs_warning_and_turn_still_completes(
+    monkeypatch, caplog
+) -> None:
+    # Parity with openrouter.py's _load_turn_memory (S11): a store-read error must
+    # not swallow silently -- WARN, then degrade to no memory injected (FR-7).
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    caplog.set_level(logging.WARNING)
+
+    user_message = _run_copilot_capturing_injection(
+        monkeypatch, store=_ReadRaisingStore(), case_id="case-mem-read-error"
+    )
+
+    assert "Customer Memory" not in user_message
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "read" in warnings[0].getMessage().lower()

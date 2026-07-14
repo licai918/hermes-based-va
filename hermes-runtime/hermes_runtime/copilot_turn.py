@@ -36,6 +36,7 @@ never logged.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
@@ -52,6 +53,8 @@ from hermes_runtime.openrouter import (
     resolve_openrouter_config,
 )
 from hermes_runtime.tool_backend import memory_enabled
+
+logger = logging.getLogger(__name__)
 
 # Reported as the provenance model when no real LLM produced the draft (scripted
 # in tests, deterministic stub locally). A real keyed turn reports the resolved
@@ -194,9 +197,18 @@ def _load_case_memory(
     binding_key, _kind = resolved
     try:
         return identity, resolved_store.load_customer_memory(binding_key)
-    except Exception:
+    except Exception as exc:
         # ponytail: swallow to None so a DB hiccup degrades to "no memory injected",
         # never a failed draft (FR-7) — but keep identity for the write-binding.
+        # S11 parity (openrouter.py _load_turn_memory): WARN so the swallow isn't
+        # silent. binding_key + exception TYPE only -- never str(exc)/traceback,
+        # which could echo back store-supplied content.
+        logger.warning(
+            "Customer Memory read failed binding_key=%s error_type=%s; "
+            "turn continues with no memory injected",
+            binding_key,
+            type(exc).__name__,
+        )
         return identity, None
 
 
