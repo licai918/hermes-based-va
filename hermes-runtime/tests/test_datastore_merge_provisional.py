@@ -24,6 +24,10 @@ import threading
 
 from hermes_runtime.datastore.config import database_url
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+from toee_hermes.drivers.mock.memory import (
+    MEMORY_SOURCE_MERGED_PROVISIONAL,
+    MEMORY_SOURCE_VALUES,
+)
 
 _PROV = "provisional:sms:+14165550111"
 _VERIFIED = "gid://shopify/Customer/5001"
@@ -86,6 +90,27 @@ def test_merge_no_conflict_moves_provisional_and_deletes(datastore) -> None:
         assert sorted(details["moved"]) == ["channel_preference", "contact_time_preference"]
         assert details["overridden"] == {}
     assert sorted(result["moved"]) == ["channel_preference", "contact_time_preference"]
+
+
+def test_merge_writes_source_from_the_shared_memory_source_enum(datastore) -> None:
+    """Standards fix #2 (drift guard): the merge SQL's ``source`` column must come
+    from the SAME ``MEMORY_SOURCE_VALUES`` enum every other write path is checked
+    against (``test_customer_memory_write_source.py``), not a scattered SQL
+    literal that could silently drift out of sync with it -- e.g. a typo'd
+    ``'merge_provisional'`` would still "work" (writes and reads round-trip fine)
+    while quietly breaking anything that filters/validates on the real enum."""
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    with conn.cursor() as cur:
+        _seed_slot(cur, _PROV, "provisional", "channel_preference", "sms",
+                   "customer_explicit")
+
+    store.merge_provisional_memory(_PROV, _VERIFIED)
+
+    with conn.cursor() as cur:
+        _, source, _ = _slots(cur, _VERIFIED)["channel_preference"]
+    assert source == MEMORY_SOURCE_MERGED_PROVISIONAL
+    assert source in MEMORY_SOURCE_VALUES
 
 
 def test_merge_conflict_keeps_verified_and_shadows_provisional(datastore) -> None:

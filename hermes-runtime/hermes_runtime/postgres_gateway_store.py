@@ -14,6 +14,7 @@ from typing import Any, Iterator, Optional
 import psycopg
 from psycopg.types.json import Jsonb
 
+from toee_hermes.drivers.mock.memory import MEMORY_SOURCE_MERGED_PROVISIONAL
 from toee_hermes.gateway.agent_turn import AgentTurnContext, build_agent_turn_context
 from toee_hermes.gateway.ingress import SessionIdentitySnapshot
 from toee_hermes.gateway.pipeline import InboundDecision
@@ -400,11 +401,18 @@ class PostgresGatewayStore:
                             INSERT INTO customer_memory_slot
                                 (id, binding_key, binding_kind, slot_name, slot_value,
                                  source, evidence)
-                            VALUES (%s, %s, 'verified', %s, %s, 'merged_provisional', %s)
+                            VALUES (%s, %s, 'verified', %s, %s, %s, %s)
                             ON CONFLICT (binding_key, slot_name) DO NOTHING
                             RETURNING slot_name
                             """,
-                            (new_id("mem"), verified_key, slot_name, slot_value, evidence),
+                            (
+                                new_id("mem"),
+                                verified_key,
+                                slot_name,
+                                slot_value,
+                                MEMORY_SOURCE_MERGED_PROVISIONAL,
+                                evidence,
+                            ),
                         )
                         if cur.fetchone() is not None:
                             moved.append(slot_name)

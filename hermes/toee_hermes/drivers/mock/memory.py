@@ -43,6 +43,18 @@ MEMORY_SOURCE_VALUES: tuple[str, ...] = (
     "merged_provisional",
 )
 
+# Named handles onto the three MEMORY_SOURCE_VALUES entries -- unpacked FROM the
+# tuple (not re-typed as separate literals) so every emit site (the two branches
+# below, and the S10 merge SQL in postgres_gateway_store.py) shares the exact same
+# object the enum holds. A future reorder/add/remove in MEMORY_SOURCE_VALUES fails
+# this unpacking at import time instead of silently drifting a scattered literal
+# out of sync with it.
+(
+    MEMORY_SOURCE_CUSTOMER_EXPLICIT,
+    MEMORY_SOURCE_EMPLOYEE_CONFIRMED,
+    MEMORY_SOURCE_MERGED_PROVISIONAL,
+) = MEMORY_SOURCE_VALUES
+
 # ADR-0111 slots hold a short preference note (e.g. "after 2pm"), not free text;
 # PRD FR-3 caps the stored value so a write can't smuggle an essay into a slot.
 MEMORY_VALUE_MAX_LENGTH = 200
@@ -238,9 +250,9 @@ def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
     from ...plugin.profiles import EXTERNAL, INTERNAL
 
     if context.profile == EXTERNAL:
-        return "customer_explicit"
+        return MEMORY_SOURCE_CUSTOMER_EXPLICIT
     if context.profile == INTERNAL:
-        return "employee_confirmed"
+        return MEMORY_SOURCE_EMPLOYEE_CONFIRMED
     raise ToolDriverError(
         "policy_blocked",
         f'Customer Memory writes are not permitted for profile "{context.profile}".',
