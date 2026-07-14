@@ -14,6 +14,9 @@ vi.mock("@/lib/api/copilot-client", () => ({
   resolveCase: vi.fn(),
   setPriority: vi.fn(),
   setContactReason: vi.fn(),
+  getPreferences: vi.fn().mockResolvedValue({ preferences: {} }),
+  upsertPreference: vi.fn(),
+  clearPreference: vi.fn(),
   draft: vi.fn(),
   chat: vi.fn(),
   sendTextline: vi.fn(),
@@ -56,6 +59,7 @@ beforeEach(() => {
     case: makeCase(),
     messages: [],
   });
+  vi.mocked(copilot.getPreferences).mockResolvedValue({ preferences: {} });
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -97,6 +101,56 @@ describe("CopilotDashboard", () => {
     expect(
       await screen.findByRole("region", { name: /case thread context/i }),
     ).toBeInTheDocument();
+  });
+
+  it("fetches customer preferences alongside the thread when a case is selected", async () => {
+    vi.mocked(copilot.listCases).mockResolvedValue({
+      cases: [makeCase({ caseId: "c9", identitySummary: "Pick Me" })],
+    });
+    vi.mocked(copilot.getThread).mockResolvedValue({
+      case: makeCase({ caseId: "c9", identitySummary: "Pick Me" }),
+      messages: [],
+    });
+    vi.mocked(copilot.getPreferences).mockResolvedValue({
+      preferences: { contact_time_preference: "Evenings" },
+    });
+    renderDashboard(WORKBENCH_ROLES.rep);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+
+    await waitFor(() => expect(copilot.getPreferences).toHaveBeenCalledWith("c9"));
+    expect(await screen.findByText("Evenings")).toBeInTheDocument();
+  });
+
+  it("refreshes preferences after a correction is saved", async () => {
+    vi.mocked(copilot.listCases).mockResolvedValue({
+      cases: [makeCase({ caseId: "c9", identitySummary: "Pick Me" })],
+    });
+    vi.mocked(copilot.getThread).mockResolvedValue({
+      case: makeCase({ caseId: "c9", identitySummary: "Pick Me" }),
+      messages: [],
+    });
+    vi.mocked(copilot.getPreferences).mockResolvedValue({ preferences: {} });
+    vi.mocked(copilot.upsertPreference).mockResolvedValue({
+      slot: "channel_preference",
+      value: "sms",
+      stored: true,
+    });
+    renderDashboard(WORKBENCH_ROLES.rep);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+    await waitFor(() => expect(copilot.getPreferences).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /edit preferred channel/i }));
+    fireEvent.change(screen.getByLabelText("Preferred channel"), {
+      target: { value: "sms" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(copilot.upsertPreference).toHaveBeenCalledWith("c9", "channel_preference", "sms"),
+    );
+    await waitFor(() => expect(copilot.getPreferences).toHaveBeenCalledTimes(2));
   });
 
   it("polls queue and thread while the tab is visible", async () => {

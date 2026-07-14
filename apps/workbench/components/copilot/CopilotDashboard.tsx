@@ -13,10 +13,15 @@ import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import * as copilot from "@/lib/api/copilot-client";
 import type { DraftKind } from "@/lib/api/copilot-client";
 import { ApiError } from "@/lib/api/http";
-import type { ThreadMessage, WorkbenchCase } from "@/lib/gateway/types";
+import type {
+  CustomerPreferences as CustomerPreferencesData,
+  ThreadMessage,
+  WorkbenchCase,
+} from "@/lib/gateway/types";
 import { useErrorBanner } from "@/components/shell/error-banner";
 import { CaseQueue } from "./CaseQueue";
 import { CopilotGateway } from "./CopilotGateway";
+import { CustomerPreferences } from "./CustomerPreferences";
 import { ThreadContext } from "./ThreadContext";
 import type { QueueFilter } from "./QueueFilters";
 
@@ -51,6 +56,7 @@ export function CopilotDashboard({
   const [loadingCases, setLoadingCases] = useState(true);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [thread, setThread] = useState<Thread | null>(null);
+  const [preferences, setPreferences] = useState<CustomerPreferencesData>({});
 
   const elevated = isSupervisorOrAdmin(role);
 
@@ -85,6 +91,18 @@ export function CopilotDashboard({
     [surface],
   );
 
+  const loadPreferences = useCallback(
+    async (caseId: string, opts?: LoadOpts) => {
+      try {
+        const { preferences: next } = await copilot.getPreferences(caseId);
+        setPreferences(next);
+      } catch (err) {
+        if (!opts?.silent) surface(err, "Failed to load preferences");
+      }
+    },
+    [surface],
+  );
+
   useEffect(() => {
     void loadCases();
   }, [loadCases]);
@@ -92,17 +110,22 @@ export function CopilotDashboard({
   useEffect(() => {
     if (selectedCaseId === null) {
       setThread(null);
+      setPreferences({});
       return;
     }
     void loadThread(selectedCaseId);
-  }, [selectedCaseId, loadThread]);
+    void loadPreferences(selectedCaseId);
+  }, [selectedCaseId, loadThread, loadPreferences]);
 
   const refresh = useCallback(
     async (opts?: LoadOpts) => {
       await loadCases(opts);
-      if (selectedCaseId !== null) await loadThread(selectedCaseId, opts);
+      if (selectedCaseId !== null) {
+        await loadThread(selectedCaseId, opts);
+        await loadPreferences(selectedCaseId, opts);
+      }
     },
-    [loadCases, loadThread, selectedCaseId],
+    [loadCases, loadThread, loadPreferences, selectedCaseId],
   );
 
   useEffect(() => {
@@ -181,6 +204,26 @@ export function CopilotDashboard({
             </p>
           )}
         </div>
+
+        {thread !== null ? (
+          <div style={{ flex: "0 0 auto", borderBottom: "1px solid #e2e2e2" }}>
+            <CustomerPreferences
+              preferences={preferences}
+              onUpsert={(slot, value) =>
+                mutate(
+                  () => copilot.upsertPreference(thread.case.caseId, slot, value),
+                  "Failed to update preference",
+                )
+              }
+              onClear={(slot) =>
+                mutate(
+                  () => copilot.clearPreference(thread.case.caseId, slot),
+                  "Failed to clear preference",
+                )
+              }
+            />
+          </div>
+        ) : null}
 
         <div style={{ flex: "1 1 45%", minHeight: 0, overflowY: "auto" }}>
           <CopilotGateway
