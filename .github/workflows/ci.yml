@@ -57,6 +57,25 @@ jobs:
   runtime:
     name: Hermes runtime + gateway embedding
     runs-on: ubuntu-latest
+    # Matches docker-compose.yml's postgres service (same user/pass/db) so the
+    # datastore/E2E acceptance tests (hermes-runtime/tests/conftest.py's
+    # temp_schema_conn) find a real Postgres instead of skipping (ADR-0142).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: toee
+          POSTGRES_PASSWORD: toee
+          POSTGRES_DB: toee_va
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://toee:toee@localhost:5432/toee_va
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
