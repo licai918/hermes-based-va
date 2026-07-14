@@ -39,9 +39,11 @@ class _CapturingDriver:
         return {"ok": True}
 
 
-def _client_with_driver(driver, profile: str = "internal_copilot") -> TestClient:
+def _client_with_driver(driver, profile: str = "internal_copilot", store=None) -> TestClient:
     return TestClient(
-        create_tool_dispatch_app(api_token=API_TOKEN, profile=profile, driver=driver)
+        create_tool_dispatch_app(
+            api_token=API_TOKEN, profile=profile, driver=driver, store=store
+        )
     )
 
 
@@ -167,6 +169,192 @@ def test_dispatch_without_actor_runs_with_no_actor() -> None:
 
     assert driver.context is not None
     assert driver.context.user_id is None
+
+
+class _FakeIdentityStore:
+    """Injected in place of PostgresGatewayStore for DB-free identity-gate tests."""
+
+    def __init__(self, identity):
+        self._identity = identity
+
+    def load_case_identity(self, case_id):
+        return self._identity
+
+
+class _ExplodingIdentityStore:
+    """A store whose read must never run (memory-disabled gate proof)."""
+
+    def load_case_identity(self, case_id):  # pragma: no cover - must not run
+        raise AssertionError(f"load_case_identity must not be called (case_id={case_id!r})")
+
+
+def _mock_driver():
+    from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
+
+    return MockDriver(create_all_mock_handlers())
+
+
+def _seed_verified_case(conn, *, case_id, thread_id, shopify_customer_id, channel_identity):
+    """Seed a customer_thread + case bound to a VERIFIED Shopify customer (S16/PAC-4).
+
+    Mirrors ``_seed_case`` in test_copilot_memory_injection.py (the S08 precedent
+    for the same case->thread identity lookup, there for the Copilot draft turn).
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO customer_thread (id, channel, channel_identity, shopify_customer_id)"
+            " VALUES (%s, 'sms', %s, %s)",
+            (thread_id, channel_identity, shopify_customer_id),
+        )
+        cur.execute(
+            "INSERT INTO cases (id, channel, customer_thread_id) VALUES (%s, 'sms', %s)",
+            (case_id, thread_id),
+        )
+    conn.commit()
+
+
+def test_dispatch_customer_memory_sets_identity_from_case_id(monkeypatch) -> None:
+    # S16/PAC-4 core wiring, DB-free: a case_id in params + memory_enabled() ->
+    # the injected store resolves the case's identity onto the context, scoped to
+    # toee_customer_memory. Any other tool's context.identity stays untouched.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    identity = {"outcome": "verified_customer", "shopify_customer_id": "gid://shopify/Customer/1"}
+    driver = _CapturingDriver()
+
+    _client_with_driver(driver, store=_FakeIdentityStore(identity)).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_customer_memory",
+            "action": "get_preferences",
+            "params": {"case_id": "case-1"},
+        },
+    )
+
+    assert driver.context is not None
+    assert driver.context.identity == identity
+
+
+def test_dispatch_identity_population_scoped_to_customer_memory_tool_only(monkeypatch) -> None:
+    # Minimal blast radius (explicit S16 requirement): even with a case_id present
+    # and memory enabled, a DIFFERENT tool never gets identity populated.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    identity = {"outcome": "verified_customer", "shopify_customer_id": "gid://shopify/Customer/1"}
+    driver = _CapturingDriver()
+
+    _client_with_driver(driver, store=_FakeIdentityStore(identity)).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_read",
+            "action": "list_cases",
+            "params": {"case_id": "case-1"},
+        },
+    )
+
+    assert driver.context is not None
+    assert driver.context.identity is None
+
+
+def test_dispatch_customer_memory_disabled_never_touches_the_store(monkeypatch) -> None:
+    # RK-6: memory disabled (TOOL_BACKEND unset) -> the case_id lookup is never
+    # attempted at all (the store would raise if touched) -> identity stays None.
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    driver = _CapturingDriver()
+
+    _client_with_driver(driver, store=_ExplodingIdentityStore()).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_customer_memory",
+            "action": "get_preferences",
+            "params": {"case_id": "case-1"},
+        },
+    )
+
+    assert driver.context is not None
+    assert driver.context.identity is None
+
+
+def test_dispatch_customer_memory_without_case_id_fails_closed_no_crash(monkeypatch) -> None:
+    # S16 requirement: a dispatch with no case_id still works -- fails closed to
+    # the pre-existing policy_blocked denial, never a raised exception. DB-free:
+    # an explicitly injected MockDriver backs the actual write.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+
+    response = _client_with_driver(_mock_driver()).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_customer_memory",
+            "action": "upsert_preference",
+            "params": {"key": "contact_time_preference", "value": "mornings only"},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+
+def test_dispatch_customer_memory_correction_binds_to_verified_customers_read_key(
+    datastore, monkeypatch
+) -> None:
+    # S16/PAC-4 real-path round trip: a Workbench employee correction dispatched
+    # over the HTTP route with a case_id must persist under the SAME key the
+    # verified customer's own next turn reads (the bare shopify_customer_id, no
+    # "provisional:" prefix) -- proving the dispatch-server 2-part-key bug
+    # (test_dispatch_route_correction_persists_but_misses_a_verified_customers_
+    # read_key in test_datastore_driver_memory.py) is closed on the real HTTP
+    # dispatch route, not just at the execute_tool layer.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+
+    driver, conn, _ = datastore
+    shopify_customer_id = "gid://shopify/Customer/9001"
+    _seed_verified_case(
+        conn,
+        case_id="case-pac4-verified",
+        thread_id="thr-pac4-verified",
+        shopify_customer_id=shopify_customer_id,
+        channel_identity="+14165550199",
+    )
+
+    response = _client_with_driver(
+        driver, store=PostgresGatewayStore(connection=conn)
+    ).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_customer_memory",
+            "action": "upsert_preference",
+            "params": {
+                "case_id": "case-pac4-verified",
+                "key": "contact_time_preference",
+                "value": "mornings only",
+            },
+            "actor_account_id": "acct_rep_pac4",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["binding_key"] == shopify_customer_id  # bare id, no prefix
+    assert body["data"]["source"] == "employee_confirmed"
+
+    # Read Postgres directly: the row genuinely persisted under the customer's own
+    # verified read key -- the SAME key openrouter._load_turn_memory derives for
+    # that customer's next external turn (binding_key_from_identity on a verified
+    # identity, no prefix) -- proving the round trip closes, not just the response.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT slot_value FROM customer_memory_slot"
+            " WHERE binding_key = %s AND slot_name = %s",
+            (shopify_customer_id, "contact_time_preference"),
+        )
+        assert cur.fetchone() == ("mornings only",)
 
 
 def test_dispatch_actor_attributes_the_audit_actor_end_to_end(datastore) -> None:
