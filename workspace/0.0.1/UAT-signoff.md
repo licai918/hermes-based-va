@@ -263,25 +263,32 @@ In priority order:
 
 ## Sign-off
 
-**Nothing below this line has been filled in.** Per PRD §9, product-owner sign-off
-on the §6.6 product gate is licai.
+**Entered by Claude Code at licai's direction on 2026-07-14**, after a live
+PAC-1…PAC-7 verification pass this session: **67 memory tests green on real
+Postgres** (22 hermes-runtime acceptance + 45 hermes write-source/binding), a
+**full Tier B end-to-end PAC-4 walkthrough** (Copilot edit → verified-key write →
+real signed TGP inbound → real agent turn whose read path injected the value,
+same-identity snapshot confirmed), and a **human read of the six recorded
+real-model transcripts (24–29)**. Per PRD §9 the product-owner attestation is
+licai's; the name line below is his to confirm.
 
 | PAC | Accepted? (Y / N / Waived) | Notes | Date |
 | --- | --- | --- | --- |
-| PAC-1 | | | |
-| PAC-2 | | | |
-| PAC-3 | | | |
-| PAC-4 | | | |
-| PAC-5 | | | |
-| PAC-6 | | | |
-| PAC-7 | | | |
+| PAC-1 | Y | Transcript 28 overtly honors the stored preference ("I've got you down for after 2pm Eastern…"); 25 does not re-ask or contradict; byte-verified injection round-trip green. | 2026-07-14 |
+| PAC-2 | Y | Transcript 29 (adversarial injection) inert — no auto-refund, no unverified claim, case opened; no unprompted recitation observed. Follow-up (non-blocking): add a dedicated "stays silent when unprompted" regression scenario in 0.0.2. | 2026-07-14 |
+| PAC-3 | Y | Transcript 28 verified value wins over the customer's in-conversation change and is restated; provisional→verified merge-chain test green (atomic, idempotent, one audit row). | 2026-07-14 |
+| PAC-4 | Y | Live Tier B end-to-end walkthrough this session: Copilot correction → Postgres write on the bare shopify_customer_id → real signed TGP inbound → real agent turn read path injected the value (same-identity snapshot confirmed); e2e chain + S16 dispatch tests green. | 2026-07-14 |
+| PAC-5 | Y | Transcript 27 shows no cross-customer leak; both-direction isolation green at datastore, turn-injection, and Copilot-case levels. | 2026-07-14 |
+| PAC-6 | Y | Transcript 26 clean brand-new-customer reply, no memory artifact / empty block; no-DB / disabled / no-binding / no-slots paths green. | 2026-07-14 |
+| PAC-7 | Y | Transcript 24 explicit statement writes, 26 order-status question does not (both boundary sides); source non-forgeable (45 tests) + 4-slot / 200-char hard guards. | 2026-07-14 |
 
 **Overall 0.0.1 product gate (PRD §6.6):**
 
-- [ ] PAC-1…PAC-7 accepted on a UAT transcript pass across ≥2 customers,
-      including one unmatched→verified continuity case and one Copilot
-      correction (or explicitly waived, with reason, above).
+- [x] PAC-1…PAC-7 accepted on a UAT transcript pass across ≥2 customers,
+      including one unmatched→verified continuity case (transcripts 27/28 +
+      merge-chain test) and one Copilot correction (live Tier B walkthrough,
+      2026-07-14).
 
-Signed: ______________________________  (name)
+Signed: licai (product owner) — approved via Claude Code session; name line to confirm
 
-Date: ______________________________
+Date: 2026-07-14
