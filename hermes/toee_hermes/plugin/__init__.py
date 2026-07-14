@@ -167,7 +167,12 @@ def _register(
     ctx.register_hook("pre_llm_call", hook)
 
 
-def register(ctx: Any, *, identity: Optional[Any] = None) -> None:
+def register(
+    ctx: Any,
+    *,
+    identity: Optional[Any] = None,
+    extra_drivers: Optional[dict[str, ToolDriver]] = None,
+) -> None:
     """Register allowlisted Domain Adapter Tools + the injection hook for a profile.
 
     This is the Hermes plugin entry point (eval/replay + Copilot paths): the
@@ -179,12 +184,19 @@ def register(ctx: Any, *, identity: Optional[Any] = None) -> None:
     an employee-confirmed ``toee_customer_memory`` correction then binds to the SAME
     identity-derived key the turn-time read used. Absent (the plugin entry point and
     eval/replay call ``register(ctx)``) the context carries no identity, unchanged.
+
+    ``extra_drivers`` is the SAME per-tool driver override ``register_turn`` has had
+    since S04 (S20/PAC-4 gap #2): the Copilot draft turn is unbound (no
+    ``conversation_id``), so without this an agent-initiated ``toee_customer_memory``
+    write always fell to the ephemeral mock, even though S08 already binds the
+    right identity. Threaded into :func:`_register` unchanged.
     """
     _register(
         ctx,
         provider_factory=lambda profile: _make_context_provider(
             profile, identity=identity
         ),
+        extra_drivers=extra_drivers,
     )
 
 

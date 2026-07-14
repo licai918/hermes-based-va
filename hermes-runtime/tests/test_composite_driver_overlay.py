@@ -125,6 +125,22 @@ def test_boot_profile_forwards_extra_drivers_to_register_turn(monkeypatch) -> No
     assert captured.get("extra_drivers") is sentinel
 
 
+def test_boot_profile_forwards_extra_drivers_to_register(monkeypatch) -> None:
+    # S20/PAC-4 gap #2: the UNBOUND boot path (no conversation_id -- Copilot draft
+    # turn) also forwards the overlay; mirrors the bound-path test above.
+    import toee_hermes.plugin as plugin_mod
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        plugin_mod, "register", lambda _ctx, **kwargs: captured.update(kwargs)
+    )
+    sentinel = {"toee_customer_memory": object()}
+
+    boot_profile(EXTERNAL, extra_drivers=sentinel)
+
+    assert captured.get("extra_drivers") is sentinel
+
+
 def test_overlay_dispatch_persists_to_postgres_and_attributes_datastore(datastore) -> None:
     # The brief's integration acceptance: the overlay routes toee_customer_memory to
     # the datastore driver, the governed dispatch persists to customer_memory_slot

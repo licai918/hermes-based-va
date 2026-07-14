@@ -52,7 +52,7 @@ from hermes_runtime.openrouter import (
     make_fallback_openai_factory,
     resolve_openrouter_config,
 )
-from hermes_runtime.tool_backend import memory_enabled
+from hermes_runtime.tool_backend import memory_enabled, select_tool_driver
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +212,24 @@ def _load_case_memory(
         return identity, None
 
 
+def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_customer_memory`` to the Postgres datastore for this copilot draft turn.
+
+    S20/PAC-4 gap #2: mirrors openrouter.py's ``_customer_memory_extra_drivers``
+    (S04) on the UNBOUND boot path. Gated by :func:`memory_enabled` (S05's single
+    source of truth, shared with the read gates above) -- a mock/unset deployment
+    never constructs a datastore driver, so the tool stays on the shared mock and an
+    agent-initiated write is discarded there, unchanged (FR-7). When memory is
+    enabled, :func:`select_tool_driver` (the one lazy import site for
+    ``PostgresDriver`` in hermes-runtime) builds it, so an employee-confirmed
+    correction the copilot agent makes reaches Postgres under the SAME key S08
+    already binds ``context.identity`` to.
+    """
+    if not memory_enabled():
+        return None
+    return {"toee_customer_memory": select_tool_driver("datastore")}
+
+
 def make_copilot_run_turn(
     *,
     scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
@@ -244,7 +262,12 @@ def make_copilot_run_turn(
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
-        booted = boot_profile(INTERNAL, identity=identity)
+        # extra_drivers (S20/PAC-4 gap #2): routes toee_customer_memory to the
+        # datastore when memory is enabled, so an agent-initiated write persists
+        # instead of always hitting mock.
+        booted = boot_profile(
+            INTERNAL, identity=identity, extra_drivers=_customer_memory_extra_drivers()
+        )
         system_message = _system_message(channel)
         base_user_message = _user_message(channel, case_id, prompt)
         # Memory only — the case identity is not surfaced as a snapshot block (the

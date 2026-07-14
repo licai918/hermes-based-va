@@ -17,7 +17,7 @@ import json
 from typing import Any
 
 from toee_hermes import plugin
-from toee_hermes.plugin import _build_driver_selector, register_turn
+from toee_hermes.plugin import _build_driver_selector, register, register_turn
 from toee_hermes.plugin.profiles import EXTERNAL
 
 
@@ -64,6 +64,34 @@ def test_register_turn_routes_the_override_tool_to_the_injected_driver(monkeypat
         conversation_id="conv-A",
         extra_drivers={"toee_customer_memory": datastore},
     )
+
+    # The overridden tool dispatches through the injected datastore driver.
+    out = json.loads(
+        _handler(ctx, "toee_customer_memory__upsert_preference")(
+            {"key": "channel_preference", "value": "sms"}
+        )
+    )
+    assert out == {"routed_through": "datastore", "tool": "toee_customer_memory"}
+    assert datastore.calls == ["toee_customer_memory"]
+
+    # Every other tool stays on the shared mock driver (real mock contract, not the fake).
+    products = json.loads(
+        _handler(ctx, "toee_shopify_read__search_products")({"query": "225"})
+    )
+    assert isinstance(products, list)
+    assert datastore.calls == ["toee_customer_memory"]  # never routed a non-override tool
+
+
+def test_register_routes_the_override_tool_to_the_injected_driver(monkeypatch) -> None:
+    # S20/PAC-4 gap #2: the UNBOUND register() entry point (Copilot draft turn) gets
+    # the SAME extra_drivers override register_turn already has (S04) -- one level
+    # down (no conversation_id), so an agent-initiated write also reaches the
+    # datastore instead of always falling to mock.
+    monkeypatch.setenv("INTEGRATION_DRIVER", "mock")
+    datastore = RecordingDriver("datastore")
+
+    ctx = RecordingCtx(profile=EXTERNAL)
+    register(ctx, extra_drivers={"toee_customer_memory": datastore})
 
     # The overridden tool dispatches through the injected datastore driver.
     out = json.loads(
