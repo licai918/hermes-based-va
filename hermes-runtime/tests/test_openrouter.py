@@ -249,7 +249,9 @@ def test_make_openrouter_run_turn_falls_back_to_the_secondary_model_on_retryable
     )
 
     turn = run_turn(
-        SimpleNamespace(conversation_id="conv-A", sms_session_id=None),
+        SimpleNamespace(
+            conversation_id="conv-A", sms_session_id=None, from_phone="+14165550101"
+        ),
         "Got my size?",
     )
 
@@ -287,7 +289,9 @@ def test_make_openrouter_run_turn_runs_a_bound_governed_turn_via_injected_provid
     )
 
     turn = run_turn(
-        SimpleNamespace(conversation_id="conv-A", sms_session_id=None),
+        SimpleNamespace(
+            conversation_id="conv-A", sms_session_id=None, from_phone="+14165550101"
+        ),
         "Where is my order?",
     )
 
@@ -317,6 +321,7 @@ def test_run_turn_passes_reloaded_snapshot_into_profile_boot(monkeypatch) -> Non
     context = SimpleNamespace(
         conversation_id="conv-778",
         sms_session_id="sms_session:thr:conv-778",
+        from_phone="4165550101",
         session_identity_snapshot=SessionIdentitySnapshot(
             outcome="verified_customer",
             resolved_at="2026-06-30T12:00:00Z",
@@ -332,6 +337,52 @@ def test_run_turn_passes_reloaded_snapshot_into_profile_boot(monkeypatch) -> Non
     assert identity["outcome"] == "verified_customer"
     assert identity["shopify_customer_id"] == "gid://shopify/Customer/1019382595648"
     assert identity["company_name"] == "Hello"
+    # S01: the SMS channel identity (E.164) rides context.identity alongside the
+    # snapshot fields, normalized from AgentTurnContext.from_phone — never a
+    # tool-schema param (RK-3).
+    assert identity["channel"] == "sms"
+    assert identity["channel_identity"] == "+14165550101"
+
+
+def test_run_turn_builds_channel_identity_for_an_unmatched_caller_with_no_snapshot(
+    monkeypatch,
+) -> None:
+    # S01: an unmatched/ambiguous caller with no resolved snapshot still needs a
+    # channel identity in context, so provisional Customer Memory binding (S02)
+    # never has to fall back to a model-supplied param.
+    import hermes_runtime.openrouter as openrouter_mod
+
+    captured: dict[str, object] = {}
+    real_boot = openrouter_mod.boot_profile
+
+    def capture(profile: str, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_boot(profile, **kwargs)
+
+    monkeypatch.setattr(openrouter_mod, "boot_profile", capture)
+    config = OpenRouterConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-test",
+        model=OPENROUTER_PRIMARY_MODEL,
+    )
+    run_turn = make_openrouter_run_turn(
+        config=config,
+        openai_factory=_scripted_openai_factory([{"content": "Hi there."}]),
+    )
+    context = SimpleNamespace(
+        conversation_id="conv-779",
+        sms_session_id="sms_session:thr:conv-779",
+        from_phone="4165550102",
+        session_identity_snapshot=None,
+    )
+
+    run_turn(context, "Where is my order?")
+
+    identity = captured.get("identity")
+    assert isinstance(identity, dict)
+    assert identity["channel"] == "sms"
+    assert identity["channel_identity"] == "+14165550102"
+    assert "outcome" not in identity
 
 
 def test_run_turn_prepends_snapshot_into_user_message(monkeypatch) -> None:
@@ -357,6 +408,7 @@ def test_run_turn_prepends_snapshot_into_user_message(monkeypatch) -> None:
     context = SimpleNamespace(
         conversation_id="conv-778",
         sms_session_id="sms_session:thr:conv-778",
+        from_phone="4165550101",
         session_identity_snapshot=SessionIdentitySnapshot(
             outcome="verified_customer",
             resolved_at="2026-06-30T12:00:00Z",
@@ -371,5 +423,8 @@ def test_run_turn_prepends_snapshot_into_user_message(monkeypatch) -> None:
     assert "Session Identity Snapshot:" in user_message
     assert "verified_customer" in user_message
     assert "1019382595648" in user_message
+    # S01: the enriched identity (with channel/channel_identity) is what gets
+    # rendered, not just the raw snapshot.
+    assert "+14165550101" in user_message
     assert user_message.endswith("Where is my order?")
 

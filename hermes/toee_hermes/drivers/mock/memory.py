@@ -3,8 +3,10 @@
 Implements the v1 Customer Memory actions over the fixed four preference slots of
 ADR-0111: open-ended keys are rejected rather than silently stored. Memory binds
 to the verified ``shopify_customer_id`` from the Session Identity Snapshot
-(``context.identity``, ADR-0043) or, when unverified, to a provisional channel
-binding (ADR-0112). Reads honor an injected baseline so a scenario ``memory_preset``
+(``context.identity``, ADR-0043) or, when unverified, to a canonical provisional
+channel key derived from context — fail-closed when no channel identity resolves,
+never a shared bucket (:func:`resolve_customer_memory_binding`, ADR-0112, PRD
+FR-5/S02). Reads honor an injected baseline so a scenario ``memory_preset``
 is reflected on first read (ADR-0113 lightweight injection). Writes are
 explicit-only: this driver never infers or fabricates a preference.
 """
@@ -28,6 +30,40 @@ MEMORY_PREFERENCE_SLOTS: tuple[str, ...] = (
     "delivery_habit_note",
     "communication_style_note",
 )
+
+# Framework-derived write sources (PRD FR-3, RK-1). ``customer_explicit`` and
+# ``employee_confirmed`` are set by :func:`resolve_memory_write_source`, never by
+# a model-supplied tool param. ``merged_provisional`` is reserved for the async
+# provisional-to-verified merge path (S10) and is not produced by either write
+# handler in this module -- it is listed here so the enum never needs a second
+# change when that path lands.
+MEMORY_SOURCE_VALUES: tuple[str, ...] = (
+    "customer_explicit",
+    "employee_confirmed",
+    "merged_provisional",
+)
+
+# Named handles onto the three MEMORY_SOURCE_VALUES entries -- unpacked FROM the
+# tuple (not re-typed as separate literals) so every emit site (the two branches
+# below, and the S10 merge SQL in postgres_gateway_store.py) shares the exact same
+# object the enum holds. A future reorder/add/remove in MEMORY_SOURCE_VALUES fails
+# this unpacking at import time instead of silently drifting a scattered literal
+# out of sync with it.
+(
+    MEMORY_SOURCE_CUSTOMER_EXPLICIT,
+    MEMORY_SOURCE_EMPLOYEE_CONFIRMED,
+    MEMORY_SOURCE_MERGED_PROVISIONAL,
+) = MEMORY_SOURCE_VALUES
+
+# ADR-0111 slots hold a short preference note (e.g. "after 2pm"), not free text;
+# PRD FR-3 caps the stored value so a write can't smuggle an essay into a slot.
+MEMORY_VALUE_MAX_LENGTH = 200
+
+# ``evidence`` (the optional verbatim customer phrase kept for audit, PRD FR-3) is
+# a quoted excerpt rather than a slot value, so it gets a looser but still bounded
+# ceiling -- same governed-rejection treatment as MEMORY_VALUE_MAX_LENGTH, just a
+# larger cap, so a write can't smuggle an unbounded essay in via evidence either.
+MEMORY_EVIDENCE_MAX_LENGTH = 500
 
 
 @dataclass(frozen=True)
@@ -75,32 +111,158 @@ def _read_string(params: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _resolve_binding_key(
-    context: "ToolExecutionContext", params: dict[str, Any]
-) -> str:
-    """Bind to the verified ``shopify_customer_id``, else a provisional channel key.
+def _require_value(params: dict[str, Any]) -> str:
+    """Resolve and validate ``value``: a string, capped at 200 chars (PRD FR-3)."""
+    value = params.get("value")
+    if not isinstance(value, str):
+        raise ToolDriverError(
+            "unexpected_error", "upsert_preference requires a string value."
+        )
+    if len(value) > MEMORY_VALUE_MAX_LENGTH:
+        raise ToolDriverError(
+            "unexpected_error",
+            "Customer Memory rejects a value longer than "
+            f"{MEMORY_VALUE_MAX_LENGTH} characters.",
+        )
+    return value
 
-    A verified Session Identity Snapshot binds memory to its Shopify customer id;
-    otherwise the binding is provisional and keyed by the channel identity supplied
-    in ``params`` (ADR-0112). Ambiguous matches never merge in v1, so they are not
-    split further here. With no channel identity, a single ``provisional`` bucket
-    is used.
+
+def _read_evidence(params: dict[str, Any]) -> str | None:
+    """Resolve the optional ``evidence`` param: a string, capped at 500 chars."""
+    evidence = params.get("evidence")
+    if evidence is None:
+        return None
+    if not isinstance(evidence, str):
+        raise ToolDriverError(
+            "unexpected_error",
+            "upsert_preference evidence must be a string when provided.",
+        )
+    if len(evidence) > MEMORY_EVIDENCE_MAX_LENGTH:
+        raise ToolDriverError(
+            "unexpected_error",
+            "Customer Memory rejects evidence longer than "
+            f"{MEMORY_EVIDENCE_MAX_LENGTH} characters.",
+        )
+    return evidence
+
+
+def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
+    """Pure identity dict -> ``(binding_key, binding_kind)`` core, or ``None``.
+
+    The security-sensitive derivation shared by BOTH the governed WRITE path
+    (:func:`resolve_customer_memory_binding`) and the turn-time READ injection
+    (openrouter/copilot, S07/S08): reads and writes MUST compute a byte-identical
+    key for a given identity or the memory round-trip silently returns nothing.
+
+    A verified Session Identity Snapshot (``identity["outcome"] ==
+    "verified_customer"``) binds to its Shopify customer id, kind ``"verified"``.
+    Otherwise the caller's ingress-controlled channel identity
+    (``identity["channel"]`` / ``["channel_identity"]``, S01) is canonicalized to
+    ``provisional:{channel}:{E.164}`` (e.g. ``provisional:sms:+17786803250``), kind
+    ``"provisional"`` — never a model-supplied param (RK-3). A degenerate channel
+    identity (missing, empty, or normalizing to a bare ``"+"``) yields ``None``, not
+    a shared bucket.
+
+    Returns ``None`` when nothing resolves — the caller decides the fail-closed
+    policy: the write path raises ``policy_blocked``; the read path injects nothing.
     """
-    identity = context.identity
-    if isinstance(identity, dict) and identity.get("outcome") == "verified_customer":
+    # Deferred import: this module loads as part of ``drivers.mock``'s own package
+    # init (which ``toee_hermes.plugin`` imports in turn), so importing ``gateway``
+    # at module scope here would re-enter that partially-initialized package during
+    # a cold import and raise ImportError.
+    from ...gateway.normalize import normalize_e164
+
+    if not isinstance(identity, dict):
+        return None
+
+    if identity.get("outcome") == "verified_customer":
         shopify_customer_id = identity.get("shopify_customer_id")
         if isinstance(shopify_customer_id, str) and shopify_customer_id:
-            return shopify_customer_id
-    channel_identity_id = _read_string(
-        params, "channel_identity_id", "channelIdentityId"
+            return shopify_customer_id, "verified"
+
+    channel = identity.get("channel")
+    channel_identity = identity.get("channel_identity")
+    if isinstance(channel, str) and channel and isinstance(channel_identity, str):
+        normalized = normalize_e164(channel_identity)
+        if normalized != "+":
+            return f"provisional:{channel}:{normalized}", "provisional"
+
+    return None
+
+
+def resolve_customer_memory_binding(
+    context: "ToolExecutionContext", params: dict[str, Any]
+) -> tuple[str, str]:
+    """Resolve ``(binding_key, binding_kind)`` for a WRITE, fail-closed (S02, FR-5).
+
+    Thin wrapper over :func:`binding_key_from_identity` (the shared pure core) that
+    adds the two write-only concerns: the ``internal_copilot`` param carve-out and
+    the fail-closed ``policy_blocked`` raise. Kept here since hermes-runtime already
+    imports ``MEMORY_PREFERENCE_SLOTS`` from this module as the single source of
+    truth for the slot enum.
+
+    ``channel_identity_id`` in ``params`` is honored only as a last resort on the
+    ``internal_copilot`` profile (employee-confirmed corrections over the unbound
+    workbench dispatch path, which carries no channel identity in context). Every
+    other profile — including external — ignores it entirely.
+
+    No resolvable identity at all raises a fail-closed ``policy_blocked``; the bare
+    shared ``"provisional"`` key from pre-S02 (a cross-customer leak) is gone.
+    """
+    # Deferred import: same partially-initialized-package hazard as the core above.
+    from ...plugin.profiles import INTERNAL
+
+    resolved = binding_key_from_identity(context.identity)
+    if resolved is not None:
+        return resolved
+
+    if context.profile == INTERNAL:
+        channel_identity_id = _read_string(
+            params, "channel_identity_id", "channelIdentityId"
+        )
+        if channel_identity_id is not None:
+            return f"provisional:{channel_identity_id}", "provisional"
+
+    raise ToolDriverError(
+        "policy_blocked",
+        "Customer Memory requires a resolvable channel identity; the turn has "
+        "none (fail-closed, ADR-0112 / PRD FR-5).",
     )
-    if channel_identity_id is not None:
-        return f"provisional:{channel_identity_id}"
-    return "provisional"
+
+
+def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
+    """Framework-derived ``source`` for a preference write (RK-1, PRD FR-3).
+
+    ONE shared resolver for both the mock and Postgres datastore handlers, same
+    reasoning as :func:`resolve_customer_memory_binding`: this is
+    security-sensitive governance logic that must not drift between the two.
+
+    Never taken from the model-supplied tool params -- the model cannot forge
+    ``customer_explicit`` for an inferred write. The External Customer Service
+    Profile always writes ``customer_explicit``; the Internal Copilot Profile
+    always writes ``employee_confirmed``. ``merged_provisional`` is set only by
+    the merge path (S10), never by this resolver. Any other profile is
+    fail-closed -- ``toee_customer_memory`` is not allowlisted outside these two
+    today (ADR-0034/35), so this is defense in depth, not a reachable path.
+    """
+    # Deferred import: same partially-initialized-package hazard documented on
+    # resolve_customer_memory_binding above.
+    from ...plugin.profiles import EXTERNAL, INTERNAL
+
+    if context.profile == EXTERNAL:
+        return MEMORY_SOURCE_CUSTOMER_EXPLICIT
+    if context.profile == INTERNAL:
+        return MEMORY_SOURCE_EMPLOYEE_CONFIRMED
+    raise ToolDriverError(
+        "policy_blocked",
+        f'Customer Memory writes are not permitted for profile "{context.profile}".',
+    )
 
 
 def create_memory_mock_handlers(
     data: MemoryMockData = memory_baseline_data,
+    *,
+    evidence_store: dict[str, dict[str, str]] | None = None,
 ) -> MockHandlerRegistry:
     """Build ``toee_customer_memory`` handlers backed by a per-binding store.
 
@@ -108,8 +270,19 @@ def create_memory_mock_handlers(
     in-memory writes persist across calls within one handler-set instance while
     staying isolated per identity binding. Each binding is lazily seeded from the
     injected baseline so a scenario ``memory_preset`` is honored on first read.
+
+    ``evidence_store``, when supplied, is mutated in place with each write's
+    ``evidence`` (``binding_key -> {slot: evidence}``) -- mirrors the datastore
+    handler's ``evidence`` column so a caller (a test, mainly) can prove evidence
+    is actually persisted and retrievable, not just echoed back on the same call
+    (PRD FR-3). Not exposed through ``get_preferences``, matching how ``source``
+    already isn't -- both are write-time governance/audit metadata, not part of
+    the live preference value re-injected into the prompt every turn (RK-2).
     """
     store: dict[str, dict[str, str]] = {}
+    evidence: dict[str, dict[str, str]] = (
+        {} if evidence_store is None else evidence_store
+    )
 
     def slots_for(binding_key: str) -> dict[str, str]:
         slots = store.get(binding_key)
@@ -125,21 +298,21 @@ def create_memory_mock_handlers(
         # (scenario 24). The Tool Gate — not this driver — enforces that the write
         # came from explicit customer language (ADR-0114).
         slot = _require_slot(params)
-        value = params.get("value")
-        if not isinstance(value, str):
-            raise ToolDriverError(
-                "unexpected_error", "upsert_preference requires a string value."
-            )
-        source = params.get("source")
-        if not isinstance(source, str):
-            source = None
-        binding_key = _resolve_binding_key(context, params)
+        value = _require_value(params)
+        write_evidence = _read_evidence(params)
+        # RK-1: source is framework-derived from context.profile, never the
+        # model-supplied params — any "source" the caller passed is ignored.
+        source = resolve_memory_write_source(context)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key)[slot] = value
+        if write_evidence is not None:
+            evidence.setdefault(binding_key, {})[slot] = write_evidence
         return {
             "binding_key": binding_key,
             "slot": slot,
             "value": value,
             "source": source,
+            "evidence": write_evidence,
             "stored": True,
         }
 
@@ -148,7 +321,7 @@ def create_memory_mock_handlers(
     ) -> dict[str, Any]:
         # Clears one preference slot and acknowledges the removal.
         slot = _require_slot(params)
-        binding_key = _resolve_binding_key(context, params)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key).pop(slot, None)
         return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
@@ -157,7 +330,7 @@ def create_memory_mock_handlers(
     ) -> dict[str, Any]:
         # Returns the current preference slots for the active binding, honoring any
         # injected baseline (scenario 25).
-        binding_key = _resolve_binding_key(context, params)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         return {
             "binding_key": binding_key,
             "preferences": dict(slots_for(binding_key)),

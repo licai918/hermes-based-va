@@ -14,6 +14,7 @@ from typing import Any, Iterator, Optional
 import psycopg
 from psycopg.types.json import Jsonb
 
+from toee_hermes.drivers.mock.memory import MEMORY_SOURCE_MERGED_PROVISIONAL
 from toee_hermes.gateway.agent_turn import AgentTurnContext, build_agent_turn_context
 from toee_hermes.gateway.ingress import SessionIdentitySnapshot
 from toee_hermes.gateway.pipeline import InboundDecision
@@ -300,6 +301,143 @@ class PostgresGatewayStore:
                 )
                 row = cur.fetchone()
         return row[0] if row else None
+
+    def load_case_identity(self, case_id: str) -> Optional[dict[str, Any]]:
+        """Resolve a case's customer-thread identity for turn-time memory binding (S08).
+
+        The Copilot draft seam is bound to a ``case_id``, not a phone, so its binding
+        key is derived here: join the case to its ``customer_thread`` and return an
+        identity dict in the S02/S07 shape (``binding_key_from_identity``'s contract)
+        — verified on the thread's ``shopify_customer_id``, else provisional on its
+        channel identity. Returns ``None`` when the case is unknown or threadless, so
+        the read fail-closes to "inject nothing" rather than raising."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT t.channel, t.channel_identity, t.shopify_customer_id
+                    FROM cases c
+                    JOIN customer_thread t ON t.id = c.customer_thread_id
+                    WHERE c.id = %s
+                    """,
+                    (case_id,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        channel, channel_identity, shopify_customer_id = row
+        if shopify_customer_id:
+            return {
+                "outcome": "verified_customer",
+                "shopify_customer_id": shopify_customer_id,
+                "channel": channel,
+                "channel_identity": channel_identity,
+            }
+        return {
+            "outcome": "unmatched_caller",
+            "channel": channel,
+            "channel_identity": channel_identity,
+        }
+
+    def load_customer_memory(self, binding_key: str) -> list[dict[str, Any]]:
+        """Indexed read of a binding key's preference slots (FR-1), in the
+        ``[{"slot": ..., "value": ...}, ...]`` shape ``hooks._render_memory`` expects."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT slot_name, slot_value FROM customer_memory_slot WHERE binding_key = %s",
+                    (binding_key,),
+                )
+                rows = cur.fetchall()
+        return [{"slot": name, "value": value} for name, value in rows]
+
+    def merge_provisional_memory(
+        self, provisional_key: str, verified_key: str
+    ) -> Optional[dict[str, Any]]:
+        """Merge a caller's pre-verification provisional slots onto their verified
+        record, atomically and idempotently (ADR-0112, FR-4, R5). First writer of
+        ``customer_memory_merge_audit``.
+
+        Behavior: move each provisional slot onto ``verified_key`` with
+        ``source = merged_provisional``; **on slot conflict the verified value wins**
+        and the provisional value is recorded in the audit ``details.overridden``;
+        delete the provisional copies; write exactly one audit row. Evidence is
+        **carried forward** on a migrated slot (the verbatim customer phrase is the
+        slot's real provenance, and FR-3 wants every write to carry it); a conflicting
+        slot is not inserted, so the verified slot's own evidence is left intact.
+
+        Idempotency (RK-5): the provisional rows are locked ``FOR UPDATE`` as the
+        first statement, so two concurrent/repeat merges serialize here — the first
+        deletes the rows, the second's lock re-check then finds an empty set and is a
+        no-op. Exactly one audit row per transition, no double-apply, without a
+        uniqueness constraint on the audit table. Returns ``None`` when there was
+        nothing to merge.
+        # ponytail: FOR UPDATE serialization is sufficient at SMS volume; add a
+        # unique audit key only if a non-locking merge path ever appears.
+        """
+        with self._connect() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT slot_name, slot_value, evidence
+                        FROM customer_memory_slot
+                        WHERE binding_key = %s
+                        ORDER BY slot_name
+                        FOR UPDATE
+                        """,
+                        (provisional_key,),
+                    )
+                    provisional_rows = cur.fetchall()
+                    if not provisional_rows:
+                        conn.commit()  # release the lock / snapshot; nothing to merge
+                        return None
+
+                    moved: list[str] = []
+                    overridden: dict[str, str] = {}
+                    for slot_name, slot_value, evidence in provisional_rows:
+                        cur.execute(
+                            """
+                            INSERT INTO customer_memory_slot
+                                (id, binding_key, binding_kind, slot_name, slot_value,
+                                 source, evidence)
+                            VALUES (%s, %s, 'verified', %s, %s, %s, %s)
+                            ON CONFLICT (binding_key, slot_name) DO NOTHING
+                            RETURNING slot_name
+                            """,
+                            (
+                                new_id("mem"),
+                                verified_key,
+                                slot_name,
+                                slot_value,
+                                MEMORY_SOURCE_MERGED_PROVISIONAL,
+                                evidence,
+                            ),
+                        )
+                        if cur.fetchone() is not None:
+                            moved.append(slot_name)
+                        else:
+                            overridden[slot_name] = slot_value
+
+                    cur.execute(
+                        "DELETE FROM customer_memory_slot WHERE binding_key = %s",
+                        (provisional_key,),
+                    )
+
+                    details = {"moved": moved, "overridden": overridden}
+                    cur.execute(
+                        """
+                        INSERT INTO customer_memory_merge_audit
+                            (id, provisional_key, verified_key, details)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (new_id("merge"), provisional_key, verified_key, Jsonb(details)),
+                    )
+                conn.commit()
+                return {"moved": moved, "overridden": overridden}
+            except Exception:
+                conn.rollback()
+                raise
 
     def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None:
         """Mirror a successful agent SMS reply into message_turn for Workbench (ADR-0082)."""

@@ -67,3 +67,53 @@ def datastore(temp_schema_conn):
     from hermes_runtime.datastore.driver import PostgresDriver
 
     return PostgresDriver(connection=conn), conn, schema
+
+
+@pytest.fixture(autouse=True)
+def _reset_tool_registry():
+    """Snapshot/restore the shared upstream ``tools.registry`` singleton per test.
+
+    ``boot_profile`` (hermes_runtime/boot.py) and Hermes' own native
+    ``discover_plugins`` (test_entrypoint_discovery.py) register tool handlers
+    into a PROCESS-WIDE singleton (``tools.registry.registry``) keyed by tool
+    name. A profile's static ``(name, toolset)`` pairs never change, so a later
+    boot always silently overwrites an earlier one for the same name -- and,
+    more perniciously, entries NO later boot happens to touch just accumulate
+    forever. ``run_agent_turn`` (hermes_runtime/live.py) unions a booted
+    profile's own tool names with the agent's own DEFAULT ``valid_tool_names``,
+    which is resolved from whatever toolsets are CURRENTLY registered -- so a
+    tool an earlier test registered for a DIFFERENT profile (e.g. the External
+    profile's ``toee_textline_reply__send_message``, registered globally by
+    test_entrypoint_discovery.py's in-process ``discover_plugins(force=True)``)
+    can silently satisfy the "is this tool allowed" check in a LATER test that
+    boots a profile without it -- defeating the very rejection the later test
+    means to prove.
+
+    Confirmed live: ``pytest tests/test_entrypoint_discovery.py
+    tests/test_copilot_turn.py`` fails
+    ``test_a_send_tool_call_is_rejected_under_the_real_multistep_loop`` and
+    ``test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop``
+    without this fixture (the scripted send tool_call actually dispatches
+    instead of getting the intended "does not exist" rejection). Both are
+    order-independent green with it, and a full-suite run in reverse file
+    order (a controlled A/B: identical otherwise) fails only those two tests
+    without this fixture and neither with it.
+
+    Restoring the exact pre-test snapshot after each test -- rather than
+    clearing the registry outright -- keeps process-lifetime registrations
+    (Hermes' own built-in tools, registered exactly once via
+    ``model_tools.discover_builtin_tools()`` at first import) intact, since
+    they are already present in every test's "before" snapshot.
+    """
+    from tools.registry import registry
+
+    with registry._lock:
+        tools_snapshot = dict(registry._tools)
+        checks_snapshot = dict(registry._toolset_checks)
+        aliases_snapshot = dict(registry._toolset_aliases)
+    yield
+    with registry._lock:
+        registry._tools = tools_snapshot
+        registry._toolset_checks = checks_snapshot
+        registry._toolset_aliases = aliases_snapshot
+        registry._generation += 1

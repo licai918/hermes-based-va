@@ -2,7 +2,9 @@ import {
   assignCase,
   chat,
   claimCase,
+  clearPreference,
   draft,
+  getPreferences,
   getThread,
   listCases,
   normalizeDraft,
@@ -10,6 +12,7 @@ import {
   sendTextline,
   setContactReason,
   setPriority,
+  upsertPreference,
 } from "./copilot-client";
 
 function ok(body: unknown) {
@@ -51,6 +54,17 @@ describe("read wrappers", () => {
 
     await expect(getThread("c1")).resolves.toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith("/api/copilot/cases/c1/thread", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("getPreferences hits the preferences endpoint", async () => {
+    const payload = { preferences: { contact_time_preference: "evenings" } };
+    const fetchMock = vi.fn().mockResolvedValue(ok(payload));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getPreferences("c1")).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith("/api/copilot/cases/c1/preferences", {
       headers: { accept: "application/json" },
     });
   });
@@ -118,6 +132,36 @@ describe("mutation wrappers", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ contactReason: "order_status" }),
+    });
+  });
+
+  it("upsertPreference POSTs the slot + value", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ok({ slot: "channel_preference", value: "sms", stored: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await upsertPreference("c1", "channel_preference", "sms");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/copilot/cases/c1/preferences", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slot: "channel_preference", value: "sms" }),
+    });
+  });
+
+  it("clearPreference POSTs the slot to the clear endpoint", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ok({ slot: "channel_preference", cleared: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await clearPreference("c1", "channel_preference");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/copilot/cases/c1/preferences/clear", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slot: "channel_preference" }),
     });
   });
 

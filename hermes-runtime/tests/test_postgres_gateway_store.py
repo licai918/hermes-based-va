@@ -201,6 +201,34 @@ def test_load_context_and_inbound_body_round_trip(datastore) -> None:
     assert case["identity_summary"] == "Verified: Round Trip Customer · +1 (555) 111-2222"
 
 
+def test_load_customer_memory_returns_slots_for_binding_key(datastore) -> None:
+    """S06/FR-1: an indexed read of a binding key's slots, in _render_memory's
+    ``[{"slot": ..., "value": ...}, ...]`` shape (no adaptation needed downstream)."""
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    binding_key = "gid://shopify/Customer/2002"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO customer_memory_slot
+                (id, binding_key, binding_kind, slot_name, slot_value, source)
+            VALUES
+                ('mem_test_1', %s, 'verified', 'contact_time_preference', 'mornings', 'customer_explicit'),
+                ('mem_test_2', %s, 'verified', 'channel_preference', 'sms', 'customer_explicit')
+            """,
+            (binding_key, binding_key),
+        )
+
+    loaded = store.load_customer_memory(binding_key)
+
+    assert sorted(loaded, key=lambda slot: slot["slot"]) == [
+        {"slot": "channel_preference", "value": "sms"},
+        {"slot": "contact_time_preference", "value": "mornings"},
+    ]
+    assert store.load_customer_memory("gid://shopify/Customer/unknown") == []
+
+
 def test_persist_agent_outbound_writes_hermes_message_turn(datastore) -> None:
     _, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)

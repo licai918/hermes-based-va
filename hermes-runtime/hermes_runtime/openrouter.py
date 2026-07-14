@@ -15,17 +15,27 @@ key is a deploy misconfiguration, never a silent fall-through to an unauthed cal
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from toee_hermes.drivers.mock.memory import binding_key_from_identity
 from toee_hermes.gateway.ingress import snapshot_as_identity_dict
+from toee_hermes.gateway.normalize import normalize_e164
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
 from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn
+from hermes_runtime.tool_backend import (
+    _customer_memory_extra_drivers,
+    _gateway_store,
+    memory_enabled,
+)
+
+logger = logging.getLogger(__name__)
 
 # A non-tool-iterating turn still needs headroom for the reply iteration after a
 # governed tool call; this caps a runaway loop without truncating a normal turn.
@@ -60,6 +70,149 @@ _RETRYABLE_ERROR_NAMES = frozenset(
         "APIError",
     }
 )
+
+
+def _with_channel_identity(
+    identity: Optional[dict[str, Any]], from_phone: str
+) -> dict[str, Any]:
+    """Merge the SMS channel identity (E.164) into the turn's identity dict (S01).
+
+    Runs at the turn boundary rather than in ``snapshot_as_identity_dict``: the
+    phone lives on ``AgentTurnContext``, not the Session Identity Snapshot. Always
+    returns a dict — even for an unmatched caller with no snapshot — so Customer
+    Memory binding (S02) has ingress-controlled channel identity to key off,
+    never a model-supplied tool param (RK-3).
+    """
+    merged = dict(identity) if identity else {}
+    merged["channel"] = "sms"
+    merged["channel_identity"] = normalize_e164(from_phone)
+    return merged
+
+
+def _load_turn_memory(
+    identity: dict[str, Any], store: Optional[Any]
+) -> Optional[list[dict[str, Any]]]:
+    """Load this turn's Customer Memory preference slots for injection (S07, FR-1).
+
+    Gated by :func:`memory_enabled` (S05) — the same single source of truth as the
+    write overlay (S04): a mock/unset deployment reads nothing and the turn still
+    completes (FR-7/RK-6). The binding key comes from the ingress-controlled
+    ``identity`` via :func:`binding_key_from_identity` — the SAME core the write
+    path uses, so the read key is byte-identical to the stored key (R2 round-trip).
+
+    Read fail-closed: no resolvable binding injects nothing (never raises — unlike
+    the write tool's ``policy_blocked``). A datastore read error also degrades to
+    nothing, because memory is never a hard dependency of answering (FR-7).
+    """
+    if not memory_enabled():
+        return None
+    resolved = binding_key_from_identity(identity)
+    if resolved is None:
+        return None
+    binding_key, _kind = resolved
+    resolved_store = store if store is not None else _gateway_store()
+    try:
+        return resolved_store.load_customer_memory(binding_key)
+    except Exception as exc:
+        # ponytail: swallow to None so a DB hiccup degrades to "no memory injected",
+        # never a failed reply (FR-7 / the hooks module's provider-error philosophy).
+        # S11: WARN so the swallow isn't silent. binding_key + exception TYPE only —
+        # never str(exc)/traceback, which could echo back store-supplied content.
+        logger.warning(
+            "Customer Memory read failed binding_key=%s error_type=%s; "
+            "turn continues with no memory injected",
+            binding_key,
+            type(exc).__name__,
+        )
+        return None
+
+
+def _provisional_key_for(identity: dict[str, Any]) -> Optional[str]:
+    """This caller's provisional binding key from the SAME channel-identity fields.
+
+    A verified identity short-circuits :func:`binding_key_from_identity` to its
+    Shopify id, so to find the caller's PRE-verification provisional slots we derive
+    the provisional key from the channel fields alone (S01 always threads them on).
+    Byte-identical to the key the write path stored under while unverified (R2)."""
+    resolved = binding_key_from_identity(
+        {
+            "channel": identity.get("channel"),
+            "channel_identity": identity.get("channel_identity"),
+        }
+    )
+    return resolved[0] if resolved is not None else None
+
+
+def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) -> bool:
+    """Merge pre-verification provisional slots onto the verified record (S10/FR-4).
+
+    Runs on the async turn — never ``process_inbound`` / the webhook ack (RK-5) — on
+    every verified ingress, so it also covers a manually-seeded identity link, not
+    only the first-ever verification. Gated by :func:`memory_enabled` and fail-closed
+    exactly like the read: a disabled backend, a non-verified/ambiguous identity, an
+    unresolvable channel key, or a store error degrades to "no merge" and the turn
+    still replies (FR-7). A merge failure leaves the provisional rows intact to retry
+    on the next verified turn (the merge is idempotent), so swallowing is safe.
+
+    Returns whether a merge actually fired this turn (S11 observability): ``True``
+    only when the store reports it moved/overrode at least one provisional slot;
+    ``False`` on every skip, no-op, or swallowed error.
+    """
+    if not memory_enabled():
+        return False
+    verified = binding_key_from_identity(identity)
+    # Only a verified single-customer resolution merges: an ambiguous or unmatched
+    # identity resolves to kind "provisional" (or None) and is skipped (ADR-0112).
+    if verified is None or verified[1] != "verified":
+        return False
+    provisional_key = _provisional_key_for(identity)
+    if provisional_key is None:
+        return False
+    resolved_store = store if store is not None else _gateway_store()
+    try:
+        merged = resolved_store.merge_provisional_memory(provisional_key, verified[0])
+    except Exception as exc:
+        # ponytail: swallow so a merge hiccup never fails the reply; the provisional
+        # rows survive and the next verified turn retries (FR-7, same philosophy as
+        # the read).
+        # S11: WARN so the swallow isn't silent. Binding keys + exception TYPE only.
+        logger.warning(
+            "Customer Memory merge failed provisional_key=%s verified_key=%s "
+            "error_type=%s; provisional slots left intact for retry",
+            provisional_key,
+            verified[0],
+            type(exc).__name__,
+        )
+        return False
+    return merged is not None
+
+
+def _log_turn_memory(
+    identity: dict[str, Any],
+    memory: Optional[list[dict[str, Any]]],
+    merge_fired: bool,
+) -> None:
+    """Emit the compact per-turn Customer Memory observability line (S11, PRD §6.4).
+
+    So a real conversation can be audited after the fact ("did this customer get
+    THEIR memory?") without ever logging PII: records the resolved binding_key (an
+    identifier, not customer content), the injected slot NAMES only — never slot
+    values, which are customer-authored free text and the FR-6 persistent-injection
+    surface — and whether the S10 provisional->verified merge fired this turn.
+    Re-derives the binding key independently of :func:`_load_turn_memory` (cheap and
+    pure) so this note still fires when memory is disabled or the read itself failed.
+    """
+    resolved = binding_key_from_identity(identity)
+    binding_key = resolved[0] if resolved is not None else None
+    slot_names = [
+        slot.get("slot") for slot in (memory or []) if slot.get("slot") is not None
+    ]
+    logger.info(
+        "Customer Memory turn: binding_key=%s slots=%s merge_fired=%s",
+        binding_key,
+        slot_names,
+        merge_fired,
+    )
 
 
 @dataclass(frozen=True)
@@ -171,6 +324,7 @@ def make_openrouter_run_turn(
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     tools_exclusive: bool = True,
+    store: Optional[Any] = None,
 ) -> Callable[[Any, str], Mapping[str, Any]]:
     """Build the production ``run_turn``: a conversation-bound governed turn over OpenRouter.
 
@@ -182,7 +336,10 @@ def make_openrouter_run_turn(
     secondary model (ADR-0009). ``config`` defaults to :func:`resolve_openrouter_config`
     (resolved per turn so a credential rotation is picked up); ``openai_factory``
     injects a deterministic provider in tests (the real OpenAI client is used
-    otherwise).
+    otherwise). ``store`` injects the gateway store for the turn-time Customer Memory
+    read (S07); when ``None`` a DSN-based :class:`PostgresGatewayStore` is built per
+    turn, but only under :func:`memory_enabled` (mock/unset deployments never touch
+    Postgres).
     """
 
     def run_turn(context: Any, inbound_body: str) -> Mapping[str, Any]:
@@ -198,19 +355,33 @@ def make_openrouter_run_turn(
             is_retryable=is_retryable,
         )
         snapshot = getattr(context, "session_identity_snapshot", None)
-        identity = (
+        base_identity = (
             snapshot_as_identity_dict(snapshot) if snapshot is not None else None
         )
+        # S01: enrich with the caller's channel identity (E.164) here, where
+        # AgentTurnContext.from_phone is in scope — the snapshot alone never has it.
+        identity = _with_channel_identity(base_identity, context.from_phone)
+        # S10/FR-4: on a verified ingress, merge the caller's pre-verification
+        # provisional slots onto the verified record BEFORE the read below, so the
+        # just-merged preferences are injected on this same turn (PAC-3). No-op /
+        # fail-closed when not verified or memory is disabled.
+        merge_fired = _merge_provisional_memory(identity, store)
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
-        # Prepend the snapshot here so the model sees verified identity (ADR-0140).
-        injected = render_injection(identity, None)
+        # Prepend the snapshot + Customer Memory here so the model sees verified
+        # identity and prior preferences (ADR-0140, S07/FR-1). The memory read is
+        # gated + fail-closed in _load_turn_memory (nothing injected when disabled,
+        # unbound, or the store errors).
+        memory = _load_turn_memory(identity, store)
+        _log_turn_memory(identity, memory, merge_fired)
+        injected = render_injection(identity, memory)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,
             conversation_id=context.conversation_id,
             sms_session_id=getattr(context, "sms_session_id", None),
             identity=identity,
+            extra_drivers=_customer_memory_extra_drivers(),
         )
         return run_agent_turn(
             user_message=user_message,

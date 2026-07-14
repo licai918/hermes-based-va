@@ -18,7 +18,7 @@ branch so a mock-first app never imports the database adapter.
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.execute import ToolDriver
@@ -51,6 +51,18 @@ def resolve_tool_backend(value: object = _UNSET) -> str:
     )
 
 
+def memory_enabled(value: object = _UNSET) -> bool:
+    """Whether Customer Memory is active for this deployment (S05, FR-7/RK-6).
+
+    True only when the datastore backend is configured (``TOOL_BACKEND=datastore``).
+    Single source of truth shared by the write overlay (S04's per-tool
+    ``extra_drivers`` injection) and the read injection gates (S07/S08): a
+    mock/unset deployment never hard-depends on Postgres — reads inject nothing,
+    writes stay on the ephemeral mock, and the turn still completes and replies.
+    """
+    return resolve_tool_backend(value) == "datastore"
+
+
 def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
     """Build the dispatch ToolDriver for ``backend`` (env-resolved when ``None``).
 
@@ -65,3 +77,43 @@ def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
 
         return PostgresDriver()
     return MockDriver(create_all_mock_handlers())
+
+
+def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_customer_memory`` to the Postgres datastore for an agent turn.
+
+    Shared by the live External turn (``openrouter.py``, S04) and the unbound
+    Copilot draft turn (``copilot_turn.py``, S20/PAC-4 gap #2) -- both boot paths
+    need the SAME overlay, so it lives here next to the two things it uses
+    (:func:`memory_enabled`, :func:`select_tool_driver`) instead of being
+    reimplemented per caller (Standards fix #1). Gated by :func:`memory_enabled`
+    (S05) -- the single source of truth for whether Customer Memory is active,
+    shared with the read injection gates (S07/S08). ``False`` (mock/unset
+    backend) returns ``None`` so the tool stays on the shared mock driver and a
+    mock deployment never hard-depends on Postgres. ``select_tool_driver`` builds
+    the ``PostgresDriver`` (psycopg stays in hermes-runtime); the plugin overlay
+    only ever sees a ``ToolDriver``, whose ``kind = "datastore"`` attributes the
+    audit rows (anti-mock, ADR-0140).
+    """
+    if not memory_enabled():
+        return None
+    return {"toee_customer_memory": select_tool_driver("datastore")}
+
+
+def _gateway_store() -> Any:
+    """Build the Postgres gateway store for a Customer Memory read/merge/lookup.
+
+    Shared by the turn-time memory read + provisional merge (``openrouter.py``,
+    S06/S07/S10), the Copilot case-identity/memory read (``copilot_turn.py``,
+    S08), and the Workbench dispatch-time case identity lookup
+    (``tool_dispatch_app.py``, S16) -- every caller wants the SAME default
+    construction, only ever overridden by an explicit ``store=`` param in tests
+    (Standards fix #1). Deferred import keeps ``psycopg`` out of a mock
+    deployment's import path (same reasoning as ``select_tool_driver``'s
+    ``PostgresDriver`` branch above); every call site only reaches this under
+    :func:`memory_enabled`, so a mock/unset deployment never constructs it.
+    DSN-based, matching how ``select_tool_driver`` obtains its datastore driver.
+    """
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+
+    return PostgresGatewayStore()

@@ -35,7 +35,10 @@ ProviderFactory = Callable[[str], ContextProvider]
 DriverSelector = Callable[[str], ToolDriver]
 
 
-def _build_driver_selector(injected: Optional[ToolDriver]) -> DriverSelector:
+def _build_driver_selector(
+    injected: Optional[ToolDriver],
+    extra_drivers: Optional[dict[str, ToolDriver]] = None,
+) -> DriverSelector:
     """Resolve a per-tool driver selector (mock-first, ADR-0137).
 
     An ``injected`` driver (the eval recording path, :func:`register_eval`)
@@ -43,22 +46,36 @@ def _build_driver_selector(injected: Optional[ToolDriver]) -> DriverSelector:
     builds a live driver. Otherwise ``INTEGRATION_DRIVER`` selects the backend:
     ``mock`` (default) serves every tool, while ``composio`` routes only the three
     Layer 1 tools to the Composio driver and leaves the rest on mock (ADR-0128).
+
+    ``extra_drivers`` is a per-tool override the embedding layer supplies for the
+    live async turn (S04): precedence is ``extra_drivers[tool]`` -> composio ->
+    mock, so ``toee_customer_memory`` reaches the Postgres datastore while every
+    other tool keeps its backend. The override sits *inside* dispatch, after the
+    catalog check, Tool Gate, and profile allowlist — so swapping the driver
+    introduces no governance drift (the injected driver's ``kind`` attributes the
+    audit record). psycopg never reaches the plugin: the embedding passes only an
+    object satisfying the ``ToolDriver`` protocol.
     """
     if injected is not None:
         return lambda _tool: injected
 
     kind = resolve_integration_driver()
     mock_driver = MockDriver(create_all_mock_handlers())
-    if kind == "mock":
-        return lambda _tool: mock_driver
-    if kind == "composio":
-        composio_driver = build_composio_driver()
-        return lambda tool: (
-            composio_driver if tool in COMPOSIO_LAYER1_TOOLS else mock_driver
+    composio_driver = build_composio_driver() if kind == "composio" else None
+    if kind not in ("mock", "composio"):
+        raise NotImplementedError(
+            f'Integration driver "{kind}" is not implemented yet (mock-first, ADR-0137).'
         )
-    raise NotImplementedError(
-        f'Integration driver "{kind}" is not implemented yet (mock-first, ADR-0137).'
-    )
+    overrides = dict(extra_drivers or {})
+
+    def select(tool: str) -> ToolDriver:
+        if tool in overrides:
+            return overrides[tool]
+        if composio_driver is not None and tool in COMPOSIO_LAYER1_TOOLS:
+            return composio_driver
+        return mock_driver
+
+    return select
 
 
 def _make_context_provider(
@@ -100,6 +117,7 @@ def _register(
     gate: Optional[ToolGate] = None,
     session_identity: Optional[Any] = None,
     memory_preferences: Optional[list[dict[str, Any]]] = None,
+    extra_drivers: Optional[dict[str, ToolDriver]] = None,
 ) -> None:
     """Register a profile's allowlisted tools + the injection hook.
 
@@ -108,10 +126,13 @@ def _register(
     unbound), so only :func:`register_turn` activates the binding constraint. The
     Launch Eval recording path (:func:`register_eval`) injects the scenario's
     ``driver`` (its MockDriver) and ``gate`` (the External-profile gate) instead.
+    ``extra_drivers`` is the live turn's per-tool driver override (S04), threaded
+    into the selector so a chosen tool (e.g. ``toee_customer_memory``) reaches the
+    datastore without changing governance.
     """
     profile = resolve_profile(ctx)
     allow = allowlisted_tools(profile)
-    driver_for = _build_driver_selector(driver)
+    driver_for = _build_driver_selector(driver, extra_drivers)
     context_provider = provider_factory(profile)
     active_gate = gate if gate is not None else create_turn_binding_gate()
 
@@ -146,13 +167,37 @@ def _register(
     ctx.register_hook("pre_llm_call", hook)
 
 
-def register(ctx: Any) -> None:
+def register(
+    ctx: Any,
+    *,
+    identity: Optional[Any] = None,
+    extra_drivers: Optional[dict[str, ToolDriver]] = None,
+) -> None:
     """Register allowlisted Domain Adapter Tools + the injection hook for a profile.
 
     This is the Hermes plugin entry point (eval/replay + Copilot paths): the
     context carries no async turn binding, so the reply tool is unconstrained.
+
+    ``identity`` threads the turn's Session Identity Snapshot into the (unbound)
+    ToolExecutionContext so an identity-scoped write binds from context (S08): the
+    Copilot draft turn resolves the case's thread identity and passes it here, and
+    an employee-confirmed ``toee_customer_memory`` correction then binds to the SAME
+    identity-derived key the turn-time read used. Absent (the plugin entry point and
+    eval/replay call ``register(ctx)``) the context carries no identity, unchanged.
+
+    ``extra_drivers`` is the SAME per-tool driver override ``register_turn`` has had
+    since S04 (S20/PAC-4 gap #2): the Copilot draft turn is unbound (no
+    ``conversation_id``), so without this an agent-initiated ``toee_customer_memory``
+    write always fell to the ephemeral mock, even though S08 already binds the
+    right identity. Threaded into :func:`_register` unchanged.
     """
-    _register(ctx, provider_factory=lambda profile: _make_context_provider(profile))
+    _register(
+        ctx,
+        provider_factory=lambda profile: _make_context_provider(
+            profile, identity=identity
+        ),
+        extra_drivers=extra_drivers,
+    )
 
 
 def register_turn(
@@ -162,6 +207,7 @@ def register_turn(
     sms_session_id: Optional[str] = None,
     identity: Optional[Any] = None,
     memory_preferences: Optional[list[dict[str, Any]]] = None,
+    extra_drivers: Optional[dict[str, ToolDriver]] = None,
 ) -> None:
     """Register for one async Textline turn bound to ``conversation_id`` (ADR-0107).
 
@@ -170,7 +216,8 @@ def register_turn(
     turn-binding gate rejects a ``toee_textline_reply.send_message`` aimed at any
     other conversation (ADR-0066). ``identity`` is the ingress Session Identity
     Snapshot (ADR-0043) closed over for Tool Gate authorization and ``pre_llm_call``
-    injection (ADR-0140).
+    injection (ADR-0140). ``extra_drivers`` is the per-tool driver override (S04)
+    that routes ``toee_customer_memory`` to the Postgres datastore for this turn.
     """
     _register(
         ctx,
@@ -182,6 +229,7 @@ def register_turn(
         ),
         session_identity=identity,
         memory_preferences=memory_preferences,
+        extra_drivers=extra_drivers,
     )
 
 

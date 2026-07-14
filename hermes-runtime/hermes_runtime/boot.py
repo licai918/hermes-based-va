@@ -57,6 +57,7 @@ def boot_profile(
     conversation_id: Optional[str] = None,
     sms_session_id: Optional[str] = None,
     identity: Optional[Any] = None,
+    extra_drivers: Optional[dict[str, Any]] = None,
 ) -> BootedProfile:
     """Register the profile's allowlisted toee_* tools into a real PluginContext.
 
@@ -65,6 +66,19 @@ def boot_profile(
     carries that turn binding and the turn-binding gate constrains
     ``toee_textline_reply.send_message`` to the bound conversation (ADR-0107/0066).
     Without it, the unbound :func:`register` path is used (eval/replay + Copilot).
+
+    ``extra_drivers`` is the turn's per-tool driver override (S04): the embedding
+    passes ``{"toee_customer_memory": PostgresDriver(...)}`` so Customer Memory
+    persists to the datastore. The values are ``ToolDriver`` objects; the type is
+    ``Any`` here so ``psycopg``/``PostgresDriver`` never reach this module. Both the
+    bound (``register_turn``, the live external turn) and unbound (``register``, the
+    Copilot draft turn, S20/PAC-4 gap #2) paths carry it — an agent-initiated
+    ``toee_customer_memory`` write on the unbound path used to always fall to the
+    ephemeral mock even though S08 already binds the right identity.
+
+    ``identity`` on the UNBOUND path (Copilot draft turn, S08) threads the case's
+    thread identity into the ToolExecutionContext so an employee-confirmed memory
+    correction binds from context; the eval/replay callers pass none, unchanged.
     """
     from toee_hermes.plugin import register, register_turn
 
@@ -76,9 +90,13 @@ def boot_profile(
                 conversation_id=conversation_id,
                 sms_session_id=sms_session_id,
                 identity=identity,
+                extra_drivers=extra_drivers,
             ),
         )
-    return _boot(profile, register)
+    return _boot(
+        profile,
+        lambda ctx: register(ctx, identity=identity, extra_drivers=extra_drivers),
+    )
 
 
 def boot_profile_eval(
