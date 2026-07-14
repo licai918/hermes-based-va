@@ -110,11 +110,23 @@ moot by construction (it can only *propose*). If UAT of the autonomous path feel
 loose, jump straight to D. Avoid C-in-isolation (it just turns the feature off
 without the proposal UX).
 
+### Also fold in here — NFR-3 actor attribution gap (from PR #54 review)
+The employee-correction write **resolves the acting rep** (`actor_account_id` →
+`context.user_id` in `tool_dispatch_app`) but then **drops it** — `_upsert_preference`
+persists no actor column, so `source=employee_confirmed` never records *which* rep
+made the change. PRD NFR-3 says "every memory write is attributable." Defensible
+under the amended §6.4 (the write is attributable *in kind*), but the actor is
+resolved-then-dropped. **This pairs naturally with option B**: when we add the
+`source` distinction, also persist the acting `actor_account_id` (and, for a merge,
+already covered by the merge-audit row). Cheap column add; makes "which rep
+corrected this" auditable (feeds Candidate 7's supervisor view). **Size:** XS.
+
 ### Open questions
 - Does the draft agent *need* to write at all, or is "propose to the rep" (D)
   always better? (If yes → D, and S20's direct write becomes a stepping stone.)
 - Is a new `source` value enough, or does an AI-inferred write need supervisor
   review before it counts as active (ties to Candidate 7)?
+- Persist the acting rep (NFR-3 above) alongside the `source` value?
 - Resolve together with Candidate 4 (the `channel_identity_id` carve-out).
 
 **Size:** A+B+E = S–M; D = L.
@@ -267,6 +279,16 @@ Low-risk hygiene the reviews flagged and parked (each XS–S):
 - **Export the slot constant on the TS side** — `PREFERENCE_SLOTS` is a hand-written
   literal in `apps/workbench` because `MEMORY_PREFERENCE_SLOTS` isn't exported from
   `@toee/domain-adapters`; export + import so a 5th slot can't silently drift.
+- **Fix the eval `honor_injected_preference` freebie (from PR #54 review)** —
+  `turn_result.py:73` sets `honored_injected_preference=True` whenever any
+  `memory_preset` exists, and `assertions.py:198` then always passes. So scenarios
+  25/27/28 that list `honor_injected_preference: true` prove nothing — only their
+  `must_not_contain` legs discriminate. Make the assertion actually inspect whether
+  the injected preference was honored in the reply, so the R3/R5b/PAC-1 eval legs
+  are genuine (today the datastore/E2E suites carry that proof, not the eval). Also
+  wire/verify `MEMORY_SOURCE_VALUES` isn't the only drift guard. **Size:** S.
+  *(Related: PAC-2 "no over-recall" has NO eval leg at all — §6.5 says "eval + UAT";
+  today it's UAT-only. Add a `no-unprompted-recall` scenario when hardening these.)*
 
 ---
 
