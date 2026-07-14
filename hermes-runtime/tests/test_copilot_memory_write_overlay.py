@@ -84,12 +84,15 @@ def test_copilot_run_turn_passes_no_overlay_when_backend_is_unset(monkeypatch) -
     # tool stays on mock, and the datastore driver is never even constructed (a mock
     # deployment must never hard-depend on Postgres).
     monkeypatch.delenv("TOOL_BACKEND", raising=False)
-    import hermes_runtime.copilot_turn as copilot_mod
+    # select_tool_driver now lives behind tool_backend._customer_memory_extra_drivers
+    # (Standards fix #1 -- hoisted out of copilot_turn.py so openrouter.py and
+    # copilot_turn.py share one definition instead of two copies); patch it there.
+    import hermes_runtime.tool_backend as tool_backend_mod
 
     def _boom(*_a, **_k):
         raise AssertionError("select_tool_driver must not be called when memory is disabled")
 
-    monkeypatch.setattr(copilot_mod, "select_tool_driver", _boom)
+    monkeypatch.setattr(tool_backend_mod, "select_tool_driver", _boom)
 
     captured = _capture_copilot_boot_kwargs(monkeypatch)
 
@@ -99,12 +102,15 @@ def test_copilot_run_turn_passes_no_overlay_when_backend_is_unset(monkeypatch) -
 def test_copilot_run_turn_passes_no_overlay_when_backend_is_explicitly_mock(monkeypatch) -> None:
     # Same contract, spelled out for TOOL_BACKEND=mock (not just unset).
     monkeypatch.setenv("TOOL_BACKEND", "mock")
-    import hermes_runtime.copilot_turn as copilot_mod
+    # select_tool_driver now lives behind tool_backend._customer_memory_extra_drivers
+    # (Standards fix #1 -- hoisted out of copilot_turn.py so openrouter.py and
+    # copilot_turn.py share one definition instead of two copies); patch it there.
+    import hermes_runtime.tool_backend as tool_backend_mod
 
     def _boom(*_a, **_k):
         raise AssertionError("select_tool_driver must not be called when memory is disabled")
 
-    monkeypatch.setattr(copilot_mod, "select_tool_driver", _boom)
+    monkeypatch.setattr(tool_backend_mod, "select_tool_driver", _boom)
 
     captured = _capture_copilot_boot_kwargs(monkeypatch)
 
@@ -146,14 +152,16 @@ def test_copilot_draft_turn_scripted_write_persists_to_datastore_under_verified_
     # being silently discarded by the ephemeral mock.
     driver, conn, _ = datastore
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
-    import hermes_runtime.copilot_turn as copilot_mod
+    import hermes_runtime.tool_backend as tool_backend_mod
 
     # select_tool_driver's default PostgresDriver() opens a FRESH connection (its own
     # dsn), which would miss this test's throwaway schema entirely. Substitute the
     # fixture's schema-bound instance -- the ONLY substitution here: boot_profile,
     # register(), _register, _build_driver_selector, and execute_tool all run for
     # real, exactly as they would with a real TOOL_BACKEND=datastore deployment.
-    monkeypatch.setattr(copilot_mod, "select_tool_driver", lambda *_a, **_k: driver)
+    # (select_tool_driver lives behind tool_backend._customer_memory_extra_drivers,
+    # Standards fix #1 -- patch it there, not on copilot_turn's old local copy.)
+    monkeypatch.setattr(tool_backend_mod, "select_tool_driver", lambda *_a, **_k: driver)
 
     _seed_case(
         conn,

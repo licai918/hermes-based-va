@@ -9,10 +9,10 @@ FR-5/S02). Open-ended keys are rejected, never silently stored, and a value over
 is derived from ``context.profile`` by :func:`resolve_memory_write_source`, never
 taken from the model-supplied tool params (RK-1); an optional ``evidence`` param
 (verbatim customer phrase) is persisted alongside the write for audit, capped at
-``MEMORY_EVIDENCE_MAX_LENGTH`` chars the same governed way. The slot enum and
-both resolvers are imported from the plugin so the datastore and mock paths
-share one source of truth: this is security-sensitive logic that must not drift
-between the two.
+``MEMORY_EVIDENCE_MAX_LENGTH`` chars the same governed way. The slot enum, both
+resolvers, and the value/evidence validators are all imported from the plugin so
+the datastore and mock paths share one source of truth: this is security-sensitive
+logic that must not drift between the two.
 """
 
 from __future__ import annotations
@@ -20,9 +20,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from toee_hermes.drivers.mock.memory import (
-    MEMORY_EVIDENCE_MAX_LENGTH,
     MEMORY_PREFERENCE_SLOTS,
-    MEMORY_VALUE_MAX_LENGTH,
+    _read_evidence,
+    _require_value,
     resolve_customer_memory_binding,
     resolve_memory_write_source,
 )
@@ -45,39 +45,6 @@ def _require_slot(params: dict[str, Any]) -> str:
             "only the four v1 slots are allowed (ADR-0111).",
         )
     return requested
-
-
-def _require_value(params: dict[str, Any]) -> str:
-    value = params.get("value")
-    if not isinstance(value, str):
-        raise ToolDriverError(
-            "unexpected_error", "upsert_preference requires a string value."
-        )
-    if len(value) > MEMORY_VALUE_MAX_LENGTH:
-        raise ToolDriverError(
-            "unexpected_error",
-            "Customer Memory rejects a value longer than "
-            f"{MEMORY_VALUE_MAX_LENGTH} characters.",
-        )
-    return value
-
-
-def _read_evidence(params: dict[str, Any]) -> str | None:
-    evidence = params.get("evidence")
-    if evidence is None:
-        return None
-    if not isinstance(evidence, str):
-        raise ToolDriverError(
-            "unexpected_error",
-            "upsert_preference evidence must be a string when provided.",
-        )
-    if len(evidence) > MEMORY_EVIDENCE_MAX_LENGTH:
-        raise ToolDriverError(
-            "unexpected_error",
-            "Customer Memory rejects evidence longer than "
-            f"{MEMORY_EVIDENCE_MAX_LENGTH} characters.",
-        )
-    return evidence
 
 
 def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:

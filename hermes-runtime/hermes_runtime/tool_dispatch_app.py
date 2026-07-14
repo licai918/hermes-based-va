@@ -27,7 +27,7 @@ from toee_hermes.execute import ToolDriver, execute_tool
 from toee_hermes.plugin.profiles import allowlisted_tools
 from toee_hermes.tool_gate import GateDecision, ToolExecutionContext, ToolGate
 
-from .tool_backend import memory_enabled, select_tool_driver
+from .tool_backend import _gateway_store, memory_enabled, select_tool_driver
 
 logger = logging.getLogger(__name__)
 
@@ -79,19 +79,6 @@ def profile_allowlist_gate(profile: str) -> ToolGate:
         )
 
     return gate
-
-
-def _gateway_store() -> Any:
-    """Build the Postgres gateway store for dispatch-time case identity lookups (S16).
-
-    Deferred import keeps ``psycopg`` out of a mock deployment's import path (same
-    reasoning as ``select_tool_driver``'s ``PostgresDriver`` branch; mirrors
-    ``openrouter.py``'s own ``_gateway_store``); only reached under
-    :func:`memory_enabled`, so a mock/unset deployment never constructs it.
-    """
-    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
-
-    return PostgresGatewayStore()
 
 
 def _resolve_case_identity(

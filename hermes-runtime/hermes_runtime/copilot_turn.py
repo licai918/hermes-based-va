@@ -47,12 +47,15 @@ from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
 from hermes_runtime.openrouter import (
     OpenRouterConfig,
-    _gateway_store,
     default_is_retryable,
     make_fallback_openai_factory,
     resolve_openrouter_config,
 )
-from hermes_runtime.tool_backend import memory_enabled, select_tool_driver
+from hermes_runtime.tool_backend import (
+    _customer_memory_extra_drivers,
+    _gateway_store,
+    memory_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -210,24 +213,6 @@ def _load_case_memory(
             type(exc).__name__,
         )
         return identity, None
-
-
-def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
-    """Route ``toee_customer_memory`` to the Postgres datastore for this copilot draft turn.
-
-    S20/PAC-4 gap #2: mirrors openrouter.py's ``_customer_memory_extra_drivers``
-    (S04) on the UNBOUND boot path. Gated by :func:`memory_enabled` (S05's single
-    source of truth, shared with the read gates above) -- a mock/unset deployment
-    never constructs a datastore driver, so the tool stays on the shared mock and an
-    agent-initiated write is discarded there, unchanged (FR-7). When memory is
-    enabled, :func:`select_tool_driver` (the one lazy import site for
-    ``PostgresDriver`` in hermes-runtime) builds it, so an employee-confirmed
-    correction the copilot agent makes reaches Postgres under the SAME key S08
-    already binds ``context.identity`` to.
-    """
-    if not memory_enabled():
-        return None
-    return {"toee_customer_memory": select_tool_driver("datastore")}
 
 
 def make_copilot_run_turn(

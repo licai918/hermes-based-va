@@ -40,6 +40,7 @@ from toee_hermes.plugin.profiles import EXTERNAL, INTERNAL
 from toee_hermes.tool_gate import ToolExecutionContext
 
 import hermes_runtime.openrouter as openrouter_mod
+import hermes_runtime.tool_backend as tool_backend_mod
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.live import _scripted_openai_factory
@@ -208,7 +209,9 @@ def test_matrix_all_four_layers_live_in_one_run(datastore, monkeypatch, caplog) 
     # Route the live turn's toee_customer_memory overlay at the fixture connection so
     # the governed write lands in THIS throwaway schema (else a fresh DSN connection
     # would write the default schema and the read-back would see nothing).
-    monkeypatch.setattr(openrouter_mod, "select_tool_driver", lambda *_a, **_k: driver)
+    # select_tool_driver lives behind tool_backend._customer_memory_extra_drivers
+    # (Standards fix #1 -- shared with copilot_turn.py instead of two copies).
+    monkeypatch.setattr(tool_backend_mod, "select_tool_driver", lambda *_a, **_k: driver)
 
     store = PostgresGatewayStore(connection=conn)
     sent: list[tuple[str, str]] = []
@@ -493,11 +496,12 @@ def test_dormancy_tripwire_is_red_when_driver_disabled(datastore, monkeypatch) -
     # Route the live turn's toee_customer_memory overlay at the fixture connection —
     # mirrors the matrix test's seam above. When correctly dormant this is inert:
     # _customer_memory_extra_drivers() short-circuits on memory_enabled() before ever
-    # calling select_tool_driver. But if activation regresses (memory wrongly active),
-    # this makes the regressed write land in THIS throwaway schema instead of a fresh
-    # DSN connection's default `public` schema — so the readback below actually flips
-    # RED instead of missing the write entirely and staying falsely green.
-    monkeypatch.setattr(openrouter_mod, "select_tool_driver", lambda *_a, **_k: driver)
+    # calling select_tool_driver (both now live in tool_backend.py, Standards fix #1).
+    # But if activation regresses (memory wrongly active), this makes the regressed
+    # write land in THIS throwaway schema instead of a fresh DSN connection's default
+    # `public` schema — so the readback below actually flips RED instead of missing
+    # the write entirely and staying falsely green.
+    monkeypatch.setattr(tool_backend_mod, "select_tool_driver", lambda *_a, **_k: driver)
 
     store = PostgresGatewayStore(connection=conn)
     sent: list[tuple[str, str]] = []
@@ -584,9 +588,10 @@ def test_memory_read_error_still_replies_and_warns(monkeypatch, caplog) -> None:
     the read; a provisional caller so no merge is attempted (isolates the read)."""
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
     # Keep the write overlay off Postgres (no tool call happens anyway); this also
-    # avoids resolving a DSN, so the test needs no database.
+    # avoids resolving a DSN, so the test needs no database. select_tool_driver lives
+    # behind tool_backend._customer_memory_extra_drivers (Standards fix #1).
     monkeypatch.setattr(
-        openrouter_mod,
+        tool_backend_mod,
         "select_tool_driver",
         lambda *_a, **_k: MockDriver(create_all_mock_handlers()),
     )

@@ -29,7 +29,11 @@ from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn
-from hermes_runtime.tool_backend import memory_enabled, select_tool_driver
+from hermes_runtime.tool_backend import (
+    _customer_memory_extra_drivers,
+    _gateway_store,
+    memory_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,19 +87,6 @@ def _with_channel_identity(
     merged["channel"] = "sms"
     merged["channel_identity"] = normalize_e164(from_phone)
     return merged
-
-
-def _gateway_store() -> Any:
-    """Build the Postgres gateway store for the turn-time memory read (S06/S07).
-
-    Deferred import keeps ``psycopg`` out of a mock deployment's import path (same
-    reasoning as ``select_tool_driver``'s ``PostgresDriver`` branch); only reached
-    under :func:`memory_enabled`, so a mock/unset deployment never constructs it.
-    DSN-based, matching how S04 obtains its datastore driver.
-    """
-    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
-
-    return PostgresGatewayStore()
 
 
 def _load_turn_memory(
@@ -222,23 +213,6 @@ def _log_turn_memory(
         slot_names,
         merge_fired,
     )
-
-
-def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
-    """Route ``toee_customer_memory`` to the Postgres datastore for the live turn (S04).
-
-    Gated by :func:`hermes_runtime.tool_backend.memory_enabled` (S05) — the single
-    source of truth for whether Customer Memory is active, shared with the read
-    injection gates (S07/S08). ``False`` (mock/unset backend) returns ``None`` so
-    the tool stays on the shared mock driver and a mock deployment never
-    hard-depends on Postgres. ``select_tool_driver`` builds the ``PostgresDriver``
-    (psycopg stays in hermes-runtime); the plugin overlay only ever sees a
-    ``ToolDriver``, whose ``kind = "datastore"`` attributes the audit rows
-    (anti-mock, ADR-0140).
-    """
-    if not memory_enabled():
-        return None
-    return {"toee_customer_memory": select_tool_driver("datastore")}
 
 
 @dataclass(frozen=True)
