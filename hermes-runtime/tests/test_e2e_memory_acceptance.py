@@ -490,6 +490,14 @@ def test_dormancy_tripwire_is_red_when_driver_disabled(datastore, monkeypatch) -
     both assertions would FAIL. CI treats a green-when-active flip as the alarm."""
     monkeypatch.delenv("TOOL_BACKEND", raising=False)  # composite driver OFF
     driver, conn, _ = datastore
+    # Route the live turn's toee_customer_memory overlay at the fixture connection —
+    # mirrors the matrix test's seam above. When correctly dormant this is inert:
+    # _customer_memory_extra_drivers() short-circuits on memory_enabled() before ever
+    # calling select_tool_driver. But if activation regresses (memory wrongly active),
+    # this makes the regressed write land in THIS throwaway schema instead of a fresh
+    # DSN connection's default `public` schema — so the readback below actually flips
+    # RED instead of missing the write entirely and staying falsely green.
+    monkeypatch.setattr(openrouter_mod, "select_tool_driver", lambda *_a, **_k: driver)
 
     store = PostgresGatewayStore(connection=conn)
     sent: list[tuple[str, str]] = []
