@@ -8,10 +8,11 @@ FR-5/S02). Open-ended keys are rejected, never silently stored, and a value over
 ``MEMORY_VALUE_MAX_LENGTH`` chars is rejected the same way (PRD FR-3). ``source``
 is derived from ``context.profile`` by :func:`resolve_memory_write_source`, never
 taken from the model-supplied tool params (RK-1); an optional ``evidence`` param
-(verbatim customer phrase) is persisted alongside the write for audit. The slot
-enum and both resolvers are imported from the plugin so the datastore and mock
-paths share one source of truth: this is security-sensitive logic that must not
-drift between the two.
+(verbatim customer phrase) is persisted alongside the write for audit, capped at
+``MEMORY_EVIDENCE_MAX_LENGTH`` chars the same governed way. The slot enum and
+both resolvers are imported from the plugin so the datastore and mock paths
+share one source of truth: this is security-sensitive logic that must not drift
+between the two.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from toee_hermes.drivers.mock.memory import (
+    MEMORY_EVIDENCE_MAX_LENGTH,
     MEMORY_PREFERENCE_SLOTS,
     MEMORY_VALUE_MAX_LENGTH,
     resolve_customer_memory_binding,
@@ -68,6 +70,12 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
         raise ToolDriverError(
             "unexpected_error",
             "upsert_preference evidence must be a string when provided.",
+        )
+    if len(evidence) > MEMORY_EVIDENCE_MAX_LENGTH:
+        raise ToolDriverError(
+            "unexpected_error",
+            "Customer Memory rejects evidence longer than "
+            f"{MEMORY_EVIDENCE_MAX_LENGTH} characters.",
         )
     return evidence
 

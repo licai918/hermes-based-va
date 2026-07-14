@@ -366,6 +366,27 @@ def test_upsert_value_over_max_length_is_rejected() -> None:
     assert result.error_class == "unexpected_error"
 
 
+def test_upsert_evidence_at_max_length_is_accepted() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "delivery_habit_note", "value": "x", "evidence": "x" * 500},
+        _verified_ctx(),
+    )
+    assert result.ok is True
+
+
+def test_upsert_evidence_over_max_length_is_rejected() -> None:
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "delivery_habit_note", "value": "x", "evidence": "x" * 501},
+        _verified_ctx(),
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
 def test_upsert_ignores_model_supplied_source_and_uses_framework_value() -> None:
     # RK-1: the model could try to tag an inferred write as customer_explicit
     # (or any other value) via the tool param — the framework must ignore it.

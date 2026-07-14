@@ -142,6 +142,23 @@ def test_value_over_max_length_is_governed_rejection(datastore) -> None:
     assert result.error_class == "unexpected_error"
 
 
+def test_evidence_at_max_length_is_accepted(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "upsert_preference",
+                  {"key": "delivery_habit_note", "value": "x", "evidence": "x" * 500},
+                  identity=_PROVISIONAL_A)
+    assert result.ok
+
+
+def test_evidence_over_max_length_is_governed_rejection(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "upsert_preference",
+                  {"key": "delivery_habit_note", "value": "x", "evidence": "x" * 501},
+                  identity=_PROVISIONAL_A)
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+
+
 def test_source_param_cannot_be_forged(datastore) -> None:
     # RK-1: source is framework-derived from context.profile, never the
     # model-supplied tool param, even against the real Postgres path.

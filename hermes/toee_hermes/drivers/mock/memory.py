@@ -47,6 +47,12 @@ MEMORY_SOURCE_VALUES: tuple[str, ...] = (
 # PRD FR-3 caps the stored value so a write can't smuggle an essay into a slot.
 MEMORY_VALUE_MAX_LENGTH = 200
 
+# ``evidence`` (the optional verbatim customer phrase kept for audit, PRD FR-3) is
+# a quoted excerpt rather than a slot value, so it gets a looser but still bounded
+# ceiling -- same governed-rejection treatment as MEMORY_VALUE_MAX_LENGTH, just a
+# larger cap, so a write can't smuggle an unbounded essay in via evidence either.
+MEMORY_EVIDENCE_MAX_LENGTH = 500
+
 
 @dataclass(frozen=True)
 class MemoryMockData:
@@ -110,7 +116,7 @@ def _require_value(params: dict[str, Any]) -> str:
 
 
 def _read_evidence(params: dict[str, Any]) -> str | None:
-    """Resolve the optional ``evidence`` param (verbatim customer phrase)."""
+    """Resolve the optional ``evidence`` param: a string, capped at 500 chars."""
     evidence = params.get("evidence")
     if evidence is None:
         return None
@@ -118,6 +124,12 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
         raise ToolDriverError(
             "unexpected_error",
             "upsert_preference evidence must be a string when provided.",
+        )
+    if len(evidence) > MEMORY_EVIDENCE_MAX_LENGTH:
+        raise ToolDriverError(
+            "unexpected_error",
+            "Customer Memory rejects evidence longer than "
+            f"{MEMORY_EVIDENCE_MAX_LENGTH} characters.",
         )
     return evidence
 
