@@ -1,0 +1,16 @@
+scenario_id: "28"
+title: "Customer Memory merge verified value wins"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+memory_preset:
+  contact_time_preference: "after 2pm Eastern"
+turns:
+  - inbound: "Quick one - I think I told you before noon works best for calls. Can you also check on order 1042?"
+mock_overrides: {}
+assertions:
+  memory_assertions:
+    honor_injected_preference: true
+  text:
+    must_not_contain: ["before noon", "what time works", "when should we contact", "best time to reach you"]
+  max_severity: medium
