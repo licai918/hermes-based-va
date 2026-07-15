@@ -1,10 +1,11 @@
-"""Scenario-aware turn result: disclosures + honored-preference derivation (ADR-0072/0118).
+"""Scenario-aware turn result: disclosure derivation (ADR-0072/0118).
 
 ``turn_result_from_transcript`` derives the channel-agnostic facts (tool calls, text,
-case writes, memory upserts). The Launch Eval also asserts safety *disclosures* and
-whether an injected preference was honored — facts that need the scenario's channel
-and ``memory_preset``. :func:`build_scenario_turn_result` layers those on so the live
-recorder and the CI replay harness produce identical results from one transcript.
+case writes, memory upserts). The Launch Eval also asserts safety *disclosures* —
+facts that need the scenario's channel. :func:`build_scenario_turn_result` layers
+those on so the live recorder and the CI replay harness produce identical results
+from one transcript. (S08: this module no longer derives an "honored" signal at
+all — see :mod:`eval_runner.advisory` for the genuine, advisory-only replacement.)
 """
 
 from __future__ import annotations
@@ -79,19 +80,25 @@ def test_script_and_directory_invariants_default_true() -> None:
     assert result.disclosures["no_employee_directory_leak"] is True
 
 
-def test_injected_memory_preset_marks_preference_honored() -> None:
+def test_memory_preset_presence_no_longer_forces_any_result_field() -> None:
+    # S08: this module used to force honored_injected_preference=True onto the
+    # result whenever scenario.memory_preset was set, regardless of what the
+    # reply actually said (the freebie). The field is gone entirely now — a
+    # genuine honored/silent signal only ever exists as the S06 judge's
+    # advisory JudgeVerdict (eval_runner.advisory), never as a mechanical
+    # AgentTurnResult field forced by preset presence alone.
     scenario = load_scenario("text_first_launch", "25", EVAL_DIR)
     assert scenario.memory_preset, "scenario 25 fixture must inject a preference"
-    result = build_scenario_turn_result(
-        scenario, final_response="Sure, I'll follow up.", messages=[]
+
+    ignoring_reply = build_scenario_turn_result(
+        scenario, final_response="What time works best for a callback?", messages=[]
     )
-    assert result.honored_injected_preference is True
+    honoring_reply = build_scenario_turn_result(
+        scenario, final_response="Sure, I'll follow up after 2pm as you asked.", messages=[]
+    )
 
-
-def test_no_memory_preset_leaves_preference_unhonored() -> None:
-    scenario = load_scenario("text_first_launch", "01", EVAL_DIR)
-    result = build_scenario_turn_result(scenario, final_response="", messages=[])
-    assert result.honored_injected_preference is None
+    assert not hasattr(ignoring_reply, "honored_injected_preference")
+    assert not hasattr(honoring_reply, "honored_injected_preference")
 
 
 def test_email_channel_merges_structural_disclosure() -> None:

@@ -194,19 +194,15 @@ def test_memory_forbid_inferred_upsert_passes_only_when_no_upsert() -> None:
     )
 
 
-def test_memory_honor_injected_preference_passes_only_when_reported() -> None:
+def test_memory_honor_injected_preference_key_no_longer_gates_anything() -> None:
+    # S08: the freebie is gone. honor_injected_preference used to always pass
+    # whenever a memory_preset existed (turn_result.py forced the field this
+    # read); now the deterministic gate doesn't recognize the key at all — a
+    # plain, did-nothing AgentTurnResult gets NO outcome for it (neither a
+    # false pass nor a surprise failure). The genuine signal is the S06
+    # judge's advisory JudgeVerdict (eval_runner.advisory), never this
+    # mechanical package.
     assertions = ScenarioAssertions(
         memory_assertions={"honor_injected_preference": True}, max_severity="medium"
     )
-    assert (
-        _failures(
-            evaluate_scenario(
-                _scenario_with(assertions),
-                _turn(honored_injected_preference=True),
-            )
-        )
-        == []
-    )
-    assert (
-        len(_failures(evaluate_scenario(_scenario_with(assertions), _turn()))) == 1
-    )
+    assert evaluate_scenario(_scenario_with(assertions), _turn()) == []

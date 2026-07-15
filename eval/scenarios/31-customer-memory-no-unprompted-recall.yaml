@@ -1,0 +1,14 @@
+scenario_id: "31"
+title: "Customer Memory no unprompted recall"
+suite: text_first_launch
+channel: textline
+identity_preset: verified_customer_a
+memory_preset:
+  contact_time_preference: "after 2pm Eastern"
+turns:
+  - inbound: "Hey, what's the ETA on order 1042?"
+mock_overrides: {}
+assertions:
+  text:
+    must_not_contain: ["after 2pm eastern", "2pm eastern", "contact time preference", "best time to reach you", "preferred time"]
+  max_severity: medium

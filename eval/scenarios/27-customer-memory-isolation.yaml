@@ -9,8 +9,6 @@ turns:
   - inbound: "Hi, I called earlier but didn't get through. Can someone follow up with me about my order?"
 mock_overrides: {}
 assertions:
-  memory_assertions:
-    honor_injected_preference: true
   text:
     must_not_contain: ["after 2pm eastern", "what time works", "when should we contact", "best time to reach you"]
   max_severity: high

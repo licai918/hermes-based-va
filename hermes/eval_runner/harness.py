@@ -63,7 +63,6 @@ class AgentTurnResult:
     case_urgency: Optional[str] = None
     contact_reason: Optional[str] = None
     alternate_address_not_verified: Optional[bool] = None
-    honored_injected_preference: Optional[bool] = None
 
 
 class AgentHarness(Protocol):
