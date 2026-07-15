@@ -118,6 +118,23 @@ def test_scripted_turn_returns_final_response_as_draft() -> None:
     assert result["model"] == SCRIPTED_MODEL
 
 
+def test_run_turn_result_carries_the_governed_messages_transcript() -> None:
+    # S07 (FR-3/R4): the copilot return must thread the governed tool-call
+    # transcript through so an eval scenario's mechanical no-inferred-write
+    # assertion (forbid_inferred_upsert) can inspect it -- this was computed but
+    # silently dropped before (S05 spike finding 5). Additive: agent_turn_app.py,
+    # the only production consumer, never reads result["messages"].
+    draft = "Hi there, thanks for reaching out."
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": draft}])
+
+    result = run_turn(channel="sms", case_id="case_msgs", prompt="need help")
+
+    assert isinstance(result.get("messages"), list) and result["messages"]
+    assert result["messages"][0]["role"] == "user"
+    assistant_messages = [m for m in result["messages"] if m.get("role") == "assistant"]
+    assert assistant_messages[-1]["content"].strip() == draft
+
+
 def test_default_provider_is_a_deterministic_keyless_stub() -> None:
     # Fork C1 mock-first (ADR-0137): with no injected completions and no API key,
     # the turn still yields a deterministic, non-empty draft (a local stub), so the

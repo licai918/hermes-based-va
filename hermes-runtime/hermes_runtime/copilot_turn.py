@@ -258,8 +258,10 @@ def make_copilot_run_turn(
 
     The returned ``run_turn(*, channel, case_id, prompt=None)`` boots
     ``internal_copilot`` unbound, runs a real ``AIAgent`` loop against the resolved
-    provider, and returns ``{"draft", "model", "profile"}`` (email also carries
-    ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1).
+    provider, and returns ``{"draft", "model", "profile", "messages"}`` (email also
+    carries ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1)
+    and ``messages`` is the governed tool-call transcript (S07, FR-3/R4) -- the shape
+    :func:`eval_runner.transcript.turn_result_from_transcript` parses.
 
     Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
     OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
@@ -352,6 +354,12 @@ def make_copilot_run_turn(
 
         draft = turn["final_response"]
         result: dict[str, Any] = {"draft": draft, "model": model, "profile": INTERNAL}
+        # S07 (FR-3/R4): thread the governed tool-call transcript through so an eval
+        # scenario's mechanical no-inferred-write assertion (forbid_inferred_upsert)
+        # can inspect it -- previously computed as `turn` but silently dropped here
+        # (S05 spike finding 5). Purely additive: agent_turn_app.py, the only
+        # production consumer of this result, reads draft/subject/model/profile only.
+        result["messages"] = list(turn.get("messages", []) or [])
         # Email carries a subject (the in-process mock returns {channel, subject,
         # draft}); the subject is derived from the turn's final_response, and the
         # body becomes the draft. sms/internal_note key only on draft.
