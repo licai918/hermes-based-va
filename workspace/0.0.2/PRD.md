@@ -218,32 +218,33 @@ The single truth table 0.0.2 must make true, proven with real Postgres:
 | **R5** | Honored-leg genuine: a transcript where the preference is ignored/re-asked **fails** the honored judge (the freebie is gone) | eval-unit (judge on fixtures) | judge inspects the reply, not the preset |
 | **R6** | No-unprompted-recall: the agent stays silent about a stored preference the customer did not raise | eval (advisory judge) | no unprompted recitation |
 
-### 6.3 Test levels & seams (existing preferred; **confirm these**)
+### 6.3 Test levels & seams (**confirmed 2026-07-14** — one seam per FR, no gaps)
 
-Almost every seam is an **existing 0.0.1 seam** — one new component, one spike:
+Every requirement maps to exactly one testing seam, **preferring existing 0.0.1
+seams** (highest seam that still exercises the behaviour). One new component (the
+LLM-judge) and one spike (FR-3's harness capability) are the only additions.
 
-- **Unit (pure):** `resolve_memory_write_source` discriminator (seam:
-  `test_memory.py` / `test_customer_memory_write_source.py`);
-  `resolve_customer_memory_binding` after carve-out removal (seam:
-  `test_customer_memory_binding.py`).
-- **Datastore integration (real Postgres, throwaway schema):** `source` + actor
-  persisted per origin; carve-out removal → `policy_blocked`; the actor-column
-  migration (seams: `test_datastore_driver_memory.py`,
-  `test_customer_memory_datastore.py`).
-- **Eval (behavioral replay):** the new Copilot no-inferred scenario (mechanical,
-  **hard gate**); the honored-leg genuineness + no-unprompted-recall via the
-  **LLM-judge** (advisory). **NEW seam:** the LLM-judge component — unit-tested with
-  **fixture transcripts** (a small new seam, injection-hardening included).
-- **Workbench (vitest):** `PREFERENCE_SLOTS` import from the shared package
-  (existing vitest seam).
-- **Removal tripwire:** a test asserting a model-supplied `channel_identity_id` is
-  `policy_blocked` — the replacement for the deleted S15 characterization test.
+| Req | Seam (test level) | File / harness | New? |
+| --- | --- | --- | --- |
+| **FR-1** prompt guard | eval (copilot no-inferred) + unit (persona carries the rule) | the FR-3 scenario + a persona unit assert | existing |
+| **FR-2** `copilot_agent` source | unit (`resolve_memory_write_source` discriminator) + datastore (source per origin) | `test_memory.py` / `test_customer_memory_write_source.py`; `test_datastore_driver_memory.py` | existing |
+| **FR-3** eval + judge | eval replay (mechanical no-inferred, **hard gate**) + eval-unit (LLM-judge on fixture transcripts, **advisory**) | eval runner; **new** judge unit seam | **new seam + spike** |
+| **FR-4** actor column | datastore (actor per origin) + migration test | `test_datastore_driver_memory.py` / `test_customer_memory_datastore.py`; migrate test | existing |
+| **FR-5** carve-out removal | unit (binding → `policy_blocked`) + datastore + **removal tripwire** | `test_customer_memory_binding.py` / `test_memory.py`; `test_datastore_driver_memory.py` | existing (tripwire replaces deleted S15 test) |
+| **FR-6** honored/silent eval | eval-unit (judge integration in `turn_result`/`assertions`) + eval scenario (no-unprompted-recall) | eval runner + judge | existing runner, uses the FR-3 judge |
+| **FR-7** TS slot export | workbench vitest + domain-adapters unit | `apps/workbench` vitest; `@toee/domain-adapters` | existing |
+| **FR-8** swallow warning | unit (forced identity-lookup failure logs PII-safe warning) | `copilot_turn` unit (S11-parity) | existing |
 
-> **Seams to confirm:** (a) all reuse existing 0.0.1 seams except **one new** — the
-> LLM-judge, tested at the fixture-transcript level, the highest seam that still
-> exercises it; (b) a **spike** gates FR-3: the eval runner's scenarios are
-> `channel: textline` today — confirm it can drive an `internal_copilot` draft
-> turn, or the Copilot no-inferred scenario needs harness plumbing (bumps FR-3 S→M).
+**Confirmed seam decisions (product owner, 2026-07-14):**
+- The **LLM-judge** is the one new seam, unit-tested at the **fixture-transcript**
+  level (the highest seam that still exercises it), injection-hardening included,
+  and positioned **advisory** — it never gates CI; the hard gate stays the
+  mechanical assertions.
+- **FR-3 is spike-gated:** the eval runner's scenarios are `channel: textline`
+  today. A **spike-first slice** confirms the runner can drive an
+  `internal_copilot` draft turn; if it cannot, the Copilot no-inferred scenario
+  needs harness plumbing and FR-3 grows S→M. **No FR-3 implementation slice starts
+  until the spike resolves.**
 
 ### 6.4 Observability
 
