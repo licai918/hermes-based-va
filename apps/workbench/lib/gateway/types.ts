@@ -3,7 +3,7 @@
 // ADR-0085/0086 audit views). These back the in-memory GatewayStore that is the
 // Slice-2 source of truth; Slice 3 swaps the store for Postgres without changing
 // these shapes.
-import type { MemoryPreferenceSlot } from "@toee/domain-adapters";
+import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/domain-adapters";
 
 // Re-exported so the rest of the BFF/gateway layer imports the slot union from
 // "./types" alongside everything else, without drifting from the domain-adapters
@@ -117,11 +117,10 @@ export interface CaseListFilter {
 // Customer Memory preferences (ADR-0111/0114, PAC-4/S17). A case's four v1
 // preference slots as read/corrected from the Workbench; any slot not yet set is
 // simply absent rather than present with an empty value.
-export const PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = [
-  "contact_time_preference",
-  "channel_preference",
-  "delivery_habit_note",
-  "communication_style_note",
-];
+//
+// Re-exported (not re-declared) from domain-adapters (S09, FR-7): the mock
+// driver's MEMORY_PREFERENCE_SLOTS is the single source, so a fifth slot can't
+// silently drift between the two copies.
+export const PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = MEMORY_PREFERENCE_SLOTS;
 
 export type CustomerPreferences = Partial<Record<MemoryPreferenceSlot, string>>;
