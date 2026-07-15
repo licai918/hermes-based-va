@@ -13,10 +13,12 @@ External profile always writes `customer_explicit`; the Internal Copilot profile
 always writes `employee_confirmed`; binding derives from the turn's resolved
 identity, with an `internal_copilot`-only fallback that let a model-supplied
 `channel_identity_id` tool param mint a `provisional:{param}` key when context
-carried none. A later 0.0.1 slice (S20) gave the Copilot **draft turn** — the
-agent drafting a reply, unbound to any human action — its own ability to call
-`toee_customer_memory.upsert_preference`, guarded only by a prompt instruction
-not to infer.
+carried none. The Copilot **draft turn** — the agent drafting a reply, unbound
+to any human action — already had `toee_customer_memory` in its boot allowlist
+(ADR-0114) and could call `upsert_preference` on its own initiative, guarded
+only by a prompt instruction not to infer; a later 0.0.1 slice (S20) routed
+that write to the real datastore instead of an ephemeral mock, making the
+mislabeling below consequential rather than moot.
 
 That combination exposed three gaps the 0.0.2 PRD (§4.1/§4.2, FR-2/FR-4/FR-5)
 tracks as RK-1/RK-2/RK-4:
@@ -163,7 +165,8 @@ this test, not just a code review (RK-4).
   handle `copilot_agent` — none does today (repo-wide grep, S01).
 - The nullable actor column has no reader yet: no index, no audit/reporting view
   filters by it. Not a regression — adding one now would be speculative for a
-  column nothing reads (RK-6 accepted this at migration time).
+  column nothing reads, consistent with RK-6's minimal-migration-risk
+  mitigation (nullable, no backfill, no read dependency until FR-4 needed one).
 - **RK-2 remains open by design, not closed by this ADR.** Both `source` and
   `actor_account_id` are only as honest as `context.user_id`'s own contract: a
   future non-UI internal caller that sets `user_id` without a real employee at
