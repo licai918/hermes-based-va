@@ -55,6 +55,22 @@ def _provisional_ctx(channel_identity: str, channel: str = "sms") -> ToolExecuti
     )
 
 
+def _internal_ctx(
+    user_id: str | None = None, shopify_customer_id: str = VERIFIED_CUSTOMER_ID
+) -> ToolExecutionContext:
+    # S01 (PRD §9): context.user_id is the source discriminator on the Internal
+    # profile -- set by the dispatch route from actor_account_id when a UI
+    # correction dispatched it, absent on the unbound AI draft-turn path (S20).
+    return ToolExecutionContext(
+        profile="internal_copilot",
+        identity={
+            "outcome": "verified_customer",
+            "shopify_customer_id": shopify_customer_id,
+        },
+        user_id=user_id,
+    )
+
+
 def _call(driver: MockDriver, action: str, params: dict, context: ToolExecutionContext):
     return execute_tool(
         tool="toee_customer_memory",
@@ -402,6 +418,52 @@ def test_upsert_ignores_model_supplied_source_and_uses_framework_value() -> None
     )
     assert result.ok is True
     assert result.data["source"] == "customer_explicit"
+
+
+def test_internal_profile_with_user_id_resolves_employee_confirmed() -> None:
+    # PRD §9 / FR-2: an acting employee (context.user_id, set by the dispatch
+    # route) makes this a confirmed correction.
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings"},
+        _internal_ctx(user_id="acct_rep_1"),
+    )
+    assert result.ok is True
+    assert result.data["source"] == "employee_confirmed"
+
+
+def test_internal_profile_without_user_id_resolves_copilot_agent() -> None:
+    # The unbound AI draft-turn path (S20) never sets context.user_id -- no
+    # employee confirmed this write, so it gets its own honest label (FR-2),
+    # never the (false) employee_confirmed a profile-only check used to give it.
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings"},
+        _internal_ctx(),
+    )
+    assert result.ok is True
+    assert result.data["source"] == "copilot_agent"
+
+
+def test_internal_profile_upsert_ignores_forged_actor_and_source_params() -> None:
+    # RK-1/2: source is derived from context.user_id ONLY -- a model on the
+    # unbound draft turn cannot forge an "employee confirmed" label by naming
+    # itself an actor, or by naming the source directly, via tool params.
+    result = _call(
+        _driver(),
+        "upsert_preference",
+        {
+            "key": "channel_preference",
+            "value": "sms",
+            "user_id": "acct_forged",
+            "source": "employee_confirmed",
+        },
+        _internal_ctx(),  # no context.user_id: this is the unbound draft turn
+    )
+    assert result.ok is True
+    assert result.data["source"] == "copilot_agent"
 
 
 def test_internal_copilot_channel_identity_id_param_is_ignored() -> None:

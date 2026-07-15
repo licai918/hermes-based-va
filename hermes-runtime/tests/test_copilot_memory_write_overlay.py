@@ -148,8 +148,9 @@ def test_copilot_draft_turn_scripted_write_persists_to_datastore_under_verified_
     # extra_drivers overlay now threaded through boot_profile -> register() ->
     # _register -> _build_driver_selector, the write reaches Postgres -- under the
     # SAME bare shopify_customer_id key S08 already binds context.identity to --
-    # tagged source=employee_confirmed (the internal_copilot profile), instead of
-    # being silently discarded by the ephemeral mock.
+    # tagged source=copilot_agent (S01: this unbound draft turn never sets
+    # context.user_id, so it is honestly labelled, never employee_confirmed),
+    # instead of being silently discarded by the ephemeral mock.
     driver, conn, _ = datastore
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
     import hermes_runtime.tool_backend as tool_backend_mod
@@ -199,4 +200,4 @@ def test_copilot_draft_turn_scripted_write_persists_to_datastore_under_verified_
             (_VERIFIED_SHOPIFY_ID, "contact_time_preference"),
         )
         row = cur.fetchone()
-    assert row == ("mornings", "employee_confirmed")  # anti-mock: mock never writes here
+    assert row == ("mornings", "copilot_agent")  # anti-mock: mock never writes here

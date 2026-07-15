@@ -21,31 +21,45 @@ INTERNAL = "internal_copilot"
 SUPERVISOR = "supervisor_admin"
 
 
-def _ctx(profile: str) -> ToolExecutionContext:
-    return ToolExecutionContext(profile=profile)
+def _ctx(profile: str, *, user_id: str | None = None) -> ToolExecutionContext:
+    return ToolExecutionContext(profile=profile, user_id=user_id)
 
 
 def test_external_profile_resolves_customer_explicit() -> None:
     assert resolve_memory_write_source(_ctx(EXTERNAL)) == "customer_explicit"
 
 
-def test_internal_copilot_resolves_employee_confirmed() -> None:
-    assert resolve_memory_write_source(_ctx(INTERNAL)) == "employee_confirmed"
+def test_internal_with_user_id_resolves_employee_confirmed() -> None:
+    # PRD §9: the discriminator is context.user_id, set by the dispatch route
+    # from the request's actor_account_id -- an acting employee is present.
+    assert (
+        resolve_memory_write_source(_ctx(INTERNAL, user_id="acct_rep_1"))
+        == "employee_confirmed"
+    )
 
 
-def test_accepted_enum_includes_merged_provisional_for_future_merge_path() -> None:
+def test_internal_without_user_id_resolves_copilot_agent() -> None:
+    # The unbound AI draft-turn path (S20) never sets context.user_id -- no
+    # employee confirmed this write, so FR-2 gives it its own honest label
+    # instead of the (false) employee_confirmed a profile-only check used to.
+    assert resolve_memory_write_source(_ctx(INTERNAL)) == "copilot_agent"
+
+
+def test_accepted_enum_includes_copilot_agent_and_merged_provisional() -> None:
     # S10 (merge, not this slice) is the only writer of merged_provisional; the
     # enum must already accept it so that path never needs a second change here.
     assert MEMORY_SOURCE_VALUES == (
         "customer_explicit",
         "employee_confirmed",
+        "copilot_agent",
         "merged_provisional",
     )
 
 
 def test_every_resolved_source_is_in_the_accepted_enum() -> None:
-    for profile in (EXTERNAL, INTERNAL):
-        assert resolve_memory_write_source(_ctx(profile)) in MEMORY_SOURCE_VALUES
+    contexts = (_ctx(EXTERNAL), _ctx(INTERNAL), _ctx(INTERNAL, user_id="acct_1"))
+    for context in contexts:
+        assert resolve_memory_write_source(context) in MEMORY_SOURCE_VALUES
 
 
 def test_unsupported_profile_is_policy_blocked() -> None:

@@ -58,10 +58,11 @@ def test_unbound_register_binds_a_verified_memory_write_to_the_identity(monkeypa
         )
     )
     # The write bound to the verified Shopify id from context.identity (not the
-    # model-supplied provisional carve-out), and the Internal profile stamps the
-    # employee-confirmed source (RK-1).
+    # model-supplied provisional carve-out). RecordingCtx carries no user_id, so
+    # (S01, PRD §9) the Internal profile stamps the honest copilot_agent source,
+    # not employee_confirmed -- no employee confirmed this unbound write.
     assert out["binding_key"] == "gid://shopify/Customer/2002"
-    assert out["source"] == "employee_confirmed"
+    assert out["source"] == "copilot_agent"
 
 
 def test_unbound_register_binds_a_provisional_memory_write_to_the_3_part_key(monkeypatch) -> None:

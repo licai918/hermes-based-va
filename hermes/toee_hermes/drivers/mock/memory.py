@@ -31,20 +31,21 @@ MEMORY_PREFERENCE_SLOTS: tuple[str, ...] = (
     "communication_style_note",
 )
 
-# Framework-derived write sources (PRD FR-3, RK-1). ``customer_explicit`` and
-# ``employee_confirmed`` are set by :func:`resolve_memory_write_source`, never by
-# a model-supplied tool param. ``merged_provisional`` is reserved for the async
-# provisional-to-verified merge path (S10) and is not produced by either write
-# handler in this module -- it is listed here so the enum never needs a second
-# change when that path lands.
+# Framework-derived write sources (PRD FR-2/FR-3, RK-1). ``customer_explicit``,
+# ``employee_confirmed``, and ``copilot_agent`` are set by
+# :func:`resolve_memory_write_source`, never by a model-supplied tool param.
+# ``merged_provisional`` is reserved for the async provisional-to-verified merge
+# path (S10) and is not produced by either write handler in this module -- it is
+# listed here so the enum never needs a second change when that path lands.
 MEMORY_SOURCE_VALUES: tuple[str, ...] = (
     "customer_explicit",
     "employee_confirmed",
+    "copilot_agent",
     "merged_provisional",
 )
 
-# Named handles onto the three MEMORY_SOURCE_VALUES entries -- unpacked FROM the
-# tuple (not re-typed as separate literals) so every emit site (the two branches
+# Named handles onto the four MEMORY_SOURCE_VALUES entries -- unpacked FROM the
+# tuple (not re-typed as separate literals) so every emit site (the resolver
 # below, and the S10 merge SQL in postgres_gateway_store.py) shares the exact same
 # object the enum holds. A future reorder/add/remove in MEMORY_SOURCE_VALUES fails
 # this unpacking at import time instead of silently drifting a scattered literal
@@ -52,6 +53,7 @@ MEMORY_SOURCE_VALUES: tuple[str, ...] = (
 (
     MEMORY_SOURCE_CUSTOMER_EXPLICIT,
     MEMORY_SOURCE_EMPLOYEE_CONFIRMED,
+    MEMORY_SOURCE_COPILOT_AGENT,
     MEMORY_SOURCE_MERGED_PROVISIONAL,
 ) = MEMORY_SOURCE_VALUES
 
@@ -218,19 +220,24 @@ def resolve_customer_memory_binding(
 
 
 def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
-    """Framework-derived ``source`` for a preference write (RK-1, PRD FR-3).
+    """Framework-derived ``source`` for a preference write (RK-1, PRD FR-2/§9).
 
     ONE shared resolver for both the mock and Postgres datastore handlers, same
     reasoning as :func:`resolve_customer_memory_binding`: this is
     security-sensitive governance logic that must not drift between the two.
 
     Never taken from the model-supplied tool params -- the model cannot forge
-    ``customer_explicit`` for an inferred write. The External Customer Service
-    Profile always writes ``customer_explicit``; the Internal Copilot Profile
-    always writes ``employee_confirmed``. ``merged_provisional`` is set only by
-    the merge path (S10), never by this resolver. Any other profile is
-    fail-closed -- ``toee_customer_memory`` is not allowlisted outside these two
-    today (ADR-0034/35), so this is defense in depth, not a reachable path.
+    ``employee_confirmed`` for an inferred write. The External Customer Service
+    Profile always writes ``customer_explicit``. The Internal Copilot Profile
+    discriminates on ``context.user_id`` (PRD §9): the dispatch route sets it
+    from the request's ``actor_account_id`` when a rep is at the keyboard, so
+    present -> a deliberate UI correction, ``employee_confirmed``; absent -> the
+    unbound AI draft-turn write (S20), honestly labelled ``copilot_agent``
+    rather than the (false) ``employee_confirmed`` a profile-only check used to
+    give it. ``merged_provisional`` is set only by the merge path (S10), never
+    by this resolver. Any other profile is fail-closed -- ``toee_customer_
+    memory`` is not allowlisted outside these two today (ADR-0034/35), so this
+    is defense in depth, not a reachable path.
     """
     # Deferred import: same partially-initialized-package hazard documented on
     # resolve_customer_memory_binding above.
@@ -239,7 +246,9 @@ def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
     if context.profile == EXTERNAL:
         return MEMORY_SOURCE_CUSTOMER_EXPLICIT
     if context.profile == INTERNAL:
-        return MEMORY_SOURCE_EMPLOYEE_CONFIRMED
+        if context.user_id:
+            return MEMORY_SOURCE_EMPLOYEE_CONFIRMED
+        return MEMORY_SOURCE_COPILOT_AGENT
     raise ToolDriverError(
         "policy_blocked",
         f'Customer Memory writes are not permitted for profile "{context.profile}".',

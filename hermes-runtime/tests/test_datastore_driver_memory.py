@@ -18,12 +18,20 @@ VERIFIED = {
 }
 
 
-def _run(driver, action, params, *, identity=None, profile="customer_service_external"):
+def _run(
+    driver,
+    action,
+    params,
+    *,
+    identity=None,
+    profile="customer_service_external",
+    user_id=None,
+):
     return execute_tool(
         tool="toee_customer_memory",
         action=action,
         params=params,
-        context=ToolExecutionContext(profile=profile, identity=identity),
+        context=ToolExecutionContext(profile=profile, identity=identity, user_id=user_id),
         driver=driver,
     )
 
@@ -174,6 +182,58 @@ def test_source_param_cannot_be_forged(datastore) -> None:
     )
     assert result.ok
     assert result.data["source"] == "customer_explicit"
+
+
+def test_internal_copilot_with_user_id_persists_employee_confirmed_source(
+    datastore,
+) -> None:
+    # §6.1 matrix / R1: a write dispatched WITH an actor (context.user_id, PRD §9)
+    # persists source=employee_confirmed -- read back directly from Postgres, not
+    # just the tool's own return value.
+    driver, conn, _ = datastore
+    up = _run(
+        driver, "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings only"},
+        identity=VERIFIED, profile="internal_copilot", user_id="acct_rep_s01",
+    )
+    assert up.ok
+    assert up.data["source"] == "employee_confirmed"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT source FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (up.data["binding_key"], "contact_time_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "employee_confirmed"
+
+
+def test_internal_copilot_without_user_id_persists_copilot_agent_source(
+    datastore,
+) -> None:
+    # §6.1 matrix / R1: a draft-turn-shaped write (no context.user_id -- the
+    # unbound S20 path) persists source=copilot_agent, never employee_confirmed
+    # -- read back directly from Postgres.
+    driver, conn, _ = datastore
+    up = _run(
+        driver, "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings only"},
+        identity=VERIFIED, profile="internal_copilot",
+    )
+    assert up.ok
+    assert up.data["source"] == "copilot_agent"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT source FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (up.data["binding_key"], "contact_time_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "copilot_agent"
 
 
 def test_internal_copilot_channel_identity_id_param_is_ignored(datastore) -> None:
