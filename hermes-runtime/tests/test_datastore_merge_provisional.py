@@ -113,6 +113,30 @@ def test_merge_writes_source_from_the_shared_memory_source_enum(datastore) -> No
     assert source in MEMORY_SOURCE_VALUES
 
 
+def test_merge_writes_null_actor(datastore) -> None:
+    """§6.1 matrix / R2: a provisional->verified merge writes no actor (null),
+    same as an AI-draft row -- the merge INSERT never sets ``actor_account_id``,
+    so Postgres's own column default (NULL, no DEFAULT clause) fills it; this pins
+    that behavior against a future edit to the merge SQL's column list."""
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    with conn.cursor() as cur:
+        _seed_slot(cur, _PROV, "provisional", "channel_preference", "sms",
+                   "customer_explicit")
+
+    store.merge_provisional_memory(_PROV, _VERIFIED)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT actor_account_id FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (_VERIFIED, "channel_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
 def test_merge_conflict_keeps_verified_and_shadows_provisional(datastore) -> None:
     """R5(b): a slot present on BOTH keys -> the verified value is kept untouched and
     the provisional value is recorded in details.overridden; a non-conflicting slot

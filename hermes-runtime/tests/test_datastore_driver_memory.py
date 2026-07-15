@@ -236,6 +236,56 @@ def test_internal_copilot_without_user_id_persists_copilot_agent_source(
     assert row[0] == "copilot_agent"
 
 
+# --- actor attribution (S02, PRD §9 / FR-4 / R2) -----------------------------
+
+
+def test_internal_copilot_with_user_id_persists_the_actor_account_id(
+    datastore,
+) -> None:
+    # R2/FR-4: a write dispatched WITH an actor (context.user_id, PRD §9) persists
+    # that account id in the actor column -- read back directly from Postgres, not
+    # just the tool's own return value.
+    driver, conn, _ = datastore
+    up = _run(
+        driver, "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings only"},
+        identity=VERIFIED, profile="internal_copilot", user_id="acct_rep_s01",
+    )
+    assert up.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT actor_account_id FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (up.data["binding_key"], "contact_time_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "acct_rep_s01"
+
+
+def test_internal_copilot_without_user_id_persists_null_actor(datastore) -> None:
+    # R2/FR-4: a draft-turn-shaped write (no context.user_id -- the unbound S20
+    # path) persists a NULL actor -- read back directly from Postgres.
+    driver, conn, _ = datastore
+    up = _run(
+        driver, "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings only"},
+        identity=VERIFIED, profile="internal_copilot",
+    )
+    assert up.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT actor_account_id FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (up.data["binding_key"], "contact_time_preference"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
 def test_internal_copilot_channel_identity_id_param_is_ignored(datastore) -> None:
     # R3/FR-5: the carve-out is removed -- a model-supplied channel_identity_id no
     # longer binds on internal_copilot either, against the real Postgres path. No

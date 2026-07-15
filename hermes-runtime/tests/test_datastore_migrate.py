@@ -146,6 +146,47 @@ def test_eval_run_has_governance_overlay_columns_after_migrate(temp_schema_conn)
         )
 
 
+def test_customer_memory_slot_has_actor_account_id_after_migrate(temp_schema_conn) -> None:
+    # PRD 0.0.2 §9 decision 2 / FR-4: the 0007 migration adds a nullable actor
+    # column so a UI correction's row can carry the rep's account id. The live
+    # schema already applied 0001-0006, so a new migration, not an edit.
+    conn, schema = temp_schema_conn
+    run_migrations(conn)
+    assert "customer_memory_slot" in _tables_with_column(conn, schema, "actor_account_id")
+
+
+def test_customer_memory_actor_column_has_no_backfill_on_existing_rows(
+    temp_schema_conn,
+) -> None:
+    # RK-6/NFR-1: nullable ALTER, no backfill -- a row written before 0007 applies
+    # must read back a NULL actor, not a default. Applying 0007 against a live
+    # (non-empty) table would itself raise if the column were ever NOT NULL
+    # without a default, so this also pins nullability.
+    conn, schema = temp_schema_conn
+    run_migrations(conn, exclude={"0007_customer_memory_actor"})
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO customer_memory_slot
+                (id, binding_key, binding_kind, slot_name, slot_value, source)
+            VALUES ('mem_pre_0007', 'provisional:sms:+15550000000', 'provisional',
+                    'channel_preference', 'sms', 'customer_explicit')
+            """
+        )
+    conn.commit()
+
+    run_migrations(conn)  # applies 0007 (and anything else pending) on top
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT actor_account_id FROM customer_memory_slot WHERE id = %s",
+            ("mem_pre_0007",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] is None
+
+
 def test_retention_timestamp_columns_present(temp_schema_conn) -> None:
     conn, schema = temp_schema_conn
     run_migrations(conn)

@@ -12,7 +12,11 @@ taken from the model-supplied tool params (RK-1); an optional ``evidence`` param
 ``MEMORY_EVIDENCE_MAX_LENGTH`` chars the same governed way. The slot enum, both
 resolvers, and the value/evidence validators are all imported from the plugin so
 the datastore and mock paths share one source of truth: this is security-sensitive
-logic that must not drift between the two.
+logic that must not drift between the two. The acting employee, when one exists,
+is persisted in ``actor_account_id`` (0007 migration, nullable, no backfill) --
+taken directly from ``context.user_id``, framework-set by the dispatch route from
+the request's asserted actor and never model-supplied: present on a UI correction,
+NULL on an AI draft-turn write or a provisional->verified merge (PRD 0.0.2 FR-4/R2).
 """
 
 from __future__ import annotations
@@ -56,21 +60,30 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
     # passed is ignored.
     source = resolve_memory_write_source(context)
     binding_key, binding_kind = resolve_customer_memory_binding(context, params)
+    # FR-4/R2: actor is framework-derived from context.user_id -- the dispatch
+    # route sets it from the request's asserted actor_account_id (ADR-0141), never
+    # a model-supplied param. Present -> a UI correction; absent (None) -> an AI
+    # draft-turn write, same presence check resolve_memory_write_source already
+    # makes for source (PRD §9).
+    actor_account_id = context.user_id
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO customer_memory_slot
-                (id, binding_key, binding_kind, slot_name, slot_value, source, evidence)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                (id, binding_key, binding_kind, slot_name, slot_value, source,
+                 evidence, actor_account_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (binding_key, slot_name) DO UPDATE SET
                 slot_value = EXCLUDED.slot_value,
                 source = EXCLUDED.source,
                 evidence = EXCLUDED.evidence,
                 binding_kind = EXCLUDED.binding_kind,
+                actor_account_id = EXCLUDED.actor_account_id,
                 updated_at = now(),
                 last_interaction_at = now()
             """,
-            (new_id("mem"), binding_key, binding_kind, slot, value, source, evidence),
+            (new_id("mem"), binding_key, binding_kind, slot, value, source, evidence,
+             actor_account_id),
         )
     return {
         "binding_key": binding_key,
