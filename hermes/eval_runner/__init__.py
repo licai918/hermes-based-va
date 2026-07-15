@@ -33,6 +33,15 @@ from .harness import (
     scenario_tool_gate,
     stub_agent_harness,
 )
+from .judge import (
+    DATA_NOT_INSTRUCTIONS_MARKER,
+    DEFAULT_JUDGE_MODEL,
+    JudgeClient,
+    JudgeLeg,
+    JudgeVerdict,
+    build_judge_prompt,
+    judge_reply,
+)
 from .report import (
     EvalReport,
     EvalReportSummary,
@@ -84,6 +93,14 @@ __all__ = [
     "scenario_execution_context",
     "scenario_tool_gate",
     "stub_agent_harness",
+    # judge (S06 — advisory, injection-hardened; not wired into gating yet)
+    "DATA_NOT_INSTRUCTIONS_MARKER",
+    "DEFAULT_JUDGE_MODEL",
+    "JudgeClient",
+    "JudgeLeg",
+    "JudgeVerdict",
+    "build_judge_prompt",
+    "judge_reply",
     # assertions
     "AssertionOutcome",
     "evaluate_scenario",
