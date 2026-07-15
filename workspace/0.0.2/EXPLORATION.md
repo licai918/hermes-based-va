@@ -1,9 +1,11 @@
 # 0.0.2 — Exploration → sharpened scope (NOT yet a PRD)
 
-- **Status:** exploration, **grilled and trimmed to committed scope** (2026-07-14).
-  This is the PRD-ready shape for the "govern + harden" iteration. The unselected
-  candidates were moved to [0.0.3 exploration](../0.0.3/EXPLORATION.md).
-  **Next:** brainstorm → `workspace/0.0.2/PRD.md` → slices.
+- **Status:** ✅ **Graduated to [PRD.md](PRD.md)** (2026-07-14). This doc is now the
+  exploration + grill **record** (candidates 1/4/5, the four locked decisions,
+  file:line grounding) — the committed scope lives in the PRD. Deferred candidates
+  (knowledge layer, option D, retention, pooling, cross-channel, transparency,
+  instrumentation) are in [0.0.3 exploration](../0.0.3/EXPLORATION.md); nothing
+  unfinished is stranded here. **Next:** slice the PRD (`/to-issues`).
 - **Builds on:** 0.0.1 (Customer Memory activation — [PRD](../0.0.1/PRD.md),
   merged PR #54). Branch `feat/0.0.2-memory-governance` (rebased on the merge).
 - **Date opened:** 2026-07-14
