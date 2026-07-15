@@ -77,7 +77,11 @@ _SUBJECT_LINE_PREFIX = "subject:"
 # reply, email body, staff-facing internal note, or (Slice 4) a conversational chat
 # reply that helps the staff member work the case. Each instructs "propose only,
 # never send"; the agent has no send tool regardless (the structural no-send
-# invariant, ADR-0035/0067).
+# invariant, ADR-0035/0067). Every channel also gets the _MEMORY_WRITE_DISCIPLINE
+# suffix appended below (S03, FR-1): the draft agent keeps toee_customer_memory
+# (S20 lets a draft turn persist an agent-initiated write) under the SAME
+# internal_copilot allowlist for all four channels, so the no-inferred guard has
+# to cover every one of them.
 _SYSTEM_MESSAGES = {
     "sms": (
         "You are a Toee Tire support copilot drafting a customer SMS reply for a "
@@ -105,6 +109,20 @@ _SYSTEM_MESSAGES = {
         "If they ask you to draft a customer reply, provide the suggested reply text "
         "for them to review, edit, and send themselves. Never send anything yourself."
     ),
+}
+# S03 (FR-1): mirrors persona.py:99-103's proven external rule ("ONLY when the
+# customer explicitly asks... NEVER save a preference you merely inferred"), adapted
+# to the case-scoped draft turn. Appended to every channel in one place — rather than
+# pasted into all four literals above — so the guard cannot drift out of sync between
+# channels; the draft agent keeps upsert_preference (guarded, not removed).
+_MEMORY_WRITE_DISCIPLINE = (
+    "Only use toee_customer_memory to save a preference when the customer has "
+    "explicitly stated a durable preference in this case's conversation — never "
+    "one merely inferred from tone, history, or a single order."
+)
+_SYSTEM_MESSAGES = {
+    channel: f"{message} {_MEMORY_WRITE_DISCIPLINE}"
+    for channel, message in _SYSTEM_MESSAGES.items()
 }
 
 

@@ -449,3 +449,23 @@ def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> No
     available = rejection.split("Available tools:", 1)[-1]
     assert "toee_textline_reply" not in available
     assert turn["final_response"].strip() == reply
+
+
+# --- S03 (FR-1): draft-persona write discipline for toee_customer_memory ---------
+# The draft agent KEEPS upsert_preference (S20 lets a draft turn persist an
+# agent-initiated write), so the persona has to carry the same no-inferred
+# discipline the external persona already proved (persona.py:99-103: "ONLY when
+# the customer explicitly asks... NEVER save a preference you merely inferred").
+# All four channels boot the identical internal_copilot allowlist (REVIEWED_
+# INTERNAL_ALLOWLIST above includes toee_customer_memory, and boot_profile never
+# sees the channel), so every channel's system message must carry the guard.
+
+
+def test_system_messages_carry_the_no_inferred_memory_write_rule() -> None:
+    for channel in ("sms", "email", "internal_note", "chat"):
+        message = _system_message(channel)
+        assert "toee_customer_memory" in message
+        assert "explicitly stated" in message
+        assert "this case's conversation" in message
+        lowered = message.lower()
+        assert "never" in lowered and "infer" in lowered
