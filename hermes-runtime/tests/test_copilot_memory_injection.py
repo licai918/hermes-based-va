@@ -53,6 +53,20 @@ class _ReadRaisingStore:
         raise RuntimeError("read boom")
 
 
+class _IdentityRaisingStore:
+    """The case->thread identity lookup itself explodes (S10, S11-parity sibling).
+
+    The exception message stands in for a store leak (e.g. driver-echoed customer
+    content) -- it must never reach the log, only the exception's TYPE.
+    """
+
+    def load_case_identity(self, case_id):
+        raise RuntimeError("identity boom -- must never appear in logs")
+
+    def load_customer_memory(self, binding_key):  # pragma: no cover - must not run
+        raise AssertionError("load_customer_memory must not run when identity lookup failed")
+
+
 def _seed_case(
     conn,
     *,
@@ -271,3 +285,27 @@ def test_copilot_memory_read_error_logs_warning_and_turn_still_completes(
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     assert "read" in warnings[0].getMessage().lower()
+
+
+def test_copilot_case_identity_lookup_error_logs_warning_and_turn_still_completes(
+    monkeypatch, caplog
+) -> None:
+    # S10 (FR-8), sibling to the S11 read-failure test above: the OTHER swallow in
+    # _load_case_memory -- load_case_identity itself raising -- must not be silent
+    # either. WARN, then degrade to no memory injected (no behaviour change, NFR-4).
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    caplog.set_level(logging.WARNING)
+
+    user_message = _run_copilot_capturing_injection(
+        monkeypatch, store=_IdentityRaisingStore(), case_id="case-mem-identity-error"
+    )
+
+    assert "Customer Memory" not in user_message  # degrades cleanly -- unchanged
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "identity" in message.lower()
+    assert "RuntimeError" in message  # the exception TYPE
+    assert "case-mem-identity-error" in message  # case_id: an internal id, not PII
+    assert "identity boom" not in message  # never str(exc) -- could echo store content

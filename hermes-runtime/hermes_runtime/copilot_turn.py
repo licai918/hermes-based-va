@@ -208,7 +208,19 @@ def _load_case_memory(
     resolved_store = store if store is not None else _gateway_store()
     try:
         identity = resolved_store.load_case_identity(case_id)
-    except Exception:
+    except Exception as exc:
+        # ponytail: swallow to None so a lookup hiccup degrades to "no memory
+        # injected", never a failed draft (FR-7) -- same philosophy as the read
+        # swallow below. S10/S11 parity: WARN so the swallow isn't silent. No
+        # binding_key exists yet (identity never resolved), so log case_id (an
+        # internal id, not PII -- see _user_message above) + exception TYPE only --
+        # never str(exc)/traceback, which could echo back store-supplied content.
+        logger.warning(
+            "Customer Memory identity lookup failed case_id=%s error_type=%s; "
+            "turn continues with no memory injected",
+            case_id,
+            type(exc).__name__,
+        )
         return None, None
     if identity is None:
         return None, None
