@@ -103,14 +103,6 @@ def _require_slot(params: dict[str, Any]) -> str:
     return requested
 
 
-def _read_string(params: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = params.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
-
-
 def _require_value(params: dict[str, Any]) -> str:
     """Resolve and validate ``value``: a string, capped at 200 chars (PRD FR-3)."""
     value = params.get("value")
@@ -196,32 +188,27 @@ def resolve_customer_memory_binding(
     """Resolve ``(binding_key, binding_kind)`` for a WRITE, fail-closed (S02, FR-5).
 
     Thin wrapper over :func:`binding_key_from_identity` (the shared pure core) that
-    adds the two write-only concerns: the ``internal_copilot`` param carve-out and
-    the fail-closed ``policy_blocked`` raise. Kept here since hermes-runtime already
-    imports ``MEMORY_PREFERENCE_SLOTS`` from this module as the single source of
-    truth for the slot enum.
+    adds the one write-only concern: the fail-closed ``policy_blocked`` raise. Kept
+    here since hermes-runtime already imports ``MEMORY_PREFERENCE_SLOTS`` from this
+    module as the single source of truth for the slot enum.
 
-    ``channel_identity_id`` in ``params`` is honored only as a last resort on the
-    ``internal_copilot`` profile (employee-confirmed corrections over the unbound
-    workbench dispatch path, which carries no channel identity in context). Every
-    other profile — including external — ignores it entirely.
+    Binding is context-only on EVERY profile — ``params`` is accepted for call-shape
+    symmetry with the other handlers but never consulted. The former
+    ``internal_copilot`` ``channel_identity_id`` carve-out (a model-supplied param
+    could mint a ``provisional:{param}`` key when context had no identity) is
+    removed (R3, PRD FR-5, S04): a Workbench correction now binds via the case's
+    resolved identity (S16, ``tool_dispatch_app._resolve_case_identity``), not a
+    model-named param.
 
-    No resolvable identity at all raises a fail-closed ``policy_blocked``; the bare
-    shared ``"provisional"`` key from pre-S02 (a cross-customer leak) is gone.
+    No resolvable identity at all raises a fail-closed ``policy_blocked``; neither
+    the bare shared ``"provisional"`` key from pre-S02 nor the model-named
+    ``provisional:{param}`` key from the removed carve-out is ever produced.
     """
-    # Deferred import: same partially-initialized-package hazard as the core above.
-    from ...plugin.profiles import INTERNAL
-
+    # ``params`` is unused: matches the (context, params) call convention the other
+    # handlers share; binding itself never consults model-supplied params (R3).
     resolved = binding_key_from_identity(context.identity)
     if resolved is not None:
         return resolved
-
-    if context.profile == INTERNAL:
-        channel_identity_id = _read_string(
-            params, "channel_identity_id", "channelIdentityId"
-        )
-        if channel_identity_id is not None:
-            return f"provisional:{channel_identity_id}", "provisional"
 
     raise ToolDriverError(
         "policy_blocked",

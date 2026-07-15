@@ -404,7 +404,11 @@ def test_upsert_ignores_model_supplied_source_and_uses_framework_value() -> None
     assert result.data["source"] == "customer_explicit"
 
 
-def test_upsert_internal_copilot_resolves_employee_confirmed() -> None:
+def test_internal_copilot_channel_identity_id_param_is_ignored() -> None:
+    # R3/FR-5: the carve-out is removed -- a model-supplied channel_identity_id no
+    # longer binds on internal_copilot either (mirrors
+    # test_external_profile_channel_identity_id_param_is_ignored above). No context
+    # identity => policy_blocked, never a bound provisional:{param} key.
     ctx = ToolExecutionContext(profile="internal_copilot", identity=None)
     result = _call(
         _driver(),
@@ -416,8 +420,8 @@ def test_upsert_internal_copilot_resolves_employee_confirmed() -> None:
         },
         ctx,
     )
-    assert result.ok is True
-    assert result.data["source"] == "employee_confirmed"
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
 
 
 def test_upsert_evidence_is_persisted_and_retrievable() -> None:
