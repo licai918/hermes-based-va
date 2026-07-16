@@ -486,3 +486,19 @@ def test_system_messages_carry_the_no_inferred_memory_write_rule() -> None:
         assert "this case's conversation" in message
         lowered = message.lower()
         assert "never" in lowered and "infer" in lowered
+
+
+def test_system_messages_document_read_tool_param_conventions() -> None:
+    # Fix (task_8525be3c): the copilot draft prompts documented no tool parameter
+    # names, while build_tool_schema gives every governed tool an OPEN schema, so the
+    # draft agent guessed `order_id` for get_order and gave up when the sanitized
+    # "temporarily unavailable" error hid the real cause. Mirror the External
+    # persona's convention (persona.py) so every channel names order_number.
+    for channel in ("sms", "email", "internal_note", "chat"):
+        message = _system_message(channel)
+        assert "order_number" in message
+        assert "get_order" in message
+        assert "get_delivery_status" in message
+        # the load-bearing framing: exact names matter, wrong name == missing value.
+        lowered = message.lower()
+        assert "exact" in lowered and "parameter name" in lowered

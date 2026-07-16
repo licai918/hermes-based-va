@@ -120,8 +120,26 @@ _MEMORY_WRITE_DISCIPLINE = (
     "explicitly stated a durable preference in this case's conversation — never "
     "one merely inferred from tone, history, or a single order."
 )
+# Tool-parameter conventions (fix for the copilot draft path, task_8525be3c).
+# build_tool_schema (hermes/toee_hermes/plugin/schemas.py) gives every governed tool
+# an OPEN schema ("properties": {}), so the model gets ZERO parameter-name guidance
+# from the schema — the only place conventions live is the system prompt. The
+# External persona (persona.py:68-94) documents them; these Copilot draft prompts did
+# not, so the draft agent guessed `order_id` for get_order, and because governed
+# dispatch sanitizes a wrong-param failure to a generic "temporarily unavailable"
+# (execute.py TOOL_UNAVAILABLE_MESSAGE) the agent could not self-correct — it just
+# concluded systems were down. Mirror the read-tool conventions here.
+# KEEP IN SYNC with persona.py:68-94.
+_TOOL_PARAM_CONVENTIONS = (
+    "When you read case data, use the EXACT tool parameter names — a wrong name is "
+    "treated as a missing value and the lookup fails: toee_shopify_read get_order "
+    '{order_number} (the bare order number, e.g. "1042"), list_customer_orders {}, '
+    "get_product {sku|product_id}; toee_easyroutes_read get_delivery_status "
+    "{order_number}; toee_qbo_read get_invoice {invoice_number}, get_ar_summary "
+    "{customer_id}."
+)
 _SYSTEM_MESSAGES = {
-    channel: f"{message} {_MEMORY_WRITE_DISCIPLINE}"
+    channel: f"{message} {_TOOL_PARAM_CONVENTIONS} {_MEMORY_WRITE_DISCIPLINE}"
     for channel, message in _SYSTEM_MESSAGES.items()
 }
 
