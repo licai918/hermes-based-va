@@ -22,25 +22,13 @@ from toee_hermes.execute import execute_tool
 from toee_hermes.plugin.profiles import EXTERNAL
 from toee_hermes.tool_gate import ToolExecutionContext
 
-from hermes_runtime.copilot_turn import make_copilot_run_turn
+from hermes_runtime.copilot_turn import _load_case_memory, make_copilot_run_turn
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 
 _SHOPIFY_ID = "gid://shopify/Customer/70701"
 _VERIFIED_PREF = "text me after 5pm, don't call"
 _PROVISIONAL_PHONE = "+14165550175"
 _PROVISIONAL_PREF = "leave orders at the loading dock"
-
-
-class _ExplodingStore:
-    """A store whose reads must never run (gate/fail-closed guard)."""
-
-    def load_case_identity(self, case_id):  # pragma: no cover - must not run
-        raise AssertionError(f"load_case_identity must not be called (case_id={case_id!r})")
-
-    def load_customer_memory(self, binding_key):  # pragma: no cover - must not run
-        raise AssertionError(
-            f"load_customer_memory must not be called (binding_key={binding_key!r})"
-        )
 
 
 class _ReadRaisingStore:
@@ -243,16 +231,47 @@ def test_copilot_turn_with_no_stored_slots_injects_no_block(datastore, monkeypat
 
 
 def test_copilot_memory_disabled_injects_no_block(monkeypatch) -> None:
-    # S05/FR-7: TOOL_BACKEND unset -> memory_enabled() False -> neither the
-    # case->thread lookup nor the memory read is attempted (the store raises if
-    # touched) and no block is injected; the draft turn still completes normally.
+    # S05/FR-7: TOOL_BACKEND unset -> memory_enabled() False. The genuine
+    # no-datastore turn has no store to resolve from, so _load_case_memory dials
+    # nothing -- neither identity nor memory -- and no block is injected; the draft
+    # still completes. (task_86123a78 decoupled identity from the memory gate, so a
+    # PROVIDED store IS now consulted for identity for business-tool reads; the no-DB
+    # contract is precisely that there is no store to consult -- the gateway store is
+    # dialed only when memory is enabled, never reaching for a datastore that is off.)
     monkeypatch.delenv("TOOL_BACKEND", raising=False)
 
     user_message = _run_copilot_capturing_injection(
-        monkeypatch, store=_ExplodingStore(), case_id="case-x"
+        monkeypatch, store=None, case_id="case-x"
     )
 
     assert "Customer Memory" not in user_message
+
+
+def test_copilot_memory_disabled_still_resolves_case_identity(monkeypatch) -> None:
+    # task_86123a78 regression: business-tool reads (get_order/get_delivery_status/
+    # QBO) verify against context.identity, so a verified case must resolve its
+    # identity even when Customer Memory slots are disabled. Before the fix this
+    # returned (None, None) -> the draft agent could not read a verified customer's
+    # own data. Identity is decoupled from the memory gate; only the SLOTS load is
+    # gated (load_customer_memory must not run when memory is off).
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)  # memory_enabled() -> False
+
+    verified = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": "gid://shopify/Customer/1001",
+    }
+
+    class _VerifiedIdentityStore:
+        def load_case_identity(self, case_id):
+            return verified
+
+        def load_customer_memory(self, binding_key):  # pragma: no cover - must not run
+            raise AssertionError("memory slots must not load when memory is disabled")
+
+    identity, memory = _load_case_memory("case-verified", _VerifiedIdentityStore())
+
+    assert identity == verified  # resolved for business-tool verification
+    assert memory is None  # slots gated by memory_enabled()
 
 
 def test_copilot_turn_for_an_unknown_case_injects_no_block(datastore, monkeypatch) -> None:

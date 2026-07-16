@@ -221,9 +221,21 @@ def _load_case_memory(
     slots so the turn's ToolExecutionContext still binds an employee-confirmed
     correction write to the right key.
     """
-    if not memory_enabled():
+    # Resolve the case's thread identity FIRST, decoupled from memory_enabled()
+    # (task_86123a78): business-tool reads (get_order, get_delivery_status, QBO)
+    # verify against ToolExecutionContext.identity, so a verified case must resolve
+    # its identity even when Customer Memory slots are disabled -- the mock-backed
+    # eval recording forces TOOL_BACKEND=mock, and without this the draft agent could
+    # never read a verified customer's own order/delivery/AR data. Only the memory
+    # SLOTS load below stays gated by memory_enabled(). A provided store is always
+    # usable; without one we dial the gateway store ONLY when memory is enabled, so a
+    # genuinely no-datastore turn never reaches for a datastore that isn't there
+    # (S05/FR-7).
+    resolved_store = store if store is not None else (
+        _gateway_store() if memory_enabled() else None
+    )
+    if resolved_store is None:
         return None, None
-    resolved_store = store if store is not None else _gateway_store()
     try:
         identity = resolved_store.load_case_identity(case_id)
     except Exception as exc:
@@ -242,6 +254,10 @@ def _load_case_memory(
         return None, None
     if identity is None:
         return None, None
+    if not memory_enabled():
+        # Identity stands (business-tool reads + write-binding); no memory slots when
+        # Customer Memory is disabled -- FR-7 degradation is memory-only, not identity.
+        return identity, None
     resolved = binding_key_from_identity(identity)
     if resolved is None:
         return identity, None
