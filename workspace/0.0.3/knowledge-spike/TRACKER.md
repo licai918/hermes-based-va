@@ -18,7 +18,7 @@ now; **S-QUAL blocked on the real question set** (see ⛔ below).
 | --- | --- | --- | --- | --- |
 | **Scaffold + S-ISO** | index in a **separate DB** (`KNOWLEDGE_DATABASE_URL`); business datastore untouched; connections isolated | 🟢 ready | — | |
 | **S-LAT** | selected retriever in-turn **p95 < 800 ms** @ projected size **+** driver-side deadline → `found=false` | 🟢 ready | — | |
-| **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🔴 blocked (needs-info) | — | ⛔ awaiting question set |
+| **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🔴 blocked (needs-info) | — | corpus ✓ (Shopify, ~20-28 real docs); ⛔ awaiting question set |
 | **Decision gate** | Path X / Path Y / defer, from the above | ⚪ pending | — | waits on all 3 |
 
 State legend: 🟢 ready · 🟡 in-progress · 🔴 blocked · ⚪ pending · ✅ pass · ❌ fail
@@ -28,10 +28,12 @@ recall@3 ≥ 80% at the **lowest clearing rung** → FTS = **Path Y-FTS (M)** ·
 **Path Y-embed (M+)** · gbrain = **Path X (L)** · none clears → **defer** (0.0.3 falls back
 to PAC-1 view + option D / judge tuning). S-LAT + S-ISO must both pass for *any* build.
 
-## ⛔ Blocking input (gates S-QUAL only)
-**~30 real customer questions** from actual SMS/support history (verbatim phrasing) +
-the **gold answer** (which page/topic should retrieve) per question. Scaffold + S-LAT +
-S-ISO proceed without it.
+## ⛔ Remaining input (gates S-QUAL only; scaffold + S-LAT + S-ISO proceed)
+Company knowledge today ≈ empty (persona = 1 line, 6 policy slots empty, only Shopify product
+is live-read). Corpus source **resolved** — Shopify-connector pull, confirmed viable (~15
+pages + 5 policies + ~30 articles; 859 products excluded as live facts). **I produce it.**
+The one input still needed from the product owner:
+- **~30 real customer questions** (verbatim SMS/support phrasing) + gold page/topic per Q.
 
 ## Log
 - (2026-07-16) Opened; direction D committed.

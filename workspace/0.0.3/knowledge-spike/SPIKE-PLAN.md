@@ -29,6 +29,15 @@ Candidate 1; spec §M2
   → a slow retriever blocks the whole SMS turn. **The deadline is the spike's job.**
 - **NO** pgvector (stock `postgres:16`), **NO** embedding/vector dep anywhere, **NO**
   second-DSN seam, **NO** `brain/` corpus, **NO** latency instrumentation. All greenfield.
+- **Company-knowledge provenance today ≈ empty** (verified): `persona.py:20` hard-codes one
+  company fact ("Toee Tire, a tire wholesaler and distributor") and deliberately *withholds*
+  published copy (defers policy/facts to tools); the 6 policy slots ship **empty** in Postgres
+  (`0003_knowledge_slots.sql` seeds titles only, hand-typed later by a Supervisor Admin);
+  public-site knowledge = 2 hand-coded stub entries whose `toeetire.com/pages/{contact,shipping}`
+  URLs are typed, **not fetched**. The only **live-read** company data is Shopify product info
+  (`toee_shopify_read`). All systematic ingestion (Shopify Sync, Tavily crawl, weekly RAG —
+  ADR-0001/0002/0031) is **planned-only, zero code**. → **The seed corpus has no existing
+  source in the repo; it must be actively sourced (see Blocking inputs).**
 
 ## Key framing
 
@@ -46,10 +55,17 @@ right chunk for real, often-paraphrased customer questions? Effort concentrates 
    mirroring `PostgresDriver` (`tool_backend.py:72`). (This *is* the S-ISO substrate.)
 2. **`knowledge_chunk` table** in that DB: `(id, page_id, page_type, title, url,
    chunk_text, tsv tsvector)`, GIN index on `tsv`. No PII, ever.
-3. **Seed `brain/` corpus (~15–25 pages)** — I derive from existing toeetire.com pages
-   + `persona.py` + plain-language restatements of the 6 policy slots (NOT verbatim
-   policy copy — boundary respected). Chunk → insert. *Kept if the product owner
-   approves the content.*
+3. **Seed `brain/` corpus** — **source decided + confirmed viable (2026-07-16 probe):** pull
+   via the **Shopify connector** (option c, ADR-0031's intended source), read-only GraphQL. The
+   store has real content — ~15 useful pages (Brand Story, WHO WE ARE, Warranty, Shipping
+   Options, Return Policy, FAQ, Tire Shop Owner / Dealer VIP programs, Windforce/Grenlander
+   brand pages), 5 shop policies (Refund/Shipping/Terms/Privacy/Contact), 1 blog with ~30
+   articles (several evergreen tire-education, e.g. *"How to read sidewall tire numbers"*). Pull
+   page/article/policy **bodies** → chunk → insert. **Exclude:** the 859 products (live facts,
+   stay on `toee_shopify_read`) and site noise (search-results, HTML sitemaps, checkout pages).
+   Boundary: shop policies overlap the (empty) operational-policy slots — for the spike, index
+   as public-site prose; the brain/-vs-slot authoring boundary is a **build**-time governance
+   concern (open question), not a spike blocker.
 4. **`BrainRetrieverDriver` skeleton** — `query → ts_rank top-k → {found, chunks[]}`,
    injected via `extra_drivers` behind `knowledge_enabled()`. Governed `found=false` on
    miss (existing degradation path).
@@ -124,9 +140,11 @@ Est: scaffold + S-ISO + S-LAT ≈ **1 day**; S-QUAL ≈ **0.5–1 day** once que
 
 ---
 
-## ⛔ Blocking input (needed before S-QUAL runs)
+## ⛔ Remaining input (S-QUAL only; scaffold + S-LAT + S-ISO proceed without it)
 
-**~30 real customer questions** drawn from actual SMS / support history — verbatim
-customer phrasing (paraphrase and colloquialism are the point) — and for each, the
-**gold answer** (which page/topic *should* be retrieved). Scaffold + S-LAT + S-ISO
-proceed without it; **S-QUAL blocks on it.**
+Corpus source is **resolved** — Shopify-connector pull, confirmed viable (see Scaffold §3);
+**I produce it, not you.** The one input still needed from the product owner:
+
+**~30 real customer questions** drawn from actual SMS / support history — verbatim customer
+phrasing (paraphrase and colloquialism are the point) — and for each, the **gold answer**
+(which page/topic *should* be retrieved). Without real questions the precision@3 is meaningless.
