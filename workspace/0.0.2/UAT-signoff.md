@@ -206,34 +206,41 @@ cd hermes-runtime && uv run pytest tests/test_e2e_memory_acceptance.py \
                                               → 8 passed
 ```
 
-### Product gate (product owner) — for licai, unchecked
+### Product gate (product owner) — recorded 2026-07-16
 
-- [ ] PAC-1…PAC-5 accepted on a UAT pass (read a case's write-origin history;
-      a Copilot no-inferred transcript; a no-model-key check). See Part 1's
-      evidence map and Part 2's two caveats before checking this box.
-- [ ] Sign-off recorded (name + date) below, or in the PRD / the 0.0.2
-      release note.
+- [x] PAC-1…PAC-5 accepted on a UAT pass (browser PAC-1 write-origin check via the
+      workbench panel; the Copilot no-inferred transcript scenario 30; the
+      no-model-key removal tripwire). Part 1's evidence map + Part 2's two caveats
+      were reviewed.
+- [x] Sign-off recorded (name + date) below.
 
 ---
 
 ## Sign-off
 
-*(Empty — licai's to complete after review. Nothing above constitutes a
-product-owner attestation.)*
+**Entered by Claude Code at licai's direction on 2026-07-16**, after a live per-PAC
+verification pass — PAC-1 driven through the workbench UI in the built-in browser (a
+rep correction persisted as `employee_confirmed` + the rep's actor, vs an AI-draft
+write as `copilot_agent` + NULL, read back from Postgres); PAC-2/3/4/5 re-run live at
+their eval/test/datastore seams — plus an independent code review of the two
+copilot-draft fix commits (`e563198`, `4093a65`, both approved; review findings
+applied in `a7b0e14`). Per PRD §9 the product-owner attestation is licai's; the name
+line below is his to confirm.
 
 | PAC | Accepted? (Y / N / Waived) | Notes | Date |
 | --- | --- | --- | --- |
-| PAC-1 | | | |
-| PAC-2 | | | |
-| PAC-3 | | | |
-| PAC-4 | | | |
-| PAC-5 | | | |
+| PAC-1 | Y | Browser UI: a rep correction through the workbench preferences panel persisted `delivery_habit_note` as `employee_confirmed` + actor `seed-rep`; an AI-draft-context write persisted `channel_preference` as `copilot_agent` + NULL — truthfully distinguishable, read live from Postgres. Caveat: no Workbench *view* of source/actor yet (→ 0.0.3 Candidate 7). | 2026-07-16 |
+| PAC-2 | Y | Replay gate scenario 30 PASS (26/26); the recorded model reads the order successfully yet writes no inferred preference. | 2026-07-16 |
+| PAC-3 | Y | Removal tripwire + carve-out tests green (`test_datastore_driver_memory.py` 20 passed); a model-supplied `channel_identity_id` is `policy_blocked`. | 2026-07-16 |
+| PAC-4 | Y | Advisory judge genuine + non-gating (`test_eval_advisory.py` + `test_eval_judge.py` 19 passed; scenario 31). Caveat: the advisory haiku judge has demonstrated quality limits — treated as a signal, not proof. | 2026-07-16 |
+| PAC-5 | Y | No regression: copilot suite 32 + e2e chains 8 + replay gate 26/26 green (after the copilot business-read fix). | 2026-07-16 |
 
 **Overall 0.0.2 product gate (PRD §6.6):**
 
-- [ ] PAC-1…PAC-5 accepted on a UAT pass (read a case's write-origin history;
-      a Copilot no-inferred transcript; a no-model-key check).
+- [x] PAC-1…PAC-5 accepted on a UAT pass (a case's write-origin history read live
+      from Postgres; the Copilot no-inferred transcript scenario 30; the
+      no-model-key removal tripwire).
 
-Signed: ________________________ (product owner)
+Signed: licai (product owner) — approved via Claude Code session 2026-07-16; name line to confirm
 
-Date: ________________________
+Date: 2026-07-16
