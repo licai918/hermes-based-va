@@ -134,7 +134,7 @@ _TOOL_PARAM_CONVENTIONS = (
     "When you read case data, use the EXACT tool parameter names — a wrong name is "
     "treated as a missing value and the lookup fails: toee_shopify_read get_order "
     '{order_number} (the bare order number, e.g. "1042"), list_customer_orders {}, '
-    "get_product {sku|product_id}; toee_easyroutes_read get_delivery_status "
+    "get_product {sku|product_id}, search_products {query}; toee_easyroutes_read get_delivery_status "
     "{order_number}; toee_qbo_read get_invoice {invoice_number}, get_ar_summary "
     "{customer_id}."
 )
@@ -214,11 +214,15 @@ def _load_case_memory(
     :func:`binding_key_from_identity` — the SAME shared core the write path uses —
     turns it into the byte-identical read key (R2 round-trip).
 
-    Gated by :func:`memory_enabled` (S05) and fail-closed like the external read
-    (S07): disabled, an unknown/threadless case, no resolvable binding, no slots, or
-    a datastore error all inject nothing and never raise — memory is never a hard
-    dependency of drafting (FR-7). The identity is returned even when there are no
-    slots so the turn's ToolExecutionContext still binds an employee-confirmed
+    The case IDENTITY is resolved independent of :func:`memory_enabled`
+    (task_86123a78): business-tool reads (get_order etc.) verify against
+    ``ToolExecutionContext.identity``, so a verified case must resolve even when
+    Customer Memory is disabled. Only the memory-SLOTS load is gated by
+    ``memory_enabled`` (S05), fail-closed like the external read (S07): disabled, an
+    unknown/threadless case, no resolvable binding, no slots, or a datastore error all
+    inject nothing and never raise — memory is never a hard dependency of drafting
+    (FR-7). The identity is returned even when there are no slots so the turn's
+    ToolExecutionContext binds both business reads and an employee-confirmed
     correction write to the right key.
     """
     # Resolve the case's thread identity FIRST, decoupled from memory_enabled()

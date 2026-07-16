@@ -240,6 +240,16 @@ def test_copilot_memory_disabled_injects_no_block(monkeypatch) -> None:
     # dialed only when memory is enabled, never reaching for a datastore that is off.)
     monkeypatch.delenv("TOOL_BACKEND", raising=False)
 
+    # Hardening: with no store + memory off, the gateway store must NEVER be dialed
+    # (a black-holed live datastore has hung this project for hours). Fail fast in
+    # milliseconds if a future change ever reaches for it on this path.
+    import hermes_runtime.copilot_turn as copilot_mod
+
+    def _must_not_dial():
+        raise AssertionError("_gateway_store must not be dialed when memory is disabled")
+
+    monkeypatch.setattr(copilot_mod, "_gateway_store", _must_not_dial)
+
     user_message = _run_copilot_capturing_injection(
         monkeypatch, store=None, case_id="case-x"
     )
