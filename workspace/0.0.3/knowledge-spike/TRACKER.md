@@ -4,8 +4,8 @@
 hard-gate spikes BEFORE committing to a build, in parallel with the PAC-1 supervisor
 view. This board tracks the **spike line only**. Plan → [SPIKE-PLAN.md](SPIKE-PLAN.md).
 
-**Phase status:** `READY` — plan grilled + locked (2026-07-16). Scaffold/S-LAT executable
-now; **S-QUAL blocked on the real question set** (see ⛔ below).
+**Phase status:** `EXECUTING` — S-ISO ✅ + S-LAT ✅ passed (2026-07-16); corpus pulling from
+Shopify; **S-QUAL blocked on the real question set** (see ⛔ below).
 
 ## Locked decisions (grill)
 - Ladder: **Postgres FTS → small embedding → gbrain**; walk up only as far as S-QUAL needs.
@@ -16,8 +16,8 @@ now; **S-QUAL blocked on the real question set** (see ⛔ below).
 
 | ID | Gate (pass/fail) | State | Verdict | Evidence |
 | --- | --- | --- | --- | --- |
-| **Scaffold + S-ISO** | index in a **separate DB** (`KNOWLEDGE_DATABASE_URL`); business datastore untouched; connections isolated | 🟢 ready | — | |
-| **S-LAT** | selected retriever in-turn **p95 < 800 ms** @ projected size **+** driver-side deadline → `found=false` | 🟢 ready | — | |
+| **Scaffold + S-ISO** | index in a **separate DB** (`KNOWLEDGE_DATABASE_URL`); business datastore untouched; connections isolated | ✅ pass | ✅ pass | separate `toee_knowledge` DB + `knowledge_chunk`+GIN; biz `toee_va` unchanged (16 tbl), no leak; corpus ingested **27 docs → 167 chunks** (page 53 / article 66 / policy 48) |
+| **S-LAT** | selected retriever in-turn **p95 < 800 ms** @ projected size **+** driver-side deadline → `found=false` | ✅ pass | ✅ pass | FTS **p95=1.40ms** @1500 (167 real+1333 synth); forced 2s query → found=false in 201ms |
 | **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🔴 blocked (needs-info) | — | corpus ✓ (Shopify, ~20-28 real docs); ⛔ awaiting question set |
 | **Decision gate** | Path X / Path Y / defer, from the above | ⚪ pending | — | waits on all 3 |
 
@@ -40,3 +40,12 @@ The one input still needed from the product owner:
 - (2026-07-16) Plan grilled (grill-with-docs) + locked: ladder, ≥80% bar, real-question
   input. `SPIKE-PLAN.md` written. Scaffold/S-LAT ready to execute; S-QUAL blocked on the
   question set.
+- (2026-07-16) Corpus source = Shopify connector, confirmed viable (read-only probe:
+  ~15 pages + 5 policies + ~30 articles; 859 products excluded as live facts).
+- (2026-07-16) **S-ISO ✅** — separate `toee_knowledge` DB + `knowledge_chunk`+GIN stood up;
+  business `toee_va` unchanged (16 tables), no `knowledge_chunk` leak. **S-LAT ✅** — FTS
+  p95=0.82ms @1500 chunks (`probe/slat.py`); forced 2s query → `found=false` in 205ms via a
+  200ms driver deadline. Corpus pull (subagent) → ingest → S-LAT reconfirm on real+padded next.
+- (2026-07-16) Corpus ingested: `probe/corpus.json` (27 real Toee Tire docs) → **167 chunks**
+  in `knowledge_chunk`. **S-LAT reconfirmed** on real+padded (p95=1.40ms). Table left real-only,
+  **staged for S-QUAL** — only the ~30 questions remain. Scaffold + S-ISO + S-LAT ✅ done.
