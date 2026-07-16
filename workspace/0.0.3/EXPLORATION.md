@@ -212,9 +212,15 @@ access/deletion expectations).
 - **Customer-facing:** a governed way for a verified customer to ask "what do you
   remember about me?" and to clear it (a read/clear over their own slots, gated by
   verification — reuse the existing binding + a customer-safe summary).
-- **Supervisor/admin view:** a Workbench admin surface to view/audit/clear a
-  customer's memory + its change history (pairs with the `source` distinction +
-  the actor column shipped in 0.0.2 Candidate 1).
+- **Supervisor/admin view — now the concrete PAC-1 caveat-closer (triaged in from
+  0.0.2, 2026-07-16):** 0.0.2 SHIPPED the honest audit data — every write carries
+  `source` (`employee_confirmed` / `copilot_agent` / `merged_provisional`) and an
+  `actor_account_id` column — but there is NO Workbench surface for it, so PAC-1's
+  "a supervisor can tell" needs a raw SQL query today (the sign-off flagged this).
+  This candidate is that surface: a Workbench admin view to read/audit/clear a
+  customer's memory + its write-origin history. The data model is done; this is UI
+  + a read BFF route (mirrors S17/S18), so it is the cheapest, most concrete of the
+  0.0.2 caveats to close.
 - **Deletion honoring:** wire memory into whatever data-deletion process exists so a
   "forget me" removes preference slots too.
 
@@ -238,6 +244,15 @@ eval path — this candidate is the *production* aggregate view). **Open:** what
 success metric the business cares about (CSAT, handle time, repeat-contact rate)?
 **Size:** S–M.
 
+**Judge-quality tuning — triaged in from 0.0.2 (2026-07-16, PAC-4 caveat).** 0.0.2's
+advisory LLM-judge (`hermes/eval_runner/judge.py`, S06/S08) is correctly non-gating,
+but its per-transcript reasoning on the cheap model (haiku) is demonstrably weak — in
+a live run it conflated a numeric "2pm" delivery ETA with an "after 2pm Eastern"
+preference in *both* directions. Before the "honored / no-unprompted-recall" advisory
+signal is trustworthy enough to report on (or to feed this candidate's rubric), the
+judge needs tuning: a sharper rubric/prompt, a stronger model, and a small labelled
+fixture set to measure the judge's OWN precision/recall. **Size:** S.
+
 ---
 
 ## Tech debt / carried forward
@@ -255,13 +270,28 @@ Populate as 0.0.2's reviews surface debt it does not fix. Seeds:
   Already on record (S13/S14).
 - **Third `_require_slot` near-duplicate** — deferred from 0.0.1 review; low-risk
   hygiene.
+- **Copilot persona QBO link-check gap — triaged in from 0.0.2 (2026-07-16 review).**
+  The copilot draft `_TOOL_PARAM_CONVENTIONS` (added in 0.0.2) documents the read
+  tools' parameter names but omits the QBO email-link-check workflow `persona.py:77-87`
+  spells out for the external agent (`get_email_link_status {shopify_customer_id}` →
+  must return `linked` before `get_invoice`/`get_ar_summary`). Pre-existing (the
+  link-check gate is wired only in the eval harness, not production dispatch), but now
+  that the copilot draft can actually reach QBO tools, tightening the mirror is
+  prudent. **Size:** XS.
 
 ## Live scratchpad — 0.0.2 dev spillover
 
 Dump ideas here the moment they surface while building 0.0.2, so they are not lost;
 triage at 0.0.3 kickoff. Format: `(date) one-line idea`.
 
-- (2026-07-14) opened — nothing yet.
+- (2026-07-14) opened.
+- (2026-07-16) 0.0.2 shipped + merged (PR #55). Triaged 3 surfaced items into their
+  candidates: PAC-1 supervisor view → Candidate 6; PAC-4 judge-quality tuning →
+  Candidate 7; copilot QBO link-check persona gap → Tech debt.
+- (2026-07-16) Resolved DURING 0.0.2 (not 0.0.3 work): copilot tool-param conventions
+  (agent guessed `order_id` for get_order) and the copilot business-read identity
+  decoupling (`_load_case_memory` gated identity behind `memory_enabled`) — both
+  diagnosed, fixed, reviewed, merged in #55.
 
 ---
 
