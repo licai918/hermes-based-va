@@ -21,9 +21,15 @@ Disclosure derivation policy:
   via ``text.must_not_contain`` plus the Tool Gate, so they hold by construction here
   rather than being phrase-guessed (mirrors :mod:`eval_runner.disclosures`' philosophy).
 
-``honored_injected_preference`` is satisfied when the scenario injected a Customer
-Memory ``memory_preset`` (ADR-0113): the ``pre_llm_call`` hook surfaces it to the model,
-and the scenario's ``text.must_not_contain`` enforces that the turn did not re-ask.
+S08 (PRD §9 decision 4): this module used to also force
+``honored_injected_preference=True`` onto the result whenever a scenario carried a
+``memory_preset``, regardless of what the reply actually said — a freebie, not a
+check. That field and the forcing are both gone. A genuine "honored" / "stayed
+silent" signal needs a real, non-deterministic read of the reply — exactly what
+this deterministic module must never attempt. That signal now lives one layer
+outside it entirely: an advisory, recorded-only verdict composed by
+:mod:`eval_runner.advisory` (S08) — never fed back into
+:func:`eval_runner.assertions.evaluate_scenario`.
 """
 
 from __future__ import annotations
@@ -56,10 +62,13 @@ def build_scenario_turn_result(
 ) -> AgentTurnResult:
     """Build the full AgentTurnResult for ``scenario`` from a captured turn.
 
-    Layers the scenario's channel-structural disclosures (ADR-0056), the turn-derived
-    safety invariants, and the injected-preference signal onto the transcript-derived
-    result. Composer-provided disclosures (already on the transcript result) win over
-    the structural/derived defaults.
+    Layers the scenario's channel-structural disclosures (ADR-0056) and the
+    turn-derived safety invariants onto the transcript-derived result.
+    Composer-provided disclosures (already on the transcript result) win over
+    the structural/derived defaults. ``scenario`` (including its
+    ``memory_preset``) is otherwise unused here by design (S08) — the honored /
+    no-unprompted-recall signal is advisory-only and lives in
+    :mod:`eval_runner.advisory`, never in this deterministic composer.
     """
     result = turn_result_from_transcript(
         final_response=final_response, messages=messages
@@ -69,9 +78,4 @@ def build_scenario_turn_result(
         **_safety_disclosures(result),
         **result.disclosures,
     }
-    honored = (
-        True if scenario.memory_preset else result.honored_injected_preference
-    )
-    return replace(
-        result, disclosures=disclosures, honored_injected_preference=honored
-    )
+    return replace(result, disclosures=disclosures)

@@ -8,6 +8,7 @@ Python-native Domain Adapter Tools (ADR-0139).
 
 from __future__ import annotations
 
+from .advisory import judge_scenario_leg
 from .assertions import AssertionOutcome, evaluate_scenario
 from .cli import CliArgs, build_agent, main, parse_args
 from .disclosures import derive_disclosures
@@ -32,6 +33,15 @@ from .harness import (
     scenario_execution_context,
     scenario_tool_gate,
     stub_agent_harness,
+)
+from .judge import (
+    DATA_NOT_INSTRUCTIONS_MARKER,
+    DEFAULT_JUDGE_MODEL,
+    JudgeClient,
+    JudgeLeg,
+    JudgeVerdict,
+    build_judge_prompt,
+    judge_reply,
 )
 from .report import (
     EvalReport,
@@ -84,6 +94,17 @@ __all__ = [
     "scenario_execution_context",
     "scenario_tool_gate",
     "stub_agent_harness",
+    # judge (S06 — advisory, injection-hardened; not wired into gating yet)
+    "DATA_NOT_INSTRUCTIONS_MARKER",
+    "DEFAULT_JUDGE_MODEL",
+    "JudgeClient",
+    "JudgeLeg",
+    "JudgeVerdict",
+    "build_judge_prompt",
+    "judge_reply",
+    # advisory (S08 — composes the judge against a scenario transcript; never
+    # imported by the deterministic gate path: assertions/turn_result/replay/run/cli)
+    "judge_scenario_leg",
     # assertions
     "AssertionOutcome",
     "evaluate_scenario",

@@ -4,6 +4,13 @@
 > hold; they are stored in the Toee Business Datastore (Postgres), not Hermes
 > Native Memory.
 
+> **Amended by [ADR-0148](0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)**
+> (2026-07-14, 0.0.2). "After employee confirmation," below, no longer covers
+> every Internal Copilot write — a Copilot draft turn may also write on its own
+> initiative (S20). `source` now distinguishes the two (`employee_confirmed` vs.
+> the new `copilot_agent`), and a nullable `actor_account_id` column records the
+> confirming rep, when there is one.
+
 **Customer Memory** stores structured service preferences in **Hermes Native Memory** per ADR-0110. v1 uses fixed slots and governed writes rather than open-ended key-value preference storage.
 
 ## v1 preference slots

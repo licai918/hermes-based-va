@@ -4,9 +4,11 @@ Exercises :func:`resolve_customer_memory_binding` directly (context + params, no
 DB, no driver) — the ONE binding-key derivation both the mock and Postgres
 datastore handlers import, so it must never drift between the two paths.
 
-Covers correctness rules R1 (verified vs provisional canonical key) and R6
+Covers correctness rules R1 (verified vs provisional canonical key), R6
 (fail-closed on no/degenerate channel identity; a model-supplied phone param
-cannot move the binding on the external profile).
+cannot move the binding on the external profile), and R3 (the internal_copilot
+``channel_identity_id`` param carve-out is removed: binding is context-only on
+every profile, PRD FR-5).
 """
 
 import pytest
@@ -109,14 +111,18 @@ def test_external_profile_ignores_model_supplied_channel_identity_id_param() -> 
     assert exc_info.value.error_class == "policy_blocked"
 
 
-# --- internal_copilot employee-confirmed-correction carve-out ---------------
+# --- internal_copilot: channel_identity_id carve-out removed (R3, FR-5) -----
 
 
-def test_internal_copilot_honors_param_when_context_has_no_identity() -> None:
+def test_internal_copilot_ignores_model_supplied_channel_identity_id_param() -> None:
+    # R3: the carve-out is removed -- a model-supplied channel_identity_id no
+    # longer binds on internal_copilot either. No context identity => policy_blocked,
+    # never the old bound provisional:{param} key (mirrors the external-profile
+    # case above; every profile is now context-only).
     params = {"channel_identity_id": "case:12345"}
-    key, kind = resolve_customer_memory_binding(_ctx(INTERNAL, identity=None), params)
-    assert key == "provisional:case:12345"
-    assert kind == "provisional"
+    with pytest.raises(ToolDriverError) as exc_info:
+        resolve_customer_memory_binding(_ctx(INTERNAL, identity=None), params)
+    assert exc_info.value.error_class == "policy_blocked"
 
 
 def test_internal_copilot_prefers_context_over_param_when_both_present() -> None:
@@ -135,10 +141,10 @@ def test_internal_copilot_without_param_or_context_is_policy_blocked() -> None:
 
 
 # --- binding_key_from_identity: the pure core shared with the turn-time READ ---
-# resolve_customer_memory_binding is the WRITE-path wrapper (adds the copilot param
-# carve-out + fail-closed raise); binding_key_from_identity is the pure identity ->
-# (key, kind) core the S07/S08 turn-time reader calls, so the READ key is
-# byte-identical to the stored key. Read fail-closed = None, never a raise.
+# resolve_customer_memory_binding is the WRITE-path wrapper (adds the fail-closed
+# raise); binding_key_from_identity is the pure identity -> (key, kind) core the
+# S07/S08 turn-time reader calls, so the READ key is byte-identical to the stored
+# key. Read fail-closed = None, never a raise.
 
 
 def test_binding_key_from_identity_verified_returns_shopify_id() -> None:

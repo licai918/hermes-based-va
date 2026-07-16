@@ -195,18 +195,14 @@ def _eval_memory(
                 else "no inferred upsert",
             )
         )
-    if memory.get("honor_injected_preference") is True:
-        passed = result.honored_injected_preference is True
-        outcomes.append(
-            AssertionOutcome(
-                type="memory",
-                name="honor_injected_preference",
-                passed=passed,
-                detail="injected preference honored"
-                if passed
-                else "injected preference not honored (or re-asked)",
-            )
-        )
+    # S08 (PRD §9 decision 4): there used to be a `honor_injected_preference`
+    # mechanical key here that always passed when a memory_preset existed (the
+    # freebie — turn_result.py forced the field it read from). It is not
+    # replaced by anything in this deterministic package: a genuine honored /
+    # no-unprompted-recall verdict needs a real, non-deterministic read of the
+    # reply — exactly what this hard gate must never attempt. That signal now
+    # lives one layer outside, an advisory recorded-only verdict composed by
+    # eval_runner.advisory — reported, never gating.
     return outcomes
 
 

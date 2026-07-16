@@ -4,6 +4,12 @@
 > the tool reads/writes the Toee Business Datastore (Postgres), not Hermes Native
 > Memory.
 
+> **Amended by [ADR-0148](0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)**
+> (2026-07-14, 0.0.2). "Employee-confirmed preference changes," below, no longer
+> describes every Internal Copilot write: a draft turn's own `upsert_preference`
+> call now persists `source = copilot_agent`, not `employee_confirmed`. The
+> active Human Intervention Case requirement is unchanged.
+
 **Customer Memory** writes use a dedicated Domain Adapter Tool with fixed v1 action enums per ADR-0059.
 
 ## toee_customer_memory

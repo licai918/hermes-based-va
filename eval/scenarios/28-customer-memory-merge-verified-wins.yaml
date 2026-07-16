@@ -9,8 +9,6 @@ turns:
   - inbound: "Quick one - I think I told you before noon works best for calls. Can you also check on order 1042?"
 mock_overrides: {}
 assertions:
-  memory_assertions:
-    honor_injected_preference: true
   text:
     must_not_contain: ["before noon", "what time works", "when should we contact", "best time to reach you"]
   max_severity: medium

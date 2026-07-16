@@ -118,6 +118,23 @@ def test_scripted_turn_returns_final_response_as_draft() -> None:
     assert result["model"] == SCRIPTED_MODEL
 
 
+def test_run_turn_result_carries_the_governed_messages_transcript() -> None:
+    # S07 (FR-3/R4): the copilot return must thread the governed tool-call
+    # transcript through so an eval scenario's mechanical no-inferred-write
+    # assertion (forbid_inferred_upsert) can inspect it -- this was computed but
+    # silently dropped before (S05 spike finding 5). Additive: agent_turn_app.py,
+    # the only production consumer, never reads result["messages"].
+    draft = "Hi there, thanks for reaching out."
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": draft}])
+
+    result = run_turn(channel="sms", case_id="case_msgs", prompt="need help")
+
+    assert isinstance(result.get("messages"), list) and result["messages"]
+    assert result["messages"][0]["role"] == "user"
+    assistant_messages = [m for m in result["messages"] if m.get("role") == "assistant"]
+    assert assistant_messages[-1]["content"].strip() == draft
+
+
 def test_default_provider_is_a_deterministic_keyless_stub() -> None:
     # Fork C1 mock-first (ADR-0137): with no injected completions and no API key,
     # the turn still yields a deterministic, non-empty draft (a local stub), so the
@@ -449,3 +466,39 @@ def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> No
     available = rejection.split("Available tools:", 1)[-1]
     assert "toee_textline_reply" not in available
     assert turn["final_response"].strip() == reply
+
+
+# --- S03 (FR-1): draft-persona write discipline for toee_customer_memory ---------
+# The draft agent KEEPS upsert_preference (S20 lets a draft turn persist an
+# agent-initiated write), so the persona has to carry the same no-inferred
+# discipline the external persona already proved (persona.py:99-103: "ONLY when
+# the customer explicitly asks... NEVER save a preference you merely inferred").
+# All four channels boot the identical internal_copilot allowlist (REVIEWED_
+# INTERNAL_ALLOWLIST above includes toee_customer_memory, and boot_profile never
+# sees the channel), so every channel's system message must carry the guard.
+
+
+def test_system_messages_carry_the_no_inferred_memory_write_rule() -> None:
+    for channel in ("sms", "email", "internal_note", "chat"):
+        message = _system_message(channel)
+        assert "toee_customer_memory" in message
+        assert "explicitly stated" in message
+        assert "this case's conversation" in message
+        lowered = message.lower()
+        assert "never" in lowered and "infer" in lowered
+
+
+def test_system_messages_document_read_tool_param_conventions() -> None:
+    # Fix (task_8525be3c): the copilot draft prompts documented no tool parameter
+    # names, while build_tool_schema gives every governed tool an OPEN schema, so the
+    # draft agent guessed `order_id` for get_order and gave up when the sanitized
+    # "temporarily unavailable" error hid the real cause. Mirror the External
+    # persona's convention (persona.py) so every channel names order_number.
+    for channel in ("sms", "email", "internal_note", "chat"):
+        message = _system_message(channel)
+        assert "order_number" in message
+        assert "get_order" in message
+        assert "get_delivery_status" in message
+        # the load-bearing framing: exact names matter, wrong name == missing value.
+        lowered = message.lower()
+        assert "exact" in lowered and "parameter name" in lowered

@@ -77,7 +77,11 @@ _SUBJECT_LINE_PREFIX = "subject:"
 # reply, email body, staff-facing internal note, or (Slice 4) a conversational chat
 # reply that helps the staff member work the case. Each instructs "propose only,
 # never send"; the agent has no send tool regardless (the structural no-send
-# invariant, ADR-0035/0067).
+# invariant, ADR-0035/0067). Every channel also gets the _MEMORY_WRITE_DISCIPLINE
+# suffix appended below (S03, FR-1): the draft agent keeps toee_customer_memory
+# (S20 lets a draft turn persist an agent-initiated write) under the SAME
+# internal_copilot allowlist for all four channels, so the no-inferred guard has
+# to cover every one of them.
 _SYSTEM_MESSAGES = {
     "sms": (
         "You are a Toee Tire support copilot drafting a customer SMS reply for a "
@@ -105,6 +109,38 @@ _SYSTEM_MESSAGES = {
         "If they ask you to draft a customer reply, provide the suggested reply text "
         "for them to review, edit, and send themselves. Never send anything yourself."
     ),
+}
+# S03 (FR-1): mirrors persona.py:99-103's proven external rule ("ONLY when the
+# customer explicitly asks... NEVER save a preference you merely inferred"), adapted
+# to the case-scoped draft turn. Appended to every channel in one place — rather than
+# pasted into all four literals above — so the guard cannot drift out of sync between
+# channels; the draft agent keeps upsert_preference (guarded, not removed).
+_MEMORY_WRITE_DISCIPLINE = (
+    "Only use toee_customer_memory to save a preference when the customer has "
+    "explicitly stated a durable preference in this case's conversation — never "
+    "one merely inferred from tone, history, or a single order."
+)
+# Tool-parameter conventions (fix for the copilot draft path, task_8525be3c).
+# build_tool_schema (hermes/toee_hermes/plugin/schemas.py) gives every governed tool
+# an OPEN schema ("properties": {}), so the model gets ZERO parameter-name guidance
+# from the schema — the only place conventions live is the system prompt. The
+# External persona (persona.py:68-94) documents them; these Copilot draft prompts did
+# not, so the draft agent guessed `order_id` for get_order, and because governed
+# dispatch sanitizes a wrong-param failure to a generic "temporarily unavailable"
+# (execute.py TOOL_UNAVAILABLE_MESSAGE) the agent could not self-correct — it just
+# concluded systems were down. Mirror the read-tool conventions here.
+# KEEP IN SYNC with persona.py:68-94.
+_TOOL_PARAM_CONVENTIONS = (
+    "When you read case data, use the EXACT tool parameter names — a wrong name is "
+    "treated as a missing value and the lookup fails: toee_shopify_read get_order "
+    '{order_number} (the bare order number, e.g. "1042"), list_customer_orders {}, '
+    "get_product {sku|product_id}, search_products {query}; toee_easyroutes_read get_delivery_status "
+    "{order_number}; toee_qbo_read get_invoice {invoice_number}, get_ar_summary "
+    "{customer_id}."
+)
+_SYSTEM_MESSAGES = {
+    channel: f"{message} {_TOOL_PARAM_CONVENTIONS} {_MEMORY_WRITE_DISCIPLINE}"
+    for channel, message in _SYSTEM_MESSAGES.items()
 }
 
 
@@ -178,22 +214,54 @@ def _load_case_memory(
     :func:`binding_key_from_identity` — the SAME shared core the write path uses —
     turns it into the byte-identical read key (R2 round-trip).
 
-    Gated by :func:`memory_enabled` (S05) and fail-closed like the external read
-    (S07): disabled, an unknown/threadless case, no resolvable binding, no slots, or
-    a datastore error all inject nothing and never raise — memory is never a hard
-    dependency of drafting (FR-7). The identity is returned even when there are no
-    slots so the turn's ToolExecutionContext still binds an employee-confirmed
+    The case IDENTITY is resolved independent of :func:`memory_enabled`
+    (task_86123a78): business-tool reads (get_order etc.) verify against
+    ``ToolExecutionContext.identity``, so a verified case must resolve even when
+    Customer Memory is disabled. Only the memory-SLOTS load is gated by
+    ``memory_enabled`` (S05), fail-closed like the external read (S07): disabled, an
+    unknown/threadless case, no resolvable binding, no slots, or a datastore error all
+    inject nothing and never raise — memory is never a hard dependency of drafting
+    (FR-7). The identity is returned even when there are no slots so the turn's
+    ToolExecutionContext binds both business reads and an employee-confirmed
     correction write to the right key.
     """
-    if not memory_enabled():
+    # Resolve the case's thread identity FIRST, decoupled from memory_enabled()
+    # (task_86123a78): business-tool reads (get_order, get_delivery_status, QBO)
+    # verify against ToolExecutionContext.identity, so a verified case must resolve
+    # its identity even when Customer Memory slots are disabled -- the mock-backed
+    # eval recording forces TOOL_BACKEND=mock, and without this the draft agent could
+    # never read a verified customer's own order/delivery/AR data. Only the memory
+    # SLOTS load below stays gated by memory_enabled(). A provided store is always
+    # usable; without one we dial the gateway store ONLY when memory is enabled, so a
+    # genuinely no-datastore turn never reaches for a datastore that isn't there
+    # (S05/FR-7).
+    resolved_store = store if store is not None else (
+        _gateway_store() if memory_enabled() else None
+    )
+    if resolved_store is None:
         return None, None
-    resolved_store = store if store is not None else _gateway_store()
     try:
         identity = resolved_store.load_case_identity(case_id)
-    except Exception:
+    except Exception as exc:
+        # ponytail: swallow to None so a lookup hiccup degrades to "no memory
+        # injected", never a failed draft (FR-7) -- same philosophy as the read
+        # swallow below. S10/S11 parity: WARN so the swallow isn't silent. No
+        # binding_key exists yet (identity never resolved), so log case_id (an
+        # internal id, not PII -- see _user_message above) + exception TYPE only --
+        # never str(exc)/traceback, which could echo back store-supplied content.
+        logger.warning(
+            "Customer Memory identity lookup failed case_id=%s error_type=%s; "
+            "turn continues with no memory injected",
+            case_id,
+            type(exc).__name__,
+        )
         return None, None
     if identity is None:
         return None, None
+    if not memory_enabled():
+        # Identity stands (business-tool reads + write-binding); no memory slots when
+        # Customer Memory is disabled -- FR-7 degradation is memory-only, not identity.
+        return identity, None
     resolved = binding_key_from_identity(identity)
     if resolved is None:
         return identity, None
@@ -228,8 +296,10 @@ def make_copilot_run_turn(
 
     The returned ``run_turn(*, channel, case_id, prompt=None)`` boots
     ``internal_copilot`` unbound, runs a real ``AIAgent`` loop against the resolved
-    provider, and returns ``{"draft", "model", "profile"}`` (email also carries
-    ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1).
+    provider, and returns ``{"draft", "model", "profile", "messages"}`` (email also
+    carries ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1)
+    and ``messages`` is the governed tool-call transcript (S07, FR-3/R4) -- the shape
+    :func:`eval_runner.transcript.turn_result_from_transcript` parses.
 
     Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
     OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
@@ -322,6 +392,12 @@ def make_copilot_run_turn(
 
         draft = turn["final_response"]
         result: dict[str, Any] = {"draft": draft, "model": model, "profile": INTERNAL}
+        # S07 (FR-3/R4): thread the governed tool-call transcript through so an eval
+        # scenario's mechanical no-inferred-write assertion (forbid_inferred_upsert)
+        # can inspect it -- previously computed as `turn` but silently dropped here
+        # (S05 spike finding 5). Purely additive: agent_turn_app.py, the only
+        # production consumer of this result, reads draft/subject/model/profile only.
+        result["messages"] = list(turn.get("messages", []) or [])
         # Email carries a subject (the in-process mock returns {channel, subject,
         # draft}); the subject is derived from the turn's final_response, and the
         # body becomes the draft. sms/internal_note key only on draft.

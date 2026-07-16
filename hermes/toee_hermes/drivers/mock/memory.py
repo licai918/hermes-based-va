@@ -31,20 +31,21 @@ MEMORY_PREFERENCE_SLOTS: tuple[str, ...] = (
     "communication_style_note",
 )
 
-# Framework-derived write sources (PRD FR-3, RK-1). ``customer_explicit`` and
-# ``employee_confirmed`` are set by :func:`resolve_memory_write_source`, never by
-# a model-supplied tool param. ``merged_provisional`` is reserved for the async
-# provisional-to-verified merge path (S10) and is not produced by either write
-# handler in this module -- it is listed here so the enum never needs a second
-# change when that path lands.
+# Framework-derived write sources (PRD FR-2/FR-3, RK-1). ``customer_explicit``,
+# ``employee_confirmed``, and ``copilot_agent`` are set by
+# :func:`resolve_memory_write_source`, never by a model-supplied tool param.
+# ``merged_provisional`` is reserved for the async provisional-to-verified merge
+# path (S10) and is not produced by either write handler in this module -- it is
+# listed here so the enum never needs a second change when that path lands.
 MEMORY_SOURCE_VALUES: tuple[str, ...] = (
     "customer_explicit",
     "employee_confirmed",
+    "copilot_agent",
     "merged_provisional",
 )
 
-# Named handles onto the three MEMORY_SOURCE_VALUES entries -- unpacked FROM the
-# tuple (not re-typed as separate literals) so every emit site (the two branches
+# Named handles onto the four MEMORY_SOURCE_VALUES entries -- unpacked FROM the
+# tuple (not re-typed as separate literals) so every emit site (the resolver
 # below, and the S10 merge SQL in postgres_gateway_store.py) shares the exact same
 # object the enum holds. A future reorder/add/remove in MEMORY_SOURCE_VALUES fails
 # this unpacking at import time instead of silently drifting a scattered literal
@@ -52,6 +53,7 @@ MEMORY_SOURCE_VALUES: tuple[str, ...] = (
 (
     MEMORY_SOURCE_CUSTOMER_EXPLICIT,
     MEMORY_SOURCE_EMPLOYEE_CONFIRMED,
+    MEMORY_SOURCE_COPILOT_AGENT,
     MEMORY_SOURCE_MERGED_PROVISIONAL,
 ) = MEMORY_SOURCE_VALUES
 
@@ -101,14 +103,6 @@ def _require_slot(params: dict[str, Any]) -> str:
             ),
         )
     return requested
-
-
-def _read_string(params: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = params.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
 
 
 def _require_value(params: dict[str, Any]) -> str:
@@ -196,32 +190,27 @@ def resolve_customer_memory_binding(
     """Resolve ``(binding_key, binding_kind)`` for a WRITE, fail-closed (S02, FR-5).
 
     Thin wrapper over :func:`binding_key_from_identity` (the shared pure core) that
-    adds the two write-only concerns: the ``internal_copilot`` param carve-out and
-    the fail-closed ``policy_blocked`` raise. Kept here since hermes-runtime already
-    imports ``MEMORY_PREFERENCE_SLOTS`` from this module as the single source of
-    truth for the slot enum.
+    adds the one write-only concern: the fail-closed ``policy_blocked`` raise. Kept
+    here since hermes-runtime already imports ``MEMORY_PREFERENCE_SLOTS`` from this
+    module as the single source of truth for the slot enum.
 
-    ``channel_identity_id`` in ``params`` is honored only as a last resort on the
-    ``internal_copilot`` profile (employee-confirmed corrections over the unbound
-    workbench dispatch path, which carries no channel identity in context). Every
-    other profile — including external — ignores it entirely.
+    Binding is context-only on EVERY profile — ``params`` is accepted for call-shape
+    symmetry with the other handlers but never consulted. The former
+    ``internal_copilot`` ``channel_identity_id`` carve-out (a model-supplied param
+    could mint a ``provisional:{param}`` key when context had no identity) is
+    removed (R3, PRD FR-5, S04): a Workbench correction now binds via the case's
+    resolved identity (S16, ``tool_dispatch_app._resolve_case_identity``), not a
+    model-named param.
 
-    No resolvable identity at all raises a fail-closed ``policy_blocked``; the bare
-    shared ``"provisional"`` key from pre-S02 (a cross-customer leak) is gone.
+    No resolvable identity at all raises a fail-closed ``policy_blocked``; neither
+    the bare shared ``"provisional"`` key from pre-S02 nor the model-named
+    ``provisional:{param}`` key from the removed carve-out is ever produced.
     """
-    # Deferred import: same partially-initialized-package hazard as the core above.
-    from ...plugin.profiles import INTERNAL
-
+    # ``params`` is unused: matches the (context, params) call convention the other
+    # handlers share; binding itself never consults model-supplied params (R3).
     resolved = binding_key_from_identity(context.identity)
     if resolved is not None:
         return resolved
-
-    if context.profile == INTERNAL:
-        channel_identity_id = _read_string(
-            params, "channel_identity_id", "channelIdentityId"
-        )
-        if channel_identity_id is not None:
-            return f"provisional:{channel_identity_id}", "provisional"
 
     raise ToolDriverError(
         "policy_blocked",
@@ -231,19 +220,24 @@ def resolve_customer_memory_binding(
 
 
 def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
-    """Framework-derived ``source`` for a preference write (RK-1, PRD FR-3).
+    """Framework-derived ``source`` for a preference write (RK-1, PRD FR-2/§9).
 
     ONE shared resolver for both the mock and Postgres datastore handlers, same
     reasoning as :func:`resolve_customer_memory_binding`: this is
     security-sensitive governance logic that must not drift between the two.
 
     Never taken from the model-supplied tool params -- the model cannot forge
-    ``customer_explicit`` for an inferred write. The External Customer Service
-    Profile always writes ``customer_explicit``; the Internal Copilot Profile
-    always writes ``employee_confirmed``. ``merged_provisional`` is set only by
-    the merge path (S10), never by this resolver. Any other profile is
-    fail-closed -- ``toee_customer_memory`` is not allowlisted outside these two
-    today (ADR-0034/35), so this is defense in depth, not a reachable path.
+    ``employee_confirmed`` for an inferred write. The External Customer Service
+    Profile always writes ``customer_explicit``. The Internal Copilot Profile
+    discriminates on ``context.user_id`` (PRD §9): the dispatch route sets it
+    from the request's ``actor_account_id`` when a rep is at the keyboard, so
+    present -> a deliberate UI correction, ``employee_confirmed``; absent -> the
+    unbound AI draft-turn write (S20), honestly labelled ``copilot_agent``
+    rather than the (false) ``employee_confirmed`` a profile-only check used to
+    give it. ``merged_provisional`` is set only by the merge path (S10), never
+    by this resolver. Any other profile is fail-closed -- ``toee_customer_
+    memory`` is not allowlisted outside these two today (ADR-0034/35), so this
+    is defense in depth, not a reachable path.
     """
     # Deferred import: same partially-initialized-package hazard documented on
     # resolve_customer_memory_binding above.
@@ -252,7 +246,9 @@ def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
     if context.profile == EXTERNAL:
         return MEMORY_SOURCE_CUSTOMER_EXPLICIT
     if context.profile == INTERNAL:
-        return MEMORY_SOURCE_EMPLOYEE_CONFIRMED
+        if context.user_id:
+            return MEMORY_SOURCE_EMPLOYEE_CONFIRMED
+        return MEMORY_SOURCE_COPILOT_AGENT
     raise ToolDriverError(
         "policy_blocked",
         f'Customer Memory writes are not permitted for profile "{context.profile}".',

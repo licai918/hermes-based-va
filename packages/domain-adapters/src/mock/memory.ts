@@ -25,7 +25,10 @@ export interface MemoryMockData {
 
 export const memoryBaselineData: MemoryMockData = { preferences: {} };
 
-const MEMORY_PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = [
+// Single source of truth for the four v1 slots (S09, FR-7): the workbench
+// imports this rather than hand-copying a second literal, so a fifth slot
+// added here propagates instead of silently drifting between the two lists.
+export const MEMORY_PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = [
   "contact_time_preference",
   "channel_preference",
   "delivery_habit_note",

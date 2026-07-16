@@ -4,6 +4,12 @@
 > records live in the Toee Business Datastore (Postgres), not Hermes Native
 > Memory.
 
+> **Amended by [ADR-0148](0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)**
+> (2026-07-14, 0.0.2). The merge rule below is unchanged. Separately, the WRITE
+> path's `internal_copilot`-only fallback onto a model-supplied
+> `channel_identity_id` param is removed: binding is now context-only on every
+> profile, and an unresolvable identity always fails closed (`policy_blocked`).
+
 **Customer Memory** records bound to `channelIdentityId` with `provisional: true` merge onto a verified customer node when **Ingress Phone Match** or equivalent ingress identity resolution first resolves the sender to a **Verified Customer**.
 
 ## Merge trigger
