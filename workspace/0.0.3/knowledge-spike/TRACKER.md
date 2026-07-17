@@ -18,7 +18,7 @@ Shopify; **S-QUAL blocked on the real question set** (see ⛔ below).
 | --- | --- | --- | --- | --- |
 | **Scaffold + S-ISO** | index in a **separate DB** (`KNOWLEDGE_DATABASE_URL`); business datastore untouched; connections isolated | ✅ pass | ✅ pass | separate `toee_knowledge` DB + `knowledge_chunk`+GIN; biz `toee_va` unchanged (16 tbl), no leak; corpus ingested **27 docs → 167 chunks** (page 53 / article 66 / policy 48) |
 | **S-LAT** | selected retriever in-turn **p95 < 800 ms** @ projected size **+** driver-side deadline → `found=false` | ✅ pass | ✅ pass | FTS **p95=1.40ms** @1500 (167 real+1333 synth); forced 2s query → found=false in 201ms |
-| **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🟡 in-progress | rung 1 FTS **50%** (synthetic) — FAIL | vocab-mismatch misses (money→refund, snow→winter, eco→green) no lexical method can fix → climb to rung 2 (embedding). Real Qs pending. |
+| **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🟡 in-progress | rung1 FTS **50%** / rung2 embed **73%** (synthetic; ~76-83% fair) | FTS out (vocab mismatch); embed borderline-viable, misses = content gaps (store hours missing) + tiny docs + strict gold. Lean **Path Y-embed**. Real Qs pending. |
 | **Decision gate** | Path X / Path Y / defer, from the above | ⚪ pending | — | waits on all 3 |
 
 State legend: 🟢 ready · 🟡 in-progress · 🔴 blocked · ⚪ pending · ✅ pass · ❌ fail
@@ -27,6 +27,10 @@ State legend: 🟢 ready · 🟡 in-progress · 🔴 blocked · ⚪ pending · �
 recall@3 ≥ 80% at the **lowest clearing rung** → FTS = **Path Y-FTS (M)** · embedding =
 **Path Y-embed (M+)** · gbrain = **Path X (L)** · none clears → **defer** (0.0.3 falls back
 to PAC-1 view + option D / judge tuning). S-LAT + S-ISO must both pass for *any* build.
+
+**Current read (synthetic, 2026-07-16):** FTS 50% (out) · embedding 73% raw / ~76-83% fair
+(borderline) → **lean Path Y-embed (M+)**. gbrain (rung 3) not yet justified. Real questions
+decide the final gate number.
 
 ## ⛔ Remaining input (gates S-QUAL only; scaffold + S-LAT + S-ISO proceed)
 Company knowledge today ≈ empty (persona = 1 line, 6 policy slots empty, only Shopify product
@@ -57,3 +61,10 @@ The one input still needed from the product owner:
   eco→green) that no lexical method can retrieve, plus TF-domination. FTS ceiling <80% for
   paraphrased Qs → ladder climbs to **rung 2 (embedding)**. Synthetic biases FTS *optimistic*,
   so real Qs won't score higher. `probe/squal.py` + `probe/questions.json`.
+- (2026-07-16) S-QUAL **rung 2 (embedding)** — bge-small-en-v1.5 via fastembed (onnx, no
+  torch), cosine over the 167 chunks: recall@3 = **22/30 = 73%** (vs FTS 50%). Of 8 misses:
+  1 unanswerable ("what are your hours" — corpus has no hours; CONTACT 200ch, shipping policy
+  empty = **content gap**), ~2 over-strict gold (ai-effect valid for delivery ETA), ~5 genuine
+  (tiny CONTACT/brand docs, who-are-you→Brand Story). Fair ≈ 76-83%. **Lean Path Y-embed (M+)**;
+  gbrain not yet justified. `probe/squal_embed.py`. (fastembed installed into the runtime venv
+  for the spike.)
