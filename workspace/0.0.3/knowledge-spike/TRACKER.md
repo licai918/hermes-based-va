@@ -18,7 +18,7 @@ Shopify; **S-QUAL blocked on the real question set** (see ⛔ below).
 | --- | --- | --- | --- | --- |
 | **Scaffold + S-ISO** | index in a **separate DB** (`KNOWLEDGE_DATABASE_URL`); business datastore untouched; connections isolated | ✅ pass | ✅ pass | separate `toee_knowledge` DB + `knowledge_chunk`+GIN; biz `toee_va` unchanged (16 tbl), no leak; corpus ingested **27 docs → 167 chunks** (page 53 / article 66 / policy 48) |
 | **S-LAT** | selected retriever in-turn **p95 < 800 ms** @ projected size **+** driver-side deadline → `found=false` | ✅ pass | ✅ pass | FTS **p95=1.40ms** @1500 (167 real+1333 synth); forced 2s query → found=false in 201ms |
-| **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🔴 blocked (needs-info) | — | corpus ✓ (Shopify, ~20-28 real docs); ⛔ awaiting question set |
+| **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🟡 in-progress | rung 1 FTS **50%** (synthetic) — FAIL | vocab-mismatch misses (money→refund, snow→winter, eco→green) no lexical method can fix → climb to rung 2 (embedding). Real Qs pending. |
 | **Decision gate** | Path X / Path Y / defer, from the above | ⚪ pending | — | waits on all 3 |
 
 State legend: 🟢 ready · 🟡 in-progress · 🔴 blocked · ⚪ pending · ✅ pass · ❌ fail
@@ -49,3 +49,11 @@ The one input still needed from the product owner:
 - (2026-07-16) Corpus ingested: `probe/corpus.json` (27 real Toee Tire docs) → **167 chunks**
   in `knowledge_chunk`. **S-LAT reconfirmed** on real+padded (p95=1.40ms). Table left real-only,
   **staged for S-QUAL** — only the ~30 questions remain. Scaffold + S-ISO + S-LAT ✅ done.
+- (2026-07-16) Docker engine crashed mid-run; restarted (non-elevated) → container back, volume
+  persisted (167 chunks intact). No data lost.
+- (2026-07-16) S-QUAL **rung 1 (FTS)** on a 30-question **synthetic** set (real Qs pending):
+  fixed a `plainto_tsquery` AND-bug (→ OR the lexemes), recall@3 = **15/30 = 50%** (FAIL @80%).
+  Misses are vocabulary-mismatch/semantic (money→refund, snow→winter, "who are you"→brand,
+  eco→green) that no lexical method can retrieve, plus TF-domination. FTS ceiling <80% for
+  paraphrased Qs → ladder climbs to **rung 2 (embedding)**. Synthetic biases FTS *optimistic*,
+  so real Qs won't score higher. `probe/squal.py` + `probe/questions.json`.
