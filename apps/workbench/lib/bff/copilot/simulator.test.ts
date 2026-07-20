@@ -238,7 +238,11 @@ describe("handleGetSimulatorThread", () => {
 
     const res = await handleGetSimulatorThread(client, "+14165550101");
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ body: string | null; author: string }> };
+    const body = (await res.json()) as {
+      caseId: string | null;
+      messages: Array<{ body: string | null; author: string }>;
+    };
+    expect(body.caseId).toBe("case_1");
     expect(body.messages.map((m) => m.body)).toEqual([
       "Do you have 225/65R17?",
       "Yes, in stock",
@@ -259,7 +263,10 @@ describe("handleGetSimulatorThread", () => {
     );
     const res = await handleGetSimulatorThread(client, "+19995550000");
     expect(res.status).toBe(200);
-    expect((await res.json()) as { messages: unknown[] }).toEqual({ messages: [] });
+    expect((await res.json()) as { caseId: string | null; messages: unknown[] }).toEqual({
+      caseId: null,
+      messages: [],
+    });
   });
 
   it("maps a governed denial to its per-class status (ADR-0104)", async () => {

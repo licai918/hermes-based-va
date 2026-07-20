@@ -7,6 +7,10 @@ import { ROUTES, WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 export type NavItem = { label: string; href: string };
 
 const COPILOT: NavItem = { label: "Copilot", href: ROUTES.copilot };
+// Conversation Simulator (FR-8, 0.0.3 S03): same copilot group/profile as
+// COPILOT above, open to every signed-in role -- canAccess only gates audit
+// and admin paths, and /copilot/simulator is neither.
+const SIMULATOR: NavItem = { label: "Simulator", href: ROUTES.copilotSimulator };
 const GOVERNANCE: NavItem[] = [
   { label: "Knowledge", href: ROUTES.adminKnowledge },
   { label: "Eval", href: ROUTES.adminEval },
@@ -15,9 +19,9 @@ const GOVERNANCE: NavItem[] = [
 
 export function navItemsForRole(role: WorkbenchRoleId): NavItem[] {
   if (role === WORKBENCH_ROLES.supervisor || role === WORKBENCH_ROLES.admin) {
-    return [COPILOT, ...GOVERNANCE];
+    return [COPILOT, SIMULATOR, ...GOVERNANCE];
   }
-  return [COPILOT];
+  return [COPILOT, SIMULATOR];
 }
 
 const ROLE_LABELS: Record<WorkbenchRoleId, string> = {

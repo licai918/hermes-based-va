@@ -113,6 +113,9 @@ export async function handleSimulatorIngress(
 // Context read (ADR-0143) via get_thread_by_phone (S02) so the response shape
 // and mapping are identical to the real copilot case view -- no parallel read
 // path. Newest-last, same order get_thread already returns (created_at ASC).
+// `caseId` (S03/FR-12) rides along so the Simulator page can link out to the
+// case's real Case Thread Context in the copilot workbench; null until the
+// gateway's async webhook has created a case for this phone.
 export async function handleGetSimulatorThread(
   client: HermesApiClient,
   fromPhone: string,
@@ -120,9 +123,11 @@ export async function handleGetSimulatorThread(
   try {
     const data = (await client.dispatch("toee_workbench_read", "get_thread_by_phone", {
       from_phone: fromPhone,
-    })) as { messages?: unknown };
+    })) as { case?: { case_id?: unknown } | null; messages?: unknown };
     const rows = Array.isArray(data?.messages) ? data.messages : [];
-    return json({ messages: rows.map(mapThreadMessage) });
+    const caseId =
+      typeof data?.case?.case_id === "string" ? data.case.case_id : null;
+    return json({ caseId, messages: rows.map(mapThreadMessage) });
   } catch (err) {
     return hermesErrorToProblem(err);
   }

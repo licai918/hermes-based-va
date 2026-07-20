@@ -3,6 +3,7 @@ import { HERMES_PROFILES, type HermesProfileId } from "./profiles";
 export const ROUTES = {
   login: "/login",
   copilot: "/copilot",
+  copilotSimulator: "/copilot/simulator",
   copilotAuditAutoHandled: "/copilot/audit/auto-handled",
   copilotAuditSalesOutreach: "/copilot/audit/sales-outreach",
   adminKnowledge: "/admin/knowledge",

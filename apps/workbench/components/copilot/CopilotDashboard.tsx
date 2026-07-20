@@ -9,6 +9,7 @@
 // every few seconds while the tab is visible so inbound SMS updates appear
 // without a manual refresh.
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import * as copilot from "@/lib/api/copilot-client";
 import type { DraftKind } from "@/lib/api/copilot-client";
@@ -54,7 +55,14 @@ export function CopilotDashboard({
   const [filter, setFilter] = useState<QueueFilter>(() => defaultFilter(role));
   const [cases, setCases] = useState<WorkbenchCase[]>([]);
   const [loadingCases, setLoadingCases] = useState(true);
-  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  // FR-12 (0.0.3 S03): the Simulator's "open case in copilot" link deep-links
+  // here via ?case=<id> so the owner can role-play the employee side (US5).
+  // useSearchParams returns null outside a router context (e.g. this
+  // component's own unit tests), matching AppShell's usePathname() fallback.
+  const searchParams = useSearchParams();
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(
+    () => searchParams?.get("case") ?? null,
+  );
   const [thread, setThread] = useState<Thread | null>(null);
   const [preferences, setPreferences] = useState<CustomerPreferencesData>({});
 
