@@ -125,6 +125,11 @@ def check_boundaries(
     ``TOOL_BACKEND`` isn't ``datastore``) -- handled gracefully: nothing can
     match, so no chunk is ever flagged ``policy_duplicate``.
     """
+    # ponytail: naive substring containment, no normalization/fuzzy match --
+    # fine while slots are empty/short-paragraph governed text (today: empty).
+    # Upgrade to normalized (casefold/whitespace-collapsed) or fuzzy comparison
+    # if a short published slot ever produces false-positive containment hits
+    # against unrelated long chunks.
     normalized_slots = [slot.strip() for slot in policy_slot_texts if slot and slot.strip()]
 
     report: list[dict[str, Any]] = []
