@@ -146,6 +146,22 @@ describe("handleSimulatorIngress", () => {
     expect(payload.accepted).toBe(false);
   });
 
+  it("returns a structured 502 problem when the gateway fetch rejects (e.g. ECONNREFUSED)", async () => {
+    const res = await handleSimulatorIngress(
+      jsonReq({ fromPhone: "+14165550101", body: "hi", conversationId: "conv-x" }),
+      {
+        gatewayUrl: "http://127.0.0.1:8080",
+        webhookSecret: "whsec-dev",
+        fetchImpl: async () => {
+          throw new TypeError("fetch failed: ECONNREFUSED");
+        },
+      },
+    );
+    expect(res.status).toBe(502);
+    const payload = (await res.json()) as { error: string };
+    expect(payload.error).toBe("service unavailable");
+  });
+
   it("400s a missing fromPhone before any fetch", async () => {
     let dispatched = false;
     const res = await handleSimulatorIngress(jsonReq({ body: "hi" }), {

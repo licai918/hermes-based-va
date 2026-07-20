@@ -86,20 +86,27 @@ export async function handleSimulatorIngress(
   const fetchImpl = config.fetchImpl ?? fetch;
   const gatewayUrl = config.gatewayUrl.replace(/\/+$/, "");
 
-  const res = await fetchImpl(`${gatewayUrl}${WEBHOOK_PATH}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [LEGACY_SIGNATURE_HEADER]: signature,
-    },
-    body: rawBody,
-  });
+  try {
+    const res = await fetchImpl(`${gatewayUrl}${WEBHOOK_PATH}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [LEGACY_SIGNATURE_HEADER]: signature,
+      },
+      body: rawBody,
+    });
 
-  return json({
-    conversationId: event.conversation_id,
-    eventId: event.id,
-    accepted: res.ok,
-  });
+    return json({
+      conversationId: event.conversation_id,
+      eventId: event.id,
+      accepted: res.ok,
+    });
+  } catch (err) {
+    // fetchImpl rejects (e.g. ECONNREFUSED when the gateway is down) rather than
+    // resolving with a non-OK Response -- same convention as handleGetSimulatorThread
+    // below: never let a network failure reach withSession as an unstructured 500.
+    return hermesErrorToProblem(err);
+  }
 }
 
 // GET /api/copilot/simulator/thread?fromPhone=...: reuses the Case Thread
