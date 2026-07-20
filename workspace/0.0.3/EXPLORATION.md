@@ -16,6 +16,40 @@ Same convention as 0.0.2's exploration: each candidate is sized (XS/S/M/L) and
 carries **options with trade-offs**, not a decision. When a candidate is chosen,
 it graduates into `workspace/0.0.3/PRD.md`.
 
+### GRILLED SCOPE — 0.0.3 commits to ALL EIGHT (2026-07-20 grilling session)
+
+The product owner grilled the full exploration and committed **all 8 candidates** plus a new
+deliverable. Eight locked decisions:
+
+1. **Scope = all 8 candidates** — the conditional gates on C3/C4/C5 are overridden by owner
+   decision; C8's precondition is resolved by (6) below.
+2. **NEW deliverable — Conversation Simulator:** a workbench surface where the owner role-plays
+   a customer ↔ external agent and an employee ↔ copilot. **Real pipeline + simulated ingress**:
+   the customer side injects simulated Textline webhooks into gateway:8080 (simulated phone
+   number) so identity → memory → knowledge → live model all run the production path; the
+   employee side uses the real copilot workbench. Channel switcher (SMS / email) for C5.
+3. **Knowledge gate runs in parallel** — build L5 now; the owner delivers the ~30 real customer
+   questions + fills the Shopify content gaps during the iteration; the final recall@3 ≥ 80%
+   gate runs on the real set before PAC sign-off (tune before signing if it misses).
+4. **Three-layer test gate on every slice:** ① technical (pytest/vitest, CI green);
+   ② browser E2E from the front end, screenshot-evidenced — **if a feature has no front-end
+   entry, the slice creates one**; ③ product acceptance by the owner in the simulator per PAC.
+5. **C2 × S20 — REVERSAL CONFIRMED (single-direction door):** the copilot draft agent loses its
+   0.0.2 autonomous write and becomes **propose-only**; proposals render in the preferences
+   panel; Accept routes through the governed dispatch path (`employee_confirmed`). The
+   `copilot_agent` source value stays (historical rows + the audit vocabulary). ADR ships with
+   the build.
+6. **C8 unblocked by the simulator:** build the governed learning loop (review-fork port +
+   propose→confirm gate + Postgres storage + audit) in-iteration and validate the MECHANISM on
+   simulator traffic; the "observe a week of proposals" calibration moves to post-launch real
+   traffic. Copilot-first; the external agent reads confirmed learnings only.
+7. **C5 = email + merge policy:** email turn path gets memory read-injection; cross-channel
+   provisional merge (once the Identity Graph links identities) gets defined + implemented;
+   **voice stays parked** (no turn path exists).
+8. **C6 includes customer self-service, verified-only:** a verified customer can ask over SMS
+   what is remembered (customer-safe summary) and request deletion (governed tool path);
+   unverified callers get neither. Plus the supervisor audit view (the PAC-1 closer).
+
 ### Current direction (2026-07-20 — after the knowledge spike + the Hermes-memory research)
 
 - **Candidate 1 — knowledge layer: DECIDED.** **Path Y-embed *hybrid*** (lexical FTS + dense

@@ -148,6 +148,10 @@ _Avoid_: Autonomous AI write, unconfirmed one-click send, bypass of source-syste
 The internal workspace combining the **Copilot Gateway** and **Operations Dashboard** for case review, conversation context, and suggested next actions through the **Internal Copilot Profile**.
 _Avoid_: Customer portal, passive ticket UI only, merged supervisor governance console
 
+**Conversation Simulator**:
+The workbench testing surface (0.0.3) where an operator role-plays a customer talking to the external Hermes agent and an employee talking to the copilot. It uses **real pipeline + simulated ingress**: the customer side injects simulated Textline webhook events into the gateway under a simulated phone number, so identity matching, memory injection, knowledge retrieval, and the live model all execute the production turn path; the employee side is the real **Copilot Workbench**. Carries a channel switcher (SMS / email). It is the product-acceptance surface for iteration PACs and the traffic source for validating the **Agent-Experience Memory (L6)** mechanism before real operational traffic exists.
+_Avoid_: A bypass chat that calls the agent directly (skipping gateway/identity), production Textline traffic, a separate agent build for testing, treating simulator transcripts as real customer data
+
 **Admin Governance Console**:
 The internal workspace entry that uses the **Supervisor Admin Profile** for **KnowledgeOps**, eval review, and workbench administration. v1 uses three routes: `/admin/knowledge`, `/admin/eval`, and `/admin/accounts`.
 _Avoid_: Customer case drafting, Textline send, live external customer-service reads, single-tabbed admin hub
