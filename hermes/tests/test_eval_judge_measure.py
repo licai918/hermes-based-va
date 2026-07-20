@@ -104,3 +104,19 @@ def test_undetermined_verdicts_are_recorded_as_misses_not_a_crash() -> None:
     assert metrics.undetermined == len(JUDGE_FIXTURES)
     assert metrics.correct == 0
     assert all(isinstance(m.reason, str) for m in metrics.misses)
+
+
+def test_cli_main_default_fake_path_prints_a_summary_and_exits_zero(capsys) -> None:
+    """The repeatable command (PRD FR-29 acceptance layer 1): `python -m
+    eval_runner.judge_measure` with no flags -- CI-safe (no network), deterministic
+    oracle client, must exit 0 and print a precision/recall summary line."""
+    from eval_runner.judge_measure import main
+
+    exit_code = main([])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert f"total={len(JUDGE_FIXTURES)}" in out
+    assert "precision=1.000" in out
+    assert "recall=1.000" in out
+    assert "MISS" not in out  # oracle client scores its own labels perfectly
