@@ -210,6 +210,7 @@ def run_live_turn(
     system_message: str | None = None,
     scripted_completions: Sequence[Mapping[str, Any]],
     profile: str | None = None,
+    extra_drivers: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one real ``AIAgent`` turn against a scripted provider; capture the turn.
 
@@ -218,6 +219,15 @@ def run_live_turn(
     execution. This is the eval recorder bridge; the bound async reply path is
     :func:`hermes_runtime.turn_runner.run_gateway_turn`.
 
+    ``extra_drivers`` threads the SAME per-tool driver overlay (S04/S09/S10:
+    :func:`hermes_runtime.tool_backend._turn_extra_drivers`) into this function's
+    own boot. ``boot_profile`` always re-registers every allowlisted handler into
+    the shared upstream ``tools.registry`` singleton (ADR-0139) -- a boot with no
+    overlay unconditionally overwrites whatever an earlier overlay boot had
+    registered, silently falling every tool back to mock. Passing the caller's
+    overlay through here (instead of leaving this boot bare) is what keeps a
+    live-shaped turn from clobbering its own overlay.
+
     Returns ``{"final_response": str, "messages": list}`` — the exact shape
     :func:`eval_runner.recorder.record_turn` persists for replay.
     """
@@ -225,7 +235,9 @@ def run_live_turn(
     if profile is not None:
         from hermes_runtime.boot import boot_profile
 
-        governed_tool_names = boot_profile(profile).tool_names
+        governed_tool_names = boot_profile(
+            profile, extra_drivers=extra_drivers
+        ).tool_names
 
     return run_scripted_agent(
         user_message=user_message,

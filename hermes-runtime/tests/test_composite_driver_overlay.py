@@ -18,6 +18,7 @@ the throwaway-schema harness (conftest) and **skips** when no Postgres is reacha
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from toee_hermes.execute import execute_tool
@@ -171,3 +172,63 @@ def test_overlay_dispatch_persists_to_postgres_and_attributes_datastore(datastor
             ("gid://shopify/Customer/1001", "contact_time_preference"),
         )
         assert cur.fetchone() == ("mornings",)
+
+
+class _SentinelDriver:
+    """A distinguishable driver: any dispatch through it proves it, not mock, ran."""
+
+    kind = "sentinel"
+
+    def execute(self, request, context):  # noqa: ANN001 - matches ToolDriver protocol
+        return {"sentinel": True}
+
+
+def test_boot_profile_survives_a_later_lazy_sdk_plugin_discovery(monkeypatch, tmp_path) -> None:
+    """Regression: a live-verified race, root-caused via a real gateway run.
+
+    Hermes' own entry-point plugin loader ALSO knows about ``toee-tire`` (the
+    "gateway-embedding slice" ``boot.py`` docstrings anticipated, and
+    ``test_entrypoint_discovery.py`` proves works standalone): the first time
+    anything in the process imports Hermes' ``model_tools`` -- lazily, e.g. inside
+    ``AIAgent`` setup, entirely outside our control -- it runs
+    ``hermes_cli.plugins.discover_plugins()``, which calls our plugin's BARE,
+    unbound ``register(ctx)`` (no ``extra_drivers``). The shared upstream
+    ``tools.registry`` is last-write-wins per tool name, so if that lazy trigger
+    lands AFTER an overlay boot (``openrouter.py``'s ``extra_drivers=
+    _turn_extra_drivers()``), it silently clobbers every handler back onto mock.
+    A live gateway run (3 signed Textline webhooks against a real KNOWLEDGE_BACKEND=
+    retriever + OpenRouter turn) caught this directly: the overlay boot registered
+    a real ``KnowledgeDriver``, and ~2s later the SDK's lazy ``discover_plugins()``
+    reset ``toee_knowledge_search`` to mock mid-turn (stack trace confirmed the
+    ``model_tools.py`` -> ``discover_plugins`` -> bare ``register`` chain).
+
+    This reproduces it deterministically: a per-profile HERMES_HOME (same
+    ``write_profile_home`` seam ``test_entrypoint_discovery.py`` uses) makes the
+    SDK's manifest scan actually find ``toee-tire``; the plugin manager is forced
+    back to "not yet discovered" (simulating a fresh process); then this boots
+    with a sentinel overlay and fires the SAME lazy trigger the real ``AIAgent``
+    setup would -- dispatch must still reach the sentinel, not mock.
+    """
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from tools.registry import registry
+
+    from hermes_runtime.home import write_profile_home
+
+    home = write_profile_home(profile=EXTERNAL, home=tmp_path / "hermes-home")
+    for key, value in home.env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("HERMES_ENABLE_PROJECT_PLUGINS", raising=False)
+    get_plugin_manager()._discovered = False  # simulate a fresh, undiscovered process
+
+    sentinel = _SentinelDriver()
+    boot_profile(EXTERNAL, extra_drivers={"toee_knowledge_search": sentinel})
+
+    # The SAME lazy trigger AIAgent's own setup fires on first use of model_tools;
+    # idempotent by default (a no-op once already discovered), so this must not
+    # be able to clobber our boot's registration.
+    discover_plugins()
+
+    result = registry.dispatch(
+        "toee_knowledge_search__search_public_site", {"query": "warranty policy"}
+    )
+    assert json.loads(result) == {"sentinel": True}

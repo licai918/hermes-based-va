@@ -57,13 +57,22 @@ def run_gateway_turn(
     sms_session_id: Optional[str] = None,
     system_message: Optional[str] = None,
     profile: str = EXTERNAL,
+    extra_drivers: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run one governed External turn bound to ``conversation_id`` (ADR-0107).
+
+    ``extra_drivers`` threads the per-tool driver overlay (S04/S09/S10) into this
+    boot, same reasoning as :func:`hermes_runtime.live.run_live_turn` -- a bare
+    boot after an overlay boot silently clobbers it back to mock in the shared
+    upstream ``tools.registry`` singleton.
 
     Returns the captured ``{"final_response": str, "messages": list}`` turn.
     """
     booted = boot_profile(
-        profile, conversation_id=conversation_id, sms_session_id=sms_session_id
+        profile,
+        conversation_id=conversation_id,
+        sms_session_id=sms_session_id,
+        extra_drivers=extra_drivers,
     )
     return run_scripted_agent(
         user_message=inbound_body,

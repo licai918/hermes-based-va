@@ -35,8 +35,33 @@ def _boot(profile: str, register_fn: Any) -> BootedProfile:
     path (``pythonpath`` in pyproject); the gateway-embedding slice replaces this
     with the installable ``hermes_agent.plugins`` entry-point package (ADR-0139),
     at which point Hermes' own loader discovers the plugin without this call.
+
+    That entry-point install means the SDK's OWN plugin loader ALSO knows about
+    ``toee-tire`` now: the first time anything in this process imports Hermes'
+    ``model_tools`` (module-level, inside ``AIAgent`` setup -- lazy and outside
+    our control) it runs ``hermes_cli.plugins.discover_plugins()``, which calls
+    our plugin's BARE, unbound ``register(ctx)`` -- no ``extra_drivers``, no
+    turn binding. The shared upstream ``tools.registry`` singleton is
+    last-write-wins per tool name (``registry.register()``), so if that lazy
+    trigger lands AFTER this function's overlay-aware registration (S04/S09/S10:
+    ``extra_drivers``), it silently clobbers every handler back onto the default
+    mock -- the live race this function used to leave to chance (verified via a
+    live gateway run: the SDK's bare ``register()`` landed ~2s after an
+    overlay boot and reset ``toee_knowledge_search`` to mock mid-turn).
+    Calling ``discover_plugins()`` here FIRST forces that lazy trigger to run (if
+    it hasn't already) before our own registration, so our overlay-aware boot is
+    always what registers last. It's idempotent past the first call (guarded by
+    a ``_discovered`` flag on the SDK's own plugin-manager singleton), so this
+    costs nothing on every boot after the first.
     """
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from hermes_cli.plugins import (
+        PluginContext,
+        PluginManager,
+        PluginManifest,
+        discover_plugins,
+    )
+
+    discover_plugins()
 
     manager = PluginManager()
     manifest = PluginManifest(name="toee-tire")
