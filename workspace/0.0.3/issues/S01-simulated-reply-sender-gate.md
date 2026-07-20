@@ -17,7 +17,7 @@ misconfiguration fails closed."
 ## Approach
 
 - One-point seam in the composition root (§7 seam 2): the reply sender is
-  selected by `REPLY_SENDER`; default (unset/`real`) = the real Textline sender.
+  selected by `REPLY_SENDER`; default (unset/`textline`) = the real Textline sender.
 - `simulated` sender makes **no** Textline POST and mirrors the reply into
   `message_turn`, so the S02 read-back path works.
 - **NFR-4:** simulated traffic never reaches real Textline. An unrecognized
