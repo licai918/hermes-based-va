@@ -100,6 +100,27 @@ def _customer_memory_extra_drivers() -> Optional[dict[str, Any]]:
     return {"toee_customer_memory": select_tool_driver("datastore")}
 
 
+def _knowledge_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_knowledge_search`` to the S08 retriever for an agent turn.
+
+    The knowledge twin of :func:`_customer_memory_extra_drivers`: same
+    ``extra_drivers`` seam (§7 seam 4), same shape, gated by its own axis
+    (:func:`hermes_runtime.knowledge.driver.knowledge_enabled`, ``KNOWLEDGE_BACKEND``)
+    rather than :func:`memory_enabled`'s ``TOOL_BACKEND`` -- knowledge is on/off
+    independently of the business datastore. ``False`` (unset/off) returns
+    ``None`` so the tool stays on the shared mock driver's 2-entry stub and a
+    deployment without a knowledge store never hard-depends on it.
+
+    Not called from any turn composition path yet (S10 wires it onto the
+    external/copilot turn profiles); this only builds the overlay dict.
+    """
+    from hermes_runtime.knowledge.driver import KnowledgeDriver, knowledge_enabled
+
+    if not knowledge_enabled():
+        return None
+    return {"toee_knowledge_search": KnowledgeDriver()}
+
+
 def _gateway_store() -> Any:
     """Build the Postgres gateway store for a Customer Memory read/merge/lookup.
 
