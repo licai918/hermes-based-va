@@ -385,6 +385,49 @@ def test_run_turn_builds_channel_identity_for_an_unmatched_caller_with_no_snapsh
     assert "outcome" not in identity
 
 
+def test_run_turn_passes_the_merged_extra_drivers_overlay_into_profile_boot(
+    monkeypatch,
+) -> None:
+    # S10 (FR-5): boot_profile receives the SAME merged dict _turn_extra_drivers()
+    # builds -- both the memory and knowledge overlays land on the external turn
+    # when both backends are on.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND", "retriever")
+    import hermes_runtime.openrouter as openrouter_mod
+
+    captured: dict[str, object] = {}
+    real_boot = openrouter_mod.boot_profile
+
+    def capture(profile: str, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real_boot(profile, **kwargs)
+
+    monkeypatch.setattr(openrouter_mod, "boot_profile", capture)
+    config = OpenRouterConfig(
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-test",
+        model=OPENROUTER_PRIMARY_MODEL,
+    )
+    run_turn = make_openrouter_run_turn(
+        config=config,
+        openai_factory=_scripted_openai_factory([{"content": "Hi there."}]),
+    )
+    context = SimpleNamespace(
+        conversation_id="conv-knowledge",
+        sms_session_id="sms_session:thr:conv-knowledge",
+        from_phone="4165550103",
+        session_identity_snapshot=None,
+    )
+
+    run_turn(context, "What's your return policy?")
+
+    extra = captured.get("extra_drivers")
+    assert extra is not None
+    assert set(extra.keys()) == {"toee_customer_memory", "toee_knowledge_search"}
+    assert extra["toee_customer_memory"].kind == "datastore"
+    assert extra["toee_knowledge_search"].kind == "knowledge"
+
+
 def test_run_turn_prepends_snapshot_into_user_message(monkeypatch) -> None:
     import hermes_runtime.openrouter as openrouter_mod
 

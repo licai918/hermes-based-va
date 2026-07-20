@@ -52,8 +52,8 @@ from hermes_runtime.openrouter import (
     resolve_openrouter_config,
 )
 from hermes_runtime.tool_backend import (
-    _customer_memory_extra_drivers,
     _gateway_store,
+    _turn_extra_drivers,
     memory_enabled,
 )
 
@@ -138,8 +138,19 @@ _TOOL_PARAM_CONVENTIONS = (
     "{order_number}; toee_qbo_read get_invoice {invoice_number}, get_ar_summary "
     "{customer_id}."
 )
+# Grounded-chunks discipline (S10, FR-5): mirrors persona.py's toee_knowledge_search
+# bullet -- in-turn content is the retrieved chunks, never synthesis, and an empty
+# result is an honest miss, never a guess.
+_KNOWLEDGE_GROUNDING = (
+    "When you use toee_knowledge_search, answer only from the returned results and "
+    "cite the source page title; if the results are empty, say plainly that you "
+    "don't have that on hand rather than guessing."
+)
 _SYSTEM_MESSAGES = {
-    channel: f"{message} {_TOOL_PARAM_CONVENTIONS} {_MEMORY_WRITE_DISCIPLINE}"
+    channel: (
+        f"{message} {_TOOL_PARAM_CONVENTIONS} {_MEMORY_WRITE_DISCIPLINE} "
+        f"{_KNOWLEDGE_GROUNDING}"
+    )
     for channel, message in _SYSTEM_MESSAGES.items()
 }
 
@@ -317,11 +328,13 @@ def make_copilot_run_turn(
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
-        # extra_drivers (S20/PAC-4 gap #2): routes toee_customer_memory to the
-        # datastore when memory is enabled, so an agent-initiated write persists
-        # instead of always hitting mock.
+        # extra_drivers (S20/PAC-4 gap #2, S10): merges the Customer Memory overlay
+        # (routes toee_customer_memory to the datastore when memory is enabled, so
+        # an agent-initiated write persists instead of always hitting mock) with the
+        # Knowledge overlay (S09/FR-5) -- one dict, each gated on its own
+        # independent axis (see tool_backend._turn_extra_drivers).
         booted = boot_profile(
-            INTERNAL, identity=identity, extra_drivers=_customer_memory_extra_drivers()
+            INTERNAL, identity=identity, extra_drivers=_turn_extra_drivers()
         )
         system_message = _system_message(channel)
         base_user_message = _user_message(channel, case_id, prompt)

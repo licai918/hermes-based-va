@@ -27,7 +27,12 @@ from toee_hermes.execute import ToolDriver, execute_tool
 from toee_hermes.plugin.profiles import allowlisted_tools
 from toee_hermes.tool_gate import GateDecision, ToolExecutionContext, ToolGate
 
-from .tool_backend import _gateway_store, memory_enabled, select_tool_driver
+from .tool_backend import (
+    _gateway_store,
+    _knowledge_extra_drivers,
+    memory_enabled,
+    select_tool_driver,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +150,14 @@ def create_tool_dispatch_app(
     """
     active_driver = driver if driver is not None else select_tool_driver()
     active_gate = gate or profile_allowlist_gate(profile)
+    # S10 (FR-5): knowledge overlay on this HTTP dispatch surface too -- e.g. an
+    # admin probe calling search_public_site directly, not through an LLM turn's
+    # extra_drivers (S11). Independent axis (KNOWLEDGE_BACKEND), same per-tool
+    # override shape as the turn-time overlay (tool_backend._turn_extra_drivers):
+    # only "toee_knowledge_search" resolves to the knowledge driver per request, so
+    # every other tool keeps active_driver's real kind for audit attribution
+    # (ADR-0140) instead of being misattributed to "knowledge".
+    knowledge_overrides = _knowledge_extra_drivers() or {}
 
     app = FastAPI()
 
@@ -202,7 +215,7 @@ def create_tool_dispatch_app(
             context=ToolExecutionContext(
                 profile=profile, user_id=actor_account_id, identity=identity
             ),
-            driver=active_driver,
+            driver=knowledge_overrides.get(tool, active_driver),
             gate=active_gate,
         )
 

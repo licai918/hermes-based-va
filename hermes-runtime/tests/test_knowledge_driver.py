@@ -9,6 +9,7 @@ not part of this suite (see the S09 report).
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import pytest
@@ -20,6 +21,7 @@ from hermes_runtime.knowledge.driver import (
     KNOWLEDGE_BACKEND_ENV,
     KnowledgeDriver,
     knowledge_enabled,
+    warm_knowledge_embedder,
 )
 from hermes_runtime.knowledge.retriever import RetrievedChunk
 
@@ -207,4 +209,70 @@ def test_knowledge_extra_drivers_present_when_gate_on(monkeypatch: pytest.Monkey
 
     assert overlay is not None
     assert set(overlay.keys()) == {"toee_knowledge_search"}
-    assert overlay["toee_knowledge_search"].kind == "knowledge"
+
+
+# --- warm_knowledge_embedder (S10 cold-load mitigation) --------------------
+
+
+def test_warm_knowledge_embedder_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(KNOWLEDGE_BACKEND_ENV, raising=False)
+    import hermes_runtime.knowledge.driver as driver_mod
+
+    def _must_not_start(*_a, **_k):
+        raise AssertionError("no warmup thread should start when knowledge is disabled")
+
+    monkeypatch.setattr(driver_mod.threading, "Thread", _must_not_start)
+
+    warm_knowledge_embedder()  # returns immediately -- no thread constructed
+
+
+def test_warm_knowledge_embedder_fires_the_embedder_in_the_background(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(KNOWLEDGE_BACKEND_ENV, "retriever")
+    calls: list[str] = []
+    done = threading.Event()
+
+    def _fake_embedder():
+        def _embed(query: str):
+            calls.append(query)
+            done.set()
+            return [0.0]
+
+        return _embed
+
+    import hermes_runtime.knowledge.retriever as retriever_mod
+
+    monkeypatch.setattr(retriever_mod, "fastembed_query_embedder", _fake_embedder)
+
+    warm_knowledge_embedder()
+
+    assert done.wait(timeout=2.0), "warmup did not call the embedder in time"
+    assert calls == ["warmup"]
+
+
+def test_warm_knowledge_embedder_swallows_and_logs_a_failing_embedder(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv(KNOWLEDGE_BACKEND_ENV, "retriever")
+
+    def _boom():
+        def _embed(query: str):
+            raise RuntimeError("model load failed")
+
+        return _embed
+
+    import hermes_runtime.knowledge.retriever as retriever_mod
+
+    monkeypatch.setattr(retriever_mod, "fastembed_query_embedder", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        warm_knowledge_embedder()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not caplog.records:
+            time.sleep(0.01)
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "warmup" in warnings[0].getMessage().lower()
+    assert "RuntimeError" in warnings[0].getMessage()

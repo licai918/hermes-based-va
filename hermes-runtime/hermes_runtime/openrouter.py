@@ -30,8 +30,8 @@ from toee_hermes.plugin.profiles import EXTERNAL
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_agent_turn
 from hermes_runtime.tool_backend import (
-    _customer_memory_extra_drivers,
     _gateway_store,
+    _turn_extra_drivers,
     memory_enabled,
 )
 
@@ -381,7 +381,10 @@ def make_openrouter_run_turn(
             conversation_id=context.conversation_id,
             sms_session_id=getattr(context, "sms_session_id", None),
             identity=identity,
-            extra_drivers=_customer_memory_extra_drivers(),
+            # S10: merges the Customer Memory overlay (S04) with the Knowledge
+            # overlay (S09/FR-5) -- one dict, each gated on its own independent
+            # axis (see _turn_extra_drivers).
+            extra_drivers=_turn_extra_drivers(),
         )
         return run_agent_turn(
             user_message=user_message,

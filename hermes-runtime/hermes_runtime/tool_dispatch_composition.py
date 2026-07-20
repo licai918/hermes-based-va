@@ -61,6 +61,13 @@ def build_tool_dispatch_app() -> FastAPI:
         )
     api_token = _require_env(DISPATCH_API_TOKEN_ENV)
 
+    # S10 cold-load mitigation: nudges the fastembed model into memory in the
+    # background so the first real knowledge query doesn't pay the ~800ms load
+    # cost against the retrieval deadline. No-op when knowledge is disabled.
+    from hermes_runtime.knowledge.driver import warm_knowledge_embedder
+
+    warm_knowledge_embedder()
+
     # TOOL_BACKEND=mock (default) or datastore (ADR-0140) selects the driver once,
     # shared by both routes so the agent:turn audit (option i, #47) lands in the same
     # store the dispatch reads/writes use. The profile-allowlist gate is the default

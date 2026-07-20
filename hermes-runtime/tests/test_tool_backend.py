@@ -20,6 +20,7 @@ from toee_hermes.tool_catalog import is_tool_action
 
 from hermes_runtime.datastore.handlers import build_datastore_registry
 from hermes_runtime.tool_backend import (
+    _turn_extra_drivers,
     memory_enabled,
     resolve_tool_backend,
     select_tool_driver,
@@ -82,6 +83,50 @@ def test_datastore_registry_has_no_catalog_drift() -> None:
     for tool, actions in registry.items():
         for action in actions:
             assert is_tool_action(tool, action), f"{tool}.{action} not in catalog"
+
+
+# --- _turn_extra_drivers (S10, FR-5): merges the memory + knowledge overlays ---
+
+
+def test_turn_extra_drivers_none_when_both_gates_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    monkeypatch.delenv("KNOWLEDGE_BACKEND", raising=False)
+
+    assert _turn_extra_drivers() is None
+
+
+def test_turn_extra_drivers_memory_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.delenv("KNOWLEDGE_BACKEND", raising=False)
+
+    overlay = _turn_extra_drivers()
+
+    assert overlay is not None
+    assert set(overlay.keys()) == {"toee_customer_memory"}
+    assert overlay["toee_customer_memory"].kind == "datastore"
+
+
+def test_turn_extra_drivers_knowledge_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    monkeypatch.setenv("KNOWLEDGE_BACKEND", "retriever")
+
+    overlay = _turn_extra_drivers()
+
+    assert overlay is not None
+    assert set(overlay.keys()) == {"toee_knowledge_search"}
+    assert overlay["toee_knowledge_search"].kind == "knowledge"
+
+
+def test_turn_extra_drivers_both_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND", "retriever")
+
+    overlay = _turn_extra_drivers()
+
+    assert overlay is not None
+    assert set(overlay.keys()) == {"toee_customer_memory", "toee_knowledge_search"}
+    assert overlay["toee_customer_memory"].kind == "datastore"
+    assert overlay["toee_knowledge_search"].kind == "knowledge"
 
 
 def test_datastore_registry_is_subset_of_mock() -> None:

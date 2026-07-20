@@ -121,6 +121,24 @@ def _knowledge_extra_drivers() -> Optional[dict[str, Any]]:
     return {"toee_knowledge_search": KnowledgeDriver()}
 
 
+def _turn_extra_drivers() -> Optional[dict[str, Any]]:
+    """Merge the Customer Memory and Knowledge per-tool overlays for one agent turn.
+
+    Single source for both turn paths (external ``openrouter.py`` + copilot draft
+    ``copilot_turn.py``, S10): each overlay is gated on its own independent axis
+    (:func:`memory_enabled`'s ``TOOL_BACKEND`` vs
+    :func:`hermes_runtime.knowledge.driver.knowledge_enabled`'s ``KNOWLEDGE_BACKEND``),
+    mirroring how the two gates already stay independent -- no coupling introduced
+    by merging them here. ``None`` only when BOTH overlays are off, so a turn with
+    neither backend enabled boots with ``extra_drivers=None`` exactly as before.
+    """
+    mem = _customer_memory_extra_drivers()
+    kn = _knowledge_extra_drivers()
+    if mem is None and kn is None:
+        return None
+    return {**(mem or {}), **(kn or {})}
+
+
 def _gateway_store() -> Any:
     """Build the Postgres gateway store for a Customer Memory read/merge/lookup.
 

@@ -120,6 +120,13 @@ def build_gateway_app() -> FastAPI:
     internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
     _apply_external_profile_env()
 
+    # S10 cold-load mitigation: nudges the fastembed model into memory in the
+    # background so the first real knowledge query doesn't pay the ~800ms load
+    # cost against the retrieval deadline. No-op when knowledge is disabled.
+    from hermes_runtime.knowledge.driver import warm_knowledge_embedder
+
+    warm_knowledge_embedder()
+
     # Resolved once at boot so a misconfiguration fails fast instead of on the first
     # webhook (rotation therefore requires a restart).
     reply_sender = resolve_reply_sender()

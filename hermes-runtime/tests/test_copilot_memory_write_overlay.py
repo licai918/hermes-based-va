@@ -79,6 +79,22 @@ def test_copilot_run_turn_injects_the_datastore_driver_when_backend_is_datastore
     assert extra["toee_customer_memory"].kind == "datastore"
 
 
+def test_copilot_run_turn_merges_the_knowledge_overlay_alongside_memory(monkeypatch) -> None:
+    # S10 (FR-5): boot_profile receives the SAME merged dict _turn_extra_drivers()
+    # builds on the copilot draft turn -- both overlays land when both backends
+    # are on, mirroring the external turn (test_openrouter.py's sibling test).
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND", "retriever")
+
+    captured = _capture_copilot_boot_kwargs(monkeypatch)
+
+    extra = captured.get("extra_drivers")
+    assert extra is not None
+    assert set(extra.keys()) == {"toee_customer_memory", "toee_knowledge_search"}
+    assert extra["toee_customer_memory"].kind == "datastore"
+    assert extra["toee_knowledge_search"].kind == "knowledge"
+
+
 def test_copilot_run_turn_passes_no_overlay_when_backend_is_unset(monkeypatch) -> None:
     # S05/FR-7 parity: unset backend -> memory_enabled() False -> no overlay -> the
     # tool stays on mock, and the datastore driver is never even constructed (a mock
