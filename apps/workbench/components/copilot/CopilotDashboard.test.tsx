@@ -3,7 +3,14 @@ import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import type { WorkbenchCase } from "@/lib/gateway/types";
 import { ErrorBannerProvider } from "@/components/shell/error-banner";
 import * as copilot from "@/lib/api/copilot-client";
+import { useSearchParams } from "next/navigation";
 import { CopilotDashboard } from "./CopilotDashboard";
+
+// FR-12 (0.0.3 S03): the Simulator's case link deep-links in as ?case=<id>.
+// Defaults to no query param; individual tests override the return value.
+vi.mock("next/navigation", () => ({
+  useSearchParams: vi.fn(() => new URLSearchParams()),
+}));
 
 vi.mock("@/lib/api/copilot-client", () => ({
   listCases: vi.fn().mockResolvedValue({ cases: [] }),
@@ -96,6 +103,22 @@ describe("CopilotDashboard", () => {
     renderDashboard(WORKBENCH_ROLES.rep);
 
     fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+
+    await waitFor(() => expect(copilot.getThread).toHaveBeenCalledWith("c9"));
+    expect(
+      await screen.findByRole("region", { name: /case thread context/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("auto-selects the case named by ?case= (FR-12 Simulator deep link)", async () => {
+    vi.mocked(useSearchParams).mockReturnValueOnce(
+      new URLSearchParams("case=c9") as unknown as ReturnType<typeof useSearchParams>,
+    );
+    vi.mocked(copilot.getThread).mockResolvedValue({
+      case: makeCase({ caseId: "c9", identitySummary: "Linked Case" }),
+      messages: [],
+    });
+    renderDashboard(WORKBENCH_ROLES.rep);
 
     await waitFor(() => expect(copilot.getThread).toHaveBeenCalledWith("c9"));
     expect(
