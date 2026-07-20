@@ -19,13 +19,14 @@ gets a full spike → PRD cycle instead of being rushed. When a candidate is cho
 it graduates into `workspace/0.0.3/PRD.md`.
 
 **Candidate index**
-1. Knowledge layer (gbrain vs in-house retriever) — *capability* (L) — **likely headline**
-2. Write-guardrail "propose → confirm" (option D) — *governance* (L)
+1. Knowledge layer — *capability* — **DECIDED: Path Y-embed hybrid (M+)**, spike-grounded
+2. Write-guardrail "propose → confirm" (option D) — *governance* (L) — *shares machinery with 8*
 3. Customer Memory retention sweep — *compliance* (M, conditional)
 4. Connection pooling — *scale* (M, conditional)
 5. Cross-channel memory continuity (email / voice) — *capability* (M, conditional)
 6. Customer memory transparency & control — *privacy/compliance* (M)
 7. Memory effectiveness instrumentation — *measurement* (S–M)
+8. **Agent-experience memory** — inherit Hermes's "gets smarter with use" — *capability* (M–L)
 
 ---
 
@@ -286,6 +287,116 @@ preference in *both* directions. Before the "honored / no-unprompted-recall" adv
 signal is trustworthy enough to report on (or to feed this candidate's rubric), the
 judge needs tuning: a sharper rubric/prompt, a stronger model, and a small labelled
 fixture set to measure the judge's OWN precision/recall. **Size:** S.
+
+---
+
+## Candidate 8 — Agent-experience memory: inherit Hermes's "gets smarter with use" — M–L
+
+### Why
+Hermes's defining trait is that it **accumulates**. Our runtime turns all of it off:
+`live.py:154-162` passes `skip_memory=True`, and `HERMES_HOME` is a fresh `mkdtemp` per process
+(`live.py:146`), so even the transcript DB is discarded. **Every turn starts from zero** — neither
+the external agent nor the internal copilot gets better at the job by doing the job.
+
+This is a **new layer**, distinct from everything shipped: not customer PII (Customer Memory),
+not authored corpus (Candidate 1), not behaviour contract (`persona.py`). It is *what the agent
+learns from doing the work*.
+
+### This does not contradict ADR-0111/0140 — check the scope
+Those ADRs rejected Hermes built-in memory **as the store for customer business records**
+("weak schema"; "not a structured business datastore") and routed Customer Memory to Postgres.
+That stands, unchanged. They say nothing about the agent accumulating *its own operational
+experience*. Candidate 8 fills that gap — **a new layer, not a re-litigation.**
+
+### What Hermes actually ships (researched 2026-07-20 — five mechanisms)
+| # | Mechanism | Stock default | What it does |
+| --- | --- | --- | --- |
+| A | `MEMORY.md` / `USER.md` notes | **ON** | agent-written `§`-delimited plaintext in `$HERMES_HOME/memories/`; injected as a **frozen snapshot at session start** — mid-session writes hit disk but do **not** change the prompt (protects the prefix cache) |
+| B | FTS5 transcript store + `session_search` | **ON** | every message, reasoning trace and tool-call arg → `$HERMES_HOME/state.db`; **cross-session *and* cross-profile**; **pull-only** (the model must choose to search) |
+| C | External `MemoryProvider` plugin | OFF | the seam for **replacing the store** (8 plugins; only `holographic` is fully local, `openviking` self-hostable; rest are SaaS) |
+| D | **Background self-improvement review fork** | **ON, every 10 turns** | ← **the actual learning loop** |
+| E | Skill library + curator | skills ON, curator OFF | the agent writes reusable **procedures**, not just facts |
+
+### The load-bearing finding: the learning loop is (D), not (C)
+`agent/background_review.py` — every N turns a **daemon-thread clone of the agent** replays the
+conversation snapshot and asks itself *"should any skill/memory be saved or updated?"*, writing
+straight to the memory + skill stores. The main conversation and prompt cache are never touched;
+the fork runs under a **tool whitelist limited to memory/skill tools**.
+
+It is ~15 lines of trigger + a prompt + a whitelist. **That is the piece with no equivalent in
+our code, and the piece worth copying.** `MemoryProvider` is storage plumbing — and since we
+already run a governed Postgres store, it is arguably the part we *don't* need.
+
+### Hermes already ships the governance seams we'd want
+- **`write_approval: True`** — an approval gate on memory writes covering **both** foreground
+  turns and the background fork; staged writes land in `/memory pending|approve|reject`. Added
+  upstream *because* the reflection loop produced unprompted "wrong assumption" saves.
+  **This is Candidate 2's option D (propose → confirm), already built** — the two candidates are
+  the same mechanism over two stores.
+- **`on_memory_write(action, target, content, metadata)`** carries provenance (`write_origin`,
+  `execution_context`, `session_id`, `platform`, `tool_name`) — an audit hook that maps cleanly
+  onto our 0.0.2 source/actor matrix.
+- **`agent_context`** ("primary" / "subagent" / "cron") — providers are told to skip writes for
+  non-primary contexts.
+- Recalled context is fenced `<memory-context>`, labelled "NOT new user input", and scrubbed of
+  pre-wrapped fences inbound *and* outbound — the same hardening as our 0.0.2 S09.
+- Entries are injection-scanned at **strict** scope *precisely because* a poisoned entry persists
+  across sessions inside a frozen snapshot.
+
+### Design sketch
+1. **Copy the loop, not the store.** Port the review-fork pattern (trigger + self-review prompt +
+   tool whitelist); route its writes through **our** governed tool → Postgres → audit, not
+   plaintext `MEMORY.md`.
+2. **Start with the internal copilot.** Reps already review every draft before it sends — the
+   human gate exists, so the blast radius is contained. The external agent starts **read-only**
+   over confirmed learnings.
+3. **Propose → confirm from day one** (`write_approval` semantics): the fork *proposes*, a human
+   confirms, only confirmed entries inject. Shares machinery with Candidate 2.
+4. **Two stores, two purposes** — facts/preferences (notes) vs reusable procedures (skills).
+   Hermes's own boundary is a good one: *"Reusable procedures belong in a skill, not memory."*
+5. **Same-session vs next-session.** Built-in notes only close the loop at the *next* session
+   (frozen snapshot); a provider's `prefetch()` closes it *within* the session by injecting into
+   the user message. Pick per surface — the copilot probably wants within-session.
+
+### Risks (concrete, from the research)
+- **Model-authored PII.** The stock review prompt literally asks the agent to save *"personal
+  details worth remembering"* — for a customer-service agent that is **customer PII**, landing in
+  an unaudited plaintext store. Must be scoped/redacted, or the fork re-prompted to record
+  *operational* learnings only.
+- **`state.db` is unbounded** — no TTL by default, no redaction, and it stores full reasoning
+  traces, tool-call arguments and the system prompt per session (upstream reports 384 MB /
+  68K messages). Retention (ADR-0004) would have to cover a brand-new surface;
+  `sessions.auto_prune` is the one-line first control.
+- **Cross-profile recall is a boundary crossing.** `session_search` is cross-session and can open
+  *another profile's* `state.db` read-only. We use profiles (EXTERNAL / INTERNAL / SUPERVISOR) as
+  a **security boundary** — this must be locked down or internal content leaks into a customer turn.
+- **Poisoned memory persists**, with a bigger blast radius than per-customer memory: one malicious
+  customer message could steer *every* future turn. 0.0.2's S09 hardening is the floor, not the ceiling.
+- **Eval determinism.** The replay gate (ADR-0119) assumes reproducibility; evolving memory breaks
+  it unless pinned or disabled in eval.
+- **Naming collision.** Our `memory_enabled()` (`tool_backend.py:54`) means *Customer Memory*
+  (Postgres); Hermes's `memory.memory_enabled` means *agent notes*. Any config or doc must
+  disambiguate, or someone wires the wrong one.
+
+### The clean-slate advantage
+We sit at `skip_memory=True` today — **nothing accumulates yet**. Any adoption is a *net-new*
+retention surface, so the governance can be designed in from turn one instead of retrofitted.
+That makes now the cheapest possible moment to do this.
+
+### Sizing
+- Copilot-only, propose→confirm, notes only (no skills, no `session_search`): **M**.
+- Both surfaces + skills + within-session prefetch + retention/eval work: **L**.
+- **Prereq spike (cheap, recommended):** stand up a persistent `HERMES_HOME`, enable the review
+  fork with `write_approval: True` on the **copilot only**, and observe what it *proposes* for a
+  week. Reversible, and it answers whether the proposals are worth governing at all before we
+  build anything.
+
+### Open questions
+- Port the loop into our own code, or enable Hermes's and intercept via `on_memory_write`?
+- Is the external customer agent ever allowed to **write**, or read-only forever?
+- Does agent-experience memory live in the business Postgres, or its own store (as the knowledge
+  layer got its own DB)?
+- Skills (procedures) in scope for v1, or notes-only?
 
 ---
 
