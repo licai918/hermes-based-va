@@ -5,6 +5,16 @@ import { ErrorBannerProvider } from "@/components/shell/error-banner";
 import * as simulator from "@/lib/api/simulator-client";
 import { Simulator } from "./Simulator";
 
+// A promise this test controls the resolution timing of, so it can simulate
+// a fetch/send that's still in flight when the user switches phones.
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 vi.mock("@/lib/api/simulator-client", () => ({
   sendSimulatorMessage: vi.fn(),
   getSimulatorThread: vi.fn(),
@@ -267,5 +277,88 @@ describe("Simulator", () => {
 
     const link = await screen.findByRole("link", { name: "Open case in copilot" });
     expect(link).toHaveAttribute("href", "/copilot?case=case_1");
+  });
+
+  it("an old-phone loadThread that resolves after Reset does not repaint the stale thread", async () => {
+    const stale = deferred<simulator.SimulatorThreadResponse>();
+    let call = 0;
+    vi.mocked(simulator.getSimulatorThread).mockImplementation(() => {
+      call += 1;
+      if (call === 1) return Promise.resolve({ caseId: null, messages: [] }); // mount
+      if (call === 2) return stale.promise; // onBlur reload for the OLD (still current) phone -- hangs
+      return Promise.resolve({ caseId: null, messages: [] }); // Reset's reload for the NEW phone
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    // Re-trigger a load for the still-current phone; this one hangs.
+    fireEvent.blur(screen.getByLabelText("From phone"));
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
+
+    // Reset switches to a new phone while call #2 is still in flight.
+    fireEvent.click(screen.getByRole("button", { name: "Reset / new conversation" }));
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(3));
+
+    // Now the OLD phone's fetch resolves, carrying a thread that belongs to
+    // the phone the user has since left.
+    await act(async () => {
+      stale.resolve({
+        caseId: "case_stale",
+        messages: [turn({ messageId: "stale", author: "customer", body: "stale message" })],
+      });
+      await stale.promise;
+    });
+
+    expect(screen.queryByText("stale message")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open case in copilot" })).toBeNull();
+  });
+
+  it("a Reset during a pending send drops the stale response instead of restarting polling for the old phone", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const pendingSend = deferred<simulator.SimulatorSendResponse>();
+    vi.mocked(simulator.sendSimulatorMessage).mockReturnValue(pendingSend.promise);
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "hi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(simulator.sendSimulatorMessage).toHaveBeenCalledTimes(1));
+
+    // Reset while the send for the OLD phone is still pending.
+    fireEvent.click(screen.getByRole("button", { name: "Reset / new conversation" }));
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
+
+    // The old phone's send now resolves accepted, as if the gateway had
+    // answered late.
+    await act(async () => {
+      pendingSend.resolve({ conversationId: "conv-old", eventId: "evt-1", accepted: true });
+      await pendingSend.promise;
+    });
+
+    // Had the stale response restarted polling for the old phone, advancing
+    // past a poll tick would fire another thread fetch.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2);
+
+    // The next send (on the reset phone) must open a fresh conversation --
+    // proving conversationId was never repopulated with "conv-old".
+    vi.mocked(simulator.sendSimulatorMessage).mockResolvedValueOnce({
+      conversationId: "conv-new",
+      eventId: "evt-2",
+      accepted: false,
+    });
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "second" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(simulator.sendSimulatorMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ body: "second", conversationId: undefined }),
+      ),
+    );
   });
 });

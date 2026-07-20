@@ -51,6 +51,14 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     timer: null,
     attempts: 0,
   });
+  // Tracks the phone the user is actually looking at right now, kept in sync
+  // with every place `phone` state changes (switchPhone, the phone input's
+  // onChange). loadThread and handleSend's continuation check against this
+  // ref -- not the `phone`
+  // state or a closed-over variable -- so a slow in-flight fetch for a phone
+  // the user has since switched away from (preset pick / reset) can't repaint
+  // stale messages/caseId or restart polling for the old number (FR-13).
+  const activePhoneRef = useRef(DEFAULT_PHONE);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current.timer !== null) {
@@ -66,8 +74,14 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     async (forPhone: string): Promise<ThreadMessage[]> => {
       try {
         const res = await simulator.getSimulatorThread(forPhone);
-        setMessages(res.messages);
-        setCaseId(res.caseId);
+        // Stale-response guard: if the user switched phones (preset/reset)
+        // while this fetch was in flight, forPhone no longer matches what's
+        // on screen -- drop the response instead of repainting the old
+        // thread over the new one.
+        if (forPhone === activePhoneRef.current) {
+          setMessages(res.messages);
+          setCaseId(res.caseId);
+        }
         return res.messages;
       } catch (err) {
         const message =
@@ -108,6 +122,7 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   // fixed preset number reused across runs).
   function switchPhone(nextPhone: string) {
     stopPolling();
+    activePhoneRef.current = nextPhone;
     setPhone(nextPhone);
     setConversationId(undefined);
     setSendState("idle");
@@ -136,13 +151,18 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     const before = messages;
     setSendState("pending");
     setSendMessage(null);
+    const forPhone = phone;
     try {
-      const res = await simulator.sendSimulatorMessage({ fromPhone: phone, body, conversationId });
-      setConversationId(res.conversationId);
+      const res = await simulator.sendSimulatorMessage({ fromPhone: forPhone, body, conversationId });
       setDraft("");
+      // Same stale-response guard as loadThread: a Reset/preset switch during
+      // this send must not repopulate conversationId or restart polling for
+      // the phone the user has since left (FR-13).
+      const stillActive = forPhone === activePhoneRef.current;
+      if (stillActive) setConversationId(res.conversationId);
       if (res.accepted) {
         setSendState("accepted");
-        startPolling(before, phone);
+        if (stillActive) startPolling(before, forPhone);
       } else {
         setSendState("rejected");
         setSendMessage("The gateway rejected the simulated message.");
@@ -178,13 +198,19 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
         <input
           id="sim-phone"
           value={phone}
-          onChange={(e) => setPhone(e.target.value)}
+          onChange={(e) => {
+            activePhoneRef.current = e.target.value;
+            setPhone(e.target.value);
+          }}
           onBlur={() => void loadThread(phone)}
         />
 
         <label htmlFor="sim-identity-preset" style={{ fontSize: "0.8rem", color: "#666" }}>
           Identity preset
         </label>
+        {/* value="" is intentional: a one-shot select, not a controlled
+            "current preset" -- picking a preset fires switchPhone and the
+            control resets to the placeholder rather than tracking phone. */}
         <select
           id="sim-identity-preset"
           value=""
