@@ -10,9 +10,15 @@
 -- 1500 chunks, well under the 800ms gate).
 --
 -- embedding storage decision: BYTEA (raw serialized vector bytes), NOT
--- pgvector. This slice ships FTS-only retrieval (S08); no pgvector extension
--- dependency is justified yet. Revisit the column type (or add a pgvector
--- column alongside) only when a real vector-similarity retrieval path lands.
+-- pgvector. No pgvector extension dependency is justified at this corpus size;
+-- similarity runs in-process (S08 hybrid retriever). Revisit the column type
+-- only if the corpus outgrows in-process cosine.
+--
+-- embedding BYTE CONTRACT (S07 writer / S08 reader — keep symmetric):
+--   float32, native byte order, 384 dims (bge-small-en-v1.5 passage embedding).
+--   Write: np.asarray(vec, dtype=np.float32).tobytes()
+--   Read:  np.frombuffer(blob, dtype=np.float32)
+--   Queries use the model's QUERY embedding (asymmetric bge query/passage modes).
 --
 -- id is a database-generated identity (BIGSERIAL), not app-generated -- the
 -- spike's ingest.py truncates with RESTART IDENTITY, i.e. it never supplies
