@@ -1,4 +1,10 @@
-# S11 — Admin knowledge corpus panel: status (docs/chunks/last-ingest) + re-ingest action
+# S11 — Admin knowledge corpus panel
+
+> **Scope addition (2026-07-20, from S08's review):** this slice ALSO delivers the
+> **retrieval probe** — a small "test a query" form on the admin knowledge surface that
+> calls `toee_knowledge_search.search_public_site` through the admin dispatch (hitting the
+> REAL S09 driver + S08 retriever) and renders the top-k chunks with provenance. It is
+> S08's re-scoped layer-② evidence as well as this panel's.: status (docs/chunks/last-ingest) + re-ingest action
 
 - **Milestone:** 0.0.3 — land all of 0.0.3
 - **Track:** T1 Knowledge layer L5

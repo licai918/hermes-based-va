@@ -37,6 +37,12 @@ reciprocal-rank; returns top-k chunks with title+url provenance." Spike rung 2
   is implementer's choice; screenshot.
 - **③ Product (PAC):** feeds PAC-1 and PAC-10 (via S12/S32).
 
+> **Re-scope (2026-07-20, controller decision on review finding):** the layer-② "minimal
+> admin retrieval probe" originally named here moves to **S11** (the admin corpus panel),
+> where it lands against the REAL governed driver (S09) instead of the mock — an earlier
+> probe would have exercised the 2-entry stub and proven nothing. S08's ② evidence rides
+> S11; S08 closes on layers ① + the tiebreak fix. Recorded in the ledger.
+
 ## Out of scope
 
 - Governed driver, `knowledge_enabled()`, deadline — **S09**.
