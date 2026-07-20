@@ -13,6 +13,7 @@ import pytest
 
 from hermes_runtime.datastore.config import database_url
 from hermes_runtime.datastore.migrate import DEV_ONLY_MIGRATIONS, run_migrations
+from hermes_runtime.knowledge.config import knowledge_database_url
 
 try:  # psycopg lives in the hermes-runtime venv (ADR-0142); guard for safety.
     import psycopg
@@ -20,9 +21,13 @@ except ImportError:  # pragma: no cover - exercised only without the driver
     psycopg = None  # type: ignore[assignment]
 
 
-@pytest.fixture
-def temp_schema_conn():
-    """An open connection whose search_path points at a fresh throwaway schema."""
+def _temp_schema(dsn: str, *, env_label: str):
+    """Shared throwaway-schema logic for both the business and knowledge DSNs.
+
+    Opens ``dsn``, creates a fresh schema, points ``search_path`` at it, and
+    drops it on teardown -- so tests never touch real data and never leak
+    schemas. Skips (not fails) when the target Postgres is unreachable.
+    """
     if psycopg is None:
         pytest.skip("psycopg not installed")
     from psycopg import sql
@@ -30,9 +35,9 @@ def temp_schema_conn():
     try:
         # connect_timeout so an unreachable/black-holed host (Docker down, IPv6
         # localhost SYN drop) skips fast instead of hanging forever in select().
-        conn = psycopg.connect(database_url(), connect_timeout=2)
+        conn = psycopg.connect(dsn, connect_timeout=2)
     except Exception as exc:  # OperationalError and friends -> no DB available.
-        pytest.skip(f"no Postgres at DATABASE_URL: {exc}")
+        pytest.skip(f"no Postgres at {env_label}: {exc}")
 
     schema = f"test_{uuid.uuid4().hex[:12]}"
     schema_id = sql.Identifier(schema)
@@ -50,6 +55,21 @@ def temp_schema_conn():
             cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema_id))
         conn.commit()
         conn.close()
+
+
+@pytest.fixture
+def temp_schema_conn():
+    """An open connection (on the business ``toee_va`` DSN) whose search_path
+    points at a fresh throwaway schema."""
+    yield from _temp_schema(database_url(), env_label="DATABASE_URL")
+
+
+@pytest.fixture
+def temp_knowledge_schema_conn():
+    """An open connection on the SEPARATE knowledge ``toee_knowledge`` DSN
+    (``KNOWLEDGE_DATABASE_URL``), whose search_path points at a fresh throwaway
+    schema. Never the same database as ``temp_schema_conn`` (S-ISO)."""
+    yield from _temp_schema(knowledge_database_url(), env_label="KNOWLEDGE_DATABASE_URL")
 
 
 @pytest.fixture
