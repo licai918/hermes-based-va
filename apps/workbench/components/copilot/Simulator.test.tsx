@@ -18,6 +18,7 @@ function deferred<T>() {
 vi.mock("@/lib/api/simulator-client", () => ({
   sendSimulatorMessage: vi.fn(),
   getSimulatorThread: vi.fn(),
+  linkSimulatorIdentity: vi.fn(),
 }));
 
 const NOW = 1_000_000_000_000;
@@ -360,5 +361,89 @@ describe("Simulator", () => {
         expect.objectContaining({ body: "second", conversationId: undefined }),
       ),
     );
+  });
+
+  // --- "link identity" control (0.0.3 S05, FR-13) ---------------------------
+
+  it("clicking link identity calls the route with the current phone and shows the linked state", async () => {
+    vi.mocked(simulator.linkSimulatorIdentity).mockResolvedValue({
+      linked: true,
+      channel: "sms",
+      channelIdentity: "+15550001001",
+      shopifyCustomerId: "gid://shopify/Customer/1001",
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Link identity to Acme Fleet/ }),
+    );
+
+    await waitFor(() =>
+      expect(simulator.linkSimulatorIdentity).toHaveBeenCalledWith({
+        channelIdentity: "+15550001001",
+        shopifyCustomerId: "gid://shopify/Customer/1001",
+        companyName: "Acme Fleet",
+      }),
+    );
+    expect(await screen.findByText(/Linked to Acme Fleet/)).toBeInTheDocument();
+  });
+
+  it("links whichever phone is current after switching to a preset", async () => {
+    vi.mocked(simulator.linkSimulatorIdentity).mockResolvedValue({
+      linked: true,
+      channel: "sms",
+      channelIdentity: "+14165550222",
+      shopifyCustomerId: "gid://shopify/Customer/1001",
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Identity preset"), {
+      target: { value: "ambiguous" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Link identity to Acme Fleet/ }),
+    );
+
+    await waitFor(() =>
+      expect(simulator.linkSimulatorIdentity).toHaveBeenCalledWith(
+        expect.objectContaining({ channelIdentity: "+14165550222" }),
+      ),
+    );
+  });
+
+  it("shows a governed error message when the link is denied (e.g. not simulated mode)", async () => {
+    vi.mocked(simulator.linkSimulatorIdentity).mockRejectedValue(
+      new ApiError(403, "policy_blocked"),
+    );
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Link identity to Acme Fleet/ }),
+    );
+
+    expect(await screen.findByText("policy_blocked")).toBeInTheDocument();
+  });
+
+  it("resetting clears a prior linked status", async () => {
+    vi.mocked(simulator.linkSimulatorIdentity).mockResolvedValue({
+      linked: true,
+      channel: "sms",
+      channelIdentity: "+15550001001",
+      shopifyCustomerId: "gid://shopify/Customer/1001",
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Link identity to Acme Fleet/ }),
+    );
+    expect(await screen.findByText(/Linked to Acme Fleet/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset / new conversation" }));
+    expect(screen.queryByText(/Linked to Acme Fleet/)).toBeNull();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
   });
 });

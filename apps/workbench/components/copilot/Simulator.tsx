@@ -8,9 +8,9 @@
 // window (~60s) elapses. FR-12: once the gateway's webhook creates a case for
 // this phone, a link out to that case's real Case Thread Context appears.
 //
-// Channel switcher is S18; the "link identity" control is S05 -- neither is
-// implemented here. `phone` is plain component state (not lifted) so those
-// slices can wire in without reshaping this component.
+// Channel switcher is S18 -- not implemented here. `phone` is plain component
+// state (not lifted) so that slice can wire in without reshaping this
+// component.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ROUTES } from "@toee/shared";
 import { useErrorBanner } from "@/components/shell/error-banner";
@@ -21,6 +21,7 @@ import type { ThreadMessage } from "@/lib/gateway/types";
 import { hasNewOutboundReply } from "@/lib/simulator-polling";
 import {
   IDENTITY_PRESETS,
+  LINK_IDENTITY_TARGET,
   resolvePresetPhone,
   type IdentityPresetId,
 } from "@/lib/simulator-identity";
@@ -47,6 +48,10 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   const [sendState, setSendState] = useState<SendState>("idle");
   const [sendMessage, setSendMessage] = useState<string | null>(null);
   const [polling, setPolling] = useState(false);
+  const [linkState, setLinkState] = useState<"idle" | "pending" | "linked" | "error">(
+    "idle",
+  );
+  const [linkMessage, setLinkMessage] = useState<string | null>(null);
   const pollRef = useRef<{ timer: ReturnType<typeof setInterval> | null; attempts: number }>({
     timer: null,
     attempts: 0,
@@ -127,11 +132,43 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     setConversationId(undefined);
     setSendState("idle");
     setSendMessage(null);
+    setLinkState("idle");
+    setLinkMessage(null);
     void loadThread(nextPhone);
   }
 
   function handlePresetSelect(id: IdentityPresetId) {
     switchPhone(resolvePresetPhone(id));
+  }
+
+  // "Link identity" control (S05, FR-13): simulates the ingress event that
+  // links the CURRENT simulated channel identity to a verified customer,
+  // through the production Identity Graph linking path (no direct DB writes --
+  // see lib/bff/copilot/simulator.ts's handleSimulatorLinkIdentity). Once
+  // linked, the customer's NEXT inbound message resolves verified_customer and
+  // the ADR-0112 provisional-merge trigger fires, making FR-19's cross-channel
+  // continuity observable (S19 wires the merge itself).
+  async function handleLinkIdentity() {
+    const forPhone = phone;
+    setLinkState("pending");
+    setLinkMessage(null);
+    try {
+      await simulator.linkSimulatorIdentity({
+        channelIdentity: forPhone,
+        shopifyCustomerId: LINK_IDENTITY_TARGET.shopifyCustomerId,
+        companyName: LINK_IDENTITY_TARGET.companyName,
+      });
+      // Stale-response guard, same as loadThread/handleSend: don't paint a
+      // "Linked" status for a phone the user has since switched away from.
+      if (forPhone === activePhoneRef.current) setLinkState("linked");
+    } catch (err) {
+      if (forPhone === activePhoneRef.current) {
+        setLinkState("error");
+        setLinkMessage(
+          err instanceof ApiError ? err.message : "Failed to link identity",
+        );
+      }
+    }
   }
 
   // Reset / new-conversation (FR-13): clears the local thread view and picks
@@ -233,6 +270,14 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
           Reset / new conversation
         </button>
 
+        <button
+          type="button"
+          onClick={() => void handleLinkIdentity()}
+          disabled={linkState === "pending"}
+        >
+          Link identity to {LINK_IDENTITY_TARGET.companyName} (verified)
+        </button>
+
         {caseId ? (
           <a href={`${ROUTES.copilot}?case=${encodeURIComponent(caseId)}`}>
             Open case in copilot
@@ -313,6 +358,18 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
         {sendState === "gateway-down"
           ? sendMessage ?? "Simulator gateway is unreachable."
           : null}
+      </div>
+
+      <div
+        role="status"
+        aria-live="polite"
+        style={{ fontSize: "0.8rem", color: linkState === "error" ? "#b00020" : "#666" }}
+      >
+        {linkState === "pending" ? "Linking…" : null}
+        {linkState === "linked"
+          ? `Linked to ${LINK_IDENTITY_TARGET.companyName} (${LINK_IDENTITY_TARGET.shopifyCustomerId}). The next message from this number resolves verified.`
+          : null}
+        {linkState === "error" ? linkMessage ?? "Failed to link identity." : null}
       </div>
     </section>
   );

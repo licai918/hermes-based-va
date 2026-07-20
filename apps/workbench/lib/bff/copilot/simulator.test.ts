@@ -4,6 +4,7 @@ import {
   buildSimulatedInboundEvent,
   handleGetSimulatorThread,
   handleSimulatorIngress,
+  handleSimulatorLinkIdentity,
   signLegacyTextlinePayload,
 } from "./simulator";
 
@@ -188,6 +189,159 @@ describe("handleSimulatorIngress", () => {
     });
     expect(res.status).toBe(400);
     expect(dispatched).toBe(false);
+  });
+});
+
+describe("handleSimulatorLinkIdentity", () => {
+  function linkReq(body: unknown): Request {
+    return new Request("http://localhost/api/copilot/simulator/link-identity", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function apiClient(
+    fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
+  ): HermesApiClient {
+    return new HermesApiClient({
+      baseUrl: "http://copilot.internal",
+      token: "tok",
+      actorAccountId: "acct_1",
+      fetchImpl,
+    });
+  }
+
+  type SentDispatch = {
+    tool: string;
+    action: string;
+    params: Record<string, unknown>;
+    actor_account_id: string;
+  };
+
+  it("dispatches link_identity carrying the correct pair of identities", async () => {
+    let captured: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      captured = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            outcome: "linked",
+            channel: "sms",
+            channel_identity: "+14165559999",
+            shopify_customer_id: "gid://shopify/Customer/1001",
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const res = await handleSimulatorLinkIdentity(
+      linkReq({
+        channelIdentity: "+14165559999",
+        shopifyCustomerId: "gid://shopify/Customer/1001",
+        companyName: "Acme Fleet",
+      }),
+      client,
+    );
+
+    expect(res.status).toBe(200);
+    const sent = captured as SentDispatch | null;
+    expect(sent?.tool).toBe("toee_identity_lookup");
+    expect(sent?.action).toBe("link_identity");
+    expect(sent?.params).toEqual({
+      channel: "sms",
+      channel_identity: "+14165559999",
+      shopify_customer_id: "gid://shopify/Customer/1001",
+      company_name: "Acme Fleet",
+    });
+    expect(sent?.actor_account_id).toBe("acct_1");
+
+    const body = (await res.json()) as {
+      linked: boolean;
+      channel: string;
+      channelIdentity: string;
+      shopifyCustomerId: string;
+    };
+    expect(body).toEqual({
+      linked: true,
+      channel: "sms",
+      channelIdentity: "+14165559999",
+      shopifyCustomerId: "gid://shopify/Customer/1001",
+    });
+  });
+
+  it("defaults channel to sms and omits companyName when absent", async () => {
+    let captured: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      captured = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 });
+    });
+
+    await handleSimulatorLinkIdentity(
+      linkReq({
+        channelIdentity: "+14165559999",
+        shopifyCustomerId: "gid://shopify/Customer/1001",
+      }),
+      client,
+    );
+
+    const sent = captured as SentDispatch | null;
+    expect(sent?.params).toEqual({
+      channel: "sms",
+      channel_identity: "+14165559999",
+      shopify_customer_id: "gid://shopify/Customer/1001",
+    });
+  });
+
+  it("400s a missing channelIdentity before any dispatch", async () => {
+    let dispatched = false;
+    const client = apiClient(async () => {
+      dispatched = true;
+      return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 });
+    });
+    const res = await handleSimulatorLinkIdentity(
+      linkReq({ shopifyCustomerId: "gid://shopify/Customer/1001" }),
+      client,
+    );
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("400s a missing shopifyCustomerId before any dispatch", async () => {
+    let dispatched = false;
+    const client = apiClient(async () => {
+      dispatched = true;
+      return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 });
+    });
+    const res = await handleSimulatorLinkIdentity(
+      linkReq({ channelIdentity: "+14165559999" }),
+      client,
+    );
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("maps a policy_blocked denial (e.g. not simulated mode) to 403", async () => {
+    const client = apiClient(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: { class: "policy_blocked", message: "not simulated" },
+          }),
+          { status: 200 },
+        ),
+    );
+    const res = await handleSimulatorLinkIdentity(
+      linkReq({
+        channelIdentity: "+14165559999",
+        shopifyCustomerId: "gid://shopify/Customer/1001",
+      }),
+      client,
+    );
+    expect(res.status).toBe(403);
   });
 });
 

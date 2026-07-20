@@ -34,6 +34,24 @@ ProviderFactory = Callable[[str], ContextProvider]
 # driver.kind accurate when Composio backs only the Layer 1 tools (ADR-0128).
 DriverSelector = Callable[[str], ToolDriver]
 
+# Catalog actions that must NEVER become an LLM-callable tool, even though their
+# toolset is profile-allowlisted for other actions (0.0.3 S05). Registering
+# every allowlisted-toolset action is otherwise correct (ADR-0034 default-deny
+# is by toolset), but toee_identity_lookup.link_identity is a governed Identity
+# Graph WRITE meant only for the deterministic tools:dispatch HTTP surface
+# (hermes-runtime/hermes_runtime/tool_dispatch_composition.py's
+# _simulated_only_gate), reached from the Conversation Simulator only. Both
+# EXTERNAL and INTERNAL profiles allowlist toee_identity_lookup (for
+# match_phone/match_email_sender), so without this exclusion a live customer or
+# copilot turn would expose link_identity to the model -- a prompt-injectable
+# account-linking primitive. Still present in TOOL_CATALOG (so the HTTP
+# dispatch surface's catalog validation accepts it) and in plugin.yaml's
+# provides_tools (the manifest declares the full catalog surface); this only
+# stops it reaching a live agent's tool-calling loop.
+_AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
+    {("toee_identity_lookup", "link_identity")}
+)
+
 
 def _build_driver_selector(
     injected: Optional[ToolDriver],
@@ -138,6 +156,8 @@ def _register(
 
     for entry in build_tool_schemas():
         if entry["toolset"] not in allow:
+            continue
+        if (entry["tool"], entry["action"]) in _AGENT_EXCLUDED_ACTIONS:
             continue
         handler = make_tool_handler(
             tool=entry["tool"],

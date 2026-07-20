@@ -25,9 +25,6 @@
 // come back unmatched. Not used here for that reason.
 //
 // Extension points (comments only, no code yet):
-// - S05 "link identity": a control that simulates the ingress event linking
-//   the current simulated channel identity to a verified customer / another
-//   channel identity. Slots in next to the preset picker in Simulator.tsx.
 // - S18 channel switcher: presets are phone-shaped today; a channel switch
 //   would need a parallel small preset table for email senders (see
 //   `email_matches` in identity.py) rather than reusing this one directly.
@@ -46,6 +43,19 @@ export const IDENTITY_PRESETS: readonly IdentityPreset[] = [
   { id: "ambiguous", label: "Ambiguous match (seeded)", phone: "+14165550222" },
   { id: "unknown", label: "Unknown caller (fresh number)" },
 ];
+
+// S05 "link identity" (FR-13): the fixed target the control links the current
+// simulated channel identity to. The SAME Shopify customer the "verified"
+// preset's seeded phone (+14165550101) already resolves to, so linking a
+// DIFFERENT (e.g. "unknown") channel identity to this id demonstrates FR-19's
+// cross-channel continuity -- two channel identities becoming linked to each
+// other reduces to both resolving to this one customer (see
+// hermes-runtime/hermes_runtime/datastore/handlers/identity.py's
+// _link_identity docstring).
+export const LINK_IDENTITY_TARGET = {
+  shopifyCustomerId: "gid://shopify/Customer/1001",
+  companyName: "Acme Fleet",
+} as const;
 
 // ponytail: a 7-digit random suffix gives a 1-in-10M collision chance per
 // pair of picks -- plenty for a manual test surface. Upgrade to a counter or

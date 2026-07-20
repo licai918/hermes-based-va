@@ -24,6 +24,7 @@ from hermes_runtime.tool_backend import (
     memory_enabled,
     resolve_tool_backend,
     select_tool_driver,
+    simulated_mode_enabled,
 )
 
 
@@ -74,6 +75,40 @@ def test_memory_enabled_reads_the_env_var_when_called_with_no_argument(
 
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
     assert memory_enabled() is True
+
+
+# --- simulated_mode_enabled (0.0.3 S05, NFR-4 gate reuse) --------------------
+
+
+def test_simulated_mode_disabled_when_unset_or_empty() -> None:
+    assert simulated_mode_enabled(None) is False
+    assert simulated_mode_enabled("") is False
+
+
+def test_simulated_mode_disabled_for_the_real_textline_sender() -> None:
+    assert simulated_mode_enabled("textline") is False
+
+
+def test_simulated_mode_enabled_for_simulated_case_insensitive() -> None:
+    assert simulated_mode_enabled("simulated") is True
+    assert simulated_mode_enabled("SIMULATED") is True
+
+
+def test_simulated_mode_disabled_for_an_unrecognized_value() -> None:
+    # Fail-closed, not fail-open: an unrecognized REPLY_SENDER (which
+    # resolve_reply_sender would reject at gateway boot anyway) never enables the
+    # dev-only surface.
+    assert simulated_mode_enabled("bogus") is False
+
+
+def test_simulated_mode_reads_the_env_var_when_called_with_no_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("REPLY_SENDER", raising=False)
+    assert simulated_mode_enabled() is False
+
+    monkeypatch.setenv("REPLY_SENDER", "simulated")
+    assert simulated_mode_enabled() is True
 
 
 def test_datastore_registry_has_no_catalog_drift() -> None:

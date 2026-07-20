@@ -14,6 +14,7 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "match_phone",
         "match_email_sender",
         "get_email_link_status",
+        "link_identity",
     ),
     "toee_knowledge_search": ("search_public_site", "search_operational_policy"),
     "toee_shopify_read": (

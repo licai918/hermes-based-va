@@ -8,6 +8,7 @@ provides_tools:
   - toee_identity_lookup__match_phone
   - toee_identity_lookup__match_email_sender
   - toee_identity_lookup__get_email_link_status
+  - toee_identity_lookup__link_identity
   - toee_knowledge_search__search_public_site
   - toee_knowledge_search__search_operational_policy
   - toee_shopify_read__get_order

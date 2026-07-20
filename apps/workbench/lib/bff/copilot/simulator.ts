@@ -109,6 +109,42 @@ export async function handleSimulatorIngress(
   }
 }
 
+// POST /api/copilot/simulator/link-identity (0.0.3 S05, FR-13): the owner's
+// "link identity" control. Unlike the message-send route above (which composes
+// a raw webhook body), this DOES go through tools:dispatch -- link_identity is
+// not a chat turn, it is a governed Identity Graph write, and tools:dispatch is
+// the existing "no direct DB writes" seam every other structured write already
+// uses (see preferences.ts). The Hermes dispatch server denies this action
+// outright unless it is booted with REPLY_SENDER=simulated (NFR-4,
+// hermes-runtime/hermes_runtime/tool_dispatch_composition.py's
+// _simulated_only_gate), so production is fail-closed even if this route were
+// somehow reached there. dispatchWrite (not dispatch): a governed write must
+// carry the acting employee (ADR-0141).
+export async function handleSimulatorLinkIdentity(
+  req: Request,
+  client: HermesApiClient,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const channelIdentity = readNonEmptyString(body, "channelIdentity");
+  if (!channelIdentity) return problem(400, "channelIdentity is required");
+  const shopifyCustomerId = readNonEmptyString(body, "shopifyCustomerId");
+  if (!shopifyCustomerId) return problem(400, "shopifyCustomerId is required");
+  const channel = readNonEmptyString(body, "channel") ?? "sms";
+  const companyName = readNonEmptyString(body, "companyName");
+
+  try {
+    await client.dispatchWrite("toee_identity_lookup", "link_identity", {
+      channel,
+      channel_identity: channelIdentity,
+      shopify_customer_id: shopifyCustomerId,
+      ...(companyName ? { company_name: companyName } : {}),
+    });
+    return json({ linked: true, channel, channelIdentity, shopifyCustomerId });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
 // GET /api/copilot/simulator/thread?fromPhone=...: reuses the Case Thread
 // Context read (ADR-0143) via get_thread_by_phone (S02) so the response shape
 // and mapping are identical to the real copilot case view -- no parallel read

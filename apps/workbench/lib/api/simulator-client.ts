@@ -30,3 +30,21 @@ export function sendSimulatorMessage(input: {
 export function getSimulatorThread(fromPhone: string): Promise<SimulatorThreadResponse> {
   return getJson(`${BASE}/thread?fromPhone=${encodeURIComponent(fromPhone)}`);
 }
+
+export type SimulatorLinkIdentityResponse = {
+  linked: boolean;
+  channel: string;
+  channelIdentity: string;
+  shopifyCustomerId: string;
+};
+
+// S05 (FR-13): simulates the ingress event that links the current channel
+// identity (the simulator's "From phone") to a verified customer, through the
+// production Identity Graph linking path (toee_identity_lookup.link_identity).
+export function linkSimulatorIdentity(input: {
+  channelIdentity: string;
+  shopifyCustomerId: string;
+  companyName?: string;
+}): Promise<SimulatorLinkIdentityResponse> {
+  return sendJson("POST", `${BASE}/link-identity`, input);
+}

@@ -38,6 +38,10 @@ def test_identity_lookup_actions_match_adr_0060() -> None:
         "match_phone",
         "match_email_sender",
         "get_email_link_status",
+        # 0.0.3 S05 (FR-13): explicit Identity Graph link, used by the
+        # Conversation Simulator's "link identity" control -- see
+        # hermes-runtime/hermes_runtime/datastore/handlers/identity.py.
+        "link_identity",
     )
 
 

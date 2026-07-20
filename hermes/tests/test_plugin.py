@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
-from toee_hermes.plugin import register
+from toee_hermes.plugin import _AGENT_EXCLUDED_ACTIONS, register, register_turn
 from toee_hermes.plugin.profiles import DEFAULT_PROFILE, PROFILE_TOOL_ALLOWLIST
 from toee_hermes.plugin.schemas import build_tool_schema, build_tool_schemas, hermes_tool_name
 from toee_hermes.plugin.tools import make_tool_handler
@@ -173,12 +173,34 @@ def test_register_external_profile_registers_only_allowlist() -> None:
     assert ctx.registered_toolsets() == set(
         PROFILE_TOOL_ALLOWLIST["customer_service_external"]
     )
-    expected = sum(
-        len(TOOL_CATALOG[tool])
-        for tool in PROFILE_TOOL_ALLOWLIST["customer_service_external"]
-    )
+    allow = PROFILE_TOOL_ALLOWLIST["customer_service_external"]
+    excluded_in_allow = sum(1 for tool, _ in _AGENT_EXCLUDED_ACTIONS if tool in allow)
+    expected = sum(len(TOOL_CATALOG[tool]) for tool in allow) - excluded_in_allow
     assert len(ctx.tools) == expected
     assert ctx.hook_events() == ["pre_llm_call"]
+
+
+# --- 0.0.3 S05: link_identity is never LLM-callable (governance) ------------
+
+
+def test_link_identity_is_never_registered_as_an_llm_tool_for_any_profile() -> None:
+    # toee_identity_lookup is allowlisted for BOTH external and internal_copilot
+    # (for match_phone/match_email_sender); link_identity must stay off the
+    # model's tool-calling surface on every profile that would otherwise expose
+    # it, since it's a governed Identity Graph WRITE meant only for the
+    # simulator's gated tools:dispatch HTTP path.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_identity_lookup__link_identity" not in ctx.registered_names()
+
+
+def test_link_identity_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async Textline turn's entry point -- the actual
+    # production path a prompt-injected customer message would try to exploit.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_identity_lookup__link_identity" not in ctx.registered_names()
 
 
 def test_register_supervisor_profile_excludes_customer_send_tools() -> None:

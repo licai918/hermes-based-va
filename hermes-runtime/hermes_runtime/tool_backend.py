@@ -63,6 +63,31 @@ def memory_enabled(value: object = _UNSET) -> bool:
     return resolve_tool_backend(value) == "datastore"
 
 
+# Shared with hermes_runtime.gateway_composition.resolve_reply_sender (S01,
+# FR-10/NFR-4): "simulated" is the one deployment-wide signal for "this process
+# is running the Conversation Simulator, not real customer traffic." Read again
+# here rather than importing gateway_composition's constant so the tool-dispatch
+# composition root (a separate process/deployment, ADR-0141) never has to import
+# the gateway's composition module just for this string.
+SIMULATED_MODE_ENV = "REPLY_SENDER"
+_SIMULATED_MODE_VALUE = "simulated"
+
+
+def simulated_mode_enabled(value: object = _UNSET) -> bool:
+    """True only when ``REPLY_SENDER=simulated`` (0.0.3 S05, NFR-4 gate reuse).
+
+    Governs dev-only mutation surfaces reachable through tools:dispatch that must
+    be impossible in production -- currently ``toee_identity_lookup.link_identity``
+    (see ``tool_dispatch_composition._simulated_only_gate``). Fail-closed by
+    construction: unset, empty, or any value other than exactly ``"simulated"``
+    (case-insensitive) returns ``False``, mirroring
+    ``gateway_composition.resolve_reply_sender``'s treatment of that same value.
+    """
+    if value is _UNSET:
+        value = os.environ.get(SIMULATED_MODE_ENV)
+    return isinstance(value, str) and value.strip().lower() == _SIMULATED_MODE_VALUE
+
+
 def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
     """Build the dispatch ToolDriver for ``backend`` (env-resolved when ``None``).
 
