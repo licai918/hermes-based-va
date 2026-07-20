@@ -3,7 +3,9 @@
 > **Retrieval mechanism superseded (2026-07-20).** The weekly **Knowledge Crawl** rebuild was
 > never implemented, and the "no separate vector database" constraint no longer holds: the 0.0.3
 > spike selected an in-house **hybrid lexical + dense-embedding** retriever over a separate
-> index. **Still holds:** the two-layer split (Public Site Knowledge vs governed Operational
+> index. The storage substrate goes with it: knowledge is not stored through **Hermes Native
+> Memory** but in a separate no-PII database loaded from the Shopify connector.
+> **Still holds:** the two-layer split (Public Site Knowledge vs governed Operational
 > Policy Knowledge), "account-specific facts come from live tools, not RAG", and keeping public
 > copy on the website rather than a second hand-authored corpus.
 > Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md) (L5).

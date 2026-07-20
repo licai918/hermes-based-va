@@ -1,5 +1,11 @@
 # 0.0.3 Knowledge-layer feasibility — SPIKE PLAN
 
+> **The spike has RUN and the path is decided (2026-07-20): Path Y-embed *hybrid*; gbrain
+> rejected, rung 3 is off the ladder.** Read the ladder and decision table below as the *plan
+> that was executed*, not as an open question. Results → [TRACKER.md](TRACKER.md); decision →
+> [../EXPLORATION.md](../EXPLORATION.md) Candidate 1. The one thing still genuinely open is the
+> **final quality number** on ~30 real customer questions (see "Remaining input" at the bottom).
+
 **Direction D.** Decide **Path Y (in-house) vs gbrain (Path X) vs defer** with data,
 before committing a build. These are throwaway probes; the seam + schema they leave
 behind are the real build's foundation (not pure throwaway — see last section).

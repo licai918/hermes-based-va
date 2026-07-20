@@ -75,9 +75,15 @@ and Candidate 1 of [the 0.0.3 exploration](../../workspace/0.0.3/EXPLORATION.md)
 **Boundary:** knowledge is a shared, non-PII corpus — never live facts (Shopify/QBO tool reads),
 never the governed policy-slot copy, never customer PII.
 
-**Open:** ingestion source (the corpus already lives in Shopify — see
-[CONTENT-GAPS.md](../../workspace/0.0.3/knowledge-spike/CONTENT-GAPS.md)) vs a `brain/` git-PR flow;
-embedding model; short-doc handling.
+**Corpus source is settled:** the **Shopify connector** (pages, blog articles, shop policies) —
+that is where the content already lives and where staff already author it; the spike pulled its
+whole corpus from there. Gaps are closed by editing Shopify, not by crawling — see
+[CONTENT-GAPS.md](../../workspace/0.0.3/knowledge-spike/CONTENT-GAPS.md).
+
+**Still open:** the ongoing *refresh + authoring* flow and **where the review gate lives** — a
+Shopify sync has no PR review, whereas a `brain/` git-PR flow does; a hybrid (Shopify for
+existing pages, `brain/` for net-new authored knowledge) is possible. Also open: embedding model,
+and short-doc handling (200-char Contact and thin brand pages under-retrieve).
 
 **Supersedes in practice:** the never-built weekly RAG / crawl / sync mechanisms of ADR-0001,
 ADR-0002, ADR-0030 and ADR-0031 (their live-facts rules still hold). A formal superseding ADR

@@ -1,5 +1,16 @@
 # PRD: Hermes VA Text-First Launch (Textline SMS)
 
+> **Superseded in part (2026-07-20) — read this first.** This PRD's *behaviour and scope* still
+> hold, but its **substrate is wrong throughout**. ADR-0139 (Hermes is the Nous **Python** agent
+> plugin — no TypeScript `Hermes Runtime Shim`, no `packages/hermes-runtime` boot path),
+> ADR-0140 (**Postgres is the system of record**; Hermes Native Memory is conversation-only and
+> entirely off in practice), ADR-0141 (workbench BFF reaches per-profile Hermes **over HTTP**,
+> not in-process), ADR-0142 (local-first). Read every "Hermes Native Memory" and "Hermes Runtime
+> Shim" reference below as the historical design.
+> **Customer Memory — user stories 21–23 and delivery phase 4 — SHIPPED** in 0.0.1 (PR #54) and
+> was hardened in 0.0.2 (PR #55); it is not pending work.
+> Current memory map → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 ## Problem Statement
 
 Toee Tire needs governed AI customer service on an external channel without exposing accounting data, bypassing policy, or forcing customers through a separate verification product. The business wants to validate **Hermes Core**, **Tool Gate**, knowledge layers, employee **Copilot Workbench**, and quality gates on **Textline SMS** first because text is lower latency and easier to debug than voice.

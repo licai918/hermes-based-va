@@ -1,5 +1,11 @@
 # Fast Textline webhook acknowledgment with async external agent execution
 
+> **Storage substrate superseded by ADR-0140/0142.** The entire fast-ack/async pipeline
+> and its step ordering still hold. Only step 5's target changes: the inbound turn
+> persists to the **Toee Business Datastore** (Postgres, L2), not **Hermes Native
+> Memory**, which is conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 `POST /webhooks/textline` separates webhook acknowledgment from external agent execution so Textline retries do not duplicate customer turns or stall on long model and tool work.
 
 ## Synchronous pre-ack pipeline

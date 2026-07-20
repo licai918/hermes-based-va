@@ -8,6 +8,16 @@
 > [`docs/architecture/memory-layers.md`](../../architecture/memory-layers.md) (L5) and
 > [`workspace/0.0.3/knowledge-spike/`](../../../workspace/0.0.3/knowledge-spike/).
 > Retained as the historical record of how M1 was designed.
+>
+> **Also AMENDED, not merely shipped — do not implement §M1c as written.** 0.0.2 /
+> [ADR-0148](../../adr/0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)
+> *changed* two decisions below: the `source` enum gained a fourth value **`copilot_agent`**
+> (§M1c.5 lists only three), and the `channel_identity_id` carve-out was **removed entirely**
+> (§M1c.2 says it "remains" — it does not; an unresolvable identity now fails closed to
+> `policy_blocked`, guarded by a dedicated removal-tripwire test). An `actor_account_id` column
+> was also added. Separately, the **hard-boundary table** in §Decision predates the gbrain
+> rejection — knowledge now targets a hybrid FTS + embedding retriever over a Shopify-sourced
+> corpus.
 
 Date: 2026-07-10
 Status: **superseded in part** (M1 shipped; M2 superseded 2026-07-20) — was: approved-direction

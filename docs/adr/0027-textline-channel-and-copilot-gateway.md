@@ -1,5 +1,14 @@
 # Textline channel binding and Copilot internal gateway
 
+> **Storage substrate superseded by ADR-0140/0142.** Textline as a channel rather than a
+> profile, the **Customer Thread** + **SMS Session** two-level model, the thin **Channel
+> Gateway**, and the two **Copilot Workbench** surfaces all still hold. Superseded: both
+> substrate claims — the long-lived **Customer Thread** (L2) and the **Operations
+> Dashboard** reads both come from the **Toee Business Datastore** (Postgres), and the ban
+> on "a parallel case database" now prohibits exactly what shipped. Hermes memory is
+> conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 Textline is not its own Hermes Profile. It is a **channel** that routes inbound SMS into the **External Customer Service Profile**.
 
 For each customer phone number, Hermes maintains:

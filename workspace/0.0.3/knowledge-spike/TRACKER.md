@@ -4,8 +4,12 @@
 hard-gate spikes BEFORE committing to a build, in parallel with the PAC-1 supervisor
 view. This board tracks the **spike line only**. Plan → [SPIKE-PLAN.md](SPIKE-PLAN.md).
 
-**Phase status:** `EXECUTING` — S-ISO ✅ + S-LAT ✅ passed (2026-07-16); corpus pulling from
-Shopify; **S-QUAL blocked on the real question set** (see ⛔ below).
+**Phase status:** `DECIDED` (2026-07-20) — **Path = Y-embed *hybrid*** (lexical FTS + dense
+embedding, separate no-PII DB, `extra_drivers` seam). **gbrain rejected — rung 3 is off the
+ladder.** S-ISO ✅ and S-LAT ✅ passed and the 167-chunk corpus is loaded; the only thing still
+open is the **final quality number** on ~30 real customer questions. Decision recorded in
+[../EXPLORATION.md](../EXPLORATION.md) Candidate 1 and
+[`docs/architecture/memory-layers.md`](../../../docs/architecture/memory-layers.md) (L5).
 
 ## Locked decisions (grill)
 - Ladder: **Postgres FTS → small embedding → gbrain**; walk up only as far as S-QUAL needs.
@@ -19,7 +23,7 @@ Shopify; **S-QUAL blocked on the real question set** (see ⛔ below).
 | **Scaffold + S-ISO** | index in a **separate DB** (`KNOWLEDGE_DATABASE_URL`); business datastore untouched; connections isolated | ✅ pass | ✅ pass | separate `toee_knowledge` DB + `knowledge_chunk`+GIN; biz `toee_va` unchanged (16 tbl), no leak; corpus ingested **27 docs → 167 chunks** (page 53 / article 66 / policy 48) |
 | **S-LAT** | selected retriever in-turn **p95 < 800 ms** @ projected size **+** driver-side deadline → `found=false` | ✅ pass | ✅ pass | FTS **p95=1.40ms** @1500 (167 real+1333 synth); forced 2s query → found=false in 201ms |
 | **S-QUAL** | **recall@3 ≥ 80%** on ~30 labelled real Qs; ladder FTS→embed→gbrain | 🟡 in-progress | rung1 FTS **50%** / rung2 embed **73%** (synthetic; ~76-83% fair) | FTS out (vocab mismatch); embed borderline-viable, misses = content gaps (store hours missing) + tiny docs + strict gold. Lean **Path Y-embed**. Real Qs pending. |
-| **Decision gate** | Path X / Path Y / defer, from the above | ⚪ pending | — | waits on all 3 |
+| **Decision gate** | Path X / Path Y / defer, from the above | ✅ **decided** | **Path Y-embed hybrid**; gbrain rejected | 2026-07-20; only the final quality number remains |
 
 State legend: 🟢 ready · 🟡 in-progress · 🔴 blocked · ⚪ pending · ✅ pass · ❌ fail
 

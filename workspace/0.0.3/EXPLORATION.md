@@ -399,10 +399,12 @@ That makes now the cheapest possible moment to do this.
 ### Sizing
 - Copilot-only, propose→confirm, notes only (no skills, no `session_search`): **M**.
 - Both surfaces + skills + within-session prefetch + retention/eval work: **L**.
-- **Prereq spike (cheap, recommended):** stand up a persistent `HERMES_HOME`, enable the review
-  fork with `write_approval: True` on the **copilot only**, and observe what it *proposes* for a
-  week. Reversible, and it answers whether the proposals are worth governing at all before we
-  build anything.
+- **Prereq spike — BLOCKED, prerequisite not met.** The proposed probe (persistent `HERMES_HOME`,
+  review fork on with `write_approval: True`, **copilot only**, observe what it *proposes* for a
+  week) needs **real operational traffic** to observe. The product is not in operational use yet,
+  so there is nothing for the fork to learn from — a run today would measure noise. This is a
+  **precondition, not a scheduling choice**: the spike unblocks when the copilot is carrying real
+  rep work. Until then Candidate 8 stays exploratory and must not be sized into a build.
 
 ### Open questions
 - Port the loop into our own code, or enable Hermes's and intercept via `on_memory_write`?

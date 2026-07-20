@@ -1,5 +1,13 @@
 # AgentTurnContext persistence for async Textline reply binding
 
+> **Storage substrate superseded by ADR-0140/0142.** Persist-before-ack, the minimal
+> Cloud Tasks payload, reload-by-`eventId`, and reply-binding enforcement all still hold.
+> Superseded: the storage substrate — **AgentTurnContext** persists to the **Toee Business
+> Datastore** (Postgres, L2), not **Hermes Native Memory**. "Memory is the source of
+> truth" under **Async job behavior** now inverts current truth: the datastore is the
+> source of truth, and Hermes memory is conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 When the Textline gateway durably records an accepted inbound turn before webhook acknowledgment, it stores an **AgentTurnContext** in **Hermes Native Memory**.
 
 Cloud Tasks payloads stay minimal and carry at minimum `eventId` and `conversationId`. The async job reloads the full turn context from memory by `eventId`.
