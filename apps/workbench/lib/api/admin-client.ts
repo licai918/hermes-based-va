@@ -4,6 +4,7 @@
 // whose 400 carries a policy `errors[]` we surface inline rather than throw.
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
+import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
 import { getJson, sendJson } from "./http";
@@ -42,6 +43,20 @@ export function rollbackSlot(slotId: string): Promise<PolicySlot> {
     "POST",
     `/api/admin/knowledge/slots/${slotId}/rollback`,
   ).then((b) => b.slot);
+}
+
+// --- S11: corpus status + retrieval probe (FR-6) ------------------------------
+
+export function getCorpusStatus(): Promise<CorpusStatus> {
+  return getJson<{ status: CorpusStatus }>("/api/admin/knowledge/corpus-status").then(
+    (b) => b.status,
+  );
+}
+
+export function probeKnowledge(query: string): Promise<ProbeResult[]> {
+  return sendJson<{ results: ProbeResult[] }>("POST", "/api/admin/knowledge/probe", {
+    query,
+  }).then((b) => b.results);
 }
 
 // --- Eval review (Knowledge Publish Eval Gate) -------------------------------

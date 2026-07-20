@@ -1,10 +1,12 @@
 import {
   createAccount,
   disableAccount,
+  getCorpusStatus,
   getRun,
   listAccounts,
   listRuns,
   listSlots,
+  probeKnowledge,
   promote,
   rollbackSlot,
   saveDraft,
@@ -87,6 +89,28 @@ describe("admin-client knowledge", () => {
       "/api/admin/knowledge/slots/business-hours/rollback",
       { method: "POST", headers: { "content-type": "application/json" }, body: undefined },
     );
+  });
+
+  it("getCorpusStatus GETs the corpus-status endpoint and unwraps status", async () => {
+    const status = { docCount: 27, chunkCount: 167, lastIngestAt: null, byType: [] };
+    const fetchMock = stubFetch({ status });
+
+    await expect(getCorpusStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/knowledge/corpus-status", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("probeKnowledge POSTs the query and unwraps results", async () => {
+    const results = [{ title: "Return Policy", url: null, snippet: "..." }];
+    const fetchMock = stubFetch({ results });
+
+    await expect(probeKnowledge("return policy")).resolves.toEqual(results);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/knowledge/probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "return policy" }),
+    });
   });
 });
 

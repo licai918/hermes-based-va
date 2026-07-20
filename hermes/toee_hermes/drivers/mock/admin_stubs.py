@@ -152,6 +152,16 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 "slot": _read_string(params, "slot", default="slot_stub"),
                 "rolled_back": True,
             },
+            # S11: deterministic empty-corpus shape — the mock has no corpus, so
+            # counts are zero and there is no ingest to report yet. The real
+            # datastore handler (hermes-runtime) returns the live toee_knowledge
+            # counts.
+            "get_corpus_status": lambda params, context: {
+                "doc_count": 0,
+                "chunk_count": 0,
+                "last_ingest_at": None,
+                "by_type": [],
+            },
         },
         "toee_eval_review": {
             "list_eval_runs": lambda params, context: {"runs": []},

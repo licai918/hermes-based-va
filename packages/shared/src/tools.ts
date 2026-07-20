@@ -40,6 +40,7 @@ export const TOOL_CATALOG = {
     "update_policy_slot",
     "submit_for_eval",
     "rollback_published_policy",
+    "get_corpus_status",
   ],
   toee_eval_review: [
     "list_eval_runs",

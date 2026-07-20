@@ -11,8 +11,10 @@ import {
 import { HermesApiClient } from "../../gateway/hermes-api-client";
 import type { AdminDeps } from "./deps";
 import {
+  handleGetCorpusStatusViaApi,
   handleListSlots,
   handleListSlotsViaApi,
+  handleProbeQueryViaApi,
   handleRollbackSlot,
   handleRollbackSlotViaApi,
   handleSaveDraft,
@@ -351,5 +353,137 @@ describe("handleRollbackSlotViaApi", () => {
       denyOn("rollback_published_policy", "conflict"),
     );
     expect(res.status).toBe(409);
+  });
+});
+
+// --- S11: corpus status + retrieval probe (FR-6) ------------------------------
+
+describe("handleGetCorpusStatusViaApi", () => {
+  it("dispatches get_corpus_status and maps the snake_case payload", async () => {
+    let sent: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      sent = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            doc_count: 27,
+            chunk_count: 167,
+            last_ingest_at: "2026-07-01T12:00:00+00:00",
+            by_type: [
+              { page_type: "faq", count: 40 },
+              { page_type: "policy", count: 127 },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const res = await handleGetCorpusStatusViaApi(client);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: unknown };
+    expect(body.status).toEqual({
+      docCount: 27,
+      chunkCount: 167,
+      lastIngestAt: "2026-07-01T12:00:00+00:00",
+      byType: [
+        { pageType: "faq", count: 40 },
+        { pageType: "policy", count: 127 },
+      ],
+    });
+    const s = sent as SentDispatch | null;
+    expect(s?.tool).toBe("toee_knowledge_ops");
+    expect(s?.action).toBe("get_corpus_status");
+  });
+
+  it("maps a governed error to its per-class status", async () => {
+    const client = apiClient(async () =>
+      new Response(
+        JSON.stringify({ ok: false, error: { class: "configuration_missing", message: "no" } }),
+        { status: 200 },
+      ),
+    );
+    expect((await handleGetCorpusStatusViaApi(client)).status).toBe(503);
+  });
+});
+
+function probeReq(body: unknown): Request {
+  return new Request("http://localhost/api/admin/knowledge/probe", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("handleProbeQueryViaApi", () => {
+  it("dispatches search_public_site with the query and maps results", async () => {
+    let sent: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      sent = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            results: [
+              {
+                title: "Return Policy",
+                url: "https://example.test/returns",
+                snippet: "Tires may be returned within 30 days.",
+                chunk_text: "Tires may be returned within 30 days.",
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const res = await handleProbeQueryViaApi(probeReq({ query: "return policy" }), client);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { results: unknown };
+    expect(body.results).toEqual([
+      {
+        title: "Return Policy",
+        url: "https://example.test/returns",
+        snippet: "Tires may be returned within 30 days.",
+      },
+    ]);
+    const s = sent as SentDispatch | null;
+    expect(s?.tool).toBe("toee_knowledge_search");
+    expect(s?.action).toBe("search_public_site");
+    expect(s?.params).toEqual({ query: "return policy" });
+  });
+
+  it("returns an empty list on the governed no-match shape", async () => {
+    const client = apiClient(async () =>
+      new Response(JSON.stringify({ ok: true, data: { results: [] } }), { status: 200 }),
+    );
+    const res = await handleProbeQueryViaApi(probeReq({ query: "nothing matches" }), client);
+    const body = (await res.json()) as { results: unknown };
+    expect(body.results).toEqual([]);
+  });
+
+  it("400s a blank query without dispatching", async () => {
+    const seen: string[] = [];
+    const client = apiClient(async (_url, init) => {
+      const sent = JSON.parse(init.body as string) as SentDispatch;
+      seen.push(sent.action);
+      return new Response(JSON.stringify({ ok: true, data: { results: [] } }), { status: 200 });
+    });
+    const res = await handleProbeQueryViaApi(probeReq({ query: "   " }), client);
+    expect(res.status).toBe(400);
+    expect(seen).toEqual([]);
+  });
+
+  it("maps a governed error to its per-class status", async () => {
+    const client = apiClient(async () =>
+      new Response(
+        JSON.stringify({ ok: false, error: { class: "unexpected_error", message: "no" } }),
+        { status: 200 },
+      ),
+    );
+    const res = await handleProbeQueryViaApi(probeReq({ query: "x" }), client);
+    expect(res.status).toBe(502);
   });
 });
