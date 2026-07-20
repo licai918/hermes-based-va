@@ -67,22 +67,34 @@ returns top-k chunks.
 - Cons: no knowledge-graph retrieval; we build/maintain the chunker+index; quality
   ceiling lower than gbrain on a large corpus.
 
-**Lean:** start with **Path Y (in-house, BM25 first)** for a v1 — the corpus is
-curated and small (company/brand/product/FAQ), retrieval quality needs are modest,
-and it avoids betting a customer-facing path on a churny dependency. Revisit gbrain
-(Path X) if the corpus grows and retrieval quality demands graph-aware search.
-*This reverses the 0.0.1 lean toward gbrain — worth an explicit call after the spikes.*
+**DECIDED (2026-07-16, after the spikes) → Path Y-embed, *hybrid*.** Build an in-house
+retriever that **fuses lexical FTS + dense embeddings**, indexed in the separate knowledge
+DB, injected via the proven `extra_drivers` seam. **gbrain (Path X) is not justified.**
+Evidence: [knowledge-spike/](knowledge-spike/). *This reverses the 0.0.1 lean toward gbrain
+**and** the earlier "BM25 first" lean — pure lexical is provably not enough.*
 
-### Spikes (hard gates, measure before committing to either path)
-1. **Latency** — top-k retrieval must return **< 800 ms** for an in-turn SMS tool
-   call (measured on the real corpus size). Synthesis/LLM-in-the-loop retrieval is
-   **out of scope in-turn** regardless of path. *Pass/fail: p95 < 800 ms.*
-2. **Retrieval quality** — on a hand-labeled set of ~30 real customer questions,
-   the right chunk in top-3. *Pass/fail: precision@3 acceptable to the product owner.*
-   (This is where Path X might beat Path Y — spike both if quality is borderline.)
-3. **Deployment isolation** — the knowledge index lives in a **separate database**
-   from the business datastore (knowledge carries no PII; physical separation).
-   *Pass/fail: index reachable, business DB untouched, connection isolated.*
+### Spikes — RUN, all three (2026-07-16) → [knowledge-spike/](knowledge-spike/)
+
+| Spike | Gate | Result |
+| --- | --- | --- |
+| **S-ISO** | index in a separate DB; business datastore untouched | ✅ **PASS** — separate `toee_knowledge` DB + `knowledge_chunk`+GIN; `toee_va` unchanged (16 tables), no leak |
+| **S-LAT** | in-turn p95 < 800 ms **+** a deadline that degrades instead of hanging | ✅ **PASS** — FTS p95 **1.4 ms** @1500 chunks; a forced 2 s query → governed `found=false` in 201 ms via a 200 ms driver deadline. (No tool-call timeout exists in-repo, so this deadline wiring is a **required build deliverable**, not optional.) |
+| **S-QUAL** | recall@3 ≥ 80% (gold chunk in top-3) | 🟡 **partial** — on a 30-question **synthetic** set: lexical FTS **50%** (out); dense embedding (bge-small) **73%** raw / ~76–83% fair. ~30 **real** customer questions still pending = the final arbiter |
+
+**Why lexical alone is out:** ~half the FTS misses are pure **vocabulary mismatch**
+(`money`→refund, `snow`→winter, "who are you"→Brand Story, "environmentally friendly"→green)
+where the gold doc shares *zero* query terms — no lexical ranking or tuning can ever retrieve it.
+
+**Why hybrid, not embeddings alone:** the two rungs fail *differently* — FTS nails exact tokens
+(brand names, model codes, SKUs) that embeddings blur; embeddings bridge the paraphrase FTS
+can't. Fusing them (RRF / union re-rank) covers both failure modes, and **both halves already
+exist** from the spike, so fusion is near-free.
+
+**Also learned:** Hermes ships **no native dense-vector RAG** to inherit — its built-in
+retrieval is SQLite **FTS5 (lexical)**, i.e. the very rung this spike rejected, and Customer
+Memory is exact-key **slot** storage, not RAG (ADR-0111/0140 chose that deliberately). So this
+layer is genuinely net-new. The separate question of applying Hermes's *own* memory to **agent
+learning** is Candidate 8 — a different layer, not a substitute for this one.
 
 ### Design sketch — the driver seam (same for both paths)
 - Tool surface unchanged: the agent still sees only the allowlisted
@@ -111,6 +123,17 @@ knowledge from the eval gate, so no conflict) → merge → index sync (Path X: 
 own loop; Path Y: a re-index step) → retrievable. No live facts / policy copy / PII
 ever committed.
 
+**Spike update — the corpus already lives in Shopify.** The spike pulled a real 27-doc corpus
+(13 pages, 10 articles, 4 policies → **167 chunks**) **read-only from the Shopify connector** —
+which is where staff already author and where the content actually is. That reopens the
+ingestion question: a **Shopify sync** (ADR-0031's original intent) may beat a `brain/` git-PR
+flow, since staff keep editing where they work and no parallel copy can drift.
+**Trade-off:** Shopify has no PR-review gate, so the git governance would be lost; a hybrid
+(Shopify sync for existing pages + `brain/` for net-new authored knowledge) is possible. **Open.**
+Filling the store's content gaps lifts recall directly — see
+[knowledge-spike/CONTENT-GAPS.md](knowledge-spike/CONTENT-GAPS.md) (no business hours anywhere,
+empty FAQ page, no payment-methods content, empty Shipping policy).
+
 ### Terminology / ADR deliverables (ship with the layer)
 - Redefine **Public Site Knowledge** = customer-facing content authored in `brain/`,
   indexed/retrieved by the chosen retriever.
@@ -120,14 +143,25 @@ ever committed.
   *implementation* mechanisms (their live-facts rule stays).
 
 ### Sizing
-- Path Y v1 (BM25 + `brain/` + driver + authoring + terminology/ADR): **M**.
-- Path X (gbrain deploy + driver + isolation + the above): **L**.
-- Spikes: half a day–2 days before committing.
+- **Path Y-embed hybrid (DECIDED)** — retriever driver (FTS + embedding fusion) + vector index
+  in the separate DB + corpus sync + deadline wiring + authoring/terminology/ADR: **M+**. The
+  spike already de-risked the retriever, the corpus pull, the isolation and both rungs.
+- ~~Path Y-FTS only~~ — **rejected**: 50% recall, categorical vocabulary-mismatch ceiling.
+- ~~Path X (gbrain)~~ — **rejected** as over-engineering for a curated FAQ-sized corpus
+  (external service + pgvector infra + read-scoped credential + churny v0.x upgrade burden).
+  Revisit only if real questions show hybrid failing badly.
+- Spikes: **done** (~1 day).
 
 ### Open questions
-- Path X vs Y (the core call) — resolve after the quality spike.
-- Same-repo `brain/` vs a separate content repo (0.0.1 leaned same-repo).
-- KnowledgeOps overlap: who authors/reviews `brain/` vs the policy slots?
+- ~~Path X vs Y (the core call)~~ — **resolved: Path Y-embed hybrid** (spike, 2026-07-16).
+- **Final gate number** — awaiting ~30 **real** customer questions to confirm hybrid clears 80%.
+- **Corpus source / authoring** — Shopify sync vs `brain/` git-PR vs a hybrid (see the spike
+  update above). This also decides where the review gate lives.
+- **Embedding model** — local (fastembed/onnx, no torch; spiked with bge-small) vs a larger
+  local model vs hosted. Local keeps queries in-house and costs nothing per call.
+- **Short-doc handling** — the 200-char Contact page and thin brand pages under-retrieve;
+  merge short pages, or add doc-level weighting/boosting.
+- KnowledgeOps overlap: who authors/reviews the public knowledge vs the policy slots?
 - Does PAC-8 (grounded knowledge) need synthesis, or are cited chunks enough for SMS?
 
 ---
