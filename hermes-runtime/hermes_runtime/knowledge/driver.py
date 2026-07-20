@@ -155,6 +155,13 @@ class KnowledgeDriver:
         query = params.get("query")
         query = query if isinstance(query, str) else ""
 
+        if not query.strip():
+            # Sanitized (no raw params) -- an empty query is what a model that
+            # guessed the wrong param name for this action produces (S10); this
+            # used to fail silently as results=[], making the bug hard to find.
+            logger.warning("search_public_site called with empty query (param guess failure?)")
+            return _not_found()
+
         deadline = self._deadline_ms if self._deadline_ms is not None else _deadline_ms()
         # Log length/hash only -- the raw query text must never reach logs (FR-4).
         query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]

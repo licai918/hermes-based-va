@@ -142,6 +142,31 @@ def test_retriever_exception_returns_governed_miss_never_raises() -> None:
     assert driver.execute(request, _CTX) == {"results": []}
 
 
+# --- empty query (param-guess failure) -------------------------------------
+
+
+def test_empty_query_logs_one_sanitized_warning_and_returns_governed_miss(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # S10 diagnosis: an open `{}` param schema let the model guess/omit `query`,
+    # and the driver silently returned {"results": []} with no trace -- this is
+    # what made the bug hard to find. Retrieval must not even run.
+    driver = KnowledgeDriver(
+        retrieve_fn=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not call retrieve for an empty query")
+        )
+    )
+    request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": ""})
+
+    with caplog.at_level(logging.WARNING):
+        result = driver.execute(request, _CTX)
+
+    assert result == {"results": []}
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "empty query" in warnings[0].getMessage().lower()
+
+
 # --- search_operational_policy delegates unchanged ------------------------
 
 

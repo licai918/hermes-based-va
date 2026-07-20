@@ -17,7 +17,7 @@ import pytest
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.plugin import register
 from toee_hermes.plugin.profiles import DEFAULT_PROFILE, PROFILE_TOOL_ALLOWLIST
-from toee_hermes.plugin.schemas import build_tool_schemas, hermes_tool_name
+from toee_hermes.plugin.schemas import build_tool_schema, build_tool_schemas, hermes_tool_name
 from toee_hermes.plugin.tools import make_tool_handler
 from toee_hermes.tool_catalog import TOOL_CATALOG
 from toee_hermes.tool_gate import GateDecision, ToolExecutionContext
@@ -79,6 +79,34 @@ def test_build_tool_schemas_covers_every_catalog_action() -> None:
         assert schema["parameters"]["type"] == "object"
     names = [entry["schema"]["name"] for entry in schemas]
     assert len(names) == len(set(names))
+
+
+def test_build_tool_schema_layers_known_param_schemas_for_knowledge_search() -> None:
+    # The bug this pins down: every tool advertised an open `{}` object, so the
+    # model had to guess param names from persona prose -- non-deterministic
+    # per call (S10 diagnosis). Layered schemas fix the two knowledge actions.
+    public_site = build_tool_schema("toee_knowledge_search", "search_public_site")["parameters"]
+    assert public_site["properties"] == {
+        "query": {
+            "type": "string",
+            "description": "The customer's question or topic to search the public knowledge corpus for.",
+        }
+    }
+    assert public_site["required"] == ["query"]
+    assert public_site["additionalProperties"] is True
+
+    policy = build_tool_schema("toee_knowledge_search", "search_operational_policy")["parameters"]
+    assert set(policy["properties"]) == {"query", "slot"}
+    assert "required" not in policy  # mock accepts either; neither is mandatory
+    assert policy["additionalProperties"] is True
+
+
+def test_build_tool_schema_falls_back_to_open_object_for_unlayered_actions() -> None:
+    # get_order stays an open object -- filling the rest of the catalog
+    # (the get_order {order_id vs order_number} family) is tracked debt, not
+    # this fix's scope.
+    schema = build_tool_schema("toee_shopify_read", "get_order")["parameters"]
+    assert schema == {"type": "object", "properties": {}, "additionalProperties": True}
 
 
 # --- handlers --------------------------------------------------------------
