@@ -61,7 +61,8 @@ def _boot(profile: str, register_fn: Any) -> BootedProfile:
         discover_plugins,
     )
 
-    discover_plugins()
+    discover_plugins()  # idempotent; NOT proof against a future discover_and_load(force=True),
+    # which clears the registry and re-runs bare register() -- no turn path uses force today
 
     manager = PluginManager()
     manifest = PluginManifest(name="toee-tire")
