@@ -8,9 +8,9 @@
 // window (~60s) elapses. FR-12: once the gateway's webhook creates a case for
 // this phone, a link out to that case's real Case Thread Context appears.
 //
-// Channel switcher + identity presets + reset are S18/S04 -- `phone` is plain
-// component state (not lifted) so those slices can wire in without reshaping
-// this component.
+// Channel switcher is S18; the "link identity" control is S05 -- neither is
+// implemented here. `phone` is plain component state (not lifted) so those
+// slices can wire in without reshaping this component.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ROUTES } from "@toee/shared";
 import { useErrorBanner } from "@/components/shell/error-banner";
@@ -19,6 +19,11 @@ import { ApiError } from "@/lib/api/http";
 import { formatRelativeTime } from "@/lib/format";
 import type { ThreadMessage } from "@/lib/gateway/types";
 import { hasNewOutboundReply } from "@/lib/simulator-polling";
+import {
+  IDENTITY_PRESETS,
+  resolvePresetPhone,
+  type IdentityPresetId,
+} from "@/lib/simulator-identity";
 
 const DEFAULT_PHONE = "+15550001001";
 const POLL_INTERVAL_MS = 2_000;
@@ -95,6 +100,36 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     }, POLL_INTERVAL_MS);
   }
 
+  // Fresh identity / fresh phone -- shared by the preset picker and reset
+  // (FR-9/FR-13). Stops any in-flight poll for the old phone, drops the
+  // conversationId so the next send opens a new server-side conversation
+  // (new phone = new thread server-side too), and reloads the thread for
+  // the new number (empty for a never-seen number, existing history for a
+  // fixed preset number reused across runs).
+  function switchPhone(nextPhone: string) {
+    stopPolling();
+    setPhone(nextPhone);
+    setConversationId(undefined);
+    setSendState("idle");
+    setSendMessage(null);
+    void loadThread(nextPhone);
+  }
+
+  function handlePresetSelect(id: IdentityPresetId) {
+    switchPhone(resolvePresetPhone(id));
+  }
+
+  // Reset / new-conversation (FR-13): clears the local thread view and picks
+  // a fresh unknown-caller number, so PAC runs are repeatable without
+  // cross-contamination. Server-side data for the old phone/case is left
+  // alone (NFR-4 territory is simulated numbers only, never real customers).
+  function handleReset() {
+    setMessages([]);
+    setCaseId(null);
+    setDraft("");
+    switchPhone(resolvePresetPhone("unknown"));
+  }
+
   async function handleSend() {
     const body = draft.trim();
     if (body.length === 0 || sendState === "pending") return;
@@ -146,6 +181,32 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
           onChange={(e) => setPhone(e.target.value)}
           onBlur={() => void loadThread(phone)}
         />
+
+        <label htmlFor="sim-identity-preset" style={{ fontSize: "0.8rem", color: "#666" }}>
+          Identity preset
+        </label>
+        <select
+          id="sim-identity-preset"
+          value=""
+          onChange={(e) => {
+            const id = e.target.value as IdentityPresetId;
+            if (id) handlePresetSelect(id);
+          }}
+        >
+          <option value="" disabled>
+            Choose a preset…
+          </option>
+          {IDENTITY_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+            </option>
+          ))}
+        </select>
+
+        <button type="button" onClick={handleReset}>
+          Reset / new conversation
+        </button>
+
         {caseId ? (
           <a href={`${ROUTES.copilot}?case=${encodeURIComponent(caseId)}`}>
             Open case in copilot

@@ -172,6 +172,87 @@ describe("Simulator", () => {
     expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(3);
   });
 
+  it("selecting the verified preset fills the phone field with the seeded number and reloads the thread", async () => {
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Identity preset"), {
+      target: { value: "verified" },
+    });
+
+    expect(screen.getByLabelText("From phone")).toHaveValue("+14165550101");
+    await waitFor(() =>
+      expect(simulator.getSimulatorThread).toHaveBeenLastCalledWith("+14165550101"),
+    );
+  });
+
+  it("selecting the unknown-caller preset fills a fresh +1555 number", async () => {
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Identity preset"), {
+      target: { value: "unknown" },
+    });
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
+
+    expect((screen.getByLabelText("From phone") as HTMLInputElement).value).toMatch(
+      /^\+1555\d{7}$/,
+    );
+  });
+
+  it("switching presets drops the prior conversationId so the next send starts fresh", async () => {
+    vi.mocked(simulator.sendSimulatorMessage).mockResolvedValue({
+      conversationId: "conv-1",
+      eventId: "evt-1",
+      accepted: true,
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "first" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(simulator.sendSimulatorMessage).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Identity preset"), {
+      target: { value: "ambiguous" },
+    });
+
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "second" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(simulator.sendSimulatorMessage).toHaveBeenLastCalledWith({
+        fromPhone: "+14165550222",
+        body: "second",
+        conversationId: undefined,
+      }),
+    );
+  });
+
+  it("reset clears the thread view, the case link, and generates a fresh unknown number", async () => {
+    vi.mocked(simulator.getSimulatorThread).mockResolvedValue({
+      caseId: "case_1",
+      messages: [turn({ messageId: "1", author: "customer", body: "hi there" })],
+    });
+    renderSimulator();
+    expect(await screen.findByText("hi there")).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: "Open case in copilot" })).toBeInTheDocument();
+
+    vi.mocked(simulator.getSimulatorThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Reset / new conversation" }));
+
+    expect(screen.queryByText("hi there")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Open case in copilot" })).toBeNull();
+    const phoneValue = (screen.getByLabelText("From phone") as HTMLInputElement).value;
+    expect(phoneValue).toMatch(/^\+1555\d{7}$/);
+    expect(phoneValue).not.toBe("+15550001001");
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
+  });
+
   it("renders the FR-12 case link once the thread carries a caseId, not before", async () => {
     vi.mocked(simulator.getSimulatorThread).mockResolvedValue({ caseId: null, messages: [] });
     renderSimulator();
