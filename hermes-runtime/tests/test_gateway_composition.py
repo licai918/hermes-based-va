@@ -23,8 +23,10 @@ from fastapi import FastAPI
 
 from hermes_runtime.gateway_composition import (
     INTERNAL_JOB_SECRET_ENV,
+    REPLY_SENDER_ENV,
     WEBHOOK_SECRET_ENV,
     build_gateway_app,
+    resolve_reply_sender,
 )
 from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 
@@ -157,3 +159,119 @@ def test_build_gateway_app_fails_closed_when_a_required_secret_is_absent(
 
     with pytest.raises(ValueError, match=missing):
         build_gateway_app()
+
+
+# --- S01: REPLY_SENDER composition gate (FR-10, NFR-4) ---------------------
+
+
+def test_resolve_reply_sender_defaults_to_real_textline_sender_and_requires_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(REPLY_SENDER_ENV, raising=False)
+    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+
+    with pytest.raises(ValueError, match="TEXTLINE_ACCESS_TOKEN"):
+        resolve_reply_sender()
+
+
+def test_resolve_reply_sender_textline_value_behaves_like_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(REPLY_SENDER_ENV, "textline")
+    monkeypatch.setenv("TEXTLINE_ACCESS_TOKEN", "tok-123")
+
+    sender = resolve_reply_sender()
+
+    assert callable(sender)
+
+
+def test_resolve_reply_sender_simulated_does_not_require_a_textline_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
+    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+
+    sender = resolve_reply_sender()
+
+    assert callable(sender)
+
+
+def test_resolve_reply_sender_simulated_makes_no_network_call_and_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
+    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+
+    def _boom(*args: object, **kwargs: object) -> int:
+        raise AssertionError("simulated sender must never open a network connection")
+
+    monkeypatch.setattr("hermes_runtime.textline_reply._urllib_post", _boom)
+
+    sender = resolve_reply_sender()
+
+    assert sender("conv-A", "Hello") is None
+
+
+def test_resolve_reply_sender_unrecognized_value_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(REPLY_SENDER_ENV, "bogus")
+    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+
+    # The error must name the misconfiguration, not the (irrelevant, unset) Textline
+    # token -- proof this never silently falls through to the real sender.
+    with pytest.raises(ValueError, match="REPLY_SENDER"):
+        resolve_reply_sender()
+
+
+def test_build_gateway_app_wires_simulated_reply_sender_without_textline_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key in _OPTIONAL_ENV:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(WEBHOOK_SECRET_ENV, "whsec-123")
+    monkeypatch.setenv(INTERNAL_JOB_SECRET_ENV, "job-secret-123")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-123")
+    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
+
+    app = build_gateway_app()
+
+    assert isinstance(app, FastAPI)
+
+
+def test_build_gateway_app_fails_closed_on_unrecognized_reply_sender(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(REPLY_SENDER_ENV, "bogus")
+
+    with pytest.raises(ValueError, match="REPLY_SENDER"):
+        build_gateway_app()
+
+
+def test_simulated_reply_sender_still_mirrors_via_on_reply_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance: simulated sender -> no send error, success result, mirror runs."""
+    from types import SimpleNamespace
+
+    from hermes_runtime.turn_runner import make_gateway_turn_runner
+
+    monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
+    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    sender = resolve_reply_sender()
+
+    mirrored: list[tuple[object, str]] = []
+    runner = make_gateway_turn_runner(
+        reply_sender=sender,
+        run_turn=lambda context, body: {
+            "final_response": "Shipped!",
+            "messages": [],
+        },
+        on_reply_sent=lambda ctx, text: mirrored.append((ctx, text)),
+    )
+    ctx = SimpleNamespace(conversation_id="conv-A")
+
+    runner(ctx, "Where is my order?")
+
+    assert mirrored == [(ctx, "Shipped!")]
