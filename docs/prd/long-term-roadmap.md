@@ -30,8 +30,10 @@ Phases are sequential gates. Each phase should have its own eval suite pass and 
 - Production Composio Connected Accounts per ops runbook
 - Cloud Logging alerts for `auth_expired`, gateway error classes, eval regressions
 - Runbook drills: reconnect, API key rotation
-- Weekly **Knowledge Crawl** job on schedule (ADR-0001, ADR-0030)
-- **Shopify Knowledge Sync** + operational policy publish rhythm
+- ~~Weekly **Knowledge Crawl** job on schedule (ADR-0001, ADR-0030)~~ — **superseded 2026-07-20**:
+  there is no crawl; knowledge ingests from the Shopify connector into an in-house hybrid
+  lexical + embedding index. See [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md) (L5).
+- Shopify content sync + operational policy publish rhythm
 - Hermes pin upgrade process exercised once in staging
 
 **Exit gate:** 30-day stable SMS operations; medium eval failures documented; on-call can reconnect Composio without code change.

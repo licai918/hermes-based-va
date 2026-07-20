@@ -1,7 +1,16 @@
 # Memory architecture activation: Customer Memory wiring (M1) + gbrain knowledge layer (M2)
 
+> **Superseded in part (2026-07-20).** **M1 (Customer Memory wiring) SHIPPED** — 0.0.1 (PR #54)
+> and 0.0.2 (PR #55); the "L4 Dormant / three broken wires" state described below is now
+> historical. **M2 (gbrain knowledge layer) is SUPERSEDED** — the 0.0.3 spike evaluated gbrain
+> and rejected it, choosing an in-house **hybrid lexical + dense-embedding** retriever over a
+> separate index. Current direction →
+> [`docs/architecture/memory-layers.md`](../../architecture/memory-layers.md) (L5) and
+> [`workspace/0.0.3/knowledge-spike/`](../../../workspace/0.0.3/knowledge-spike/).
+> Retained as the historical record of how M1 was designed.
+
 Date: 2026-07-10
-Status: approved-direction, pending user review of this spec
+Status: **superseded in part** (M1 shipped; M2 superseded 2026-07-20) — was: approved-direction
 Decision owner: licai
 
 ## Context (verified against code, 2026-07-10)

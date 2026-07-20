@@ -10,4 +10,5 @@ Five canonical triage roles with default label names. See `docs/agents/triage-la
 
 ### Domain docs
 
-Single-context layout: root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+Single-context layout: root `CONTEXT.md` (vocabulary), `docs/adr/` (decisions), and
+`docs/architecture/` (current-state structural maps). See `docs/agents/domain.md`.

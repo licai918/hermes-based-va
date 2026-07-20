@@ -1,0 +1,146 @@
+# Memory architecture — layer map
+
+**What this is.** The **current-state structural view** of the Hermes VA's memory: what each
+layer holds, where it physically lives, how it is retrieved, how it is governed, and which ADRs
+decide it.
+
+**What this is NOT.** Not a glossary — that is [`CONTEXT.md`](../../CONTEXT.md). Not a decision
+record — those are [`docs/adr/`](../adr/). This file **links** rather than restates, deliberately,
+so it cannot drift out of sync with them.
+
+> **Maintenance rule.** When an ADR lands that changes a layer, update that layer's row **in the
+> same PR**. No separate doc-maintenance ritual — the ADR is the trigger.
+
+*Last updated: 2026-07-20 (0.0.3 knowledge spike + Hermes-memory research).*
+
+---
+
+## At a glance
+
+| # | Layer | Holds | Physically | Retrieval | Status |
+| --- | --- | --- | --- | --- | --- |
+| **L1** | Identity Graph | channel identities, identity snapshots, Shopify/cross-system links, consent (SMS Opt-Out), match history | `toee_va` Postgres | exact key (phone / email → identity) | ✅ shipped |
+| **L2** | Conversation | Customer Thread, Email Thread, SMS Session windows, MessageTurn, AgentTurnContext | `toee_va` Postgres | keyed by thread / session id | ✅ shipped |
+| **L3** | Operational | Follow-up Case, Workbench Audit Log, auto-handled evidence, eval records | `toee_va` Postgres | keyed / queried per workflow | ✅ shipped |
+| **L4** | Customer Memory | 4 governed preference slots per customer | `toee_va` Postgres | **exact** `WHERE binding_key = ?`, injected per turn | ✅ shipped (0.0.1 + 0.0.2) |
+| **L5** | **Knowledge** | shared, non-PII company/product corpus | **separate `toee_knowledge` DB** | **hybrid lexical FTS + dense embedding**, top-k chunks | 🔨 **decided, not built** |
+| **L6** | **Agent experience** | what the agent learns from doing the job | TBD | TBD | 🔬 **exploring** |
+
+L1–L4 are the **four-layer model** of [ADR-0110](../adr/0110-native-memory-four-layer-model.md).
+L5 and L6 are additions in flight — see below.
+
+The same Postgres also holds **Workbench Accounts** and **knowledge publish state** (the 6
+governed operational-policy slots + history). Those sit **outside** the four-layer model; they are
+authored content, not memory.
+
+---
+
+## L1–L4 — the shipped four layers
+
+**Substrate.** The **Toee Business Datastore** (Postgres) is the system of record
+([ADR-0140](../adr/0140-business-datastore-system-of-record-hermes-memory-conversation-only.md)),
+local-first ([ADR-0142](../adr/0142-local-first-datastore-and-per-profile-api-servers-cloud-deferred.md)).
+ADR-0110's original substrate (Hermes Native Memory) is superseded; the layer model itself holds.
+
+**L4 Customer Memory** is the one with governance machinery, so it is worth spelling out:
+- Slots + binding + write sources: [ADR-0111](../adr/0111-customer-memory-slots-and-write-sources.md);
+  provisional→verified merge: [ADR-0112](../adr/0112-provisional-customer-memory-merge-on-verified-ingress.md);
+  per-turn injection: [ADR-0113](../adr/0113-customer-memory-lightweight-injection-reads.md);
+  tool actions: [ADR-0114](../adr/0114-toee-customer-memory-v1-actions.md);
+  retention: [ADR-0116](../adr/0116-conversation-and-customer-memory-retention.md).
+- **Write attribution** (0.0.2): every write carries an honest `source`
+  (`customer_explicit` / `employee_confirmed` / `copilot_agent` / `merged_provisional`) plus the
+  acting rep in `actor_account_id` — framework-derived, never model-supplied.
+  See [ADR-0148](../adr/0148-copilot-agent-source-actor-attribution-and-context-only-binding.md).
+- Reads are **exact-key**, not semantic. There is no similarity search anywhere in L1–L4.
+
+---
+
+## L5 — Knowledge layer *(decided, not yet built)*
+
+**Decision: Path Y-embed, hybrid** — an in-house retriever fusing **lexical FTS + dense
+embeddings**, indexed in a **separate database** that carries no PII, injected through the same
+`extra_drivers` driver seam L4 uses. **gbrain (Path X) was evaluated and rejected** as
+over-engineering for a curated FAQ-sized corpus.
+
+Grounded in the 0.0.3 spike — see [`workspace/0.0.3/knowledge-spike/`](../../workspace/0.0.3/knowledge-spike/)
+and Candidate 1 of [the 0.0.3 exploration](../../workspace/0.0.3/EXPLORATION.md):
+
+| Gate | Result |
+| --- | --- |
+| **Isolation** | ✅ separate `toee_knowledge` DB + `knowledge_chunk`; business DB untouched |
+| **Latency** | ✅ FTS p95 **1.4 ms** @1500 chunks; forced 2 s query → governed `found=false` in 201 ms via a **driver-side deadline** (required, since no tool-call timeout exists in-repo) |
+| **Quality** | 🟡 synthetic set: lexical FTS **50%** (rejected — vocabulary mismatch is uncrossable lexically), embedding **73%** raw / ~76–83% fair. **Real customer questions still pending** = the final gate |
+
+**Boundary:** knowledge is a shared, non-PII corpus — never live facts (Shopify/QBO tool reads),
+never the governed policy-slot copy, never customer PII.
+
+**Open:** ingestion source (the corpus already lives in Shopify — see
+[CONTENT-GAPS.md](../../workspace/0.0.3/knowledge-spike/CONTENT-GAPS.md)) vs a `brain/` git-PR flow;
+embedding model; short-doc handling.
+
+**Supersedes in practice:** the never-built weekly RAG / crawl / sync mechanisms of ADR-0001,
+ADR-0002, ADR-0030 and ADR-0031 (their live-facts rules still hold). A formal superseding ADR
+ships with the build.
+
+---
+
+## L6 — Agent-experience memory *(exploring)*
+
+*What the agent learns from doing the job* — distinct from customer PII (L4), authored corpus
+(L5), and behaviour contract (`persona.py`). Candidate 8 of
+[the 0.0.3 exploration](../../workspace/0.0.3/EXPLORATION.md).
+
+**Scope check:** ADR-0111/0140 rejected Hermes built-in memory **as the store for customer
+business records**. They say nothing about the agent accumulating its own operational
+experience — L6 is that gap, a new layer, not a re-litigation.
+
+**Direction under exploration:** copy Hermes's *learning loop* (the background self-improvement
+review fork), not its *store* — routing proposed learnings through our governed
+tool → Postgres → audit, gated **propose → confirm**, starting on the internal copilot where reps
+already review every draft.
+
+**Live risks** carried in the candidate: model-authored PII, unbounded transcript retention,
+**cross-profile recall crossing the EXTERNAL/INTERNAL/SUPERVISOR security boundary**,
+poisoned-memory blast radius, and eval determinism.
+
+---
+
+## Hermes Native Memory — where it actually sits
+
+The upstream framework has its **own** memory (agent notes + an FTS5 transcript store +
+an optional provider plugin + a background review fork + a skill library). Per
+[ADR-0140](../adr/0140-business-datastore-system-of-record-hermes-memory-conversation-only.md)
+it is **conversation-only and never a business system of record**.
+
+**Today it is entirely off**: the runtime constructs the agent with `skip_memory=True` and points
+`HERMES_HOME` at a per-process temp dir, so nothing accumulates between turns. Any adoption
+(L6) is therefore a **net-new** retention surface — which is exactly why the governance can be
+designed in up front rather than retrofitted.
+
+> ⚠️ **Naming collision.** Our `memory_enabled()` (`hermes-runtime/.../tool_backend.py`) means
+> **Customer Memory (L4)** — is the Postgres datastore backend active. Hermes's
+> `memory.memory_enabled` config means **agent notes**. Different concepts; do not wire one
+> expecting the other.
+
+---
+
+## Boundaries — what must never mix
+
+| This | never holds | it lives in |
+| --- | --- | --- |
+| Knowledge (L5) | live price / stock / order / AR facts | real-time Shopify/QBO tool reads |
+| Knowledge (L5) | the governed operational-policy copy | the 6 eval-gated policy slots |
+| Knowledge (L5) | customer PII | Customer Memory (L4) |
+| Customer Memory (L4) | live facts, policy text, consent state | tools / policy slots / Identity Graph (L1) |
+| Any layer | model-supplied write attribution | `source` + `actor_account_id` are framework-derived |
+
+---
+
+## Change log
+
+- **2026-07-20** — L5 decided (Path Y-embed hybrid, gbrain rejected) on spike evidence; L6 opened
+  (agent-experience memory) after researching Hermes's own memory subsystem; this map created.
+- **2026-07-16** — 0.0.2 shipped L4 write attribution (`copilot_agent` source + `actor_account_id`,
+  carve-out removed) — ADR-0148.
+- **earlier** — 0.0.1 shipped L4 Customer Memory; ADR-0140 moved the substrate to Postgres.

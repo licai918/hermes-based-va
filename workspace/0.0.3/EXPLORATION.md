@@ -13,10 +13,23 @@
 ## How to read this
 
 Same convention as 0.0.2's exploration: each candidate is sized (XS/S/M/L) and
-carries **options with trade-offs**, not a decision. The **likely 0.0.3 headline
-is the knowledge layer** — the one big capability 0.0.2 deliberately deferred so it
-gets a full spike → PRD cycle instead of being rushed. When a candidate is chosen,
+carries **options with trade-offs**, not a decision. When a candidate is chosen,
 it graduates into `workspace/0.0.3/PRD.md`.
+
+### Current direction (2026-07-20 — after the knowledge spike + the Hermes-memory research)
+
+- **Candidate 1 — knowledge layer: DECIDED.** **Path Y-embed *hybrid*** (lexical FTS + dense
+  embeddings) in a separate no-PII database, behind the proven `extra_drivers` driver seam.
+  gbrain rejected as over-engineering. Isolation ✅ and latency ✅ gates passed; the final
+  quality gate awaits ~30 **real** customer questions. Evidence: [`knowledge-spike/`](knowledge-spike/).
+- **Candidate 8 — agent-experience memory: NEW.** Inherit Hermes's "gets smarter with use" by
+  copying its **learning loop** (the background review fork) rather than its store — routed
+  through our governed tool → Postgres → audit, gated **propose → confirm**, starting on the
+  internal copilot where reps already review every draft.
+- **Together these are the 0.0.3 shape**: one new *capability* (knowledge) + one new *layer*
+  (agent experience). Candidate 2 (propose→confirm) turns out to share machinery with 8.
+- Structural view of all six memory layers →
+  [`docs/architecture/memory-layers.md`](../../docs/architecture/memory-layers.md).
 
 **Candidate index**
 1. Knowledge layer — *capability* — **DECIDED: Path Y-embed hybrid (M+)**, spike-grounded
