@@ -20,6 +20,20 @@ def _vec(*components: float) -> bytes:
     return np.asarray(components, dtype=np.float32).tobytes()
 
 
+@pytest.fixture(autouse=True)
+def _reset_query_embedder_singleton():
+    """retriever.py's process-level query-embedder singleton (FR-7b cold-load
+    fix) is process-global; reset it around every test so a test's fake/counting
+    TextEmbedding can't leak into another test (or a real model built by
+    ``test_retrieve_against_the_real_local_embedder_if_installed`` leak into a
+    test expecting its own fake to be constructed)."""
+    import hermes_runtime.knowledge.retriever as retriever_mod
+
+    retriever_mod._query_embedder_singleton = None
+    yield
+    retriever_mod._query_embedder_singleton = None
+
+
 # --- RRF fusion arithmetic (pure) ---------------------------------------
 
 
@@ -252,3 +266,42 @@ def test_retrieve_against_the_real_local_embedder_if_installed(temp_knowledge_sc
     results = retrieve("what does the warranty cover", k=3, conn=conn)  # embed_query_fn=None -> real model
     assert len(results) == 1
     assert results[0].page_id == "doc-a"
+
+
+# --- default embed path caches the model handle (FR-7b cold-load fix) -----
+
+
+def test_retrieve_default_embed_path_builds_the_embedder_only_once_across_two_calls(
+    temp_knowledge_schema_conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The bug this pins down: retrieve()'s default (embed_query_fn=None) path
+    # used to construct a FRESH fastembed TextEmbedding on every call -- onnx
+    # session init costs ~800ms+, which structurally exhausts the driver's
+    # 800ms retrieval deadline on every single query. Building it once and
+    # reusing the handle is the fix; a counting fake TextEmbedding proves the
+    # constructor only runs on the first of two retrieve() calls.
+    conn, _schema = temp_knowledge_schema_conn
+    run_migrations(conn)
+    _insert_chunk(
+        conn, page_id="doc-a", page_type="page", title="A", url=None, chunk_index=0,
+        chunk_text="Tire warranty topic.", embedding=_vec(1.0, 0.0),
+    )
+    conn.commit()
+
+    construct_calls: list[str] = []
+
+    class _CountingFakeTextEmbedding:
+        def __init__(self, model_name: str) -> None:
+            construct_calls.append(model_name)
+
+        def query_embed(self, queries):
+            return [np.asarray([1.0, 0.0], dtype=np.float32) for _ in queries]
+
+    import fastembed
+
+    monkeypatch.setattr(fastembed, "TextEmbedding", _CountingFakeTextEmbedding)
+
+    retrieve("tire warranty", conn=conn)
+    retrieve("tire warranty", conn=conn)
+
+    assert construct_calls == ["BAAI/bge-small-en-v1.5"]  # constructed once, not twice

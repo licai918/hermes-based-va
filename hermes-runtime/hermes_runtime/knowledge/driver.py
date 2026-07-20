@@ -74,25 +74,27 @@ def knowledge_enabled(value: object = _UNSET) -> bool:
 def warm_knowledge_embedder() -> None:
     """Fire-and-forget background warm of the query embedder (S10 cold-load mitigation).
 
-    Documented S09 gap: with ``KNOWLEDGE_BACKEND=retriever``, the first query in a
-    fresh process pays the fastembed model's ~800ms+ load time and reliably misses
-    the 800ms retrieval deadline (:data:`DEFAULT_DEADLINE_MS`). Composition roots
-    (``gateway_composition.build_gateway_app``, ``tool_dispatch_composition.
-    build_tool_dispatch_app``) call this once at boot so the model is already
-    loaded before the first real query lands. Runs in a daemon thread and never
-    raises into the caller; any failure (missing model files, etc.) is caught and
-    logged by TYPE only -- a slow/failed warmup must never block or fail boot.
-    No-op when knowledge is disabled. Full caching policy is S12/FR-7b; this is
-    just the boot-time nudge.
+    With ``KNOWLEDGE_BACKEND=retriever``, the first query in a fresh process
+    pays the fastembed model's ~800ms+ load time and reliably misses the
+    800ms retrieval deadline (:data:`DEFAULT_DEADLINE_MS`) -- unless the
+    process-level singleton (:func:`hermes_runtime.knowledge.retriever.
+    get_query_embedder`) is already warm. This primes THAT SAME singleton (not
+    a throwaway instance), so a warmed process's first real query hits the
+    cache retrieve() also uses. Composition roots (``gateway_composition.
+    build_gateway_app``, ``tool_dispatch_composition.build_tool_dispatch_app``)
+    call this once at boot. Runs in a daemon thread and never raises into the
+    caller; any failure (missing model files, etc.) is caught and logged by
+    TYPE only -- a slow/failed warmup must never block or fail boot. No-op
+    when knowledge is disabled.
     """
     if not knowledge_enabled():
         return
 
     def _warm() -> None:
         try:
-            from .retriever import fastembed_query_embedder
+            from .retriever import get_query_embedder
 
-            fastembed_query_embedder()("warmup")
+            get_query_embedder()("warmup")
         except Exception as exc:
             logger.warning("knowledge embedder warmup failed error_type=%s", type(exc).__name__)
 

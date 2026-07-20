@@ -28,6 +28,7 @@ versions that only expose the generic ``embed``.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -82,6 +83,42 @@ def fastembed_query_embedder(model_name: str = "BAAI/bge-small-en-v1.5") -> Embe
     return embed
 
 
+# Process-level singleton for the DEFAULT query embedder (FR-7b cold-load
+# fix). fastembed's TextEmbedding construction pays onnx session init
+# (~800ms+) -- more than the entire KNOWLEDGE_RETRIEVAL_DEADLINE_MS budget
+# (driver.py's default 800ms) -- so building a fresh instance on every
+# retrieve() call structurally always misses the deadline. This caches the
+# model HANDLE (infrastructure), not retrieval results -- S08's "no result
+# caching" rule is a different axis (query -> answer) and stays untouched.
+_query_embedder_lock = threading.Lock()
+_query_embedder_singleton: EmbedQueryFn | None = None
+
+
+def _singleton_query_embed(query: str) -> np.ndarray:
+    """Default (non-injected) query embed path, backed by the process-level
+    singleton. Construction AND every embed call are serialized under one
+    lock: onnxruntime's ``InferenceSession.run`` is documented thread-safe,
+    but fastembed's wrapper state around it isn't, and this is called from
+    driver.py's per-request worker threads, so concurrent calls are possible.
+    The lock is the safe default -- calls are short once the model is warm.
+    """
+    global _query_embedder_singleton
+    with _query_embedder_lock:
+        if _query_embedder_singleton is None:
+            _query_embedder_singleton = fastembed_query_embedder()
+        return _query_embedder_singleton(query)
+
+
+def get_query_embedder() -> EmbedQueryFn:
+    """Getter for the process-level singleton query embedder.
+
+    Used both as ``retrieve()``'s default embed path and by
+    ``warm_knowledge_embedder()`` (driver.py) to prime the SAME cache a
+    warmed process's first real query will hit.
+    """
+    return _singleton_query_embed
+
+
 def _rrf_fuse(rankings: list[list[int]], k: int = RRF_K) -> dict[int, float]:
     """Reciprocal Rank Fusion over any number of ``[row_id, ...]`` rankings
     (best first). A row absent from a ranking contributes 0 from it."""
@@ -121,14 +158,14 @@ def retrieve(
     """Hybrid FTS + embedding retrieval, fused by RRF, top-``k`` with provenance.
 
     Seams: ``conn`` (default: lazy-connect via ``knowledge_database_url()``);
-    ``embed_query_fn`` (default: lazy fastembed query embedder, built only if
-    actually needed -- tests inject a fake and never import fastembed).
+    ``embed_query_fn`` (default: the process-level singleton query embedder,
+    :func:`get_query_embedder` -- built only if actually needed, tests inject
+    a fake and never import fastembed).
     Returns ``[]`` cleanly if ``knowledge_chunk`` is empty. Two SQL round
     trips: one SELECT for all rows + embeddings, one for the FTS ranking.
 
-    # ponytail: no connection pooling, no embedder-instance caching across
-    # calls (S29 does connection pooling; a hot-path perf pass can memoize the
-    # embedder if per-call model load ever shows up in the p95 budget, S12/FR-7b).
+    # ponytail: no connection pooling (S29 does that); the embedder IS now
+    # cached (get_query_embedder), see FR-7b/S10 cold-load fix above.
     """
     import psycopg
 
@@ -154,7 +191,7 @@ def retrieve(
     by_id = {row[0]: row for row in all_rows}  # id -> (id, page_id, page_type, title, url, chunk_text, embedding)
     vectors = {row_id: row[6] for row_id, row in by_id.items()}
 
-    embed = embed_query_fn or fastembed_query_embedder()
+    embed = embed_query_fn or get_query_embedder()
     query_vec = np.asarray(embed(query), dtype=np.float32)
     embed_ranking = _cosine_ranking(list(by_id.keys()), vectors, query_vec)
 

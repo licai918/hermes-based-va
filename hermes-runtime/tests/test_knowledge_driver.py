@@ -28,6 +28,19 @@ from hermes_runtime.knowledge.retriever import RetrievedChunk
 _CTX = ToolExecutionContext(profile="external")
 
 
+@pytest.fixture(autouse=True)
+def _reset_query_embedder_singleton():
+    """retriever.py's process-level query-embedder singleton (FR-7b cold-load
+    fix) is process-global; reset it around every test so a monkeypatched/
+    counting fake in one test can't leak into another (see the matching
+    fixture in test_knowledge_retriever.py)."""
+    import hermes_runtime.knowledge.retriever as retriever_mod
+
+    retriever_mod._query_embedder_singleton = None
+    yield
+    retriever_mod._query_embedder_singleton = None
+
+
 def _chunk(title: str = "Contact & Store Hours", url: str = "https://x.test/contact") -> RetrievedChunk:
     return RetrievedChunk(
         page_id="p1",
@@ -276,3 +289,38 @@ def test_warm_knowledge_embedder_swallows_and_logs_a_failing_embedder(
     assert len(warnings) == 1
     assert "warmup" in warnings[0].getMessage().lower()
     assert "RuntimeError" in warnings[0].getMessage()
+
+
+def test_warm_knowledge_embedder_primes_the_same_singleton_retrieve_uses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bug this pins down: warm_knowledge_embedder() used to build a
+    # THROWAWAY embedder instance, caching nothing retrieve() would ever see.
+    # This proves warm() primes retriever.get_query_embedder()'s SAME
+    # singleton -- a later get_query_embedder() call (what retrieve() uses)
+    # must reuse it instead of constructing a second instance.
+    monkeypatch.setenv(KNOWLEDGE_BACKEND_ENV, "retriever")
+    construct_count = 0
+    done = threading.Event()
+
+    def _fake_embedder():
+        nonlocal construct_count
+        construct_count += 1
+
+        def _embed(query: str):
+            if query == "warmup":
+                done.set()
+            return [0.0]
+
+        return _embed
+
+    import hermes_runtime.knowledge.retriever as retriever_mod
+
+    monkeypatch.setattr(retriever_mod, "fastembed_query_embedder", _fake_embedder)
+
+    warm_knowledge_embedder()
+    assert done.wait(timeout=2.0), "warmup did not call the embedder in time"
+
+    retriever_mod.get_query_embedder()("second call")
+
+    assert construct_count == 1, "get_query_embedder() after warm() must reuse the primed singleton"
