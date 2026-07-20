@@ -42,18 +42,22 @@ def test_identity_lookup_actions_match_adr_0060() -> None:
 
 
 def test_workbench_read_exposes_get_thread_for_case_thread_context() -> None:
-    # ADR-0143 extends ADR-0068 with the Case Thread Context read.
+    # ADR-0143 extends ADR-0068 with the Case Thread Context read; 0.0.3 S02 adds
+    # get_thread_by_phone for the Conversation Simulator's read-back (FR-9), which
+    # has no case_id to key off until the gateway's async webhook creates one.
     assert TOOL_CATALOG["toee_workbench_read"] == (
         "get_case",
         "list_cases",
         "get_audit_log",
         "get_thread",
+        "get_thread_by_phone",
         "list_auto_handled",
         "get_auto_handled",
         "list_sales_outreach",
         "get_sales_outreach",
     )
     assert is_tool_action("toee_workbench_read", "get_thread") is True
+    assert is_tool_action("toee_workbench_read", "get_thread_by_phone") is True
     assert is_tool_action("toee_workbench_read", "list_auto_handled") is True
 
 

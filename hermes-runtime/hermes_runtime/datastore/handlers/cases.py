@@ -745,6 +745,42 @@ def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     return {"case": case, "messages": messages}
 
 
+# Deterministic customer_thread key for an inbound SMS (mirrors
+# postgres_gateway_store._thread_id -- no hashing, just the literal format).
+def _sms_thread_id(from_phone: str) -> str:
+    return f"customer_thread:textline:{from_phone}"
+
+
+def _latest_case_id_for_thread(conn, thread_id: str) -> Optional[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM cases WHERE customer_thread_id = %s"
+            " ORDER BY opened_at DESC LIMIT 1",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _get_thread_by_phone(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Simulator read-back (FR-9/S02): the BFF only knows the simulated
+    from-phone it posted, not a case_id (the gateway's inbound webhook creates
+    the case asynchronously). Resolve the case via the same deterministic
+    customer_thread key the gateway store uses, then defer to ``_get_thread``
+    so the response shape and the case_view audit stay identical either way.
+    """
+    from_phone = read_string(params, "from_phone", "fromPhone")
+    if not from_phone:
+        raise ToolDriverError("unexpected_error", "from_phone is required.")
+    thread_id = _sms_thread_id(from_phone)
+    case_id = _latest_case_id_for_thread(conn, thread_id)
+    if case_id is None:
+        return {"case": None, "messages": []}
+    return _get_thread(conn, {"case_id": case_id}, context)
+
+
 # Mirrors store.ts DEFAULT_STATUSES: resolved cases are hidden by default.
 _DEFAULT_STATUSES = ("open", "in_progress")
 
@@ -839,6 +875,7 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "list_cases": _list_cases,
             "get_audit_log": _get_audit_log,
             "get_thread": _get_thread,
+            "get_thread_by_phone": _get_thread_by_phone,
             "list_auto_handled": _list_auto_handled,
             "get_auto_handled": _get_auto_handled,
             "list_sales_outreach": _list_sales_outreach,

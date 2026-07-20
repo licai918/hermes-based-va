@@ -337,6 +337,47 @@ def test_get_thread_threadless_case_has_empty_timeline(datastore) -> None:
         assert cur.fetchone()[0] == {}
 
 
+def test_get_thread_by_phone_resolves_case_from_deterministic_thread_key(datastore) -> None:
+    """S02 (FR-9): the simulator BFF only knows the from-phone it posted, not a
+    case_id -- the gateway's inbound webhook creates the case asynchronously.
+    get_thread_by_phone must resolve the same customer_thread key the gateway
+    store derives (``customer_thread:textline:{from_phone}``) and return the
+    identical shape as get_thread by case_id.
+    """
+    driver, conn, _ = datastore
+    thread_id = "customer_thread:textline:+15551234567"
+    _seed_thread(
+        conn,
+        thread_id=thread_id,
+        channel_identity="+15551234567",
+        messages=(
+            ("customer", "do you have 225/65R17?", False),
+            ("hermes", "yes, in stock", False),
+        ),
+    )
+    _seed_case(conn, case_id="case_phone", thread_id=thread_id)
+
+    result = _run(
+        driver, "toee_workbench_read", "get_thread_by_phone", {"from_phone": "+15551234567"}
+    ).data
+
+    assert result["case"]["case_id"] == "case_phone"
+    assert [m["body"] for m in result["messages"]] == [
+        "do you have 225/65R17?",
+        "yes, in stock",
+    ]
+
+
+def test_get_thread_by_phone_unknown_number_is_empty_read(datastore) -> None:
+    driver, _, _ = datastore
+    # A phone that never sent an inbound turn has no customer_thread/case row
+    # (ADR-0020 empty read), same contract as get_thread's missing-case path.
+    result = _run(
+        driver, "toee_workbench_read", "get_thread_by_phone", {"from_phone": "+19995550000"}
+    ).data
+    assert result == {"case": None, "messages": []}
+
+
 def test_get_audit_log_includes_actor_username(datastore) -> None:
     driver, conn, _ = datastore
     with conn.cursor() as cur:

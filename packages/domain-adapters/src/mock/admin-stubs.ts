@@ -31,6 +31,7 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       messages: [],
     }),
+    get_thread_by_phone: () => ({ case: null, messages: [] }),
     list_auto_handled: () => ({ records: [] }),
     get_auto_handled: () => ({ record: null }),
     list_sales_outreach: () => ({ cases: [] }),
