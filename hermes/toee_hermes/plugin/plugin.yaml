@@ -48,6 +48,7 @@ provides_tools:
   - toee_knowledge_ops__update_policy_slot
   - toee_knowledge_ops__submit_for_eval
   - toee_knowledge_ops__rollback_published_policy
+  - toee_knowledge_ops__get_corpus_status
   - toee_eval_review__list_eval_runs
   - toee_eval_review__get_eval_run
   - toee_eval_review__sign_off_medium_failure
