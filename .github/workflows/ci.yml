@@ -60,6 +60,9 @@ jobs:
     # Matches docker-compose.yml's postgres service (same user/pass/db) so the
     # datastore/E2E acceptance tests (hermes-runtime/tests/conftest.py's
     # temp_schema_conn) find a real Postgres instead of skipping (ADR-0142).
+    # POSTGRES_USER is granted superuser by the official image, so `toee` can
+    # CREATE DATABASE -- the knowledge fixtures self-provision toee_knowledge
+    # via ensure_database() with zero extra CI setup (S30/NFR-7).
     services:
       postgres:
         image: postgres:16
@@ -76,14 +79,39 @@ jobs:
           --health-retries 5
     env:
       DATABASE_URL: postgresql://toee:toee@localhost:5432/toee_va
+      KNOWLEDGE_DATABASE_URL: postgresql://toee:toee@localhost:5432/toee_knowledge
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
           enable-cache: true
+      # toee_va needs the business migrations applied before the tests run (some,
+      # e.g. test_knowledge_ingest.py's policy-slot read, hit the DB's default
+      # schema directly rather than a throwaway one). toee_knowledge has no
+      # equivalent step: it self-provisions + self-migrates inside the test
+      # fixtures (ensure_database / run_migrations against a throwaway schema).
+      - name: Apply business datastore migrations (toee_va)
+        working-directory: hermes-runtime
+        run: uv run --frozen python -m hermes_runtime.datastore.migrate
       # Installs the pinned upstream hermes-agent (git rev) and exercises the
       # embedded AIAgent turn + FastAPI Textline gateway routes.
+      #
+      # NFR-7 gate: -rs prints one summary line per skip. The datastore/knowledge
+      # live-Postgres suites (hermes-runtime/tests/test_datastore_*.py,
+      # test_knowledge_*.py) previously skipped silently with no Postgres in CI
+      # (the 0.0.1 debt) -- now that a Postgres service is provisioned above,
+      # any skip left in those files fails the job, except the one documented,
+      # intentional skip: the live-embedder smoke tests guard themselves with
+      # "fastembed not installed" (fastembed is not a project dependency, so
+      # this always skips in CI -- no 100MB+ model download).
       - name: Runtime + gateway tests
         working-directory: hermes-runtime
-        run: uv run --frozen pytest -q
+        run: |
+          set -o pipefail
+          uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
+          if grep -E '^SKIPPED .*tests/test_(datastore|knowledge)_' /tmp/pytest-runtime.log \
+              | grep -v 'fastembed not installed'; then
+            echo "::error::datastore/knowledge test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
+            exit 1
+          fi
