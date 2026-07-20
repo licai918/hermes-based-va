@@ -21,7 +21,7 @@ export const GET = withSession((req, { session }) => {
     process.env.HERMES_COPILOT_API_URL,
     process.env.HERMES_COPILOT_API_TOKEN,
   );
-  if (!apiConfig) return json({ messages: [] });
+  if (!apiConfig) return json({ caseId: null, messages: [] });
 
   const client = new HermesApiClient({ ...apiConfig, actorAccountId: session.accountId });
   return handleGetSimulatorThread(client, fromPhone);
