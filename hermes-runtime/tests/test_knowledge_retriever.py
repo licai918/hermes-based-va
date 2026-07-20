@@ -191,6 +191,45 @@ def test_retrieve_hybrid_fusion_end_to_end_against_disagreeing_signals(temp_know
     assert results[0].page_id == "tire-return"
 
 
+def test_fts_ranking_orders_ts_rank_ties_by_ascending_id_deterministically(temp_knowledge_schema_conn) -> None:
+    # Identical chunk_text -> identical generated tsv -> identical ts_rank for
+    # every row (S-LAT's GIN index over `tv` has no title weighting to break
+    # the tie). Without a secondary ORDER BY key, Postgres is free to return
+    # tied rows in whatever order the query plan happens to produce -- the
+    # latent reproducibility gap this test pins down (and the likely cause of
+    # the 43%-vs-50% FTS eval discrepancy: tied-rank boundary flips).
+    conn, _schema = temp_knowledge_schema_conn
+    run_migrations(conn)
+    ids = [
+        _insert_chunk(
+            conn, page_id=f"tie-{i}", page_type="policy", title=f"Tie {i}", url=None,
+            chunk_index=0, chunk_text="Warranty warranty warranty coverage details.",
+            embedding=_vec(1.0, 0.0),
+        )
+        for i in range(6)
+    ]
+    conn.commit()
+    assert ids == sorted(ids)  # sanity: BIGSERIAL assigns ascending ids in insert order
+
+    from hermes_runtime.knowledge.retriever import _FTS_SQL
+
+    # Behavioral assertion isn't reliably RED pre-fix: a freshly-inserted,
+    # never-updated small table happens to return GIN-index ties in physical
+    # (= insertion = ascending id) order on this Postgres/plan, so it passes
+    # even without a secondary ORDER BY key -- exactly the "can flip between
+    # query plans" fragility the finding warns about. Assert the ORDER BY
+    # contract directly so this test actually fails without the fix.
+    assert _FTS_SQL.rstrip().lower().endswith("desc, id"), _FTS_SQL
+
+    def _fts_order() -> list[int]:
+        with conn.cursor() as cur:
+            cur.execute(_FTS_SQL, ("warranty", "warranty"))
+            return [row[0] for row in cur.fetchall()]
+
+    orders = [_fts_order() for _ in range(5)]
+    assert all(order == ids for order in orders), orders
+
+
 def test_retrieve_against_the_real_local_embedder_if_installed(temp_knowledge_schema_conn) -> None:
     try:
         import fastembed  # noqa: F401

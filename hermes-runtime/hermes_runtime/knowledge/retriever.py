@@ -40,7 +40,7 @@ RRF_K = 60
 # chunk -- proven in the spike (probe/squal.py's _TSQ trick).
 _TSQ = "to_tsquery('english', replace(plainto_tsquery('english', %s)::text, '&', '|'))"
 _FTS_SQL = (
-    f"SELECT id FROM knowledge_chunk WHERE tsv @@ {_TSQ} ORDER BY ts_rank(tsv, {_TSQ}) DESC"
+    f"SELECT id FROM knowledge_chunk WHERE tsv @@ {_TSQ} ORDER BY ts_rank(tsv, {_TSQ}) DESC, id"
 )
 _ALL_SQL = "SELECT id, page_id, page_type, title, url, chunk_text, embedding FROM knowledge_chunk ORDER BY id"
 
@@ -103,7 +103,12 @@ def _cosine_ranking(ids: list[int], vectors: dict[int, bytes | None], query_vec:
     norms[norms == 0] = 1.0
     q_norm = np.linalg.norm(query_vec) or 1.0
     sims = (matrix / norms) @ (query_vec / q_norm)
-    return [embedded_ids[i] for i in np.argsort(-sims)]
+    # np.argsort's default quicksort isn't stable -> cosine ties would resolve
+    # in unspecified order (same latent nondeterminism as the FTS ts_rank
+    # ties above). lexsort's primary key is the LAST arg: -sims (best first),
+    # tiebreak ascending id, matching the FTS fix's tiebreak.
+    order = np.lexsort((embedded_ids, -sims))
+    return [embedded_ids[i] for i in order]
 
 
 def retrieve(
