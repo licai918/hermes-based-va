@@ -46,7 +46,10 @@ _UNSET = object()
 # Governed no-match shape for search_public_site, matching the mock driver's
 # exact contract (drivers/mock/knowledge.py's `_search_public_site`: a
 # `results` list, no top-level `found` key -- an empty list IS the miss).
-_NOT_FOUND: dict[str, Any] = {"results": []}
+def _not_found() -> dict[str, Any]:
+    """Fresh governed-miss shape per call — a shared constant would leak mutations
+    (e.g. a future caller appending to result["results"]) across every miss process-wide."""
+    return {"results": []}
 
 
 def knowledge_enabled(value: object = _UNSET) -> bool:
@@ -137,19 +140,19 @@ class KnowledgeDriver:
                     len(query),
                     deadline,
                 )
-                return dict(_NOT_FOUND)
+                return _not_found()
             except Exception:
                 logger.exception(
                     "knowledge_search retriever error (query_hash=%s len=%d)",
                     query_hash,
                     len(query),
                 )
-                return dict(_NOT_FOUND)
+                return _not_found()
         finally:
             pool.shutdown(wait=False)
 
         if not chunks:
-            return dict(_NOT_FOUND)
+            return _not_found()
 
         return {
             "results": [
