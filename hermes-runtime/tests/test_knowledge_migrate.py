@@ -9,8 +9,16 @@ conftest.py.
 
 from __future__ import annotations
 
+import uuid
+
+import psycopg
+import pytest
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
+
 import hermes_runtime.datastore.migrate as business_migrate
-from hermes_runtime.knowledge.migrate import discover_migrations, run_migrations
+from hermes_runtime.datastore.config import database_url
+from hermes_runtime.knowledge.migrate import discover_migrations, ensure_database, run_migrations
 
 
 def _columns(conn, schema: str, table: str) -> set[str]:
@@ -138,6 +146,41 @@ def test_knowledge_chunk_full_text_search_finds_a_row(temp_knowledge_schema_conn
         )
         rows = cur.fetchall()
     assert rows == [("Return Policy",)]
+
+
+def test_ensure_database_creates_the_database_when_missing() -> None:
+    # Proves the Important #1 fix: a fresh Postgres that only has toee_va (the
+    # CI/docker-compose starting state) gets the target database created by
+    # ensure_database, using toee_va itself as the maintenance connection.
+    disposable = f"toee_ensure_test_{uuid.uuid4().hex[:8]}"
+    dsn = make_conninfo(database_url(), dbname=disposable)
+
+    try:
+        maintenance = psycopg.connect(database_url(), autocommit=True, connect_timeout=2)
+    except Exception as exc:
+        pytest.skip(f"Postgres unavailable at DATABASE_URL: {type(exc).__name__}: {exc}")
+
+    try:
+        with maintenance.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (disposable,))
+            assert cur.fetchone() is None, f"{disposable} unexpectedly already exists"
+
+        created = ensure_database(dsn)
+        assert created is True
+
+        with maintenance.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (disposable,))
+            assert cur.fetchone() is not None
+
+        # Second call is a no-op, not an error (CREATE DATABASE IF NOT EXISTS
+        # semantics via the pg_database guard).
+        assert ensure_database(dsn) is False
+    finally:
+        with maintenance.cursor() as cur:
+            cur.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(disposable))
+            )
+        maintenance.close()
 
 
 def test_business_database_has_no_knowledge_chunk_table(

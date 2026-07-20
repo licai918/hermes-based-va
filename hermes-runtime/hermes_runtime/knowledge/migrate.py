@@ -68,6 +68,47 @@ def run_migrations(conn, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
     return applied
 
 
+def ensure_database(url: str | None = None) -> bool:
+    """Create the knowledge database if it doesn't exist yet.
+
+    ``CREATE DATABASE`` cannot run inside a transaction, so this opens an
+    autocommit connection to a maintenance database on the same host/creds as
+    the target DSN -- ``postgres`` (always present on a vanilla Postgres
+    server), falling back to the business ``toee_va`` database if ``postgres``
+    itself refuses the connection (e.g. a managed host that disables it).
+    Makes fresh environments (incl. CI, which only provisions ``toee_va``)
+    work with zero infra change. Returns True if it created the database,
+    False if it already existed.
+    """
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    from .config import knowledge_database_url
+
+    dsn = url or knowledge_database_url()
+    target_db = conninfo_to_dict(dsn)["dbname"]
+
+    last_exc: Exception = RuntimeError("no maintenance database to try")
+    conn = None
+    for maintenance_db in ("postgres", "toee_va"):
+        try:
+            conn = psycopg.connect(make_conninfo(dsn, dbname=maintenance_db), autocommit=True)
+            break
+        except Exception as exc:  # try the next maintenance DB
+            last_exc = exc
+    if conn is None:
+        raise last_exc
+
+    with conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (target_db,))
+            if cur.fetchone() is not None:
+                return False
+            cur.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(target_db)))
+            return True
+
+
 def migrate(url: str | None = None, migrations_dir: Path = MIGRATIONS_DIR) -> list[str]:
     """Connect to ``url`` (or the configured knowledge DSN) and apply pending
     migrations. Never touches the business datastore -- a distinct DSN, a
@@ -77,6 +118,7 @@ def migrate(url: str | None = None, migrations_dir: Path = MIGRATIONS_DIR) -> li
     from .config import knowledge_database_url
 
     dsn = url or knowledge_database_url()
+    ensure_database(dsn)
     with psycopg.connect(dsn) as conn:
         return run_migrations(conn, migrations_dir)
 

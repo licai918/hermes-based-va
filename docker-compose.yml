@@ -15,6 +15,10 @@ services:
       - "5432:5432"
     volumes:
       - toee_pgdata:/var/lib/postgresql/data
+      # Provisions the separate toee_knowledge database (S-ISO). Only runs on
+      # first init of an empty toee_pgdata volume -- see the script's own
+      # comment for how an existing volume (or CI) gets toee_knowledge instead.
+      - ./docker/initdb:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U toee -d toee_va"]
       interval: 5s
