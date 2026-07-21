@@ -58,11 +58,54 @@ Three grilling rounds, eleven locked decisions:
     (S32/S33 sign-off). Until then, 0.0.4 work is docs-only (this exploration,
     PRD, issues) — zero code-conflict risk with any S32 tuning.
 
+### GRILLED SCOPE ADDENDUM — candidates 4–7 committed (2026-07-21, second session)
+
+0.0.3 merged (PR #56). Owner extended 0.0.4 to a **land-all of all seven scan
+directions**, executed in order, one iteration, one UAT gate. Eight further
+locked decisions (rounds 4–5):
+
+12. **Land-all structure:** the PRD grows tracks T4–T7; slices continue S12+;
+    a single final UAT sign-off covers everything.
+13. **Judge stays advisory** (0.0.3 stance upheld): production wiring emits an
+    advisory report in CI, never blocks a merge. Gate-promotion is a future
+    ADR only after measured judge precision.
+14. **Live eval runs the real model on every PR — advisory.** The
+    deterministic scripted replay gate remains the only required check; the
+    real-model live run + judge report attach as non-blocking artifacts.
+15. **C5 = full ops surface:** `/admin/integrations` status page + scheduled
+    health probes (typed background job on the 0.0.4 queue, failure = page
+    badge + log alert) + **in-app OAuth reconnect flows** (the full ADR-0133
+    deferred surface; its follow-up ADR ships with the build).
+16. **C6 edges all closed:** Composio SDK/toolkit versions pinned + prod
+    cutover of the 3 Layer-1 tools; `get_ar_summary` gets a real QBO-reports
+    path (fail-closed retired); the `rest` driver shell is deleted (YAGNI).
+17. **EasyRoutes goes real** (owner-supplied m2m credentials, delivered
+    out-of-band into `.env` — never committed): a direct REST driver,
+    **read-only delivery status** (status, ETA window, tracking link) aligned
+    to the existing mock contract, so customers get accurate delivery answers.
+18. **C7 = full instrumentation:** the two missing event counters
+    (selfServiceUsage, l6ConfirmedEntries) emitted at their sites;
+    honored-rate computed by a scheduled judge job on the queue;
+    QualityGatesPanel reads latest report artifacts instead of static numbers.
+19. **Execution order (dependency-driven, deviates from scan numbering):**
+    S01–S11 (C1/C2/C3) → T4 Composio+EasyRoutes → T5 integrations page →
+    T6 eval completion → T7 metrics → final UAT. Rationale: the ops page
+    observes the drivers T4 lands; honored-rate needs T6's judge.
+
 ## Candidate index
 
-1. Workbench persistence — retire the in-memory fallback stores — *hardening* (M)
-2. Durable job queue — async turns survive process death — *reliability* (M)
-3. TS dead-scaffold removal — delete the superseded TypeScript stack — *hygiene* (S)
+1. Workbench persistence — retire the in-memory fallback stores — *hardening* (M) — **GRILLED, spec'd (S01–S12)**
+2. Durable job queue — async turns survive process death — *reliability* (M) — **GRILLED, spec'd (S01–S12)**
+3. TS dead-scaffold removal — delete the superseded TypeScript stack — *hygiene* (S) — **GRILLED, spec'd (S01–S12)**
+4. Eval completion — live harness, email suite in CI, judge wiring — *quality* (M–L)
+5. `/admin/integrations` ops page — ADR-0133/0136 deferred surface — *ops* (M)
+6. Composio production cutover — issue #33, SDK pins, real Layer-1 in prod — *integration* (M)
+7. Metrics instrumentation — honest tiles become live counters — *measurement* (S–M)
+
+**2026-07-21 update:** 0.0.3 merged to main (PR #56) — the sequencing
+precondition on candidates 1–3 is satisfied; code can start. Owner directed
+the remaining scan directions (4–7 below) into this same workspace for
+grilling, to be executed **in order, one iteration** after 1+2+7.
 
 **Coupling discovered during scan:** Candidate 3 depends on Candidate 1's
 direction. `apps/workbench/lib/bff/copilot/*` imports `executeTool` and the
@@ -144,6 +187,85 @@ CI job build/test the TS packages today.
 
 ---
 
+## Candidate 4 — Eval completion — M–L
+
+**Today:** the eval plumbing (fixtures, assertions, replay, CLI, recorder) is
+complete and CI-gated for one suite, but: `_StubAgentHarness.run_turn()`
+returns empty (`hermes/eval_runner/harness.py`) — the gate is only provable
+via recorded-transcript replay, never a live turn; the LLM judge
+(`judge.py`) is DI-only with no production wiring — semantic legs
+("honored", "no unprompted recall") have **no gating enforcement**; the
+email suite (`eval/scenarios/email/14–23`) has **zero transcripts** and is
+not in CI.
+
+- **Option A — full completion:** live harness (real turn through the
+  dispatch/gateway path with `scripted_completions` in CI, real model
+  locally), record email transcripts, wire the judge (advisory report in CI,
+  cheap model), add `email_go_live` to the CI matrix.
+- **Option B — email-suite only:** record email transcripts + CI; harness
+  and judge stay as-is.
+- **Open forks:** does the judge stay **advisory-only** (0.0.3 stance:
+  "never a CI gate") or graduate to a gate once tuned (that's a reversal —
+  needs an explicit decision)? Live harness in CI: scripted model
+  (deterministic) vs real model (true E2E, flaky+cost)?
+
+## Candidate 5 — `/admin/integrations` ops page — M
+
+**Today:** ADR-0133 explicitly defers the workbench route (Composio
+connection status, reconnect, OAuth redirects — "needs a future ADR");
+ADR-0136 defers all proactive health (no startup probes, no scheduled
+health job) — failures surface only when a live call fails mid-turn.
+
+- **Option A — status + health only:** read-only connection/toolkit status
+  panel + a scheduled health-probe job (rides the 0.0.4 queue as a typed
+  background job). No OAuth flows in-app.
+- **Option B — full ops:** A + reconnect/OAuth-redirect flows (the deferred
+  ADR-0133 surface, incl. callback design + governed admin tool).
+- **Open forks:** is OAuth-in-workbench worth the callback/security surface
+  now, or does the operator do reconnects in Composio's own console?
+  Health-probe cadence and failure alerting (log-only vs workbench badge)?
+
+## Candidate 6 — Composio production cutover (issue #33) — M
+
+**Today:** real external integration = Composio only, 3 tools
+(`toee_shopify_read`, `toee_qbo_read`, `toee_square_payment_link`), verified
+at **staging smoke** only; SDK surface not pinned against live toolkits
+(`ponytail:` at `drivers/composio/driver.py:585`); QBO `get_ar_summary`
+deliberately fail-closed; `rest` driver declared but `NotImplementedError`;
+EasyRoutes mock-only (no real backend exists anywhere).
+
+- **Option A — pin + cutover the 3:** pin toolkit versions, prod
+  credentials, `INTEGRATION_DRIVER=composio` in prod, smoke suite.
+- **Option B — A + close the edges:** decide `get_ar_summary` (implement via
+  QBO reports API or keep fail-closed with a recorded reason), delete the
+  `rest` driver stub (YAGNI) or implement it, declare EasyRoutes
+  mock-forever-until-API (record it).
+- **Open forks:** which env is "prod" here given local-first (ADR-0142) —
+  the owner's live workstation deployment? Fallback semantics when Composio
+  is down mid-turn (fail-closed per tool vs degrade to mock — mock in prod
+  is a lie; likely fail-closed)?
+
+## Candidate 7 — Metrics instrumentation — S–M
+
+**Today:** the 0.0.3 metrics panel ships honest placeholders: honored-rate
+"needs an offline LLM judge run" (`datastore/handlers/metrics.py`),
+`selfServiceUsage` and `l6ConfirmedEntries` are proxy counts
+(uninstrumented events); `QualityGatesPanel.tsx` shows hand-copied static
+numbers; `CorpusPanel.tsx` re-ingest is display-only (made real by S04).
+
+- **Option A — full instrumentation:** emit the two missing event counters
+  at their sites; honored-rate from a scheduled judge run over recent
+  transcripts (depends on C4's judge wiring; rides the queue as a background
+  job); QualityGatesPanel reads the latest recall/judge report artifacts
+  instead of static numbers.
+- **Option B — counters only:** the two event counters + live
+  QualityGatesPanel; honored-rate stays an honest placeholder until C4
+  lands the judge.
+- **Coupling:** honored-rate ⇢ C4 judge; scheduled runs ⇢ C1/C2's queue;
+  re-ingest ⇢ already S04. C7 should sequence **last**.
+
+---
+
 ## Grilling log
 
 - 2026-07-21 — session opened; coupling C3→C1 established from code
@@ -171,6 +293,17 @@ CI job build/test the TS packages today.
   main merge (docs-only until then); replay safety via outbound idempotency
   keys (send-record check before every Textline POST); workers split by job
   type (turn worker vs background worker).
+- 2026-07-21 (second session) — 0.0.3 merged (PR #56); owner folded scan
+  directions 4–7 into 0.0.4 as a land-all. **Round 4 LOCKED:** land-all
+  structure; judge stays advisory; live harness runs the real model in CI;
+  C6 closes all three edges AND EasyRoutes goes real (m2m credentials
+  supplied out-of-band; secret-hygiene note: values live only in `.env`,
+  rotation recommended since they transited chat). **Round 5 LOCKED:**
+  real-model eval = every PR, advisory, replay gate stays required; C5 =
+  full ops incl. OAuth reconnect; C7 = full instrumentation; EasyRoutes =
+  read-only delivery status. Defaults (not grilled): EasyRoutes driver as a
+  per-tool overlay beside the Composio driver; Composio outage = fail-closed
+  per tool (never mock-in-prod); "prod" = the owner's live deployment env.
 - 2026-07-21 — grilling closed; scope graduated to [PRD.md](PRD.md).
   PRD-level defaults (not grilled, overridable at review): retry = 3 attempts
   exponential backoff; replay permission = supervisor/admin, audited;
