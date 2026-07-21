@@ -135,6 +135,63 @@ def test_run_turn_result_carries_the_governed_messages_transcript() -> None:
     assert assistant_messages[-1]["content"].strip() == draft
 
 
+# --- S14 (FR-15): structured proposals[] extracted from the propose-only write ---
+
+
+class _VerifiedIdentityStore:
+    """A store with a fixed verified identity and no memory rows.
+
+    Keeps the proposal-extraction test hermetic (no Postgres) while still giving
+    the scripted upsert_preference call a resolvable binding to succeed against --
+    mirrors test_copilot_memory_write_overlay.py's ``_NullStore`` pattern, one step
+    further (a real identity instead of ``None``).
+    """
+
+    def load_case_identity(self, case_id: str) -> dict:
+        return {
+            "outcome": "verified_customer",
+            "shopify_customer_id": "gid://shopify/Customer/1",
+        }
+
+    def load_customer_memory(self, binding_key: str) -> list:
+        return []
+
+
+def test_run_turn_result_extracts_memory_proposals_from_the_transcript() -> None:
+    # S14 (FR-15): the draft turn's toee_customer_memory.upsert_preference call is
+    # inert (S13/ADR-0150) -- the write never reaches a datastore -- but its
+    # framework-validated result still becomes a structured proposal on
+    # result["proposals"]. Pure extraction: no new write path, no model free-text.
+    run_turn = make_copilot_run_turn(
+        scripted_completions=[
+            {
+                "tool_calls": [
+                    {
+                        "name": "toee_customer_memory__upsert_preference",
+                        "arguments": {"key": "contact_time_preference", "value": "after 2pm"},
+                    }
+                ]
+            },
+            {"content": "Noted, we'll reach out after 2pm."},
+        ],
+        store=_VerifiedIdentityStore(),
+    )
+
+    result = run_turn(channel="sms", case_id="case_pref", prompt="only call after 2pm please")
+
+    assert result["proposals"] == [
+        {"slot": "contact_time_preference", "value": "after 2pm", "evidence_turn": None}
+    ]
+
+
+def test_run_turn_result_has_no_proposals_when_no_memory_tool_calls() -> None:
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": "Just a plain draft."}])
+
+    result = run_turn(channel="sms", case_id="case_x")
+
+    assert result["proposals"] == []
+
+
 def test_default_provider_is_a_deterministic_keyless_stub() -> None:
     # Fork C1 mock-first (ADR-0137): with no injected completions and no API key,
     # the turn still yields a deterministic, non-empty draft (a local stub), so the

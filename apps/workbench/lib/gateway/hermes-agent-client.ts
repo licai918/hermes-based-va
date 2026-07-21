@@ -11,19 +11,36 @@
 // transport/auth problems are non-2xx. Both surface as a thrown HermesApiError so
 // callers map them onto the ADR-0104 status via hermesErrorToProblem.
 import { HermesApiError, type FetchLike } from "./hermes-api-client";
+import type { MemoryPreferenceSlot } from "./types";
 
 export type DraftChannel = "sms" | "email" | "internal_note";
+
+// One structured Customer Memory proposal (0.0.3 S14, FR-15): the draft turn's
+// toee_customer_memory.upsert_preference call is propose-only (S13/ADR-0150 -- it
+// never persists), so this is the framework-derived surfacing of that inert call,
+// not a write. `evidenceTurn` is the optional verbatim customer phrase the write
+// carried as `evidence`; the wire field stays `evidence_turn` (Python's naming,
+// carried through unmodified per FR-15's envelope). S15 renders these with
+// Accept/Dismiss; nothing here dispatches a write.
+export interface AgentMemoryProposal {
+  slot: MemoryPreferenceSlot;
+  value: string;
+  evidence_turn?: string | null;
+}
 
 // The governed envelope's `data` for a draft turn: the per-channel draft payload
 // (mirroring the in-process toee_copilot_draft tool output — sms/email carry
 // `channel`, email adds `subject`, internal_note carries `kind`), the draft text,
-// and provenance (model + the structurally-no-send profile that produced it).
+// provenance (model + the structurally-no-send profile that produced it), and the
+// optional S14 proposals (present only when the turn proposed a memory write; chat
+// never carries this — it's a conversational reply, not a draft).
 export interface AgentDraft {
   channel?: string;
   kind?: string;
   subject?: string;
   draft: string;
   provenance?: { model?: string; profile?: string };
+  proposals?: AgentMemoryProposal[];
 }
 
 export interface HermesAgentClientConfig {

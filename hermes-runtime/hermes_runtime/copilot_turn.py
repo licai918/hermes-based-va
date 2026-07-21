@@ -22,6 +22,9 @@ Customer Memory is propose-only on this turn (0.0.3 S13/FR-14, ADR-0150 --
 reverses 0.0.2's S20 autonomous persist): the agent still keeps
 ``toee_customer_memory`` in its allowlist and can call ``upsert_preference``,
 but the write never reaches the datastore (see ``_turn_extra_drivers`` below).
+Its inert call is extracted into a structured ``proposals[]`` on the result
+(0.0.3 S14/FR-15, :func:`eval_runner.transcript.memory_proposals_from_messages`)
+so a rep can later Accept it -- surfacing only, no new write path.
 
 Provider seam (Fork C1, mock-first ADR-0137), in precedence order:
 
@@ -44,6 +47,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from eval_runner.transcript import memory_proposals_from_messages
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
 from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import INTERNAL
@@ -312,10 +316,12 @@ def make_copilot_run_turn(
 
     The returned ``run_turn(*, channel, case_id, prompt=None)`` boots
     ``internal_copilot`` unbound, runs a real ``AIAgent`` loop against the resolved
-    provider, and returns ``{"draft", "model", "profile", "messages"}`` (email also
-    carries ``subject``) where ``draft`` is the captured ``final_response`` (Fork E1)
-    and ``messages`` is the governed tool-call transcript (S07, FR-3/R4) -- the shape
-    :func:`eval_runner.transcript.turn_result_from_transcript` parses.
+    provider, and returns ``{"draft", "model", "profile", "messages", "proposals"}``
+    (email also carries ``subject``) where ``draft`` is the captured
+    ``final_response`` (Fork E1), ``messages`` is the governed tool-call transcript
+    (S07, FR-3/R4) -- the shape :func:`eval_runner.transcript.turn_result_from_
+    transcript` parses -- and ``proposals`` is the structured, framework-derived
+    Customer Memory proposal list extracted from it (S14, FR-15).
 
     Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
     OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
@@ -423,6 +429,15 @@ def make_copilot_run_turn(
         # (S05 spike finding 5). Purely additive: agent_turn_app.py, the only
         # production consumer of this result, reads draft/subject/model/profile only.
         result["messages"] = list(turn.get("messages", []) or [])
+        # S14 (FR-15): the propose-only toee_customer_memory call (S13/ADR-0150) is
+        # extracted into a structured proposals[] here -- framework-derived from the
+        # governed tool-call RESULT (see memory_proposals_from_messages), never
+        # model free-text. Nothing persists; this is pure extraction from the same
+        # transcript above. Empty when the agent made no memory tool calls.
+        result["proposals"] = [
+            {"slot": p.slot, "value": p.value, "evidence_turn": p.evidence_turn}
+            for p in memory_proposals_from_messages(result["messages"])
+        ]
         # Email carries a subject (the in-process mock returns {channel, subject,
         # draft}); the subject is derived from the turn's final_response, and the
         # body becomes the draft. sms/internal_note key only on draft.
