@@ -112,8 +112,11 @@ def test_webhook_rejects_request_without_a_valid_signature() -> None:
 
 
 def test_webhook_accepts_a_request_signed_with_the_shared_secret() -> None:
+    # A non-blank id, so this pins signature acceptance rather than tripping the
+    # fix-wave-2 blank-event_id guard (see test_webhook_rejects_an_event_with_a_
+    # blank_event_id below, which owns that behaviour).
     client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
-    raw = b'{"event":"message.created"}'
+    raw = b'{"event":"message.created","id":"evt-signed-ok"}'
 
     response = client.post(
         "/webhooks/textline",
@@ -216,6 +219,26 @@ def test_a_burned_opt_out_confirmation_acks_200_and_does_not_retry_the_send() ->
     assert first.status_code == 500  # the genuine first-send failure, unchanged
     assert redelivery.status_code == 200  # burned key must not 500 forever
     assert calls == ["conv-optout"]  # exactly one send attempt, never retried
+
+
+def test_webhook_rejects_an_event_with_a_blank_event_id() -> None:
+    # Fix wave 2 finding 2. Every outbound_send row is keyed on event_id alone
+    # (migration 0012, UNIQUE(event_id)) -- a blank id collapses two different
+    # customers' events onto one row, silently losing the second customer's
+    # opt-out confirmation or reply. Reject at parse time, same fail-closed
+    # shape (401, no body) as the signature/staleness checks in this route.
+    sent: list[tuple[str, str]] = []
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(body="STOP", event_id="", conversation_id="conv-blank")
+
+    response = _post_signed(client, raw)
+
+    assert response.status_code == 401
+    assert sent == []
 
 
 def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:

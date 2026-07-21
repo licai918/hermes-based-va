@@ -124,3 +124,15 @@ def test_simulated_email_webhook_rejects_a_forged_signature() -> None:
         "/webhooks/simulated-email", content=raw, headers={SIGNATURE_HEADER: "deadbeef"}
     )
     assert resp.status_code == 401
+
+
+def test_simulated_email_webhook_rejects_a_blank_event_id() -> None:
+    # Fix wave 2 finding 2. Same collapse risk as the SMS route: a blank id
+    # would key every such email onto the same outbound_send row.
+    app = create_app(webhook_secret=WEBHOOK_SECRET)
+    client = TestClient(app)
+    raw = _email_payload(event_id="")
+    resp = client.post(
+        "/webhooks/simulated-email", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
+    )
+    assert resp.status_code == 401

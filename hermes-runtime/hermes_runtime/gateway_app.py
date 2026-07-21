@@ -364,11 +364,20 @@ def create_app(
         if is_ignored_tgp_webhook(payload):
             return Response(status_code=200)
 
+        fields = parse_textline_fields(payload)
+        if not fields.event_id:
+            # Fix wave 2 finding 2: every outbound_send row is keyed on
+            # event_id alone (migration 0012, UNIQUE(event_id)). A blank id --
+            # missing `id`/`post.uuid` -- would collapse a different customer's
+            # STOP confirmation or reply onto this same row. Fail closed, same
+            # shape as the signature/staleness checks above.
+            return Response(status_code=401)
+
         decision = process_inbound(
             raw_body=raw,
             signature=signature,
             secret=webhook_secret,
-            fields=parse_textline_fields(payload),
+            fields=fields,
             driver=driver,
             rate_limiter=rate_limiter,
             resolved_at=clock(),
@@ -403,11 +412,16 @@ def create_app(
         ):
             return Response(status_code=401)
 
+        event = parse_simulated_email_event(payload)
+        if not event.event_id:
+            # Fix wave 2 finding 2 (same guard as the SMS route above).
+            return Response(status_code=401)
+
         decision = process_inbound(
             raw_body=raw,
             signature=signature,
             secret=webhook_secret,
-            event=parse_simulated_email_event(payload),
+            event=event,
             driver=driver,
             rate_limiter=rate_limiter,
             resolved_at=clock(),
