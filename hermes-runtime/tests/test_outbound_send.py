@@ -29,6 +29,7 @@ from toee_hermes.gateway.pipeline import InboundDecision
 from hermes_runtime.job_queue import PostgresJobQueue
 from hermes_runtime.outbound_send import (
     InMemoryOutboundSendLog,
+    OutboundSendBurned,
     OutboundSendLog,
     deliver_once,
     outbound_idempotency_key,
@@ -111,20 +112,14 @@ def _persisted_turn(store, conn, decision):
     return context, rows[0][0]
 
 
-def _runner(reply: str, *, sent: list, store=None, log=None, deliver_hook=None):
-    """A gateway turn runner whose model is a constant reply.
-
-    ``deliver_hook`` runs *after* the reply_sender call and before the mirror, so
-    a test can crash the process exactly inside the delivery window.
-    """
+def _runner(reply: str, *, sent: list, store=None, log=None):
+    """A gateway turn runner whose model is a constant reply."""
 
     def run_turn(context, inbound_body):
         return {"final_response": reply, "messages": []}
 
     def reply_sender(conversation_id: str, text: str) -> None:
         sent.append((conversation_id, text))
-        if deliver_hook is not None:
-            deliver_hook()
 
     return make_gateway_turn_runner(
         reply_sender=reply_sender,
@@ -154,6 +149,34 @@ def _mirror_bodies(conn, session_id: str) -> list[str]:
             (session_id,),
         )
         return [r[0] for r in cur.fetchall()]
+
+
+def _seed_outbound_row(
+    conn, *, event_id: str, conversation_id: str, status: str, error=None
+) -> None:
+    """Put a row on the table by hand -- the state a killed process leaves behind.
+
+    No handler ran, so nothing in the code path produced it: that is the point.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO outbound_send
+                (idempotency_key, job_id, event_id, conversation_id, channel,
+                 status, last_error)
+            VALUES (%s, NULL, %s, %s, 'textline_sms', %s, %s)
+            """,
+            (f"killed:{event_id}:reply", event_id, conversation_id, status, error),
+        )
+    conn.commit()
+
+
+def _job_row(conn, job_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, attempts, last_error FROM job WHERE id = %s", (job_id,)
+        )
+        return cur.fetchone()
 
 
 def _serve_backoff(conn, job_id: str) -> None:
@@ -263,8 +286,21 @@ def test_a_reclaimed_turn_reruns_without_re_sending_the_reply(wired) -> None:
     assert key == outbound_idempotency_key(job_id=job_id, event_id="evt-crash")
 
 
-def test_a_crash_between_the_send_and_the_commit_counts_as_already_sent(wired) -> None:
-    """The narrow window FR-12 names: the POST happened, the bookkeeping did not."""
+def test_an_intent_row_from_a_killed_process_blocks_the_re_send_quietly(wired) -> None:
+    """The state FR-12 actually names: SIGKILL/power loss, no handler ever ran.
+
+    An ``intent`` row is what a process that got *no* chance to run any ``except``
+    leaves behind, and it is indistinguishable from the outside from "the POST
+    landed and the commit did not". This test writes that row directly -- no
+    exception, no handler -- so it is the real crash state and not the
+    rejected-send path.
+
+    **Pinned meaning: ``intent`` on a re-run is "assume sent".** The brief's
+    at-most-once direction ("a crash between POST and commit must be treated as
+    already-sent"): the re-run delivers nothing, raises nothing, and the job
+    completes. The cost is a reply lost in that narrow window; the alternative is
+    texting a customer twice.
+    """
     conn, store, queue, log = wired
     context, job_id = _persisted_turn(
         store,
@@ -273,27 +309,17 @@ def test_a_crash_between_the_send_and_the_commit_counts_as_already_sent(wired) -
             event_id="evt-window", conversation_id="conv-window", body="Any 18in?"
         ),
     )
-    sent: list = []
-
-    def _die_after_the_post() -> None:
-        raise RuntimeError("SIGKILL between the POST and the commit")
-
-    crashing = _runner(
-        "We do.", sent=sent, store=store, log=log, deliver_hook=_die_after_the_post
+    _seed_outbound_row(
+        conn, event_id="evt-window", conversation_id="conv-window", status="intent"
     )
-    with pytest.raises(RuntimeError):
-        crashing(context, "Any 18in?", job_id)
-    assert sent == [("conv-window", "We do.")]
 
-    # The record is left mid-flight, and mid-flight is indistinguishable from
-    # "delivered": at-most-once means the re-run must not try again.
-    assert _outbound_row(conn, "evt-window", "status")[0] == "failed"
-
+    sent: list = []
     survivor = _runner("We do.", sent=sent, store=store, log=log)
-    survivor(context, "Any 18in?", job_id)
+    survivor(context, "Any 18in?", job_id)  # must not raise: the turn is done
 
-    assert sent == [("conv-window", "We do.")]
-    assert _outbound_row(conn, "evt-window", "skip_count")[0] == 1
+    assert sent == [], "an intent row must block the re-send"
+    assert _mirror_bodies(conn, context.sms_session_id) == []
+    assert _outbound_row(conn, "evt-window", "status", "skip_count") == ("intent", 1)
 
 
 def test_a_rejected_send_is_recorded_and_still_never_re_posts(wired) -> None:
@@ -320,11 +346,122 @@ def test_a_rejected_send_is_recorded_and_still_never_re_posts(wired) -> None:
     assert status == "failed"
     assert "Textline rejected" in error
 
-    # The job's own retry comes back here; it must skip, not re-post.
+    # The job's own retry comes back here. It must not re-post -- and it must not
+    # pretend the turn succeeded either: this reply never reached the customer, so
+    # it raises and the job goes on to dead-letter (fix wave 1, finding 1).
     attempts: list = []
     retry = _runner("Hello!", sent=attempts, store=store, log=log)
-    retry(context, "Hi", job_id)
+    with pytest.raises(OutboundSendBurned):
+        retry(context, "Hi", job_id)
     assert attempts == []
+
+
+def test_a_burned_reply_dead_letters_instead_of_reporting_success(wired) -> None:
+    """A reply nobody will ever send must reach a human, not a green job.
+
+    The previous attempt failed to reach the provider, so the key is spent. The
+    job must burn its remaining attempts and land in the ``dead`` rows S05's
+    dead-letter view reads -- not complete as ``succeeded`` having sent nothing.
+    """
+    conn, store, queue, log = wired
+    context, job_id = _persisted_turn(
+        store,
+        conn,
+        _sms_decision(event_id="evt-burn", conversation_id="conv-burn", body="Hi"),
+    )
+    _seed_outbound_row(
+        conn,
+        event_id="evt-burn",
+        conversation_id="conv-burn",
+        status="failed",
+        error="RuntimeError: Textline rejected the reply (HTTP 500)",
+    )
+    sent: list = []
+    runner = _runner("Hello!", sent=sent, store=store, log=log)
+
+    for _ in range(3):
+        assert run_once(
+            queue=queue, store=store, turn_runner=runner, worker="w"
+        ) is not None
+        _serve_backoff(conn, job_id)
+
+    status, attempts, last_error = _job_row(conn, job_id)
+    assert sent == [], "a burned key must never re-post"
+    assert status == "dead", "the operator must see this in the dead-letter view"
+    assert attempts == 3
+    assert "OutboundSendBurned" in last_error
+
+
+# --------------------------------------------------------------------------
+# the composite delivery: POST + mirror are two actions in one wrap
+# --------------------------------------------------------------------------
+
+
+def _mirror_failing_runner(reply: str, *, sent: list, log, boom: str):
+    def _mirror(context, text: str) -> None:
+        raise RuntimeError(boom)
+
+    return make_gateway_turn_runner(
+        reply_sender=lambda cid, text: sent.append((cid, text)),
+        run_turn=lambda ctx, body: {"final_response": reply, "messages": []},
+        on_reply_sent=_mirror,
+        outbound_log=log,
+    )
+
+
+def test_a_mirror_failure_after_the_send_is_not_recorded_as_a_failed_send(
+    wired,
+) -> None:
+    """The customer HAS the SMS; only the Workbench mirror is missing (finding 4).
+
+    Recording that as ``failed`` would tell the operator the opposite of what
+    happened. The record says ``sent`` -- true, and it is what stops a re-text --
+    and ``last_error`` carries the mirror failure so the job still dead-letters
+    and a human goes and fixes the thread row.
+    """
+    conn, store, queue, log = wired
+    context, job_id = _persisted_turn(
+        store,
+        conn,
+        _sms_decision(event_id="evt-mirror", conversation_id="conv-mirror", body="Hi"),
+    )
+    sent: list = []
+    runner = _mirror_failing_runner(
+        "Hello!", sent=sent, log=log, boom="message_turn insert failed"
+    )
+
+    with pytest.raises(RuntimeError):
+        runner(context, "Hi", job_id)
+
+    status, error = _outbound_row(conn, "evt-mirror", "status", "last_error")
+    assert sent == [("conv-mirror", "Hello!")]
+    assert status == "sent", "the customer has the reply; do not call the send failed"
+    assert "message_turn insert failed" in error
+
+    # And the retry still cannot re-text -- but it is loud, not silently green.
+    with pytest.raises(OutboundSendBurned):
+        _runner("Hello!", sent=sent, store=store, log=log)(context, "Hi", job_id)
+    assert sent == [("conv-mirror", "Hello!")]
+
+
+def test_on_email_a_mirror_failure_is_a_failed_send(wired) -> None:
+    """On email the mirror IS the delivery, so its failure is a send failure."""
+    conn, store, queue, log = wired
+    context, job_id = _persisted_turn(
+        store,
+        conn,
+        _email_decision(event_id="evt-mirror-mail", conversation_id="conv-mirror-mail"),
+    )
+    sent: list = []
+    runner = _mirror_failing_runner(
+        "Shipped Tuesday.", sent=sent, log=log, boom="message_turn insert failed"
+    )
+
+    with pytest.raises(RuntimeError):
+        runner(context, "Where is my order?", job_id)
+
+    # Nothing reached the customer on this channel, so `sent` would be a lie.
+    assert _outbound_row(conn, "evt-mirror-mail", "status")[0] == "failed"
 
 
 # --------------------------------------------------------------------------

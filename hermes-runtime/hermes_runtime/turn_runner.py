@@ -23,7 +23,11 @@ from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_scripted_agent
-from hermes_runtime.outbound_send import InMemoryOutboundSendLog, deliver_once
+from hermes_runtime.outbound_send import (
+    InMemoryOutboundSendLog,
+    OutboundMirrorFailed,
+    deliver_once,
+)
 
 # Runs one bound governed turn for a reloaded context + its inbound body and returns
 # the captured ``{final_response, messages}`` turn. This is the only model boundary:
@@ -38,7 +42,9 @@ ReplySender = Callable[[str, str], None]
 # durable store for Workbench Case Thread Context when wired (ADR-0082/0140).
 OnReplySent = Callable[[Any, str], None]
 
-# ponytail: hard cap for one SMS segment; upgrade path is MMS/segment-aware send.
+# ponytail: hard cap on an SMS reply's length -- roughly three concatenated
+# segments (a segment is 160 GSM-7 chars, 153 when concatenated), not one.
+# Upgrade path is MMS/segment-aware send. The number is a product decision.
 _SMS_MAX_CHARS = 480
 
 
@@ -136,21 +142,38 @@ def make_gateway_turn_runner(
     ) -> None:
         turn = run_turn(context, inbound_body)
         reply = outbound_reply_text(turn)
-        # S17: SMS is clipped to one segment; an email reply is not 480-char-clipped.
-        if not is_email_channel(getattr(context, "channel", TEXTLINE_SMS)):
+        channel = getattr(context, "channel", TEXTLINE_SMS)
+        # S17: SMS is clipped; an email reply is not 480-char-clipped.
+        mirror_is_the_reply = is_email_channel(channel)
+        if not mirror_is_the_reply:
             reply = clip_sms_reply(reply)
 
         def deliver() -> None:
             reply_sender(context.conversation_id, reply)
-            if on_reply_sent is not None:
+            if on_reply_sent is None:
+                return
+            try:
                 on_reply_sent(context, reply)
+            except Exception as exc:
+                # Two actions, one record (fix wave 1, finding 4). Past this line
+                # the provider already took the message on SMS, so a mirror
+                # failure must NOT be recorded as a failed send -- the customer
+                # has the reply, and the retry must never re-text. It is still
+                # raised: the missing Workbench row dead-letters the job so a
+                # human fixes the thread rather than the record quietly lying.
+                if mirror_is_the_reply:
+                    raise  # on email the mirror IS the delivery: a real send failure
+                raise OutboundMirrorFailed(
+                    f"reply delivered but the message_turn mirror failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
 
         deliver_once(
             log=log,
             job_id=job_id,
             event_id=context.event_id,
             conversation_id=context.conversation_id,
-            channel=getattr(context, "channel", TEXTLINE_SMS),
+            channel=channel,
             deliver=deliver,
         )
 
