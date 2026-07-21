@@ -61,7 +61,10 @@ ReplySender = Callable[[str, str], None]
 # production runner boots the External profile agent with the loaded session
 # context and replies via governed toee_textline_reply (ADR-0107); tests inject a
 # fake. run_live_turn is the eval harness, not this production seam.
-TurnRunner = Callable[[AgentTurnContext, str], None]
+# The third argument is the durable queue's job id (0.0.4 S03): half the outbound
+# idempotency key, so it is framework context, never payload or model output
+# (ADR-0148). None on this app's ADR-0106 parity route, which has no job row.
+TurnRunner = Callable[[AgentTurnContext, str, Optional[str]], None]
 
 # resolved_at clock for the Session Identity Snapshot (injectable for determinism).
 Clock = Callable[[], str]

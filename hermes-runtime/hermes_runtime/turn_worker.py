@@ -82,7 +82,7 @@ def run_once(
     *,
     queue: PostgresJobQueue,
     store: Any,
-    turn_runner: Optional[Callable[[Any, str], None]],
+    turn_runner: Optional[Callable[[Any, str, Optional[str]], None]],
     worker: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> Optional[Job]:
@@ -156,15 +156,21 @@ def run_once(
 
 
 def _run_turn(
-    *, store: Any, turn_runner: Optional[Callable[[Any, str], None]], job: Job
+    *,
+    store: Any,
+    turn_runner: Optional[Callable[[Any, str, Optional[str]], None]],
+    job: Job,
 ) -> AgentJobOutcome:
     """The unchanged bound-turn job body, fed from the JSONB payload."""
     payload = AgentJobPayload(
         event_id=job.payload["event_id"],
         conversation_id=job.payload["conversation_id"],
     )
+    # job.id is half the outbound idempotency key (S03, FR-12). It comes from the
+    # claimed row, never from the payload, so nothing the gateway or the model
+    # wrote can move it (ADR-0148).
     return execute_agent_turn_job(
-        store=store, turn_runner=turn_runner, payload=payload
+        store=store, turn_runner=turn_runner, payload=payload, job_id=job.id
     )
 
 
@@ -209,7 +215,7 @@ def poll_forever(
     *,
     queue: PostgresJobQueue,
     store: Any,
-    turn_runner: Optional[Callable[[Any, str], None]],
+    turn_runner: Optional[Callable[[Any, str, Optional[str]], None]],
     worker: str,
     sleep: Callable[[float], None] = time.sleep,
     should_stop: Callable[[], bool] = lambda: _stopping,

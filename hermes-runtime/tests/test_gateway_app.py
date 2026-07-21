@@ -242,7 +242,7 @@ def test_internal_agent_turn_requires_the_internal_job_secret() -> None:
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
-        turn_runner=lambda context, body: runs.append(context.event_id),
+        turn_runner=lambda context, body, job_id: runs.append(context.event_id),
     )
     client = TestClient(app)
 
@@ -266,7 +266,7 @@ def test_internal_agent_turn_runs_the_turn_for_a_matching_authed_job() -> None:
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        turn_runner=lambda context, body: runs.append(
+        turn_runner=lambda context, body, job_id: runs.append(
             (context.event_id, context.conversation_id, body)
         ),
     )
@@ -299,7 +299,7 @@ def test_internal_agent_turn_404_when_context_is_unknown() -> None:
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
-        turn_runner=lambda context, body: runs.append(context.event_id),
+        turn_runner=lambda context, body, job_id: runs.append(context.event_id),
     )
     client = TestClient(app)
 

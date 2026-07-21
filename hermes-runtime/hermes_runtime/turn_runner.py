@@ -23,6 +23,7 @@ from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_scripted_agent
+from hermes_runtime.outbound_send import InMemoryOutboundSendLog, deliver_once
 
 # Runs one bound governed turn for a reloaded context + its inbound body and returns
 # the captured ``{final_response, messages}`` turn. This is the only model boundary:
@@ -103,23 +104,54 @@ def make_gateway_turn_runner(
     reply_sender: ReplySender,
     run_turn: RunTurn,
     on_reply_sent: Optional[OnReplySent] = None,
-) -> Callable[[Any, str], None]:
+    outbound_log: Optional[Any] = None,
+) -> Callable[[Any, str, Optional[str]], None]:
     """Compose the model-agnostic async reply path into a gateway ``TurnRunner``.
 
-    The returned ``(context, inbound_body)`` callable runs the bound governed turn
-    (``run_turn`` — the injected model boundary), derives the customer-facing reply,
-    and sends it to the context's conversation via ``reply_sender``. The route has
-    already reloaded + verified the binding (ADR-0106/0107) before this runs.
-    """
+    The returned ``(context, inbound_body, job_id)`` callable runs the bound governed
+    turn (``run_turn`` — the injected model boundary), derives the customer-facing
+    reply, and delivers it. The route has already reloaded + verified the binding
+    (ADR-0106/0107) before this runs.
 
-    def turn_runner(context: Any, inbound_body: str) -> None:
+    **This function holds S03's single outbound wrap (FR-12).** Delivery is one
+    closure — the ``reply_sender`` call *and* the ``on_reply_sent`` mirror — handed
+    to :func:`~hermes_runtime.outbound_send.deliver_once`, so a retried or replayed
+    turn skips the whole thing rather than re-texting the customer or writing a
+    second ``message_turn`` row. All three outbound surfaces the slice names ride
+    this one wrap because all three are reached from these two lines: the real
+    Textline POST and the ``REPLY_SENDER=simulated`` no-op are both *which*
+    ``reply_sender`` was injected (``gateway_composition.resolve_reply_sender``),
+    and the S17 email reply mirror is ``on_reply_sent``. Adding a per-sender guard
+    instead would have made a fourth outbound path easy to add unguarded.
+
+    ``job_id`` is the queue's job id, threaded from ``turn_worker.run_once``; it is
+    ``None`` on the ADR-0106 parity route, which delivers with no job behind it.
+    ``outbound_log`` defaults to an in-memory record so a DB-free ``create_app()``
+    runs the *same* wrap — there is no unguarded branch.
+    """
+    log = outbound_log if outbound_log is not None else InMemoryOutboundSendLog()
+
+    def turn_runner(
+        context: Any, inbound_body: str, job_id: Optional[str] = None
+    ) -> None:
         turn = run_turn(context, inbound_body)
         reply = outbound_reply_text(turn)
         # S17: SMS is clipped to one segment; an email reply is not 480-char-clipped.
         if not is_email_channel(getattr(context, "channel", TEXTLINE_SMS)):
             reply = clip_sms_reply(reply)
-        reply_sender(context.conversation_id, reply)
-        if on_reply_sent is not None:
-            on_reply_sent(context, reply)
+
+        def deliver() -> None:
+            reply_sender(context.conversation_id, reply)
+            if on_reply_sent is not None:
+                on_reply_sent(context, reply)
+
+        deliver_once(
+            log=log,
+            job_id=job_id,
+            event_id=context.event_id,
+            conversation_id=context.conversation_id,
+            channel=getattr(context, "channel", TEXTLINE_SMS),
+            deliver=deliver,
+        )
 
     return turn_runner

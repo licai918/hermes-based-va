@@ -44,6 +44,7 @@ from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
 from hermes_runtime.openrouter import make_openrouter_run_turn, resolve_openrouter_config
+from hermes_runtime.outbound_send import OutboundSendLog
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from hermes_runtime.textline_reply import (
     make_textline_reply_sender,
@@ -99,6 +100,10 @@ def _simulated_reply_sender(conversation_id: str, body: str) -> None:
     Makes no Textline call and never raises, so the caller (:func:`make_gateway_turn_runner`
     in ``turn_runner.py``) proceeds to invoke ``on_reply_sent`` exactly as it would after a
     real send -- the reply still mirrors into ``message_turn`` for the simulator to read.
+
+    It gets **no exemption from S03's outbound wrap** (FR-12): being a no-op here is
+    exactly why it needs one, since the mirror it lets through is the whole reply as
+    far as the simulator is concerned. Both sit inside the one ``deliver_once`` call.
     """
     return None
 
@@ -179,6 +184,14 @@ def resolve_turn_collaborators() -> TurnCollaborators:
                 if backend == "datastore"
                 else None
             ),
+            # 0.0.4 S03 (FR-12): the durable outbound record the one delivery wrap
+            # checks before it sends. On the datastore backend this is the same
+            # Postgres the queue and the store use, so the intent row survives the
+            # crash it exists to describe. Off it, make_gateway_turn_runner falls
+            # back to its in-memory record -- same wrap, process-lifetime memory,
+            # which is all a single-process no-database boot can honestly offer
+            # (and _require_datastore_backend already refuses to ship that way).
+            outbound_log=(OutboundSendLog() if backend == "datastore" else None),
         ),
     )
 

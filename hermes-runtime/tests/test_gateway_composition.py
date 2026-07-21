@@ -293,8 +293,8 @@ def test_simulated_reply_sender_still_mirrors_via_on_reply_sent(
         },
         on_reply_sent=lambda ctx, text: mirrored.append((ctx, text)),
     )
-    ctx = SimpleNamespace(conversation_id="conv-A")
+    ctx = SimpleNamespace(event_id="evt-A", conversation_id="conv-A")
 
-    runner(ctx, "Where is my order?")
+    runner(ctx, "Where is my order?", "job-A")
 
     assert mirrored == [(ctx, "Shipped!")]

@@ -209,7 +209,7 @@ def test_a_raising_turn_fails_the_job_with_its_error_and_leaves_it_retryable(wir
         store, conn, event_id="evt-w2", conversation_id="conv-w2", body="hello"
     )
 
-    def _explode(context, inbound_body):
+    def _explode(context, inbound_body, job_id=None):
         raise RuntimeError("model timed out")
 
     job = run_once(
