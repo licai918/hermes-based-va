@@ -158,6 +158,11 @@ export interface MemoryAuditEntry {
   action: string;
   slot: string | null;
   detail?: string;
+  // S16 (FR-17): the proposed value for a proposal_dismissed row, lifted from
+  // ``details.value`` (S15 writes it) the same way ``slot`` is lifted from
+  // ``details.slot`` above -- so the proposal-history section can show what
+  // was proposed, not just that something was dismissed.
+  value?: string;
 }
 
 export interface MemoryAuditView {

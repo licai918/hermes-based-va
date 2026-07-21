@@ -163,6 +163,59 @@ describe("handleGetMemoryAuditViaApi", () => {
     expect(typeof cleared?.at).toBe("number");
   });
 
+  // S16 (FR-17): the proposal-history section derives accepted proposals from
+  // employee_confirmed slots and dismissed proposals from proposal_dismissed
+  // history rows -- both must survive the same handleGetMemoryAuditViaApi
+  // response, with the dismissed row's proposed value included (details.value)
+  // so the section can show what was proposed, not just that it was dismissed.
+  it("carries an accepted slot and a dismissed proposal's value in the same payload", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse({
+        binding_key: "cust_900",
+        slots: [
+          {
+            slot_name: "channel_preference",
+            slot_value: "sms",
+            source: "employee_confirmed",
+            actor_account_id: "acct_rep_4",
+            evidence: null,
+            created_at: "2026-07-05T09:00:00Z",
+            updated_at: "2026-07-05T09:00:00Z",
+          },
+        ],
+        audit: [
+          {
+            id: "audit_3",
+            account_id: "acct_rep_4",
+            actor_username: "rep_4",
+            action: "proposal_dismissed",
+            target_type: "customer_memory_slot",
+            target_id: "delivery_habit_note",
+            details: { slot: "delivery_habit_note", value: "back door", evidence: "leave it out back" },
+            created_at: "2026-07-05T09:05:00Z",
+          },
+        ],
+      }),
+    );
+
+    const res = await handleGetMemoryAuditViaApi(client, "case_1");
+    const body = (await res.json()) as {
+      slots: Array<{ slot: string; value: string; source: string | null; actorAccountId: string | null }>;
+      history: Array<{ action: string; slot: string | null; value?: string; actorUsername?: string | null; at: number }>;
+    };
+
+    const accepted = body.slots.find((s) => s.source === "employee_confirmed");
+    expect(accepted).toMatchObject({ slot: "channel_preference", value: "sms", actorAccountId: "acct_rep_4" });
+
+    const dismissed = body.history.find((h) => h.action === "proposal_dismissed");
+    expect(dismissed).toMatchObject({
+      slot: "delivery_habit_note",
+      value: "back door",
+      actorUsername: "rep_4",
+    });
+    expect(typeof dismissed?.at).toBe("number");
+  });
+
   it("maps a governed denial to its per-class status (ADR-0104)", async () => {
     const res = await handleGetMemoryAuditViaApi(
       apiClient(

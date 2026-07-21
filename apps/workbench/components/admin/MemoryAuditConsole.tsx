@@ -22,6 +22,55 @@ function formatTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
+function slotLabel(slot: string | null): string {
+  if (!slot) return "—";
+  return (SLOT_LABELS as Record<string, string>)[slot] ?? slot;
+}
+
+export interface ProposalHistoryRow {
+  key: string;
+  slot: string;
+  value: string;
+  outcome: "accepted" | "dismissed";
+  decider: string;
+  at: number;
+}
+
+// S16 (FR-17, audit finding 14): a dismissed proposal writes no preference
+// slot (S15's dismiss_proposal is audit-only), so the slot list alone can
+// never show it. Both outcomes are already in the S20 payload -- accepted =
+// the employee_confirmed slot rows (S15's model: that slot row IS the
+// acceptance record; there is deliberately no separate proposal_accepted
+// audit action, out of scope here), dismissed = proposal_dismissed history
+// rows. Every proposal originates from the copilot draft turn, so origin is
+// a constant, not a per-row field. Decider is actorUsername ?? actorAccountId
+// for a dismissed row; MemorySlotAttribution carries no actorUsername (the
+// slots query never joins workbench_account, unlike the audit query), so an
+// accepted row's decider is its actorAccountId.
+export function deriveProposalHistory(view: MemoryAuditView): ProposalHistoryRow[] {
+  const accepted: ProposalHistoryRow[] = view.slots
+    .filter((s) => s.source === "employee_confirmed")
+    .map((s) => ({
+      key: `accepted-${s.slot}`,
+      slot: s.slot,
+      value: s.value,
+      outcome: "accepted",
+      decider: s.actorAccountId ?? "—",
+      at: s.updatedAt,
+    }));
+  const dismissed: ProposalHistoryRow[] = view.history
+    .filter((e) => e.action === "proposal_dismissed")
+    .map((e) => ({
+      key: `dismissed-${e.entryId}`,
+      slot: e.slot ?? "—",
+      value: e.value ?? "—",
+      outcome: "dismissed",
+      decider: e.actorUsername ?? e.actorAccountId ?? "—",
+      at: e.at,
+    }));
+  return [...accepted, ...dismissed].sort((a, b) => b.at - a.at);
+}
+
 export function MemoryAuditConsole() {
   const [caseId, setCaseId] = useState("");
   const [view, setView] = useState<MemoryAuditView | null>(null);
@@ -165,6 +214,41 @@ export function MemoryAuditConsole() {
                 </tbody>
               </table>
             )}
+          </div>
+
+          <div>
+            <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.5rem" }}>Proposal history</h2>
+            {(() => {
+              const rows = deriveProposalHistory(view);
+              return rows.length === 0 ? (
+                <p>No proposal outcomes for this customer yet.</p>
+              ) : (
+                <table style={{ borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={th}>Proposal</th>
+                      <th style={th}>Origin</th>
+                      <th style={th}>Outcome</th>
+                      <th style={th}>Decider</th>
+                      <th style={th}>When</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.key}>
+                        <td style={td}>
+                          {slotLabel(row.slot)}: {row.value}
+                        </td>
+                        <td style={td}>copilot proposal</td>
+                        <td style={td}>{row.outcome === "accepted" ? "Accepted" : "Dismissed"}</td>
+                        <td style={td}>{row.decider}</td>
+                        <td style={td}>{formatTime(row.at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              );
+            })()}
           </div>
         </>
       ) : null}

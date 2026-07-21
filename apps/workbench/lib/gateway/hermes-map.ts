@@ -215,10 +215,10 @@ export function mapMemorySlotAttribution(raw: unknown): MemorySlotAttribution {
 export function mapMemoryAuditEntry(raw: unknown): MemoryAuditEntry {
   const r = asObject(raw, "memory audit entry");
   const details = r.details;
+  const detailsObj =
+    details && typeof details === "object" ? (details as Record<string, unknown>) : null;
   const slot =
-    details && typeof details === "object" && typeof (details as Record<string, unknown>).slot === "string"
-      ? ((details as Record<string, unknown>).slot as string)
-      : nullableString(r.target_id);
+    detailsObj && typeof detailsObj.slot === "string" ? detailsObj.slot : nullableString(r.target_id);
   const entry: MemoryAuditEntry = {
     entryId: requiredString(r.id, "audit id"),
     at: isoToMs(r.created_at, "created_at"),
@@ -227,6 +227,11 @@ export function mapMemoryAuditEntry(raw: unknown): MemoryAuditEntry {
     action: optionalString(r.action),
     slot,
   };
+  // S16 (FR-17): a proposal_dismissed row's proposed value, pulled from
+  // details.value the same way slot is pulled from details.slot above -- the
+  // proposal-history section needs it to show what was proposed, not just
+  // that a slot was dismissed.
+  if (detailsObj && typeof detailsObj.value === "string") entry.value = detailsObj.value;
   const detail = optionalDetail(details);
   if (detail) entry.detail = detail;
   return entry;

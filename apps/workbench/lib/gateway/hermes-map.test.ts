@@ -3,6 +3,7 @@ import { HermesApiError } from "./hermes-api-client";
 import {
   mapAuditEntry,
   mapAutoHandledRecord,
+  mapMemoryAuditEntry,
   mapPreferences,
   mapThreadMessage,
   mapWorkbenchCase,
@@ -213,5 +214,40 @@ describe("mapAutoHandledRecord", () => {
     expect(record.channel).toBe("sms");
     expect(record.toolFailure).toBe(false);
     expect(record.lastActivityAt).toBe(Date.parse("2026-06-01T12:00:00+00:00"));
+  });
+});
+
+// S16 (FR-17): the proposal-history section needs a dismissed proposal's
+// proposed value, not just its slot -- lifted from details.value the same
+// way `slot` is already lifted from details.slot.
+describe("mapMemoryAuditEntry", () => {
+  it("lifts details.value onto the entry for a proposal_dismissed row", () => {
+    const entry = mapMemoryAuditEntry({
+      id: "audit_1",
+      account_id: "acct_rep_1",
+      actor_username: "rep_1",
+      action: "proposal_dismissed",
+      target_id: "channel_preference",
+      details: { slot: "channel_preference", value: "sms", evidence: "text me" },
+      created_at: "2026-07-01T09:00:00Z",
+    });
+    expect(entry.action).toBe("proposal_dismissed");
+    expect(entry.slot).toBe("channel_preference");
+    expect(entry.value).toBe("sms");
+    expect(entry.actorUsername).toBe("rep_1");
+    expect(entry.actorAccountId).toBe("acct_rep_1");
+    expect(entry.at).toBe(Date.parse("2026-07-01T09:00:00Z"));
+  });
+
+  it("leaves value undefined when details carries none (e.g. preference_cleared)", () => {
+    const entry = mapMemoryAuditEntry({
+      id: "audit_2",
+      account_id: "acct_sup_1",
+      action: "preference_cleared",
+      target_id: "channel_preference",
+      details: { slot: "channel_preference", binding_key: "cust_900" },
+      created_at: "2026-07-04T09:00:00Z",
+    });
+    expect(entry.value).toBeUndefined();
   });
 });

@@ -588,3 +588,44 @@ def test_get_memory_audit_surfaces_dismissed_and_cleared_history_not_filtered(
     assert cleared_row["account_id"] == "acct_sup_3"
     dismissed_row = next(r for r in history if r["action"] == "proposal_dismissed")
     assert dismissed_row["account_id"] == "acct_rep_3"
+
+
+def test_get_memory_audit_surfaces_accepted_slot_and_dismissed_proposal_together(
+    datastore,
+) -> None:
+    """S16 (FR-17): the proposal-history section reads BOTH proposal outcomes
+    off this one payload, no second backend read -- accepted (an
+    employee_confirmed slot, S15's model: the slot row IS the acceptance
+    record) and dismissed (a proposal_dismissed audit row, S15) for the same
+    binding, each carrying the fields the section needs: slot+value, actor,
+    timestamp.
+    """
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550093"}
+    _run(
+        driver, "upsert_preference", {"key": "channel_preference", "value": "sms"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_4",
+    )
+    _run(
+        driver, "dismiss_proposal",
+        {"key": "delivery_habit_note", "value": "back door", "evidence": "leave it out back"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_4",
+    )
+
+    result = _run(driver, "get_memory_audit", {}, identity=identity)
+    assert result.ok
+
+    slots = result.data["slots"]
+    assert len(slots) == 1
+    assert slots[0]["slot_name"] == "channel_preference"
+    assert slots[0]["slot_value"] == "sms"
+    assert slots[0]["source"] == "employee_confirmed"
+    assert slots[0]["actor_account_id"] == "acct_rep_4"
+    assert slots[0]["updated_at"] is not None
+
+    history = result.data["audit"]
+    dismissed_row = next(r for r in history if r["action"] == "proposal_dismissed")
+    assert dismissed_row["account_id"] == "acct_rep_4"
+    assert dismissed_row["details"]["slot"] == "delivery_habit_note"
+    assert dismissed_row["details"]["value"] == "back door"
+    assert dismissed_row["created_at"] is not None
