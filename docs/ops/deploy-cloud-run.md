@@ -85,6 +85,18 @@ export REPO=us-central1-docker.pkg.dev/$PROJECT/hermes   # Artifact Registry rep
 
 ### Gateway
 
+**Apply migrations before deploying a revision.** The gateway runs with
+`TOOL_BACKEND=datastore` and hard-depends on its tables — `inbound_event_claim`
+(migration 0008) is read on the opt-out path, so a revision deployed against an
+un-migrated database answers 500 to every `STOP` and, because the provider retries
+5xx, keeps retrying. Point `DATABASE_URL` at the Cloud SQL instance and run:
+
+```bash
+# From hermes-runtime/. Idempotent: already-applied versions are skipped.
+DATABASE_URL='<cloud sql dsn>' uv run python -m hermes_runtime.datastore.migrate
+# -> "applied migrations: ..." (or nothing to do)
+```
+
 ```bash
 # Build with the REPO ROOT as context (note the trailing dot), gateway Dockerfile.
 docker build -f hermes-runtime/Dockerfile -t "$REPO/toee-hermes-gateway:latest" .
