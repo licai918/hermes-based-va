@@ -44,6 +44,19 @@ CREATE TABLE outbound_send (
 -- Enforcing here makes "one reply per inbound event" true no matter which of
 -- those paths runs, and leaves the FIRST send's key (its original lineage) in
 -- place, which is what FR-13 asks Replay to keep.
+--
+-- ponytail: ONE OUTBOUND SLOT PER EVENT is the ceiling here. The key carries a
+-- slot suffix (`:reply`, `:opt-out` -- outbound_send.py) but this index does not
+-- see it, so two slots for the same event_id collide and the second is silently
+-- swallowed and logged as an already-delivered skip. That is safe today only
+-- because the two live slots are mutually exclusive per event: process_inbound
+-- returns at the opt_out stage and never enqueues a turn, so a STOP has a
+-- confirmation and no reply, and everything else has a reply and no confirmation.
+-- UPGRADE PATH, and it is a migration, not a code change: before adding any
+-- second outbound action to a turn, widen this index to
+-- (event_id, slot) -- adding the slot as a column -- in a new migration FIRST.
+-- Adding another deliver_once call without it loses the second send with no
+-- error anywhere.
 CREATE UNIQUE INDEX idx_outbound_send_event ON outbound_send (event_id);
 
 -- Operator lookup: "what did this job send?" from the dead-letter view (S05).

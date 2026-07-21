@@ -54,6 +54,15 @@ def execute_agent_turn_job(
     idempotency key, so it must come from the framework -- the row the worker
     claimed -- and never from the payload or the model (ADR-0148). ``None`` on the
     ADR-0106 parity route, which delivers a turn with no job row behind it.
+
+    **Why the ``None`` default is not a trap.** A caller that forgets to pass a
+    job id does not escape the outbound guard: the key simply becomes
+    ``no-job:{event_id}:reply``, and the guard is not the key. Enforcement is
+    ``UNIQUE (event_id)`` on ``outbound_send`` (migration 0012), so an omitted job
+    id changes only the *lineage* recorded on the row, never whether a second
+    delivery is admitted. That is the whole reason the unique index is on the
+    event rather than on the derived key -- every path is fenced by construction,
+    including the ones nobody remembered to wire.
     """
     context = store.load_context(payload.event_id)
     if context is None:
