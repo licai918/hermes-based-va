@@ -8,7 +8,6 @@
   },
   "scripts": {
     "dev:workbench": "pnpm --filter @toee/workbench dev",
-    "dev:gateway": "pnpm --filter @toee/hermes-gateway dev",
     "eval": "tsx packages/eval-runner/src/cli.ts",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",

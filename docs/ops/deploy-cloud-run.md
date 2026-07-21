@@ -15,8 +15,8 @@
 
 > **ADR-0098 supersession (read this first).** ADR-0098 predates ADR-0139 and names a
 > `services/hermes-gateway/Dockerfile` for an old **TypeScript Fastify** gateway. That
-> path is **stale**. The gateway is now the **Python FastAPI** runtime in
-> `hermes-runtime/`, and its Dockerfile lives at **`hermes-runtime/Dockerfile`**. ADR-0098's
+> service has been **deleted** (ADR-0153). The gateway is the **Python FastAPI** runtime
+> in `hermes-runtime/`, and its Dockerfile lives at **`hermes-runtime/Dockerfile`**. ADR-0098's
 > env-layering and "separate image per service" decisions still hold; only the gateway
 > source/path changed (ADR-0139). ADR-0098 now carries an amendment banner pointing here;
 > its body is retained as the historical record.

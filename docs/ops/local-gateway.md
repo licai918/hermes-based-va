@@ -10,11 +10,11 @@ See also: [`local-e2e.md`](local-e2e.md) (Workbench Tier B), [`deploy-cloud-run.
 
 ---
 
-## Why `pnpm dev:gateway` is a stub
+## Where the gateway lives
 
-Root `package.json` runs `pnpm --filter @toee/hermes-gateway dev`, which prints a placeholder
-(`services/hermes-gateway/package.json`). The live gateway is the **Python FastAPI app** in
-`hermes-runtime/` (ADR-0095). Boot it with **uvicorn** (below), not pnpm.
+The gateway is the **Python FastAPI app** in `hermes-runtime/` (ADR-0095). Boot it with
+**uvicorn** (below), not pnpm — the old TypeScript `services/hermes-gateway` stub was
+deleted (ADR-0153).
 
 ---
 
@@ -122,15 +122,13 @@ $uri = "http://127.0.0.1:8080/webhooks/simpletexting?token=$([uri]::EscapeDataSt
 Invoke-WebRequest -Method POST -Uri $uri -ContentType "application/json" -Body $body
 ```
 
-Use a **compact JSON body** for signing; whitespace changes invalidate the signature.
-
 ---
 
 ## Expected HTTP outcomes
 
 | Case | Status | Gateway behavior |
 | --- | --- | --- |
-| Missing / wrong signature | **401** | Rejected before processing |
+| Missing / wrong `token` | **401** | Rejected before processing |
 | Normal inbound (e.g. stock question) | **200** | Persist + enqueue async agent turn |
 | Opt-out keyword (`STOP`, etc.) | **200** | Fixed compliance reply via SimpleTexting; **no** agent turn |
 | Duplicate `event_id` (when idempotency wired) | **200** | No-op ack |
