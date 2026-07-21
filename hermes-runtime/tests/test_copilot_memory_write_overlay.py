@@ -1,20 +1,33 @@
-"""S20 (PAC-4 gap #2): Copilot AI-draft-turn writes reach the datastore, not mock.
+"""S13 (FR-14, ADR-0150): the copilot draft turn's memory write is propose-only.
 
-S08 already threads the case's identity into the Copilot draft turn's (unbound)
-``ToolExecutionContext``, so an employee-confirmed correction binds to the SAME key
-the customer's own turn reads. What was still missing: the UNBOUND boot path
-(``register()``, no ``conversation_id``) never carried the ``extra_drivers``
-overlay S04 gave the BOUND external turn (``register_turn``), so an agent-initiated
-``toee_customer_memory.upsert_preference`` during a copilot draft always fell to the
-ephemeral MockDriver and was silently discarded.
+**This reverses 0.0.2's S20** (PAC-4 gap #2), which gave the copilot draft turn's
+UNBOUND boot path the SAME ``extra_drivers`` overlay S04 gave the bound external
+turn, so an agent-initiated ``toee_customer_memory.upsert_preference`` reached
+Postgres instead of the ephemeral MockDriver. The governance-faithful design
+(0.0.3 Candidate 2, "propose -> confirm") makes the LLM never write customer
+memory directly: the draft turn calls the SAME tool, but ``_turn_extra_drivers
+(include_memory_write=False)`` (``tool_backend.py``) leaves ``toee_customer_memory``
+OUT of the merged overlay, so the call always lands on the shared mock driver and
+is discarded, regardless of ``TOOL_BACKEND``. S14 builds the structured
+``proposals[]`` envelope; S15 the Accept/Dismiss UI routing an accepted proposal
+through the EXISTING governed dispatch write (``employee_confirmed``).
+
+Rewritten deliberately, not deleted (RK-3): the old S20 "reaches the datastore"
+tests below are now their propose-only mirror image -- same fixtures, same seams,
+opposite assertion. ``resolve_memory_write_source`` still maps an unbound draft
+turn to ``copilot_agent`` (historical-vocabulary only now -- see
+``test_customer_memory_write_source.py``, unchanged); this file is about whether
+that code path is ever reachable in production, and after S13 it is not.
 
 This mirrors ``test_composite_driver_overlay.py`` (the overlay/injection shape) and
 ``test_copilot_memory_injection.py`` (the copilot seam + real-Postgres fixture
 conventions). The hermetic tests stub ``boot_profile`` so nothing registers into the
 shared upstream ``tools.registry``; the integration test drives a REAL scripted
 ``AIAgent`` turn through the real governed dispatch path, substituting only the
-datastore driver's CONNECTION (via ``select_tool_driver``) so its write lands in the
-test's throwaway schema instead of a fresh connection to the default schema.
+datastore driver's CONNECTION (via ``select_tool_driver``) so a regression (a
+reintroduced write overlay) would land in the test's throwaway schema instead of a
+fresh connection to the default schema -- the readback would flip RED, not just
+silently miss the write.
 """
 
 from __future__ import annotations
@@ -68,21 +81,23 @@ def _capture_copilot_boot_kwargs(monkeypatch, *, store=None) -> dict:
     return captured
 
 
-def test_copilot_run_turn_injects_the_datastore_driver_when_backend_is_datastore(monkeypatch) -> None:
+def test_copilot_run_turn_never_injects_the_datastore_driver_for_memory_write(monkeypatch) -> None:
+    # S13/FR-14 (ADR-0150) central proof at the boot-kwargs seam: even with
+    # TOOL_BACKEND=datastore (memory fully enabled), the copilot draft turn's
+    # extra_drivers never carries a toee_customer_memory entry -- the write side
+    # of S20 is gone; the tool stays on the shared mock driver.
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
 
     captured = _capture_copilot_boot_kwargs(monkeypatch)
 
     extra = captured.get("extra_drivers")
-    assert extra is not None
-    # The plugin overlay only sees a ToolDriver; its kind attributes audit rows.
-    assert extra["toee_customer_memory"].kind == "datastore"
+    assert extra is None or "toee_customer_memory" not in extra
 
 
-def test_copilot_run_turn_merges_the_knowledge_overlay_alongside_memory(monkeypatch) -> None:
-    # S10 (FR-5): boot_profile receives the SAME merged dict _turn_extra_drivers()
-    # builds on the copilot draft turn -- both overlays land when both backends
-    # are on, mirroring the external turn (test_openrouter.py's sibling test).
+def test_copilot_run_turn_keeps_the_knowledge_overlay_without_memory_write(monkeypatch) -> None:
+    # S10 (FR-5) regression, updated for S13: the Knowledge overlay still merges
+    # in on its own independent gate even though the memory-write overlay is
+    # permanently excluded on this turn.
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
     monkeypatch.setenv("KNOWLEDGE_BACKEND", "retriever")
 
@@ -90,8 +105,7 @@ def test_copilot_run_turn_merges_the_knowledge_overlay_alongside_memory(monkeypa
 
     extra = captured.get("extra_drivers")
     assert extra is not None
-    assert set(extra.keys()) == {"toee_customer_memory", "toee_knowledge_search"}
-    assert extra["toee_customer_memory"].kind == "datastore"
+    assert set(extra.keys()) == {"toee_knowledge_search"}
     assert extra["toee_knowledge_search"].kind == "knowledge"
 
 
@@ -156,28 +170,27 @@ def _seed_case(
     conn.commit()
 
 
-def test_copilot_draft_turn_scripted_write_persists_to_datastore_under_verified_customer_key(
+def test_copilot_draft_turn_scripted_write_does_not_persist_to_datastore(
     datastore, monkeypatch
 ) -> None:
-    # The S20 central proof: a copilot draft turn's SCRIPTED agent calls
-    # toee_customer_memory.upsert_preference for a VERIFIED-customer case. With the
-    # extra_drivers overlay now threaded through boot_profile -> register() ->
-    # _register -> _build_driver_selector, the write reaches Postgres -- under the
-    # SAME bare shopify_customer_id key S08 already binds context.identity to --
-    # tagged source=copilot_agent (S01: this unbound draft turn never sets
-    # context.user_id, so it is honestly labelled, never employee_confirmed),
-    # instead of being silently discarded by the ephemeral mock.
+    # The S13 central proof (FR-14, ADR-0150), RED-capable by construction like
+    # test_e2e_memory_acceptance.py's dormancy tripwire: a copilot draft turn's
+    # SCRIPTED agent calls toee_customer_memory.upsert_preference for a
+    # VERIFIED-customer case with TOOL_BACKEND=datastore (memory fully enabled) --
+    # the same scenario 0.0.2's S20 proved DID persist. It must NOT any more: a
+    # draft-turn write is a proposal, never a persist.
+    #
+    # select_tool_driver is still patched to the fixture's schema-bound real
+    # datastore driver -- NOT because this turn is expected to reach it (S13
+    # excludes toee_customer_memory from the overlay before select_tool_driver is
+    # ever called for this turn), but so that IF a regression reintroduced the
+    # write overlay, the write would land in THIS throwaway schema and the
+    # readback below would flip RED, instead of silently missing the write
+    # entirely by writing to a fresh connection's default schema.
     driver, conn, _ = datastore
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
     import hermes_runtime.tool_backend as tool_backend_mod
 
-    # select_tool_driver's default PostgresDriver() opens a FRESH connection (its own
-    # dsn), which would miss this test's throwaway schema entirely. Substitute the
-    # fixture's schema-bound instance -- the ONLY substitution here: boot_profile,
-    # register(), _register, _build_driver_selector, and execute_tool all run for
-    # real, exactly as they would with a real TOOL_BACKEND=datastore deployment.
-    # (select_tool_driver lives behind tool_backend._customer_memory_extra_drivers,
-    # Standards fix #1 -- patch it there, not on copilot_turn's old local copy.)
     monkeypatch.setattr(tool_backend_mod, "select_tool_driver", lambda *_a, **_k: driver)
 
     _seed_case(
@@ -208,12 +221,12 @@ def test_copilot_draft_turn_scripted_write_persists_to_datastore_under_verified_
 
     result = run_turn(channel="sms", case_id="case-mem-write")
 
-    assert result["draft"]  # the turn completed past the tool call
+    assert result["draft"]  # the turn still completes past the tool call
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT slot_value, source FROM customer_memory_slot"
+            "SELECT count(*) FROM customer_memory_slot"
             " WHERE binding_key = %s AND slot_name = %s",
             (_VERIFIED_SHOPIFY_ID, "contact_time_preference"),
         )
-        row = cur.fetchone()
-    assert row == ("mornings", "copilot_agent")  # anti-mock: mock never writes here
+        count = cur.fetchone()[0]
+    assert count == 0  # propose-only: nothing lands in Postgres, ever

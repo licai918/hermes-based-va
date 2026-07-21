@@ -52,6 +52,15 @@ ADR-0110's original substrate (Hermes Native Memory) is superseded; the layer mo
   (`customer_explicit` / `employee_confirmed` / `copilot_agent` / `merged_provisional`) plus the
   acting rep in `actor_account_id` — framework-derived, never model-supplied.
   See [ADR-0148](../adr/0148-copilot-agent-source-actor-attribution-and-context-only-binding.md).
+- **`copilot_agent` is history/vocabulary-only in production** (0.0.3 S13, the S20
+  reversal): the copilot draft turn's `toee_customer_memory` write overlay is gone —
+  an agent-initiated write during a draft always lands on the shared mock driver and
+  is discarded, never Postgres. The draft turn *proposes* instead (structured
+  `proposals[]`, Workbench Accept/Dismiss); an accepted proposal persists through the
+  existing UI correction path (`employee_confirmed`), same as always. The resolver
+  mapping and the `copilot_agent` enum value are unchanged (historical rows keep their
+  meaning); only the production write path that could reach it is removed. See
+  [ADR-0150](../adr/0150-s20-reversal-copilot-draft-turn-propose-only.md).
 - Reads are **exact-key**, not semantic. There is no similarity search anywhere in L1–L4.
 
 ---
@@ -151,6 +160,9 @@ designed in up front rather than retrofitted.
 
 ## Change log
 
+- **2026-07-20 (S13)** — L4 S20 reversal: the copilot draft turn's `toee_customer_memory`
+  write overlay is removed (propose-only); reads and Knowledge are unaffected —
+  ADR-0150.
 - **2026-07-20 (S12)** — L5 shipped: formal decision record + isolation/deadline rationale +
   FR-2 open question in [ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md);
   productionized FR-7/FR-7b gates harness re-measures the shipped hybrid rung (p95 48.4ms @167

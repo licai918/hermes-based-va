@@ -18,6 +18,11 @@ conversational ``chat`` reply (Slice 4, #39 — the staff-facing copilot convers
 not a customer draft). The booted tool set is identical across all of them, so the
 structural no-send invariant holds for chat exactly as for the draft channels.
 
+Customer Memory is propose-only on this turn (0.0.3 S13/FR-14, ADR-0150 --
+reverses 0.0.2's S20 autonomous persist): the agent still keeps
+``toee_customer_memory`` in its allowlist and can call ``upsert_preference``,
+but the write never reaches the datastore (see ``_turn_extra_drivers`` below).
+
 Provider seam (Fork C1, mock-first ADR-0137), in precedence order:
 
 1. ``scripted_completions`` injected (tests/eval) -> the deterministic
@@ -79,9 +84,9 @@ _SUBJECT_LINE_PREFIX = "subject:"
 # never send"; the agent has no send tool regardless (the structural no-send
 # invariant, ADR-0035/0067). Every channel also gets the _MEMORY_WRITE_DISCIPLINE
 # suffix appended below (S03, FR-1): the draft agent keeps toee_customer_memory
-# (S20 lets a draft turn persist an agent-initiated write) under the SAME
-# internal_copilot allowlist for all four channels, so the no-inferred guard has
-# to cover every one of them.
+# under the SAME internal_copilot allowlist for all four channels (propose-only
+# since S13/ADR-0150 -- the call never persists, see _turn_extra_drivers above),
+# so the no-inferred guard has to cover every one of them regardless.
 _SYSTEM_MESSAGES = {
     "sms": (
         "You are a Toee Tire support copilot drafting a customer SMS reply for a "
@@ -328,13 +333,20 @@ def make_copilot_run_turn(
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
-        # extra_drivers (S20/PAC-4 gap #2, S10): merges the Customer Memory overlay
-        # (routes toee_customer_memory to the datastore when memory is enabled, so
-        # an agent-initiated write persists instead of always hitting mock) with the
-        # Knowledge overlay (S09/FR-5) -- one dict, each gated on its own
-        # independent axis (see tool_backend._turn_extra_drivers).
+        # extra_drivers (S10; S13/FR-14 reverses S20 -- ADR-0150): merges the
+        # Knowledge overlay (S09/FR-5, routes toee_knowledge_search to the
+        # retriever) with the Customer Memory overlay EXCLUDED
+        # (include_memory_write=False) -- toee_customer_memory stays on the
+        # shared mock driver regardless of memory_enabled(), so an
+        # agent-initiated write from this unbound draft turn is never
+        # persisted; the draft can only propose (S14 builds the proposal
+        # envelope). Memory READ-injection (identity/slots, right above) is
+        # unaffected -- it goes through the gateway store directly, never this
+        # overlay. See tool_backend._turn_extra_drivers.
         booted = boot_profile(
-            INTERNAL, identity=identity, extra_drivers=_turn_extra_drivers()
+            INTERNAL,
+            identity=identity,
+            extra_drivers=_turn_extra_drivers(include_memory_write=False),
         )
         system_message = _system_message(channel)
         base_user_message = _user_message(channel, case_id, prompt)

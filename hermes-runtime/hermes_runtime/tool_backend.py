@@ -146,7 +146,7 @@ def _knowledge_extra_drivers() -> Optional[dict[str, Any]]:
     return {"toee_knowledge_search": KnowledgeDriver()}
 
 
-def _turn_extra_drivers() -> Optional[dict[str, Any]]:
+def _turn_extra_drivers(*, include_memory_write: bool = True) -> Optional[dict[str, Any]]:
     """Merge the Customer Memory and Knowledge per-tool overlays for one agent turn.
 
     Single source for both turn paths (external ``openrouter.py`` + copilot draft
@@ -156,8 +156,21 @@ def _turn_extra_drivers() -> Optional[dict[str, Any]]:
     mirroring how the two gates already stay independent -- no coupling introduced
     by merging them here. ``None`` only when BOTH overlays are off, so a turn with
     neither backend enabled boots with ``extra_drivers=None`` exactly as before.
+
+    ``include_memory_write`` (S13, FR-14 -- the S20 reversal, ADR-0150): the
+    copilot draft turn boots with ``include_memory_write=False`` so
+    ``toee_customer_memory`` is left OUT of the merged overlay regardless of
+    ``memory_enabled()`` -- the tool stays on the shared mock driver, so an
+    agent-initiated ``upsert_preference`` from an unbound draft turn is never
+    persisted (it lands in the ephemeral mock and is discarded, same as a
+    disabled backend). The Knowledge overlay is unaffected -- it is gated on its
+    own independent axis and merges in either way. The external turn
+    (``openrouter.py``) keeps calling this with no arguments, so the default
+    ``True`` leaves its write path untouched. Memory READS are untouched by this
+    flag entirely: the copilot turn's read-injection (``copilot_turn._load_case_memory``)
+    goes through the gateway store directly, never through this overlay.
     """
-    mem = _customer_memory_extra_drivers()
+    mem = _customer_memory_extra_drivers() if include_memory_write else None
     kn = _knowledge_extra_drivers()
     if mem is None and kn is None:
         return None

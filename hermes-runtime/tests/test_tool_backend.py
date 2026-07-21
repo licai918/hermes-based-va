@@ -164,6 +164,40 @@ def test_turn_extra_drivers_both_on(monkeypatch: pytest.MonkeyPatch) -> None:
     assert overlay["toee_knowledge_search"].kind == "knowledge"
 
 
+# --- include_memory_write=False (S13, FR-14 -- the S20 reversal, ADR-0150) ------
+# The copilot draft turn boots with this flag so toee_customer_memory is excluded
+# from the merged overlay regardless of memory_enabled() -- the write side of the
+# S20 reversal. The external turn's default call (no arguments, tested above)
+# is unaffected.
+
+
+def test_turn_extra_drivers_excludes_memory_write_even_when_backend_is_datastore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.delenv("KNOWLEDGE_BACKEND", raising=False)
+
+    overlay = _turn_extra_drivers(include_memory_write=False)
+
+    # No overlay at all: memory write excluded, knowledge off too.
+    assert overlay is None
+
+
+def test_turn_extra_drivers_keeps_knowledge_when_memory_write_excluded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setenv("KNOWLEDGE_BACKEND", "retriever")
+
+    overlay = _turn_extra_drivers(include_memory_write=False)
+
+    assert overlay is not None
+    # Knowledge overlay merges in as usual; toee_customer_memory is absent, so
+    # the tool stays on the shared mock driver (a write there is discarded).
+    assert set(overlay.keys()) == {"toee_knowledge_search"}
+    assert overlay["toee_knowledge_search"].kind == "knowledge"
+
+
 def test_datastore_registry_is_subset_of_mock() -> None:
     # The datastore backs the system-of-record tools only; every action it
     # implements must also exist in the mock registry so swapping the backend
