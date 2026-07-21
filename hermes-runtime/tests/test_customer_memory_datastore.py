@@ -150,9 +150,11 @@ def test_clear_preference_for_one_customer_does_not_touch_the_others_row(datasto
     )
 
     # 0.0.3 S20 (FR-20): clear is an attributed employee/supervisor action, so
-    # this isolation probe runs as an internal rep, not the EXTERNAL customer
-    # profile (which is now policy_blocked for clear, same as every other
-    # governed write on this tool).
+    # this isolation probe runs as an internal rep rather than the EXTERNAL
+    # customer profile. (0.0.3 S21 extends the EXTERNAL gate to also allow a
+    # VERIFIED customer to clear their OWN binding -- see
+    # test_datastore_driver_memory.py -- but that's a different authorization
+    # path from the rep/supervisor one this isolation probe exercises here.)
     result = execute_tool(
         tool="toee_customer_memory",
         action="clear_preference",

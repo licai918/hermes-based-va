@@ -57,6 +57,12 @@ DriverSelector = Callable[[str], ToolDriver]
 # supervisor-only surface FR-20 exists to restrict. Reached only from the admin
 # BFF's deterministic tools:dispatch call (over the internal_copilot profile's
 # per-profile API, the only profile whose allowlist carries this tool).
+#
+# By contrast, toee_customer_memory.get_my_memory_summary (0.0.3 S21, FR-21) is
+# deliberately NOT here: it's the verified-only customer self-service "what do
+# you remember about me" read, meant to reach the EXTERNAL model's live
+# tool-calling loop (its own verified-identity gate, not this list, is what
+# keeps it safe -- see is_verified_customer_identity).
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),

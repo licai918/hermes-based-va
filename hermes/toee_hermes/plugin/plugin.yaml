@@ -27,6 +27,7 @@ provides_tools:
   - toee_customer_memory__upsert_preference
   - toee_customer_memory__clear_preference
   - toee_customer_memory__get_preferences
+  - toee_customer_memory__get_my_memory_summary
   - toee_customer_memory__dismiss_proposal
   - toee_customer_memory__get_memory_audit
   - toee_case_manage__claim_case

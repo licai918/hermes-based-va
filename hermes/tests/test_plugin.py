@@ -217,6 +217,18 @@ def test_get_memory_audit_is_never_registered_as_an_llm_tool_for_any_profile() -
         assert "toee_customer_memory__get_memory_audit" not in ctx.registered_names()
 
 
+# --- 0.0.3 S21: get_my_memory_summary IS LLM-callable on EXTERNAL (FR-21) ---
+
+
+def test_get_my_memory_summary_is_registered_as_an_llm_tool_for_external_profile() -> None:
+    # Contrast with get_memory_audit above: unlike that admin-only read,
+    # get_my_memory_summary is deliberately customer-facing (FR-21) -- it must
+    # reach the EXTERNAL model's tool-calling surface, not be excluded.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register(ctx)
+    assert "toee_customer_memory__get_my_memory_summary" in ctx.registered_names()
+
+
 def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     ctx = RecordingCtx(profile="supervisor_admin")
     register(ctx)

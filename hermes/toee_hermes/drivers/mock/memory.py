@@ -140,6 +140,23 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
     return evidence
 
 
+def is_verified_customer_identity(identity: Any) -> bool:
+    """True when ``identity`` is a resolved Session Identity Snapshot for a
+    VERIFIED customer (``identity["outcome"] == "verified_customer"``).
+
+    The SAME signal :func:`binding_key_from_identity` uses to bind to the
+    Shopify customer id rather than a provisional channel key. 0.0.3 S21 (FR-21,
+    NFR-2) reuses it as the verified-only gate for EXTERNAL customer
+    self-service (the customer-safe summary read and the customer's own
+    governed clear): an unverified caller -- unmatched, provisional, or
+    ambiguous -- still resolves a binding (their own provisional channel key,
+    see ``test_unmatched_caller_outcome_still_binds_provisionally_from_context``)
+    but is NOT a verified customer, so self-service must still refuse it
+    (fail-closed, US13) -- a resolvable binding alone is not authorization.
+    """
+    return isinstance(identity, dict) and identity.get("outcome") == "verified_customer"
+
+
 def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     """Pure identity dict -> ``(binding_key, binding_kind)`` core, or ``None``.
 
@@ -169,7 +186,7 @@ def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     if not isinstance(identity, dict):
         return None
 
-    if identity.get("outcome") == "verified_customer":
+    if is_verified_customer_identity(identity):
         shopify_customer_id = identity.get("shopify_customer_id")
         if isinstance(shopify_customer_id, str) and shopify_customer_id:
             return shopify_customer_id, "verified"
@@ -324,17 +341,35 @@ def create_memory_mock_handlers(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
         # Clears one preference slot and acknowledges the removal. 0.0.3 S20
-        # (FR-20): requires an attributed actor, same gate as dismiss_proposal
-        # below and the Postgres twin's _clear_preference -- a clear is always a
-        # rep/supervisor at the keyboard, never the customer and never the
-        # unbound AI draft turn, so on the EXTERNAL profile (no context.user_id)
-        # this is policy_blocked, same as every other governed write on
-        # toee_customer_memory. The Postgres handler additionally writes a
-        # preference_cleared audit row; this mock driver has no audit sink (same
-        # no-op-in-mock-mode convention as dismiss_proposal), so it stays a plain
-        # governed acknowledgment once the actor check passes.
+        # (FR-20) gated this to an attributed rep/supervisor actor only (the
+        # EXTERNAL profile, no context.user_id, was unconditionally
+        # policy_blocked). 0.0.3 S21 (FR-21) EXTENDS that same governed
+        # clear_preference gate -- still the one write action, no new write path
+        # -- to also allow a VERIFIED customer to clear their OWN binding on the
+        # EXTERNAL profile: source=customer_explicit, actor NULL (the customer is
+        # not a workbench account). An unverified EXTERNAL caller (unmatched,
+        # provisional, or ambiguous -- see is_verified_customer_identity) is
+        # still policy_blocked, same as before: a resolvable provisional binding
+        # is not authorization (US13). On every other profile the S20 gate is
+        # unchanged: no context.user_id -> policy_blocked (a clear is always a
+        # rep/supervisor at the keyboard, never the unbound AI draft turn). The
+        # Postgres handler additionally writes a preference_cleared audit row;
+        # this mock driver has no audit sink (same no-op-in-mock-mode convention
+        # as dismiss_proposal), so it stays a plain governed acknowledgment once
+        # the gate passes.
         slot = _require_slot(params)
-        if not context.user_id:
+        # Deferred import: same partially-initialized-package hazard documented
+        # on resolve_memory_write_source below.
+        from ...plugin.profiles import EXTERNAL
+
+        if context.profile == EXTERNAL:
+            if not is_verified_customer_identity(context.identity):
+                raise ToolDriverError(
+                    "policy_blocked",
+                    "A governed preference clear requires a verified customer "
+                    "identity.",
+                )
+        elif not context.user_id:
             raise ToolDriverError(
                 "policy_blocked",
                 "A governed preference clear requires an attributed actor.",
@@ -353,6 +388,25 @@ def create_memory_mock_handlers(
             "binding_key": binding_key,
             "preferences": dict(slots_for(binding_key)),
         }
+
+    def get_my_memory_summary(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.3 S21 (FR-21, NFR-2): the customer-facing "what do you remember
+        # about me" read -- verified-only (same signal as the extended
+        # clear_preference gate above), and strips ALL internal metadata: slot
+        # values only, no source, no actor, no timestamps, no binding_key. An
+        # unverified caller (unmatched/provisional/ambiguous) must get ZERO
+        # data, never a probe surface for whoever holds a phone number/email
+        # (US13) -- a resolvable provisional binding is not authorization.
+        if not is_verified_customer_identity(context.identity):
+            raise ToolDriverError(
+                "policy_blocked",
+                "Customer Memory self-service requires a verified customer "
+                "identity.",
+            )
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+        return {"preferences": dict(slots_for(binding_key))}
 
     def dismiss_proposal(
         params: dict[str, Any], context: "ToolExecutionContext"
@@ -407,6 +461,7 @@ def create_memory_mock_handlers(
             "upsert_preference": upsert_preference,
             "clear_preference": clear_preference,
             "get_preferences": get_preferences,
+            "get_my_memory_summary": get_my_memory_summary,
             "dismiss_proposal": dismiss_proposal,
             "get_memory_audit": get_memory_audit,
         }

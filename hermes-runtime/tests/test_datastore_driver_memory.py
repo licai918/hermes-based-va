@@ -526,6 +526,140 @@ def test_clear_preference_persists_an_attributed_audit_row(datastore) -> None:
     assert target_id == "communication_style_note"
     assert details["slot"] == "communication_style_note"
     assert details["binding_key"] == binding_key
+    assert details["initiator"] == "rep"
+
+
+# --- clear_preference / get_my_memory_summary: verified customer self-service
+# (0.0.3 S21, FR-21, NFR-2) -- EXTENDS the S20 gate above to also authorize a
+# VERIFIED customer clearing their OWN binding on the EXTERNAL profile, and
+# adds the verified-only customer-safe summary read. The make-or-break
+# property: an UNVERIFIED caller gets ZERO data and CANNOT clear.
+
+
+def test_clear_preference_verified_external_customer_clears_own_slot_and_audits(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    identity = VERIFIED
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+
+    cleared = _run(driver, "clear_preference", {"key": "channel_preference"}, identity=identity)
+    assert cleared.ok
+    assert cleared.data["cleared"] is True
+    binding_key = cleared.data["binding_key"]
+    assert binding_key == identity["shopify_customer_id"]
+
+    # The slot is really gone -- read back from Postgres.
+    got = _run(driver, "get_preferences", {}, identity=identity)
+    assert "channel_preference" not in got.data["preferences"]
+
+    # Audited: customer-initiated, NULL actor (the customer is not a workbench
+    # account) -- distinguishable from a rep clear via details.initiator.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id, details "
+            "FROM workbench_audit_log WHERE action = 'preference_cleared' "
+            "AND target_id = %s",
+            ("channel_preference",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id, details = row
+    assert account_id is None
+    assert action == "preference_cleared"
+    assert target_type == "customer_memory_slot"
+    assert target_id == "channel_preference"
+    assert details["binding_key"] == binding_key
+    assert details["initiator"] == "customer"
+
+
+def test_clear_preference_unverified_external_caller_is_policy_blocked(datastore) -> None:
+    # FR-21/US13: a provisional (unmatched/ambiguous) EXTERNAL caller must
+    # still be policy_blocked -- a resolvable provisional binding is not
+    # authorization.
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550080"}
+    _run(driver, "upsert_preference",
+         {"key": "delivery_habit_note", "value": "leave at dock"}, identity=identity)
+
+    result = _run(driver, "clear_preference", {"key": "delivery_habit_note"}, identity=identity)
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+    # Fail-closed, not fail-open: the slot survives.
+    got = _run(driver, "get_preferences", {}, identity=identity)
+    assert got.data["preferences"]["delivery_habit_note"] == "leave at dock"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'preference_cleared'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_clear_preference_unmatched_external_caller_is_policy_blocked(datastore) -> None:
+    # No channel identity in context at all -- resolve_customer_memory_binding
+    # itself fails closed, and the verified-only gate rejects before that too.
+    driver, _, _ = datastore
+    result = _run(driver, "clear_preference", {"key": "delivery_habit_note"})
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+
+def test_get_my_memory_summary_verified_external_returns_slot_values_only(
+    datastore,
+) -> None:
+    driver, _, _ = datastore
+    identity = VERIFIED
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+    _run(driver, "upsert_preference",
+         {"key": "contact_time_preference", "value": "mornings"}, identity=identity)
+
+    result = _run(driver, "get_my_memory_summary", {}, identity=identity)
+    assert result.ok
+    assert result.data == {
+        "preferences": {
+            "channel_preference": "sms",
+            "contact_time_preference": "mornings",
+        }
+    }
+    # No internal metadata: no source, actor, timestamps, or binding_key.
+    assert set(result.data.keys()) == {"preferences"}
+
+
+def test_get_my_memory_summary_unverified_provisional_caller_gets_no_data(
+    datastore,
+) -> None:
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550081"}
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+
+    result = _run(driver, "get_my_memory_summary", {}, identity=identity)
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_unmatched_caller_gets_no_data(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "get_my_memory_summary", {})
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_internal_copilot_verified_still_requires_verified_identity(
+    datastore,
+) -> None:
+    # The gate is verified-identity, not profile -- an internal_copilot call
+    # with no resolvable/verified identity is blocked the same way.
+    driver, _, _ = datastore
+    result = _run(driver, "get_my_memory_summary", {}, profile="internal_copilot")
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
 
 
 # --- get_memory_audit (0.0.3 S20, FR-20: supervisor memory audit view) ------

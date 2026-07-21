@@ -243,20 +243,49 @@ def test_clear_rejects_open_ended_key() -> None:
     assert result.error_class == "unexpected_error"
 
 
-def test_clear_on_external_profile_is_policy_blocked() -> None:
-    # FR-20: on the EXTERNAL customer profile a clear must be policy_blocked
-    # (employee/supervisor-only write), same as every other write on
-    # toee_customer_memory -- a clear is always a rep/supervisor at the
-    # keyboard, never the customer.
+def test_clear_on_external_profile_verified_customer_succeeds() -> None:
+    # 0.0.3 S21 (FR-21): EXTENDS the S20 gate -- a VERIFIED customer on the
+    # EXTERNAL profile may now clear their OWN binding (still the SAME
+    # clear_preference write action, no new write path). Contrast with
+    # test_clear_on_external_profile_unverified_is_policy_blocked below.
     driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
-    result = _call(driver, "clear_preference", {"key": "channel_preference"}, _verified_ctx())
+    ctx = _verified_ctx()
+
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
+    assert result.ok is True
+    assert result.data["cleared"] is True
+
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"] == {}
+
+
+def test_clear_on_external_profile_unverified_is_policy_blocked() -> None:
+    # FR-21/US13: an UNVERIFIED EXTERNAL caller (a provisional channel binding,
+    # e.g. an unmatched or ambiguous phone/email match) must still be
+    # policy_blocked -- a resolvable provisional binding is not authorization,
+    # same as every other governed write on toee_customer_memory.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    ctx = _provisional_ctx("+14165550777")
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
 
     assert result.ok is False
     assert result.error_class == "policy_blocked"
 
-    # Fail-closed, not fail-open: the slot survives an unattributed clear.
-    read = _call(driver, "get_preferences", {}, _internal_ctx(user_id="acct_rep_1"))
+    # Fail-closed, not fail-open: the SAME binding's slot survives the
+    # unattributed clear attempt.
+    read = _call(driver, "get_preferences", {}, ctx)
     assert read.data["preferences"]["channel_preference"] == "sms"
+
+
+def test_clear_on_external_profile_unmatched_caller_is_policy_blocked() -> None:
+    # Same as above but with NO channel identity at all (a totally unresolvable
+    # caller) -- resolve_customer_memory_binding itself fails closed here, and
+    # the verified-only gate must reject before that too.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, _unmatched_ctx())
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
 
 
 def test_clear_on_internal_profile_without_user_id_is_policy_blocked() -> None:
@@ -271,6 +300,69 @@ def test_clear_on_internal_profile_without_user_id_is_policy_blocked() -> None:
 
     assert result.ok is False
     assert result.error_class == "policy_blocked"
+
+
+# --- get_my_memory_summary (0.0.3 S21, FR-21/NFR-2) -------------------------
+
+
+def test_get_my_memory_summary_verified_customer_returns_slot_values_only() -> None:
+    driver = _driver(
+        MemoryMockData(
+            preferences={
+                "channel_preference": "sms",
+                "contact_time_preference": "mornings",
+            }
+        )
+    )
+    result = _call(driver, "get_my_memory_summary", {}, _verified_ctx())
+
+    assert result.ok is True
+    assert result.data == {
+        "preferences": {
+            "channel_preference": "sms",
+            "contact_time_preference": "mornings",
+        }
+    }
+    # No internal metadata: no source, actor, timestamps, or binding_key.
+    assert set(result.data.keys()) == {"preferences"}
+
+
+def test_get_my_memory_summary_unverified_provisional_caller_gets_no_data() -> None:
+    # US13: an unmatched/provisional caller must never probe memory by holding
+    # a phone number -- a resolvable provisional binding is not authorization.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(
+        driver, "get_my_memory_summary", {}, _provisional_ctx("+14165550888")
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_unmatched_caller_gets_no_data() -> None:
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(driver, "get_my_memory_summary", {}, _unmatched_ctx())
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_isolated_by_verified_binding() -> None:
+    driver = _driver()
+    _call(
+        driver,
+        "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings"},
+        _verified_ctx("gid://shopify/Customer/1001"),
+    )
+
+    other = _call(
+        driver, "get_my_memory_summary", {}, _verified_ctx("gid://shopify/Customer/2002")
+    )
+    assert other.ok is True
+    assert other.data == {"preferences": {}}
 
 
 # --- dismiss_proposal (0.0.3 S15, FR-16/FR-17) ------------------------------

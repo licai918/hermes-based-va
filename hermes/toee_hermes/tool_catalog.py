@@ -32,6 +32,12 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "upsert_preference",
         "clear_preference",
         "get_preferences",
+        # 0.0.3 S21 (FR-21): verified-only customer self-service "what do you
+        # remember about me" read -- slot values only, no source/actor/
+        # timestamps/binding_key (see the mock/datastore handlers). LLM-callable
+        # on the EXTERNAL profile (NOT in _AGENT_EXCLUDED_ACTIONS, unlike
+        # get_memory_audit below -- this one IS customer-facing by design).
+        "get_my_memory_summary",
         # 0.0.3 S15 (FR-17): audit-only action for a dismissed S14 proposal --
         # persists no slot, only a Workbench Audit Log row (see the datastore
         # handler in hermes-runtime/hermes_runtime/datastore/handlers/memory.py).

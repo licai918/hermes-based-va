@@ -29,10 +29,12 @@ from toee_hermes.drivers.mock.memory import (
     MEMORY_PREFERENCE_SLOTS,
     _read_evidence,
     _require_value,
+    is_verified_customer_identity,
     resolve_customer_memory_binding,
     resolve_memory_write_source,
 )
 from toee_hermes.errors import ToolDriverError
+from toee_hermes.plugin.profiles import EXTERNAL
 
 from ._common import insert_audit, new_id, serialize_row
 
@@ -101,21 +103,45 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
     """Clears one preference slot and records an attributed audit row.
 
     0.0.3 S20 (FR-20): closes the 0.0.2 PAC-1 caveat -- a clear used to leave
-    zero trace (a hard DELETE, no audit row). Requires an attributed actor
-    exactly like ``_dismiss_proposal`` (a clear is always a rep/supervisor at
-    the keyboard, never the AI draft turn): no ``context.user_id`` ->
-    ``policy_blocked`` *before* the DELETE runs, so the EXTERNAL customer-facing
-    profile -- which never carries a user_id -- can never clear a slot itself,
-    same as every other write on this tool. Still the SAME governed
-    ``clear_preference`` dispatch action; no new write path, no schema change.
+    zero trace (a hard DELETE, no audit row). Gated to an attributed rep/
+    supervisor actor: no ``context.user_id`` -> ``policy_blocked`` *before* the
+    DELETE runs, same as ``_dismiss_proposal``.
+
+    0.0.3 S21 (FR-21, NFR-2) EXTENDS that same governed ``clear_preference``
+    gate -- still the ONE write action, no new write path, no schema change --
+    to also authorize a VERIFIED customer clearing their OWN binding on the
+    EXTERNAL profile: verified-only (``is_verified_customer_identity``, the
+    same signal ``binding_key_from_identity`` uses to bind to the Shopify
+    customer id), audited with ``account_id`` NULL (the customer is not a
+    workbench account -- a NULL-actor audit row is already legitimate, the
+    merge path writes them too, ADR-0148) and ``details.initiator`` marking it
+    customer-initiated so it stays distinguishable from a rep/supervisor clear
+    in the audit trail. An unverified EXTERNAL caller (unmatched, provisional,
+    or ambiguous) is still ``policy_blocked``, never a deletion -- a resolvable
+    provisional binding is not authorization (US13). Every other profile keeps
+    the unchanged S20 gate: no ``context.user_id`` -> ``policy_blocked`` (a
+    rep/supervisor clear is always an attributed actor at the keyboard, never
+    the unbound AI draft turn).
     """
     slot = _require_slot(params)
-    account_id = context.user_id
-    if not account_id:
-        raise ToolDriverError(
-            "policy_blocked",
-            "A governed preference clear requires an attributed actor.",
-        )
+
+    if context.profile == EXTERNAL:
+        if not is_verified_customer_identity(context.identity):
+            raise ToolDriverError(
+                "policy_blocked",
+                "A governed preference clear requires a verified customer identity.",
+            )
+        account_id = None
+        initiator = "customer"
+    else:
+        account_id = context.user_id
+        if not account_id:
+            raise ToolDriverError(
+                "policy_blocked",
+                "A governed preference clear requires an attributed actor.",
+            )
+        initiator = "rep"
+
     binding_key, _ = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
         cur.execute(
@@ -129,7 +155,7 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
         action="preference_cleared",
         target_type="customer_memory_slot",
         target_id=slot,
-        details={"slot": slot, "binding_key": binding_key},
+        details={"slot": slot, "binding_key": binding_key, "initiator": initiator},
     )
     return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
@@ -146,6 +172,32 @@ def _get_preferences(conn, params: dict[str, Any], context: "ToolExecutionContex
         "binding_key": binding_key,
         "preferences": {name: value for name, value in rows},
     }
+
+
+def _get_my_memory_summary(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Customer-safe self-service summary read (0.0.3 S21, FR-21, NFR-2).
+
+    Verified-only, same gate as the extended ``_clear_preference`` above: an
+    EXTERNAL caller who is not a verified customer (unmatched, provisional, or
+    ambiguous) gets ZERO data, never able to probe another customer's
+    provisional slots by holding their phone/email (fail-closed, US13). Strips
+    ALL internal metadata -- slot values only, no source, no actor, no
+    timestamps, no binding_key -- reusing ``_get_preferences``' query but never
+    its full response shape.
+    """
+    if not is_verified_customer_identity(context.identity):
+        raise ToolDriverError(
+            "policy_blocked",
+            "Customer Memory self-service requires a verified customer identity.",
+        )
+    binding_key, _ = resolve_customer_memory_binding(context, params)
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT slot_name, slot_value FROM customer_memory_slot WHERE binding_key = %s",
+            (binding_key,),
+        )
+        rows = cur.fetchall()
+    return {"preferences": {name: value for name, value in rows}}
 
 
 def _dismiss_proposal(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
@@ -233,6 +285,7 @@ def memory_handlers() -> dict[str, dict[str, Any]]:
             "upsert_preference": _upsert_preference,
             "clear_preference": _clear_preference,
             "get_preferences": _get_preferences,
+            "get_my_memory_summary": _get_my_memory_summary,
             "dismiss_proposal": _dismiss_proposal,
             "get_memory_audit": _get_memory_audit,
         }
