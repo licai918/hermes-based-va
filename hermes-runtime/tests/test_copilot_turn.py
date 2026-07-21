@@ -27,7 +27,9 @@ from hermes_runtime.copilot_turn import (
 )
 from hermes_runtime.live import _scripted_openai_factory, run_scripted_agent
 from hermes_runtime.openrouter import OPENROUTER_PRIMARY_MODEL, OpenRouterConfig
+from toee_hermes.plugin import _AGENT_EXCLUDED_ACTIONS
 from toee_hermes.plugin.profiles import INTERNAL, allowlisted_tools
+from toee_hermes.tool_catalog import TOOL_CATALOG
 
 
 @pytest.fixture(autouse=True)
@@ -63,8 +65,52 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         "toee_copilot_draft",
         "toee_workbench_read",
         "toee_customer_memory",
+        # 0.0.3 S22 (FR-23): reviewed addition. toee_agent_experience's
+        # propose_experience writes a status="proposed" L6 row (inert until an
+        # admin confirms it, S24) -- it never contacts the customer or moves
+        # money, so it does not weaken the no-auto-send invariant this
+        # tripwire guards. list_agent_experience is admin-only and excluded
+        # from LLM registration entirely (_AGENT_EXCLUDED_ACTIONS).
+        "toee_agent_experience",
+        # 0.0.3 S26 (FR-28): reviewed addition. toee_metrics.get_aggregate_metrics
+        # is a read-only aggregate-counts/rates report (never a customer value,
+        # never money) and is WHOLLY excluded from LLM registration
+        # (_AGENT_EXCLUDED_ACTIONS) -- it is the toolset's ONLY catalog action, so
+        # it never registers a handler and never appears in a booted tool_names()
+        # set (see _wholly_excluded_toolsets below). Declared here purely so the
+        # allowlist gate lets the admin BFF's deterministic tools:dispatch call
+        # reach it (ADR-0140 precedent: toee_customer_memory.get_memory_audit).
+        "toee_metrics",
+        # 0.0.3 S28 (FR-30): reviewed addition. toee_retention's two actions
+        # (trigger_retention_sweep, get_retention_status) delete/read
+        # customer_memory_slot rows -- never contacts the customer and never
+        # moves money, so it does not weaken the no-auto-send invariant this
+        # tripwire guards. BOTH actions are its ONLY catalog actions and BOTH
+        # are WHOLLY excluded from LLM registration (_AGENT_EXCLUDED_ACTIONS),
+        # so it never registers a handler and never appears in a booted
+        # tool_names() set (see _wholly_excluded_toolsets below). Declared here
+        # purely so the allowlist gate lets the admin BFF's deterministic
+        # tools:dispatch call (and the schedulable CLI entrypoint) reach it.
+        "toee_retention",
     }
 )
+
+
+def _wholly_excluded_toolsets() -> set[str]:
+    """Toolsets whose EVERY catalog action is in ``_AGENT_EXCLUDED_ACTIONS``.
+
+    Such a toolset never registers a single handler in ``_register()`` (every
+    action is skipped), so it never appears in a booted ``tool_names()`` set
+    regardless of profile-allowlist membership -- 0.0.3 S26's ``toee_metrics``
+    is the first (a single admin-only aggregate-metrics read). Assertion (2)
+    below subtracts this set so a wholly-admin-only toolset doesn't break the
+    booted-set-equals-allowlist equality it isn't structurally able to satisfy.
+    """
+    return {
+        tool
+        for tool, actions in TOOL_CATALOG.items()
+        if all((tool, action) in _AGENT_EXCLUDED_ACTIONS for action in actions)
+    }
 
 
 def _booted_toolsets(profile: str) -> set[str]:
@@ -87,9 +133,10 @@ def test_internal_copilot_agent_turn_excludes_send_tools() -> None:
         assert send not in toolsets, f"{send} must not be booted for a draft turn"
 
     # (2) Allowlist-equality: the booted set is EXACTLY internal_copilot's declared
-    # allowlist — boot registers nothing beyond what the profile declares, so the
+    # allowlist minus any WHOLLY-excluded toolset (see _wholly_excluded_toolsets)
+    # — boot registers nothing beyond what the profile declares, so the
     # structural no-send rests entirely on that declaration (no transitive drift).
-    assert toolsets == set(allowlisted_tools(INTERNAL))
+    assert toolsets == set(allowlisted_tools(INTERNAL)) - _wholly_excluded_toolsets()
 
     # (3) Allowlist tripwire: the declared allowlist still equals the reviewed
     # snapshot. (2) on its own can't catch a send tool *added to the allowlist* —
@@ -133,6 +180,63 @@ def test_run_turn_result_carries_the_governed_messages_transcript() -> None:
     assert result["messages"][0]["role"] == "user"
     assistant_messages = [m for m in result["messages"] if m.get("role") == "assistant"]
     assert assistant_messages[-1]["content"].strip() == draft
+
+
+# --- S14 (FR-15): structured proposals[] extracted from the propose-only write ---
+
+
+class _VerifiedIdentityStore:
+    """A store with a fixed verified identity and no memory rows.
+
+    Keeps the proposal-extraction test hermetic (no Postgres) while still giving
+    the scripted upsert_preference call a resolvable binding to succeed against --
+    mirrors test_copilot_memory_write_overlay.py's ``_NullStore`` pattern, one step
+    further (a real identity instead of ``None``).
+    """
+
+    def load_case_identity(self, case_id: str) -> dict:
+        return {
+            "outcome": "verified_customer",
+            "shopify_customer_id": "gid://shopify/Customer/1",
+        }
+
+    def load_customer_memory(self, binding_key: str) -> list:
+        return []
+
+
+def test_run_turn_result_extracts_memory_proposals_from_the_transcript() -> None:
+    # S14 (FR-15): the draft turn's toee_customer_memory.upsert_preference call is
+    # inert (S13/ADR-0150) -- the write never reaches a datastore -- but its
+    # framework-validated result still becomes a structured proposal on
+    # result["proposals"]. Pure extraction: no new write path, no model free-text.
+    run_turn = make_copilot_run_turn(
+        scripted_completions=[
+            {
+                "tool_calls": [
+                    {
+                        "name": "toee_customer_memory__upsert_preference",
+                        "arguments": {"key": "contact_time_preference", "value": "after 2pm"},
+                    }
+                ]
+            },
+            {"content": "Noted, we'll reach out after 2pm."},
+        ],
+        store=_VerifiedIdentityStore(),
+    )
+
+    result = run_turn(channel="sms", case_id="case_pref", prompt="only call after 2pm please")
+
+    assert result["proposals"] == [
+        {"slot": "contact_time_preference", "value": "after 2pm", "evidence_turn": None}
+    ]
+
+
+def test_run_turn_result_has_no_proposals_when_no_memory_tool_calls() -> None:
+    run_turn = make_copilot_run_turn(scripted_completions=[{"content": "Just a plain draft."}])
+
+    result = run_turn(channel="sms", case_id="case_x")
+
+    assert result["proposals"] == []
 
 
 def test_default_provider_is_a_deterministic_keyless_stub() -> None:
@@ -469,11 +573,12 @@ def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> No
 
 
 # --- S03 (FR-1): draft-persona write discipline for toee_customer_memory ---------
-# The draft agent KEEPS upsert_preference (S20 lets a draft turn persist an
-# agent-initiated write), so the persona has to carry the same no-inferred
-# discipline the external persona already proved (persona.py:99-103: "ONLY when
-# the customer explicitly asks... NEVER save a preference you merely inferred").
-# All four channels boot the identical internal_copilot allowlist (REVIEWED_
+# The draft agent KEEPS upsert_preference in its allowlist (propose-only since
+# S13/ADR-0150 -- the call never persists, see test_copilot_memory_write_overlay.py),
+# so the persona still carries the same no-inferred discipline the external
+# persona already proved (persona.py:99-103: "ONLY when the customer explicitly
+# asks... NEVER save a preference you merely inferred") as defense in depth. All
+# four channels boot the identical internal_copilot allowlist (REVIEWED_
 # INTERNAL_ALLOWLIST above includes toee_customer_memory, and boot_profile never
 # sees the channel), so every channel's system message must carry the guard.
 
@@ -502,3 +607,23 @@ def test_system_messages_document_read_tool_param_conventions() -> None:
         # the load-bearing framing: exact names matter, wrong name == missing value.
         lowered = message.lower()
         assert "exact" in lowered and "parameter name" in lowered
+
+
+def test_system_messages_document_the_qbo_email_link_check_workflow() -> None:
+    # FR-32 (0.0.3 S31): the External persona (persona.py:77-87) already documents
+    # that a toee_qbo_read is allowed ONLY after confirming the customer's email
+    # link -- get_email_link_status {shopify_customer_id} must be called and its
+    # status checked as `linked` BEFORE get_invoice/get_ar_summary. The copilot
+    # draft prompts didn't mirror this, so a draft turn could call the QBO read
+    # tools with no idea the link-check gate exists. Assert the convention text
+    # (and its ordering before the QBO read actions) is present on every channel.
+    for channel in ("sms", "email", "internal_note", "chat"):
+        message = _system_message(channel)
+        assert "get_email_link_status" in message
+        assert "shopify_customer_id" in message
+        assert "linked" in message
+        assert "get_invoice" in message
+        assert "get_ar_summary" in message
+        # ordering: the link-check call is documented before the QBO reads it gates.
+        assert message.index("get_email_link_status") < message.index("get_invoice")
+        assert message.index("get_email_link_status") < message.index("get_ar_summary")

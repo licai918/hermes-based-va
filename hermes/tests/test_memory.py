@@ -205,8 +205,11 @@ def test_get_preferences_returns_independent_copy() -> None:
 
 
 def test_clear_acknowledges_removal() -> None:
+    # 0.0.3 S20 (FR-20): a clear is a governed employee/supervisor action, same
+    # attributed-actor requirement as dismiss_proposal -- attributed internal
+    # context, mirroring the Postgres twin's success path.
     driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
-    ctx = _verified_ctx()
+    ctx = _internal_ctx(user_id="acct_rep_1")
 
     cleared = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
     assert cleared.ok is True
@@ -219,7 +222,10 @@ def test_clear_acknowledges_removal() -> None:
 
 def test_clear_missing_slot_is_idempotent() -> None:
     cleared = _call(
-        _driver(), "clear_preference", {"key": "channel_preference"}, _verified_ctx()
+        _driver(),
+        "clear_preference",
+        {"key": "channel_preference"},
+        _internal_ctx(user_id="acct_rep_1"),
     )
 
     assert cleared.ok is True
@@ -227,12 +233,201 @@ def test_clear_missing_slot_is_idempotent() -> None:
 
 
 def test_clear_rejects_open_ended_key() -> None:
+    # Slot validation runs before the actor check, so an open-ended key is
+    # still a governed rejection even with no attributed actor.
     result = _call(
         _driver(), "clear_preference", {"key": "favorite_color"}, _verified_ctx()
     )
 
     assert result.ok is False
     assert result.error_class == "unexpected_error"
+
+
+def test_clear_on_external_profile_verified_customer_succeeds() -> None:
+    # 0.0.3 S21 (FR-21): EXTENDS the S20 gate -- a VERIFIED customer on the
+    # EXTERNAL profile may now clear their OWN binding (still the SAME
+    # clear_preference write action, no new write path). Contrast with
+    # test_clear_on_external_profile_unverified_is_policy_blocked below.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    ctx = _verified_ctx()
+
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
+    assert result.ok is True
+    assert result.data["cleared"] is True
+
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"] == {}
+
+
+def test_clear_on_external_profile_unverified_is_policy_blocked() -> None:
+    # FR-21/US13: an UNVERIFIED EXTERNAL caller (a provisional channel binding,
+    # e.g. an unmatched or ambiguous phone/email match) must still be
+    # policy_blocked -- a resolvable provisional binding is not authorization,
+    # same as every other governed write on toee_customer_memory.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    ctx = _provisional_ctx("+14165550777")
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+    # Fail-closed, not fail-open: the SAME binding's slot survives the
+    # unattributed clear attempt.
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"]["channel_preference"] == "sms"
+
+
+def test_clear_on_external_profile_unmatched_caller_is_policy_blocked() -> None:
+    # Same as above but with NO channel identity at all (a totally unresolvable
+    # caller) -- resolve_customer_memory_binding itself fails closed here, and
+    # the verified-only gate must reject before that too.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, _unmatched_ctx())
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_clear_on_internal_profile_without_user_id_is_policy_blocked() -> None:
+    # The unbound AI draft-turn path never sets context.user_id -- no rep
+    # attributed the clear, so it is policy_blocked, not a silent success.
+    result = _call(
+        _driver(MemoryMockData(preferences={"channel_preference": "sms"})),
+        "clear_preference",
+        {"key": "channel_preference"},
+        _internal_ctx(),  # no user_id: unbound draft turn
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+# --- get_my_memory_summary (0.0.3 S21, FR-21/NFR-2) -------------------------
+
+
+def test_get_my_memory_summary_verified_customer_returns_slot_values_only() -> None:
+    driver = _driver(
+        MemoryMockData(
+            preferences={
+                "channel_preference": "sms",
+                "contact_time_preference": "mornings",
+            }
+        )
+    )
+    result = _call(driver, "get_my_memory_summary", {}, _verified_ctx())
+
+    assert result.ok is True
+    assert result.data == {
+        "preferences": {
+            "channel_preference": "sms",
+            "contact_time_preference": "mornings",
+        }
+    }
+    # No internal metadata: no source, actor, timestamps, or binding_key.
+    assert set(result.data.keys()) == {"preferences"}
+
+
+def test_get_my_memory_summary_unverified_provisional_caller_gets_no_data() -> None:
+    # US13: an unmatched/provisional caller must never probe memory by holding
+    # a phone number -- a resolvable provisional binding is not authorization.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(
+        driver, "get_my_memory_summary", {}, _provisional_ctx("+14165550888")
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_unmatched_caller_gets_no_data() -> None:
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(driver, "get_my_memory_summary", {}, _unmatched_ctx())
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_isolated_by_verified_binding() -> None:
+    driver = _driver()
+    _call(
+        driver,
+        "upsert_preference",
+        {"key": "contact_time_preference", "value": "mornings"},
+        _verified_ctx("gid://shopify/Customer/1001"),
+    )
+
+    other = _call(
+        driver, "get_my_memory_summary", {}, _verified_ctx("gid://shopify/Customer/2002")
+    )
+    assert other.ok is True
+    assert other.data == {"preferences": {}}
+
+
+# --- dismiss_proposal (0.0.3 S15, FR-16/FR-17) ------------------------------
+
+
+def test_dismiss_proposal_acknowledges_without_persisting_a_slot() -> None:
+    # A dismissal is always a rep at the keyboard (FR-16) -- attributed internal
+    # context, mirroring the Postgres twin's success path.
+    driver = _driver()
+    ctx = _internal_ctx(user_id="acct_rep_1")
+
+    dismissed = _call(
+        driver,
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        ctx,
+    )
+    assert dismissed.ok is True
+    assert dismissed.data["slot"] == "channel_preference"
+    assert dismissed.data["dismissed"] is True
+
+    # A bad guess can't quietly land in memory (US17): nothing was stored.
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"] == {}
+
+
+def test_dismiss_proposal_rejects_open_ended_key() -> None:
+    result = _call(
+        _driver(),
+        "dismiss_proposal",
+        {"key": "favorite_color", "value": "blue"},
+        _internal_ctx(user_id="acct_rep_1"),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_dismiss_proposal_on_external_profile_is_policy_blocked() -> None:
+    # FR-16: on the EXTERNAL customer profile a dismissal must be policy_blocked
+    # (employee-only write), same as every other write on toee_customer_memory --
+    # a dismissal is always a rep at the keyboard, never the customer.
+    result = _call(
+        _driver(),
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        _verified_ctx(),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_dismiss_proposal_on_internal_profile_without_user_id_is_policy_blocked() -> None:
+    # The unbound AI draft-turn path (S20) never sets context.user_id -- no rep
+    # attributed the dismissal, so it is policy_blocked, not a silent success.
+    result = _call(
+        _driver(),
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        _internal_ctx(),  # no user_id: unbound draft turn
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
 
 
 # --- round-trip ------------------------------------------------------------
@@ -257,7 +452,10 @@ def test_round_trip_upsert_get_clear_get() -> None:
     after_upsert = _call(driver, "get_preferences", {}, ctx)
     assert after_upsert.data["preferences"]["delivery_habit_note"] == "leave at side door"
 
-    cleared = _call(driver, "clear_preference", {"key": "delivery_habit_note"}, ctx)
+    # Clear is an attributed employee/supervisor action (FR-20): same identity
+    # binding, an internal profile context with an acting rep.
+    clear_ctx = _internal_ctx(user_id="acct_rep_1")
+    cleared = _call(driver, "clear_preference", {"key": "delivery_habit_note"}, clear_ctx)
     assert cleared.ok is True
     assert cleared.data["cleared"] is True
 

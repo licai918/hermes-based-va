@@ -1,15 +1,24 @@
 import {
+  clearMemorySlot,
+  confirmExperience,
   createAccount,
   disableAccount,
+  getCorpusStatus,
+  getMemoryAudit,
+  getRetentionStatus,
   getRun,
   listAccounts,
+  listAgentExperience,
   listRuns,
   listSlots,
+  probeKnowledge,
   promote,
+  rejectExperience,
   rollbackSlot,
   saveDraft,
   signOff,
   submitSlot,
+  triggerRetentionSweep,
   updateRole,
 } from "./admin-client";
 
@@ -87,6 +96,28 @@ describe("admin-client knowledge", () => {
       "/api/admin/knowledge/slots/business-hours/rollback",
       { method: "POST", headers: { "content-type": "application/json" }, body: undefined },
     );
+  });
+
+  it("getCorpusStatus GETs the corpus-status endpoint and unwraps status", async () => {
+    const status = { docCount: 27, chunkCount: 167, lastIngestAt: null, byType: [] };
+    const fetchMock = stubFetch({ status });
+
+    await expect(getCorpusStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/knowledge/corpus-status", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("probeKnowledge POSTs the query and unwraps results", async () => {
+    const results = [{ title: "Return Policy", url: null, snippet: "..." }];
+    const fetchMock = stubFetch({ results });
+
+    await expect(probeKnowledge("return policy")).resolves.toEqual(results);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/knowledge/probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "return policy" }),
+    });
   });
 });
 
@@ -211,6 +242,122 @@ describe("admin-client accounts", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: undefined,
+    });
+  });
+});
+
+describe("admin-client memory audit (0.0.3 S20, FR-20)", () => {
+  it("getMemoryAudit GETs the memory-audit endpoint with case_id and returns the view", async () => {
+    const view = { slots: [], history: [] };
+    const fetchMock = stubFetch(view);
+
+    await expect(getMemoryAudit("case_1")).resolves.toEqual(view);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/memory-audit?case_id=case_1", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("clearMemorySlot POSTs the clear endpoint with the slot body", async () => {
+    const fetchMock = stubFetch({ slot: "channel_preference", cleared: true });
+
+    await expect(clearMemorySlot("case_1", "channel_preference")).resolves.toEqual({
+      slot: "channel_preference",
+      cleared: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/memory-audit/clear?case_id=case_1",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slot: "channel_preference" }),
+      },
+    );
+  });
+});
+
+describe("admin-client agent experience (0.0.3 S22/S24, FR-23/FR-24)", () => {
+  it("listAgentExperience GETs the agent-experience endpoint and unwraps entries", async () => {
+    const entry = { id: "aexp_1", kind: "note", status: "proposed" };
+    const fetchMock = stubFetch({ entries: [entry] });
+
+    await expect(listAgentExperience()).resolves.toEqual([entry]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agent-experience", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("confirmExperience POSTs the confirm endpoint for the entry id and unwraps entry", async () => {
+    const entry = { id: "aexp_1", kind: "note", status: "confirmed", deciderAccountId: "seed-admin" };
+    const fetchMock = stubFetch({ entry });
+
+    await expect(confirmExperience("aexp_1")).resolves.toEqual(entry);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agent-experience/aexp_1/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: undefined,
+    });
+  });
+
+  it("rejectExperience POSTs the reject endpoint for the entry id and unwraps entry", async () => {
+    const entry = { id: "aexp_1", kind: "note", status: "rejected", deciderAccountId: "seed-admin" };
+    const fetchMock = stubFetch({ entry });
+
+    await expect(rejectExperience("aexp_1")).resolves.toEqual(entry);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agent-experience/aexp_1/reject", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: undefined,
+    });
+  });
+
+  it("confirmExperience throws ApiError carrying a governed denial message", async () => {
+    stubFetch({ error: "agent_experience entry \"aexp_missing\" not found." }, 404);
+    await expect(confirmExperience("aexp_missing")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 404,
+    });
+  });
+});
+
+describe("admin-client retention sweep (0.0.3 S28, FR-30)", () => {
+  it("getRetentionStatus GETs the retention endpoint and returns the status", async () => {
+    const status = {
+      lastRunAt: null,
+      counts: { verified: 0, provisional: 0 },
+      totalDeleted: 0,
+      windowsDays: { verified: 730, provisional: 90 },
+    };
+    const fetchMock = stubFetch(status);
+
+    await expect(getRetentionStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/retention", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("triggerRetentionSweep POSTs the sweep endpoint with no body and returns the result", async () => {
+    const result = {
+      lastRunAt: "2026-07-21T08:00:00.000000+00:00",
+      runAt: "2026-07-21T08:00:00.000000+00:00",
+      counts: { verified: 1, provisional: 2 },
+      totalDeleted: 3,
+      windowsDays: { verified: 730, provisional: 90 },
+    };
+    const fetchMock = stubFetch(result);
+
+    await expect(triggerRetentionSweep()).resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/retention/sweep", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: undefined,
+    });
+  });
+
+  it("triggerRetentionSweep throws ApiError carrying a governed denial message", async () => {
+    stubFetch({ error: "a governed case write requires an attributed actor" }, 403);
+    await expect(triggerRetentionSweep()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 403,
     });
   });
 });

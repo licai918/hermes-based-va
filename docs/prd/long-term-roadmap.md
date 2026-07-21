@@ -30,8 +30,10 @@ Phases are sequential gates. Each phase should have its own eval suite pass and 
 - Production Composio Connected Accounts per ops runbook
 - Cloud Logging alerts for `auth_expired`, gateway error classes, eval regressions
 - Runbook drills: reconnect, API key rotation
-- Weekly **Knowledge Crawl** job on schedule (ADR-0001, ADR-0030)
-- **Shopify Knowledge Sync** + operational policy publish rhythm
+- ~~Weekly **Knowledge Crawl** job on schedule (ADR-0001, ADR-0030)~~ — **superseded 2026-07-20**:
+  there is no crawl; knowledge ingests from the Shopify connector into an in-house hybrid
+  lexical + embedding index. See [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md) (L5).
+- Shopify content sync + operational policy publish rhythm
 - Hermes pin upgrade process exercised once in staging
 
 **Exit gate:** 30-day stable SMS operations; medium eval failures documented; on-call can reconnect Composio without code change.
@@ -132,7 +134,7 @@ Phases are sequential gates. Each phase should have its own eval suite pass and 
 | Track | Continues across phases |
 |-------|-------------------------|
 | **Launch Eval Gate** | Re-run on model, prompt, policy, Hermes upgrade |
-| **Hermes native-first** | Thin shim; remove local workarounds on upstream capability |
+| **Hermes native-first** | ~~Thin shim~~ — ADR-0139: no TypeScript shim; Hermes is the Nous Python agent as a plugin. Remove local workarounds on upstream capability |
 | **ADR-first integrations** | Composio or REST behind new `toee_*` tools only |
 | **CONTEXT + ADR hygiene** | Glossary in CONTEXT; hard decisions in ADR |
 | **Retention & compliance** | ADR-0004 periods applied in memory layers |
@@ -161,5 +163,8 @@ For agent execution, child issues may follow module boundaries:
 - Customer-facing Composio OAuth
 - Agent-direct vendor toolkit exposure
 - Parallel phone + SMS launch
-- Custom agent orchestrator or non-Hermes memory store
+- ~~Custom agent orchestrator or non-Hermes memory store~~ — **superseded 2026-07-20**: ADR-0140
+  made the Toee Business Datastore (Postgres) the system of record, and the L5 knowledge layer
+  gets its own separate no-PII database. Non-Hermes stores **are** the current architecture, not
+  a re-approval item. The surviving intent — *no custom agent orchestrator* — still holds.
 - Multi-merchant Composio tenancy

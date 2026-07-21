@@ -16,17 +16,25 @@ _Avoid_: Voice model, phone agent, self-built Gemini application core
 The production deployment model that runs **Hermes Core** on Google Cloud Run and activates additional Google Cloud services only when **Hermes Core** capabilities require them.
 _Avoid_: Fixed infrastructure bundle, infrastructure-first provisioning
 
+**Memory Layer**:
+One of the six numbered layers that make up Hermes VA storage vocabulary: **L1 Identity Graph**, **L2 Conversation** (**Customer Thread**, **Email Thread**, **SMS Session**, **MessageTurn**, **AgentTurnContext**), **L3 Operational** (**Follow-up Case**, **Workbench Audit Log**, eval records), and **L4 Customer Memory** — all shipped, all in the **Toee Business Datastore** — plus **L5 Knowledge** (decided, not built, in a separate no-PII database) and **L6 Agent-Experience Memory** (exploring). The current-state map is `docs/architecture/memory-layers.md`.
+_Avoid_: Treating the map as a decision record, treating CONTEXT.md as the structural map, adding a layer without an ADR
+
 **Hermes Native Memory**:
-The upstream Hermes conversation-memory system — `MEMORY.md`/`USER.md` agent notes and `session_search` transcript recall — providing per-profile conversational continuity only (ADR-0140). It is never the source of truth for business records; those live in the **Toee Business Datastore**.
-_Avoid_: business system-of-record, per-customer preference store, Gemini memory store, parallel custom memory database
+The upstream Hermes conversation-memory system — `MEMORY.md`/`USER.md` agent notes and `session_search` transcript recall — providing per-profile conversational continuity only (ADR-0140). It is never the source of truth for business records; those live in the **Toee Business Datastore**. It is **entirely disabled at runtime today**: the runtime boots the agent with `skip_memory=True` and points `HERMES_HOME` at a per-process temp directory, so nothing accumulates in it between turns. Any adoption of it (see **Agent-Experience Memory (L6)**) is therefore a net-new retention surface, not the activation of an existing one. Naming collision: this repo's own `memory_enabled()` (`hermes-runtime/.../tool_backend.py`) means **Customer Memory (L4)**, not Hermes agent notes.
+_Avoid_: business system-of-record, per-customer preference store, Gemini memory store, parallel custom memory database, treating it as live storage today, reading `memory_enabled()` as a Hermes agent-notes switch
 
 **Toee Business Datastore**:
-The Postgres system-of-record (ADR-0140, local-first per ADR-0142) holding the four memory layers: the **Identity Graph**, the conversation layer (**Customer Thread**, **SMS Session**, **MessageTurn**, **AgentTurnContext**), the operational layer (**Follow-up Case**, **Workbench Audit Log**, eval records), and **Customer Memory** preference slots — plus **Workbench Accounts** and knowledge publish state. Retention (ADR-0004) is enforced here.
-_Avoid_: Hermes Native Memory as storage substrate, per-channel databases, fixed day-one cloud bundle
+The Postgres system-of-record (ADR-0140, local-first per ADR-0142) holding the four memory layers: the **Identity Graph**, the conversation layer (**Customer Thread**, **SMS Session**, **MessageTurn**, **AgentTurnContext**), the operational layer (**Follow-up Case**, **Workbench Audit Log**, eval records), and **Customer Memory** preference slots — plus **Workbench Accounts** and knowledge publish state. Retention (ADR-0004) is enforced here. The **L5 Knowledge** corpus does **not** live here — it is a separate no-PII `toee_knowledge` database (decided 2026-07-20).
+_Avoid_: Hermes Native Memory as storage substrate, per-channel databases, fixed day-one cloud bundle, knowledge corpus or embeddings in the business database, PII in the knowledge database
 
 **Customer Memory**:
-The structured preference layer in the **Toee Business Datastore** for durable service preferences. v1 slots are `contact_time_preference`, `channel_preference`, `delivery_habit_note`, and `communication_style_note`, bound through the **Identity Graph** to `shopifyCustomerId` when verified or provisionally to `channelIdentityId` when not. Provisional records merge onto the verified customer node when ingress identity first resolves to a **Verified Customer**. Runtime reads inject a compact preference block per turn; writes use governed customer-memory tools only.
-_Avoid_: Live order or AR facts, operational policy text, SMS opt-out consent, model-guessed account data, open-ended preference keys, autonomous inferred writes, overwriting verified slots on merge, model-writable preference injection
+The structured preference layer in the **Toee Business Datastore** for durable service preferences. v1 slots are `contact_time_preference`, `channel_preference`, `delivery_habit_note`, and `communication_style_note`, bound through the **Identity Graph** to `shopifyCustomerId` when verified, or provisionally to the ingress-derived key `provisional:{channel}:{E.164}` when not. Binding is **context-only**: it derives solely from framework-resolved identity, never from a tool param. An unresolvable identity fails closed to `policy_blocked` on every profile (ADR-0148). Provisional records merge onto the verified customer node when ingress identity first resolves to a **Verified Customer**. Runtime reads inject a compact preference block per turn; writes use governed customer-memory tools only. Every write carries a framework-derived `source` — `customer_explicit` (external profile), `employee_confirmed` (UI correction via the dispatch route, with the acting rep in `actor_account_id`), `copilot_agent` (an unbound Copilot draft-turn write, `actor_account_id` NULL), or `merged_provisional` (the provisional→verified merge path only). `source` and `actor_account_id` are read from request context, never from tool params (ADR-0148).
+_Avoid_: Live order or AR facts, operational policy text, SMS opt-out consent, model-guessed account data, open-ended preference keys, **unattributed agent writes** (a Copilot draft-turn write is recorded as `copilot_agent`, not forbidden — but an External-profile write still requires **Tool Gate** proof the customer stated the preference), model-supplied `source`/`user_id`/`channel_identity_id`, overwriting verified slots on merge, model-writable preference injection
+
+**Agent-Experience Memory (L6)**:
+What the agent learns from doing the job, distinct from customer PII (**Customer Memory**, L4), the authored corpus (**Public Site Knowledge**, L5), and the behaviour contract (`persona.py`). Under exploration only; the direction is to copy Hermes's learning loop, not its store, routing proposed learnings through the governed tool → Postgres → audit path with a gated propose → confirm step.
+_Avoid_: Shipped capability, Hermes Native Memory as its store, model-authored PII, cross-profile recall across the EXTERNAL/INTERNAL/SUPERVISOR boundary, unbounded transcript retention
 
 **Hermes Integration Surface**:
 The native Hermes extension model used to connect external systems through Skills, Tools, and MCP without replacing Hermes orchestration.
@@ -39,6 +47,10 @@ _Avoid_: Full custom agent core, Gemini VA module port
 **Hermes Runtime Shim**:
 The Python Hermes-integration layer — the `toee_hermes` plugin plus the gateway embedding — that boots and embeds the upstream Python `hermes-agent`, selects a **Hermes Profile**, and registers **Domain Adapter Tools** without reimplementing orchestration, **Hermes Native Memory**, or **Tool Gate** logic. It is the only repo layer that imports Hermes (`hermes_agent` / `run_agent`); `apps/workbench` never imports Hermes and reaches per-profile Hermes over the API Server (HTTP) per ADR-0139.
 _Avoid_: TypeScript in-process Hermes SDK, npm `packages/hermes-runtime` wrapper, custom agent core, forked Hermes source, direct Hermes imports from UI, BFF, or domain adapter code
+
+**Driver Seam (`extra_drivers`)**:
+The injection point on `boot_profile` through which governed storage backends — **Customer Memory** (L4) and the **Knowledge Retriever** (L5) — are supplied to a **Hermes Profile** without the agent importing them.
+_Avoid_: Direct datastore imports in profile or agent code, bypassing the seam for retrieval
 
 **Hermes Built-in Tool**:
 A tool shipped with **Hermes Core**, such as `web_search` or `memory`, registered through the same native tool surface as **Domain Adapter Tools**.
@@ -73,7 +85,7 @@ The persisted inbound-turn record that binds an accepted Textline message to `ev
 _Avoid_: Queue payload as source of truth, reply targeting from model-supplied alternate phone numbers, session re-resolution without ingress snapshot
 
 **Customer Thread**:
-The long-lived customer conversation record in **Hermes Native Memory** for a channel identity such as a Textline phone number, spanning multiple **SMS Session** windows and many **MessageTurn** records.
+The long-lived customer conversation record in the **Toee Business Datastore** (L2 Conversation) for a channel identity such as a Textline phone number, spanning multiple **SMS Session** windows and many **MessageTurn** records.
 _Avoid_: One-message memory, channel-only log outside Hermes, case-owned thread container
 
 **MessageTurn**:
@@ -85,7 +97,7 @@ The internal chat surface in the **Copilot Workbench** where employees converse 
 _Avoid_: Customer chat portal, separate internal agent, drafting without selected case, gateway on read-only audit routes
 
 **Operations Dashboard**:
-The case and operations view in the **Copilot Workbench** showing **Human Intervention Case** queue items, urgency, conversation history, and resolution status from **Hermes Native Memory**. On the default `/copilot` route it uses a dual-zone left layout: **Case Queue** plus read-only **Case Thread Context** for the selected case.
+The case and operations view in the **Copilot Workbench** showing **Human Intervention Case** queue items, urgency, conversation history, and resolution status from the **Toee Business Datastore** (L2/L3). On the default `/copilot` route it uses a dual-zone left layout: **Case Queue** plus read-only **Case Thread Context** for the selected case.
 _Avoid_: Separate ticketing system, dashboard without Hermes context, default queue of auto-handled threads, peer audit tabs on the rep default page
 
 **Case Thread Context**:
@@ -109,7 +121,7 @@ The **Workbench Account** currently responsible for handling a **Follow-up Case*
 _Avoid_: Shared case ownership, unlogged handoff
 
 **Workbench Audit Log**:
-The per-action accountability record in **Hermes Native Memory** for workbench events such as case view, assignment, draft generation, and resolution.
+The per-action accountability record in the **Toee Business Datastore** (L3 Operational) for workbench events such as case view, assignment, draft generation, and resolution.
 _Avoid_: Untracked employee actions, external-only audit spreadsheet
 
 **Text-First Launch**:
@@ -135,6 +147,10 @@ _Avoid_: Autonomous AI write, unconfirmed one-click send, bypass of source-syste
 **Copilot Workbench**:
 The internal workspace combining the **Copilot Gateway** and **Operations Dashboard** for case review, conversation context, and suggested next actions through the **Internal Copilot Profile**.
 _Avoid_: Customer portal, passive ticket UI only, merged supervisor governance console
+
+**Conversation Simulator**:
+The workbench testing surface (0.0.3) where an operator role-plays a customer talking to the external Hermes agent and an employee talking to the copilot. It uses **real pipeline + simulated ingress**: the customer side injects simulated Textline webhook events into the gateway under a simulated phone number, so identity matching, memory injection, knowledge retrieval, and the live model all execute the production turn path; the employee side is the real **Copilot Workbench**. Carries a channel switcher (SMS / email). It is the product-acceptance surface for iteration PACs and the traffic source for validating the **Agent-Experience Memory (L6)** mechanism before real operational traffic exists.
+_Avoid_: A bypass chat that calls the agent directly (skipping gateway/identity), production Textline traffic, a separate agent build for testing, treating simulator transcripts as real customer data
 
 **Admin Governance Console**:
 The internal workspace entry that uses the **Supervisor Admin Profile** for **KnowledgeOps**, eval review, and workbench administration. v1 uses three routes: `/admin/knowledge`, `/admin/eval`, and `/admin/accounts`.
@@ -202,23 +218,30 @@ _Avoid_: Draft policy, pending eval version, website crawl content
 
 **Knowledge Publish Eval Gate**:
 The evaluation step required before new or rolled-back **Operational Policy Knowledge** becomes **Published Operational Policy** for external use.
-_Avoid_: Optional QA, publish without validation, gating weekly **Public Site Knowledge** rebuilds
+_Avoid_: Optional QA, publish without validation, gating **Public Site Knowledge** (L5) retrieval content
 
 **Public Site Knowledge**:
-Customer-facing information sourced from the Toee Tire public website and indexed for Hermes retrieval, primarily through **Shopify Knowledge Sync** and supplemented by **Tavily Gap Crawl**.
-_Avoid_: Internal SOP, tool output, live website fetch at answer time
+The shared, non-PII company and product corpus (**L5 Knowledge**) that Hermes retrieves to answer policy and FAQ-style questions. Ingested from the **Shopify connector** (pages, articles, shop policies), chunked into the separate `toee_knowledge` database, and retrieved by the **Knowledge Retriever**. Shipped 2026-07-20 — see ADR-0149.
+_Avoid_: Internal SOP, tool output, live website fetch at answer time, live price/stock/order/AR facts, governed operational-policy copy, customer PII, storage in the Toee Business Datastore
+
+**Knowledge Ingestion**:
+The process that pulls **Public Site Knowledge** from the **Shopify connector** (pages, articles, shop policies), chunks it, and writes it to the separate `toee_knowledge` database. Content gaps are closed by editing Shopify, not by crawling.
+_Avoid_: Weekly scheduled job, website crawl, sitemap discovery, Tavily, writing into Hermes Native Memory, ingesting customer PII
+
+**Knowledge Retriever**:
+The in-house **L5 Knowledge** component that fuses lexical FTS with dense embedding search over chunks in the separate `toee_knowledge` database, returning top-k chunks through the **Driver Seam (`extra_drivers`)**. It enforces a **Knowledge Deadline**. gbrain was evaluated and rejected.
+_Avoid_: gbrain, external vector-DB service, live web fetch at answer time, retrieval of live price/stock/order/AR facts, PII in the index
+
+**Knowledge Deadline**:
+The driver-side time limit on a **Knowledge Retriever** query; on expiry the driver returns a governed `found=false` rather than blocking the turn or fabricating an answer. Required because no tool-call timeout exists in the repo.
+_Avoid_: Unbounded retrieval wait, partial-result fabrication, silent empty answer without the governed found=false signal
 
 **Shopify Knowledge Sync**:
-The scheduled weekly process that reads Shopify Admin API content such as products, pages, blogs, and shop policies into **Public Site Knowledge**.
-_Avoid_: Live order lookup, cached product image send, replacement for Tavily on all URLs
-
-**Tavily Gap Crawl**:
-The supplemental weekly crawl that indexes only **Approved Crawl URL** pages not already covered by **Shopify Knowledge Sync**.
-_Avoid_: Full-site primary crawl, customer-time browsing
+*Retired 2026-07-20.* Shopify remains the corpus source — the 0.0.3 spike pulled its entire corpus from the Shopify connector — but there is no weekly sync job. See **Knowledge Ingestion**.
 
 **Product Media Reply**:
 A Textline SMS reply that sends one public-catalog product image or approved product page link resolved through a live Shopify Tool read in the **current SMS Session**. A **Verified Customer** may receive live price and inventory in the same reply when requested.
-_Avoid_: RAG-cached image URL, stale weekly sync media, payment link, account-scoped pricing or inventory for unmatched callers
+_Avoid_: RAG-cached image URL, stale corpus media, payment link, account-scoped pricing or inventory for unmatched callers
 
 **Prior Order Product Reference**:
 A customer phrase such as "the one I ordered last time" that Hermes may resolve to a single Shopify order line item for a **Verified Customer** when recent order history uniquely identifies one product.
@@ -240,10 +263,6 @@ _Avoid_: Missing category, implicit default policy
 A proactive question flow in which Hermes asks authorized **Supervisor Admin Profile** users to supply missing content for unfilled **Required Operational Policy Slots**.
 _Avoid_: Customer interview, automatic policy generation, website crawl
 
-**Knowledge Crawl**:
-The scheduled process that fetches approved public website pages and refreshes the local retrieval index used by Hermes.
-_Avoid_: Real-time browsing, customer conversation ingestion
-
 **Business Integration Tool**:
 A governed **Domain Adapter Tool** that reads or triggers approved actions in Shopify, QBO, Square, EasyRoutes, Textline, or Twilio under profile allowlists and audit rules.
 _Avoid_: Third-party MCP wrapper, direct LLM-side API call, separate tool runtime outside Hermes
@@ -259,14 +278,6 @@ _Avoid_: Skill-only policy, prompt-only enforcement, expecting a built-in Hermes
 **Skill Guidance**:
 Procedural instructions in Hermes Skills that tell the agent how to perform a task, but do not by themselves enforce customer-service policy boundaries.
 _Avoid_: Treating Skills as compliance control, assuming the model always loads a Skill
-
-**Crawl Fetch Fallback**:
-A secondary fetch attempt used during **Knowledge Crawl** when the primary Hermes web retrieval path cannot retrieve an **Approved Crawl URL**. On **Cloud-Hosted Hermes**, this uses cloud browser providers or an isolated crawl job—not local desktop Chrome CDP.
-_Avoid_: Replacing the primary crawl pipeline, customer-time live scraping, local `/browser connect` in production
-
-**Approved Crawl URL**:
-A public `toeetire.com` page that Hermes may fetch during **Knowledge Crawl**, such as pages, policies, blogs, and product education pages discovered from the site sitemap.
-_Avoid_: Checkout page, account page, cart page, login page, dynamic search URL
 
 **Verified Customer**:
 A customer whose inbound phone number on voice or Textline SMS matches a phone number stored on a Shopify Customer record.
@@ -462,7 +473,7 @@ The customer record in QuickBooks Online used for invoices, balances, and accoun
 _Avoid_: Shopify customer, caller
 
 **Identity Graph**:
-The mapping layer in **Hermes Native Memory** that links channel identities, **Session Identity Snapshot** records, business-system customer records, consent state, match history, cross-channel identity relationships, and **Customer Memory** binding keys.
+The mapping layer in the **Toee Business Datastore** (L1) that links channel identities, **Session Identity Snapshot** records, business-system customer records, consent state, match history, cross-channel identity relationships, and **Customer Memory** binding keys.
 _Avoid_: CRM, customer database, verification state only in ephemeral agent context, merged Copilot timeline in v1, storing SMS opt-out as a preference slot
 
 **Sender Identity Intake**:
@@ -478,7 +489,7 @@ The email address stored on a Shopify Customer record used for **Email Sender Ma
 _Avoid_: Any sender address, reply-to override from message body, personal inbox not on the customer record
 
 **Email Thread**:
-The long-lived inbound email conversation record in **Hermes Native Memory** for an authenticated sender **From** identity, spanning multiple inbound messages without a 24-hour timeout.
+The long-lived inbound email conversation record in the **Toee Business Datastore** (L2 Conversation) for an authenticated sender **From** identity, spanning multiple inbound messages without a 24-hour timeout.
 _Avoid_: One-message email log, channel-only mailbox outside Hermes, SMS-style 24-hour session cutoff
 
 **Customer Email Link**:
@@ -506,7 +517,8 @@ _Avoid_: Automatic erasure, single-button delete
 - There is no TypeScript in-process Hermes SDK (ADR-0139): Hermes is the upstream Python `hermes-agent`, embedded only by the Python integration layer. `apps/workbench` never imports Hermes; it reaches the **Internal Copilot Profile** and **Supervisor Admin Profile** through the per-profile Hermes HTTP API (ADR-0141: deterministic `POST /v1/tools:dispatch` running `execute_tool` for resources, plus the OpenAI-compatible agent-turn API for chat/drafts; bearer auth per profile).
 - The Python Hermes packages (`hermes/`, `hermes-runtime/`) build with `uv` against the upstream `hermes-agent` pinned by git rev (the ADR-0101 pin-and-eval-gate workflow, now against the rev). `apps/workbench` and its supporting `packages/*` TypeScript libraries use a pnpm workspace.
 - Local development runs the workbench with pnpm and the Python gateway with `uv` (no Docker by default); production deploys separate Cloud Run services from `apps/workbench/Dockerfile` and `hermes-runtime/Dockerfile` (ADR-0098 env layering still applies; the gateway image path is updated per ADR-0139). See `docs/ops/deploy-cloud-run.md`.
-- Toee Tire memory for **Hermes VA** lives in **Hermes Native Memory**, not a parallel custom store.
+- Toee Tire memory for **Hermes VA** lives in the **Toee Business Datastore** (ADR-0140), local-first per ADR-0142. **Hermes Native Memory** is conversation-only and is currently disabled at runtime (`skip_memory=True`, per-process temp `HERMES_HOME`) — nothing accumulates in it today. See `docs/architecture/memory-layers.md`.
+- Records live in the **Toee Business Datastore**; the **L5 Knowledge** corpus lives in a separate no-PII database; **Hermes Native Memory** holds neither and is disabled today.
 - External systems connect through the **Hermes Integration Surface** using Skills, Tools, and MCP.
 - Customer-service policy boundaries are enforced through **Tool Gate** checks and **Hermes Profile** tool allowlists, with **Skill Guidance** and **Launch Eval Gate** as supporting layers.
 - The **External Customer Service Profile** uses a default-deny **Profile Tool Allowlist** of Toee Tire **Business Integration Tool** reads plus restricted **Hermes Built-in Tools** such as `web_search`.
@@ -547,6 +559,8 @@ _Avoid_: Automatic erasure, single-button delete
 - `toee_square_payment_link` v1 action is `send_payment_link` for a verified current-thread **Payment Link** only.
 - `toee_knowledge_search` v1 actions are `search_public_site` and `search_operational_policy`.
 - `search_operational_policy` returns only **Published Operational Policy** content for external and Copilot use.
+- `toee_customer_memory` v1 actions are `upsert_preference`, `clear_preference`, and `get_preferences`.
+- The **External Customer Service Profile** may call `upsert_preference` only, and only with **Tool Gate** proof that the current customer turn explicitly stated the preference; the **Internal Copilot Profile** may call all three within an active **Human Intervention Case**; the **Supervisor Admin Profile** does not register the tool in v1 (ADR-0114).
 - `toee_copilot_draft` v1 actions are `draft_sms`, `draft_email`, and `draft_internal_note` on the **Internal Copilot Profile**.
 - `toee_case_manage` v1 actions are `claim_case`, `assign_case`, `update_priority`, `update_contact_reason`, and `resolve_case` on the **Internal Copilot Profile**.
 - `toee_workbench_read` v1 actions are `get_case`, `list_cases`, `get_audit_log`, and `get_thread` on the **Internal Copilot Profile** and **Supervisor Admin Profile**.
@@ -556,13 +570,13 @@ _Avoid_: Automatic erasure, single-button delete
 - `match_phone` and `match_email_sender` run at channel ingress before external agent processing; `get_email_link_status` supports accounting-read gating.
 - Tooe Tire **Domain Adapter Tools** expose v1 behavior through fixed per-tool **Domain Adapter Tool Action** enums selected by a required `action` parameter.
 - Shopify, QBO, Square, EasyRoutes, Textline, and Twilio connect through **Business Integration Tool** layers in the first version, not third-party or self-hosted MCP wrappers.
-- Weekly **Knowledge Crawl** runs as a scheduled Hermes Skill using the native web crawl stack; **Scrapling** is only a **Crawl Fetch Fallback**, not the primary crawl path.
+- **Public Site Knowledge** (L5) is retrieved by an in-house hybrid lexical FTS + dense-embedding retriever over the separate `toee_knowledge` database, injected through the `extra_drivers` seam; a driver-side deadline returns a governed `found=false` rather than blocking a turn.
 - Toee Tire business rules are implemented as thin **Domain Adapter** layers on top of **Hermes Core**, not by porting the Gemini VA application core.
 - Textline is a **channel** into the **External Customer Service Profile**, not a separate **Hermes Profile**.
 - Hermes stores a long-lived **Customer Thread** per Textline phone number and one or more bounded **SMS Session** windows inside it.
 - The **Channel Gateway** verifies Textline webhooks and routes normalized events into **Hermes Core** under the external profile.
 - Employees use the **Internal Copilot Profile** through the **Copilot Gateway** inside the **Copilot Workbench**.
-- The **Operations Dashboard** reads case and conversation state from **Hermes Native Memory**.
+- The **Operations Dashboard** reads case and conversation state from the **Toee Business Datastore**.
 - The first-version **Copilot Workbench** uses a split layout: **Operations Dashboard** on the left and **Copilot Gateway** on the right.
 - The default **Copilot Workbench** route is `/copilot` with a dual-zone left **Operations Dashboard**: **Case Queue** and read-only **Case Thread Context** for the selected case.
 - The **Case Queue** shows urgent flag, channel, identity summary, **Contact Reason**, last message preview, **Case Assignee**, status, last activity time, and tool-failure flag for each **Human Intervention Case** row.
@@ -617,15 +631,14 @@ _Avoid_: Automatic erasure, single-button delete
 - **Text-First Launch** on Textline SMS must pass the **Launch Eval Gate** before go-live; the **Voice Layer** and later email channel each require a subsequent eval pass.
 - A **Personalized Opening Greeting** may include company or contact name and account recognition, but must follow the **Greeting Personalization Boundary**.
 - **KnowledgeOps** controls what approved knowledge the **Hermes Core** can use.
-- **Public Site Knowledge** is rebuilt weekly before go-live through **Shopify Knowledge Sync** as the primary source and **Tavily Gap Crawl** as the supplement.
-- **Knowledge Crawl** still governs **Approved Crawl URL** scope; Tavily fetches only gap URLs not already indexed by Shopify sync.
+- **Public Site Knowledge** is ingested from the **Shopify connector** (pages, articles, shop policies) into the separate `toee_knowledge` database. Refresh cadence is a build-time decision, not a standing weekly job.
 - **Operational Policy Knowledge** remains internally governed and is not replaced by website content alone.
 - Hermes maintains six **Required Operational Policy Slots** as **Operational Policy Placeholder** records from onboarding onward.
 - An unfilled **Required Operational Policy Slot** triggers **Knowledge Gap Prompt** questions to authorized **Supervisor Admin Profile** users until **KnowledgeOps** publishes approved content.
 - Hermes does not improvise operational policy answers when a **Required Operational Policy Slot** has no approved content.
 - **Operational Policy Knowledge** becomes customer-effective only after it passes the **Knowledge Publish Eval Gate** and is promoted to **Published Operational Policy**.
 - Failed publish attempts remain **Pending Eval Knowledge** while the prior **Published Operational Policy** version stays active externally.
-- The **Knowledge Publish Eval Gate** applies to **Operational Policy Knowledge** only, not to weekly **Shopify Knowledge Sync** or **Tavily Gap Crawl** updates to **Public Site Knowledge**.
+- The **Knowledge Publish Eval Gate** applies to **Operational Policy Knowledge** only, not to **Public Site Knowledge** (L5) corpus updates.
 - Hermes answers policy and FAQ-style questions from **Public Site Knowledge**, but answers account-specific facts from tools and governed operational rules.
 - A **Verified Customer** is identified through **Phone Match Verification** against a Shopify Customer **Registered Phone** on voice and Textline SMS.
 - **Phone Match Verification**, unmatched handling, ambiguous match handling, and **Payment Link** rules are shared across Textline SMS and voice.
@@ -730,13 +743,13 @@ _Avoid_: Automatic erasure, single-button delete
 > **Domain expert:** "No. The **Greeting Personalization Boundary** allows company or contact name and account recognition, but not invoice amounts, balances, or overdue details in the opening."
 
 > **Dev:** "Can we use toeetire.com as the only knowledge source?"
-> **Domain expert:** "Not alone. **Public Site Knowledge** is refreshed by weekly **Knowledge Crawl** into a local index, but **Operational Policy Knowledge** must stay internally governed because website pages do not encode Hermes verification, payment-link, and after-hours rules."
+> **Domain expert:** "Not alone. **Public Site Knowledge** is ingested from the Shopify connector into the L5 `toee_knowledge` database, but **Operational Policy Knowledge** must stay internally governed because website pages do not encode Hermes verification, payment-link, and after-hours rules."
 
-> **Dev:** "How often should Hermes refresh website knowledge?"
-> **Domain expert:** "Weekly **Knowledge Crawl** is enough for public policy and FAQ. Supervisors can trigger an extra rebuild after major policy changes."
+> **Dev:** "How does the knowledge corpus get refreshed?"
+> **Domain expert:** "Re-ingestion from the Shopify connector. There is no scheduled crawl — a rebuild is an explicit operation, and cadence ships with the L5 build."
 
-> **Dev:** "Can Hermes crawl every page on toeetire.com?"
-> **Domain expert:** "No. **Knowledge Crawl** only fetches **Approved Crawl URL** pages from the sitemap, such as pages, policies, blogs, and product education content. It excludes cart, checkout, account, login, and dynamic search URLs."
+> **Dev:** "Where does the corpus come from?"
+> **Domain expert:** "The **Shopify connector** — pages, articles, and shop policies. Nothing is crawled, so there is no cart, checkout, account, or search surface to exclude in the first place."
 
 > **Dev:** "What if we launch before all internal policy rules are written?"
 > **Domain expert:** "Hermes still creates all six **Required Operational Policy Slots** as **Operational Policy Placeholder** records. If a slot is empty, Hermes sends **Knowledge Gap Prompt** questions to **Supervisor Admin Profile** users until **KnowledgeOps** publishes approved content. Hermes does not improvise that policy for customers."
@@ -823,22 +836,16 @@ _Avoid_: Automatic erasure, single-button delete
 > **Domain expert:** "Not by default. **Cloud-Hosted Hermes** runs on Cloud Run and activates Google Cloud services only when **Hermes Core** capabilities require them."
 
 > **Dev:** "Can we copy Gemini VA modules into Hermes?"
-> **Domain expert:** "No. Build on **Hermes Core** with **Hermes Native Memory** and the **Hermes Integration Surface** via Skills, Tools, and MCP. Gemini VA is reference material for business rules, not a code port source."
+> **Domain expert:** "No. Build on **Hermes Core** with the **Toee Business Datastore** for records and the **Hermes Integration Surface** via Skills, Tools, and MCP. Gemini VA is reference material for business rules, not a code port source."
 
 > **Dev:** "Can supervisors see which agent handled which case?"
-> **Domain expert:** "Yes. Each action is attributed through **Case Assignee** and **Workbench Audit Log** entries in **Hermes Native Memory**. Supervisors use the **Agent Workload View** to review ownership and resolution activity."
+> **Domain expert:** "Yes. Each action is attributed through **Case Assignee** and **Workbench Audit Log** entries in the **Toee Business Datastore**. Supervisors use the **Agent Workload View** to review ownership and resolution activity."
 
 > **Dev:** "Should Shopify and QBO go through MCP?"
 > **Domain expert:** "No. They connect through **Business Integration Tool** adapters in the first version. There is no official MCP server to trust, and a self-hosted MCP would duplicate Hermes audit and profile controls."
 
-> **Dev:** "How does weekly website crawl run?"
-> **Domain expert:** "A scheduled **Knowledge Crawl** Skill uses Hermes native web crawl with Tavily as the primary backend, sitemap discovery per **Approved Crawl URL** rules, and **Crawl Fetch Fallback** through cloud browser providers or an isolated crawl job—not local desktop Chrome CDP on Cloud Run."
-
-> **Dev:** "Does Cloud-Hosted Hermes support local Chrome CDP for crawl?"
-> **Domain expert:** "Not in production. `/browser connect` CDP is for a browser on the same machine as the operator, typically local development. On Cloud Run, browser fallback uses Hermes cloud browser providers; Scrapling runs only inside a dedicated crawl job if needed."
-
-> **Dev:** "Can Shopify Admin API replace website crawl entirely?"
-> **Domain expert:** "No. **Shopify Knowledge Sync** is the primary **Public Site Knowledge** source before go-live, but **Tavily Gap Crawl** still indexes approved URLs Shopify did not cover, and live product images use **Product Media Reply** through the Shopify Tool."
+> **Dev:** "Can Shopify content be the entire knowledge corpus?"
+> **Domain expert:** "Yes — the 0.0.3 spike pulled its whole corpus from the Shopify connector. Live product images still use **Product Media Reply** through the Shopify Tool, never the corpus. Content gaps are closed by editing Shopify, not by crawling."
 
 > **Dev:** "Can Hermes text a product photo from last week's knowledge index?"
 > **Domain expert:** "No. A **Product Media Reply** must resolve the image through a live Shopify Tool read in the **current SMS Session**."
@@ -912,14 +919,15 @@ _Avoid_: Automatic erasure, single-button delete
 > **Dev:** "If a supervisor publishes a new operational policy slot, does it go live immediately?"
 > **Domain expert:** "No. It stays **Pending Eval Knowledge** until the **Knowledge Publish Eval Gate** passes. Only then does it become **Published Operational Policy** for the **External Customer Service Profile**."
 
-> **Dev:** "Does weekly Shopify knowledge sync also need publish eval?"
-> **Domain expert:** "No. The **Knowledge Publish Eval Gate** applies to **Operational Policy Knowledge** only. **Public Site Knowledge** rebuilds from **Shopify Knowledge Sync** and **Tavily Gap Crawl** follow the weekly rebuild rules without a separate publish-eval step."
+> **Dev:** "Does a knowledge corpus refresh need publish eval?"
+> **Domain expert:** "No. The **Knowledge Publish Eval Gate** applies to **Operational Policy Knowledge** only. L5 corpus updates do not pass through it."
 
 ## Flagged ambiguities
 
-- "Hermes" can mean **Hermes VA** as the whole system or **Hermes Core** as the text orchestration layer; resolved: use **Hermes VA** for the system and **Hermes Core** for the shared text brain.
+- "Hermes" can mean **Hermes VA** as the whole system or **Hermes Core** as the text orchestration layer; resolved: use **Hermes VA** for the system and **Hermes Core** for the shared text brain. A third collision lives in code: this repo's `memory_enabled()` means **Customer Memory (L4)**, while upstream `memory.memory_enabled` means Hermes agent notes — do not wire one expecting the other.
 - "Profile" means a governed **Hermes Profile**, not a separate deployed assistant.
-- "Verified" means **Phone Match Verification** against Shopify, not manual identity proof.
+- "Memory" is ambiguous across six layers — see **Memory Layer**. Unqualified "memory" in this repo most often means **Customer Memory (L4)**; **Hermes Native Memory** is the upstream framework's own store and is disabled today.
+- "Verified" means **Phone Match Verification** on voice and SMS, or **Email Sender Match** on email — never manual identity proof.
 - "Full permissions" for a **Verified Customer** means full external-profile access for that matched customer, but still excludes accounting changes, refunds, discounts, and other non-low-risk actions.
 - **Registered Phone** is expected to be unique in Shopify, but **Ambiguous Phone Match** handling remains required as a backup control.
 - **Customer Email Link** is the only approved cross-system customer identifier between Shopify and QBO.

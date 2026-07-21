@@ -1,5 +1,13 @@
 # Monorepo layout with separate workbench and gateway services
 
+> **Provisioning rule and gateway service superseded (ADR-0140/0142, ADR-0139).** The
+> monorepo layout intent — one repo, separate deployable surfaces, shared packages, no
+> public webhooks on the employee app — still holds. Superseded: the **Provisioning rule**
+> defers "additional infrastructure such as database" until a feature proves the need, but
+> Postgres is now the system of record and stands up first; and the Node
+> `services/hermes-gateway` is retired in favour of the Python `hermes-runtime/`.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 The first-version **Hermes VA** codebase uses one repository with separate deployable services and shared packages.
 
 ## Top-level layout

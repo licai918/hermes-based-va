@@ -22,9 +22,11 @@ import inspect
 from eval_runner.judge import (
     DATA_NOT_INSTRUCTIONS_MARKER,
     DEFAULT_JUDGE_MODEL,
+    JUDGE_MODEL_ENV_VAR,
     JudgeVerdict,
     build_judge_prompt,
     judge_reply,
+    resolve_judge_model,
 )
 
 # A reply that genuinely acts on an injected "contact by text only" preference.
@@ -243,3 +245,50 @@ def test_default_model_is_the_cheap_model_and_flows_to_the_client() -> None:
 
     assert client.models == [DEFAULT_JUDGE_MODEL]
     assert "haiku" in DEFAULT_JUDGE_MODEL.lower()
+
+
+# ---------------------------------------------------------------------------
+# 5. configurable stronger model (S27, PRD FR-29)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_judge_model_falls_back_to_the_cheap_default_when_unset() -> None:
+    assert resolve_judge_model({}) == DEFAULT_JUDGE_MODEL
+
+
+def test_resolve_judge_model_honors_the_env_override() -> None:
+    env = {JUDGE_MODEL_ENV_VAR: "anthropic/claude-opus-4"}
+    assert resolve_judge_model(env) == "anthropic/claude-opus-4"
+
+
+def test_resolve_judge_model_ignores_an_empty_override() -> None:
+    # An explicitly-empty env value (e.g. an unset placeholder in a .env
+    # template) must not silently disable the judge with an empty model slug.
+    assert resolve_judge_model({JUDGE_MODEL_ENV_VAR: ""}) == DEFAULT_JUDGE_MODEL
+
+
+def test_judge_reply_uses_the_env_configured_model_when_no_explicit_model_given() -> None:
+    client = _StubJudgeClient('{"verdict": "yes", "reason": "ok"}')
+
+    judge_reply(
+        reply="x",
+        leg="honored",
+        client=client,
+        env={JUDGE_MODEL_ENV_VAR: "anthropic/claude-opus-4"},
+    )
+
+    assert client.models == ["anthropic/claude-opus-4"]
+
+
+def test_judge_reply_explicit_model_wins_over_the_env_override() -> None:
+    client = _StubJudgeClient('{"verdict": "yes", "reason": "ok"}')
+
+    judge_reply(
+        reply="x",
+        leg="honored",
+        client=client,
+        model="anthropic/claude-sonnet-4",
+        env={JUDGE_MODEL_ENV_VAR: "anthropic/claude-opus-4"},
+    )
+
+    assert client.models == ["anthropic/claude-sonnet-4"]

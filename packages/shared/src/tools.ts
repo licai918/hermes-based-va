@@ -34,12 +34,13 @@ export const TOOL_CATALOG = {
     "send_textline_message",
   ],
   toee_copilot_draft: ["draft_sms", "draft_email", "draft_internal_note"],
-  toee_workbench_read: ["get_case", "list_cases", "get_audit_log", "get_thread", "list_auto_handled", "get_auto_handled", "list_sales_outreach", "get_sales_outreach"],
+  toee_workbench_read: ["get_case", "list_cases", "get_audit_log", "get_thread", "get_thread_by_phone", "list_auto_handled", "get_auto_handled", "list_sales_outreach", "get_sales_outreach"],
   toee_knowledge_ops: [
     "get_policy_slots",
     "update_policy_slot",
     "submit_for_eval",
     "rollback_published_policy",
+    "get_corpus_status",
   ],
   toee_eval_review: [
     "list_eval_runs",
@@ -53,6 +54,15 @@ export const TOOL_CATALOG = {
     "update_account_role",
     "disable_account",
     "authenticate",
+  ],
+  // 0.0.3 S22 (FR-23, NFR-3): L6 Agent-experience store -- see
+  // hermes/toee_hermes/tool_catalog.py for the full rationale. 0.0.3 S24
+  // (FR-24) adds confirm_experience/reject_experience, the human confirm gate.
+  toee_agent_experience: [
+    "propose_experience",
+    "list_agent_experience",
+    "confirm_experience",
+    "reject_experience",
   ],
 } as const satisfies Record<string, readonly string[]>;
 

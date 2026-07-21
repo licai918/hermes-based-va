@@ -33,6 +33,13 @@ When merge triggers:
 
 ## v1 non-goals
 
+> **Superseded by [ADR-0151](0151-cross-channel-provisional-merge-precedence.md)**
+> (2026-07-20, 0.0.3 S19 / FR-19). Cross-channel auto-merge is now implemented:
+> a verified turn merges provisional slots from EVERY channel identity linked
+> to that customer, in a deterministic precedence order. The rest of this
+> ADR's merge trigger/behavior/never-overwrite-verified invariant is
+> unchanged — only this non-goal is retired.
+
 Cross-channel auto-merge of provisional preferences for two different channel identities is out of scope in v1 even if the **Identity Graph** later links them manually.
 
 Employee correction of merged preferences still uses governed Copilot or explicit customer-service writes per ADR-0111.

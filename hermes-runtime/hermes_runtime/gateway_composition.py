@@ -51,6 +51,13 @@ WEBHOOK_SECRET_ENV = "TEXTLINE_WEBHOOK_SECRET"
 # gateway_app.INTERNAL_JOB_SECRET_HEADER.
 INTERNAL_JOB_SECRET_ENV = "INTERNAL_JOB_SECRET"
 
+# Reply-sender gate (FR-10, NFR-4): unset/"textline" -> real Textline sender (token
+# required); "simulated" -> no Textline POST, mirror still runs; anything else fails
+# closed rather than falling through to the real sender.
+REPLY_SENDER_ENV = "REPLY_SENDER"
+_REPLY_SENDER_TEXTLINE = "textline"
+_REPLY_SENDER_SIMULATED = "simulated"
+
 # Canonical External profile home (ADR-0139): restricts Hermes built-ins to the
 # customer-service tool surface configured in hermes/profiles/customer_service_external.
 _EXTERNAL_PROFILE_HOME = (
@@ -74,6 +81,35 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _simulated_reply_sender(conversation_id: str, body: str) -> None:
+    """No-op ``ReplySender`` for ``REPLY_SENDER=simulated`` (NFR-4).
+
+    Makes no Textline call and never raises, so the caller (:func:`make_gateway_turn_runner`
+    in ``turn_runner.py``) proceeds to invoke ``on_reply_sent`` exactly as it would after a
+    real send -- the reply still mirrors into ``message_turn`` for the simulator to read.
+    """
+    return None
+
+
+def resolve_reply_sender():
+    """Select the gateway's ``ReplySender`` from ``REPLY_SENDER`` (fail-closed, NFR-4).
+
+    Unset or ``"textline"`` resolves the real Textline sender (``TEXTLINE_ACCESS_TOKEN``
+    required). ``"simulated"`` returns a no-op sender -- the token is not required, and
+    simulated traffic never reaches real Textline. Any other value raises immediately
+    rather than silently falling through to the real sender.
+    """
+    value = (os.environ.get(REPLY_SENDER_ENV) or "").strip().lower()
+    if value in ("", _REPLY_SENDER_TEXTLINE):
+        return make_textline_reply_sender(config=resolve_textline_config())
+    if value == _REPLY_SENDER_SIMULATED:
+        return _simulated_reply_sender
+    raise ValueError(
+        f"{REPLY_SENDER_ENV}={value!r} is not recognized; expected 'textline' "
+        "(or unset) for the real sender, or 'simulated' for the no-op sender."
+    )
+
+
 def build_gateway_app() -> FastAPI:
     """Assemble the production gateway app from the environment (fail-closed).
 
@@ -84,9 +120,16 @@ def build_gateway_app() -> FastAPI:
     internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
     _apply_external_profile_env()
 
+    # S10 cold-load mitigation: nudges the fastembed model into memory in the
+    # background so the first real knowledge query doesn't pay the ~800ms load
+    # cost against the retrieval deadline. No-op when knowledge is disabled.
+    from hermes_runtime.knowledge.driver import warm_knowledge_embedder
+
+    warm_knowledge_embedder()
+
     # Resolved once at boot so a misconfiguration fails fast instead of on the first
     # webhook (rotation therefore requires a restart).
-    reply_sender = make_textline_reply_sender(config=resolve_textline_config())
+    reply_sender = resolve_reply_sender()
     run_turn = make_openrouter_run_turn(config=resolve_openrouter_config())
 
     # The store is the source of truth (ADR-0107); the local dispatcher reloads from

@@ -13,6 +13,7 @@ import type {
   ThreadMessage,
   WorkbenchCase,
 } from "../gateway/types";
+import { PREFERENCE_SLOTS } from "../gateway/types";
 
 const BASE = "/api/copilot";
 
@@ -109,6 +110,59 @@ export function clearPreference(
   slot: MemoryPreferenceSlot,
 ): Promise<{ slot: MemoryPreferenceSlot; cleared: boolean }> {
   return sendJson("POST", casePath(caseId, "preferences/clear"), { slot });
+}
+
+// One structured Customer Memory proposal (S14 FR-15, S15 FR-16). Mirrors the
+// wire shape of AgentMemoryProposal (hermes-agent-client.ts) that the draft
+// endpoint nests under `draft.proposals` -- see proposalsFromDraft below.
+export type DraftProposal = {
+  slot: MemoryPreferenceSlot;
+  value: string;
+  evidenceTurn?: string | null;
+};
+
+// Extracts the S14 proposals nested in a draft response's `data.proposals`
+// (present only for a draft turn that called upsert_preference; absent for a
+// store-path mock draft or a chat reply). Defensive against any other shape --
+// an unrecognized entry is dropped rather than surfaced as a bogus proposal.
+export function proposalsFromDraft(draftData: unknown): DraftProposal[] {
+  if (!draftData || typeof draftData !== "object") return [];
+  const raw = (draftData as { proposals?: unknown }).proposals;
+  if (!Array.isArray(raw)) return [];
+  const proposals: DraftProposal[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const { slot, value, evidence_turn } = entry as Record<string, unknown>;
+    if (
+      typeof slot !== "string" ||
+      !(PREFERENCE_SLOTS as readonly string[]).includes(slot) ||
+      typeof value !== "string"
+    ) {
+      continue;
+    }
+    proposals.push({
+      slot: slot as MemoryPreferenceSlot,
+      value,
+      evidenceTurn: typeof evidence_turn === "string" ? evidence_turn : null,
+    });
+  }
+  return proposals;
+}
+
+// Dismiss a pending proposal (S15, FR-16/FR-17): persists NO preference slot --
+// a bad guess can't quietly land in memory (US17) -- only a governed audit
+// record of the decision (slot/value/evidence, decider, timestamp).
+export function dismissProposal(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+  value: string,
+  evidenceTurn?: string | null,
+): Promise<{ slot: MemoryPreferenceSlot; dismissed: boolean }> {
+  return sendJson("POST", casePath(caseId, "preferences/dismiss"), {
+    slot,
+    value,
+    evidenceTurn: evidenceTurn ?? undefined,
+  });
 }
 
 export function draft(

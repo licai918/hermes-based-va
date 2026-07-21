@@ -85,6 +85,113 @@ def test_get_email_link_status_linked_and_unlinked(datastore) -> None:
     assert unlinked.data["status"] == "unlinked"
 
 
+def test_link_identity_upserts_a_verified_row_in_the_identity_graph(datastore) -> None:
+    # 0.0.3 S05 (FR-13): the simulator's "link identity" control, exercised end
+    # to end here through execute_tool -- same governed path a real caller uses.
+    driver, conn, _ = datastore
+    result = _run(
+        driver,
+        "link_identity",
+        {
+            "channel_identity": "+15559990000",
+            "shopify_customer_id": "gid://shopify/Customer/7001",
+            "company_name": "Fresh Rubber Co.",
+        },
+    )
+    assert result.ok
+    assert result.data == {
+        "outcome": "linked",
+        "channel": "sms",
+        "channel_identity": "+15559990000",
+        "shopify_customer_id": "gid://shopify/Customer/7001",
+    }
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT shopify_customer_id, match_status FROM identity_link "
+            "WHERE channel = %s AND channel_identity = %s",
+            ("sms", "+15559990000"),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    assert row[0] == "gid://shopify/Customer/7001"
+    assert row[1] == "verified"
+
+
+def test_link_identity_makes_the_next_match_phone_verified(datastore) -> None:
+    # Proves the seam: a phone the Identity Graph has never seen resolves
+    # unmatched, then verified the moment link_identity lands (ADR-0112's merge
+    # trigger -- "the current channel identity newly resolves to exactly one
+    # shopify_customer_id" -- fires on exactly this transition; the merge itself
+    # is S19 scope).
+    driver, conn, _ = datastore
+    before = _run(driver, "match_phone", {"phone": "+15559990001"})
+    assert before.data["outcome"] == "unmatched_caller"
+
+    _run(
+        driver,
+        "link_identity",
+        {"channel_identity": "+15559990001", "shopify_customer_id": "gid://shopify/Customer/7002"},
+    )
+
+    after = _run(driver, "match_phone", {"phone": "+15559990001"})
+    assert after.data["outcome"] == "verified_customer"
+    assert after.data["shopify_customer_id"] == "gid://shopify/Customer/7002"
+
+
+def test_link_identity_supports_the_email_channel(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(
+        driver,
+        "link_identity",
+        {
+            "channel": "email",
+            "channel_identity": "linked@example.com",
+            "shopify_customer_id": "gid://shopify/Customer/7003",
+        },
+    )
+    assert result.data["channel"] == "email"
+
+    after = _run(driver, "match_email_sender", {"from_address": "linked@example.com"})
+    assert after.data["outcome"] == "verified_customer"
+    assert after.data["shopify_customer_id"] == "gid://shopify/Customer/7003"
+
+
+def test_link_identity_is_idempotent_on_repeat_link_to_the_same_customer(datastore) -> None:
+    driver, conn, _ = datastore
+    params = {
+        "channel_identity": "+15559990002",
+        "shopify_customer_id": "gid://shopify/Customer/7004",
+    }
+    _run(driver, "link_identity", params)
+    result = _run(driver, "link_identity", params)
+    assert result.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM identity_link WHERE channel = %s AND channel_identity = %s",
+            ("sms", "+15559990002"),
+        )
+        (count,) = cur.fetchone()
+    assert count == 1
+
+
+def test_link_identity_requires_channel_identity(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(
+        driver, "link_identity", {"shopify_customer_id": "gid://shopify/Customer/7005"}
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_link_identity_requires_shopify_customer_id(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "link_identity", {"channel_identity": "+15559990003"})
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
 def test_match_phone_shopify_fallback_creates_identity_link(datastore, monkeypatch) -> None:
     driver, conn, _ = datastore
     from hermes_runtime.datastore import shopify_identity

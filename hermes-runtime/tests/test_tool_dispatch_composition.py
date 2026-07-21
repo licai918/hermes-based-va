@@ -81,6 +81,117 @@ def test_built_app_runs_allowlisted_tool_for_its_profile(monkeypatch) -> None:
     assert response.json()["ok"] is True
 
 
+def test_link_identity_is_denied_when_reply_sender_is_unset(monkeypatch) -> None:
+    # 0.0.3 S05 / NFR-4: the simulator's "link identity" control must be
+    # unreachable outside REPLY_SENDER=simulated, even though toee_identity_lookup
+    # itself is internal_copilot-allowed for match_phone/match_email_sender.
+    _configure(monkeypatch, profile="internal_copilot")
+    monkeypatch.delenv("REPLY_SENDER", raising=False)
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={
+            "tool": "toee_identity_lookup",
+            "action": "link_identity",
+            "params": {
+                "channel_identity": "+15550001234",
+                "shopify_customer_id": "gid://shopify/Customer/1001",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+
+def test_link_identity_is_denied_when_reply_sender_is_textline(monkeypatch) -> None:
+    _configure(monkeypatch, profile="internal_copilot")
+    monkeypatch.setenv("REPLY_SENDER", "textline")
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={
+            "tool": "toee_identity_lookup",
+            "action": "link_identity",
+            "params": {
+                "channel_identity": "+15550001234",
+                "shopify_customer_id": "gid://shopify/Customer/1001",
+            },
+        },
+    )
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+
+def test_link_identity_succeeds_when_reply_sender_is_simulated(monkeypatch) -> None:
+    _configure(monkeypatch, profile="internal_copilot")
+    monkeypatch.setenv("REPLY_SENDER", "simulated")
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={
+            "tool": "toee_identity_lookup",
+            "action": "link_identity",
+            "params": {
+                "channel_identity": "+15550001234",
+                "shopify_customer_id": "gid://shopify/Customer/1001",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"] == {
+        "outcome": "linked",
+        "channel": "sms",
+        "channel_identity": "+15550001234",
+        "shopify_customer_id": "gid://shopify/Customer/1001",
+    }
+
+    # Mutation visible to a subsequent match_phone on the same (mock, in-process)
+    # driver -- the seam the simulator's E2E path depends on.
+    follow_up = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={
+            "tool": "toee_identity_lookup",
+            "action": "match_phone",
+            "params": {"phone": "+15550001234"},
+        },
+    )
+    assert follow_up.json()["data"]["outcome"] == "verified_customer"
+
+
+def test_link_identity_is_unreachable_on_a_non_copilot_profile_even_when_simulated(
+    monkeypatch,
+) -> None:
+    # toee_identity_lookup is not in the supervisor_admin allowlist at all; the
+    # allowlist denial fires first, REPLY_SENDER never gets consulted.
+    _configure(monkeypatch, profile="supervisor_admin")
+    monkeypatch.setenv("REPLY_SENDER", "simulated")
+    client = TestClient(build_tool_dispatch_app())
+    response = client.post(
+        "/v1/tools:dispatch",
+        headers={"Authorization": "Bearer dev-token"},
+        json={
+            "tool": "toee_identity_lookup",
+            "action": "link_identity",
+            "params": {
+                "channel_identity": "+15550001234",
+                "shopify_customer_id": "gid://shopify/Customer/1001",
+            },
+        },
+    )
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+
 def test_built_app_denies_tool_outside_its_profile(monkeypatch) -> None:
     # toee_workbench_admin is supervisor-only (ADR-0038); under the copilot
     # profile the per-profile gate returns a governed policy_blocked, not a raise.

@@ -8,6 +8,7 @@ describe("Topbar", () => {
       <Topbar username="rep1" role={WORKBENCH_ROLES.rep} pathname="/copilot" />,
     );
     expect(screen.getByRole("link", { name: "Copilot" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Simulator" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Knowledge" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Accounts" })).toBeNull();
   });

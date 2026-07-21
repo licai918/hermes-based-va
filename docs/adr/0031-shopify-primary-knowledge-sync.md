@@ -1,5 +1,14 @@
 # Shopify-primary knowledge sync with Tavily gap crawl before go-live
 
+> **Mechanism superseded, source vindicated (2026-07-20).** **Still holds:** Shopify as the
+> primary source of storefront knowledge — the 0.0.3 spike pulled its entire corpus (pages,
+> blog articles, shop policies) from the Shopify connector, confirming this ADR's source
+> choice — and "live conversation facts stay on tool paths, not RAG". **Superseded:** the
+> weekly scheduled Hermes Skill, the **Tavily Gap Crawl**, and writing into Hermes Native
+> Memory; retrieval is now an in-house hybrid lexical + embedding index in a separate database.
+> Formal superseding decision → [ADR-0149](0149-hybrid-lexical-embedding-knowledge-retriever.md).
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md) (L5).
+
 Before **Text-First Launch**, **Public Site Knowledge** rebuild uses a dual-track ingestion model. **Shopify Knowledge Sync** is the primary source; **Tavily Gap Crawl** supplements URLs and content not covered by the Shopify Admin API.
 
 **Shopify Knowledge Sync** runs weekly as a scheduled Hermes Skill. It reads Shopify Admin API content—products (titles, descriptions, education copy, image metadata), pages, blogs/articles, and shop policies—and writes normalized records into **Hermes Native Memory** for retrieval. This is the authoritative source for storefront content that already lives in Shopify.

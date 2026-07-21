@@ -745,6 +745,66 @@ def test_dispatch_eval_write_without_actor_is_denied(datastore) -> None:
         assert cur.fetchone()[0] == 0
 
 
+def test_dispatch_routes_knowledge_search_to_the_knowledge_overlay(monkeypatch) -> None:
+    # S10 (FR-5): the HTTP dispatch surface routes toee_knowledge_search's
+    # search_public_site to the knowledge overlay when KNOWLEDGE_BACKEND=retriever
+    # is on, exactly like the turn-time overlay -- while every OTHER tool keeps the
+    # app's original driver (audit kind never misattributed, ADR-0140). Stubs
+    # _knowledge_extra_drivers so this stays hermetic (no real fastembed/Postgres).
+    import hermes_runtime.tool_dispatch_app as dispatch_app_mod
+
+    class _FakeKnowledgeDriver:
+        kind = "knowledge"
+
+        def execute(self, request, context):
+            return {"results": [{"title": "Return Policy", "url": "https://x", "snippet": "..."}]}
+
+    monkeypatch.setattr(
+        dispatch_app_mod,
+        "_knowledge_extra_drivers",
+        lambda: {"toee_knowledge_search": _FakeKnowledgeDriver()},
+    )
+    base_driver = _CapturingDriver()
+
+    response = _client_with_driver(base_driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={"tool": "toee_knowledge_search", "action": "search_public_site", "params": {"query": "returns"}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["data"]["results"][0]["title"] == "Return Policy"
+    assert base_driver.context is None  # never routed through the app's base driver
+
+    # A different tool stays on the app's original (mock-kind) driver.
+    other = _client_with_driver(base_driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={"tool": "toee_workbench_read", "action": "list_cases"},
+    )
+    assert other.status_code == 200
+    assert base_driver.context is not None  # this one WAS routed through base_driver
+
+
+def test_dispatch_no_knowledge_overlay_when_backend_is_off(monkeypatch) -> None:
+    # Gate parity: KNOWLEDGE_BACKEND unset -> _knowledge_extra_drivers() returns
+    # None -> every tool, including toee_knowledge_search, stays on the app's
+    # original driver.
+    monkeypatch.delenv("KNOWLEDGE_BACKEND", raising=False)
+    driver = _CapturingDriver()
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={"tool": "toee_knowledge_search", "action": "search_public_site", "params": {"query": "returns"}},
+    )
+
+    assert response.status_code == 200
+    assert driver.context is not None  # routed through the app's original driver
+
+
 def test_dispatch_rejects_malformed_body() -> None:
     # Missing tool/action is a transport/shape problem, not a tool outcome → 400.
     response = _client().post(

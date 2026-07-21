@@ -32,12 +32,14 @@ describe("TOOL_CATALOG", () => {
       "list_cases",
       "get_audit_log",
       "get_thread",
+      "get_thread_by_phone",
       "list_auto_handled",
       "get_auto_handled",
       "list_sales_outreach",
       "get_sales_outreach",
     ]);
     expect(isToolAction("toee_workbench_read", "get_thread")).toBe(true);
+    expect(isToolAction("toee_workbench_read", "get_thread_by_phone")).toBe(true);
     expect(isToolAction("toee_workbench_read", "list_auto_handled")).toBe(true);
   });
 
@@ -52,9 +54,10 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
   });
 
-  it("contains exactly the 15 v1 tool names", () => {
+  it("contains exactly the 16 v1 tool names", () => {
     expect([...TOOL_NAMES].sort()).toEqual(
       [
+        "toee_agent_experience",
         "toee_case",
         "toee_case_manage",
         "toee_copilot_draft",
@@ -72,6 +75,19 @@ describe("TOOL_CATALOG", () => {
         "toee_workbench_read",
       ].sort(),
     );
+  });
+
+  it("exposes the L6 Agent-experience store actions (0.0.3 S22/S24, FR-23/FR-24)", () => {
+    expect(TOOL_CATALOG.toee_agent_experience).toEqual([
+      "propose_experience",
+      "list_agent_experience",
+      "confirm_experience",
+      "reject_experience",
+    ]);
+    expect(isToolAction("toee_agent_experience", "propose_experience")).toBe(true);
+    expect(isToolAction("toee_agent_experience", "list_agent_experience")).toBe(true);
+    expect(isToolAction("toee_agent_experience", "confirm_experience")).toBe(true);
+    expect(isToolAction("toee_agent_experience", "reject_experience")).toBe(true);
   });
 });
 

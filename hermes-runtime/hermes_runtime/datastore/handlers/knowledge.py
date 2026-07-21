@@ -233,6 +233,48 @@ def _rollback_published_policy(
 # is runId-keyed now (ADR-0146 resolves ADR-0145 divergences #1/#2).
 
 
+# --- corpus status (S11, FR-6) -----------------------------------------------
+# Unlike every write above, this read is CROSS-DATABASE: workbench_policy_slot
+# lives on the business datastore (the ``conn`` the registry hands the handler),
+# but the corpus itself (``knowledge_chunk``) lives on the SEPARATE toee_knowledge
+# database (S-ISO isolation invariant, hermes_runtime/knowledge/config.py). So
+# _get_corpus_status ignores the business ``conn`` and opens its own short-lived
+# read-only connection to the knowledge DSN.
+
+
+def _corpus_status_from_conn(kconn) -> Any:
+    """Doc/chunk counts + last-ingest time + per-type breakdown from an OPEN
+    connection to the knowledge database. Pure read (no writes, no commit) --
+    the injectable core so tests can point it at a throwaway knowledge schema
+    (mirrors the S08 retriever's ``retrieve(conn=...)`` seam)."""
+    with kconn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*), count(DISTINCT page_id), max(created_at) FROM knowledge_chunk"
+        )
+        chunk_count, doc_count, last_ingest_at = cur.fetchone()
+        cur.execute(
+            "SELECT page_type, count(*) FROM knowledge_chunk"
+            " GROUP BY page_type ORDER BY page_type"
+        )
+        by_type = cur.fetchall()
+    return {
+        "doc_count": doc_count or 0,
+        "chunk_count": chunk_count or 0,
+        "last_ingest_at": last_ingest_at.isoformat() if last_ingest_at else None,
+        "by_type": [{"page_type": pt, "count": n} for pt, n in by_type],
+    }
+
+
+def _get_corpus_status(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    # A read -> no actor required, no audit (parity with the other knowledge
+    # reads above). `conn` (the business connection) is unused on purpose.
+    del conn, params, context
+    from hermes_runtime.knowledge.pool import get_knowledge_pool
+
+    with get_knowledge_pool().connection() as kconn:
+        return _corpus_status_from_conn(kconn)
+
+
 def knowledge_handlers() -> dict[str, dict[str, Any]]:
     """Registry fragment for the knowledge-ops datastore tool."""
     return {
@@ -241,5 +283,6 @@ def knowledge_handlers() -> dict[str, dict[str, Any]]:
             "update_policy_slot": _update_policy_slot,
             "submit_for_eval": _submit_for_eval,
             "rollback_published_policy": _rollback_published_policy,
+            "get_corpus_status": _get_corpus_status,
         }
     }

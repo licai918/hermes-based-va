@@ -11,6 +11,7 @@ import {
   type WorkbenchSession,
 } from "../auth/session";
 import { problem } from "./respond";
+import { hermesErrorToProblem } from "../gateway/hermes-error";
 
 // Minimal cookie-header parser so the guard stays unit-testable with a plain
 // `Request` (no dependency on next/headers).
@@ -70,6 +71,25 @@ export function withSession(
     if (!canAccess(session.role, pathname)) return problem(403, "forbidden");
 
     const params = routeCtx?.params ? await routeCtx.params : undefined;
-    return handler(req, { session, params });
+    try {
+      return await handler(req, { session, params });
+    } catch (err) {
+      // Last-resort governed fallback: a route handler's SYNCHRONOUS setup runs
+      // outside its own try/catch (e.g. `new HermesApiClient(...)`, config
+      // resolution), and an async rejection its inner catch didn't cover would
+      // otherwise leak a bare Next.js 500 to the error banner. Map ANY throw
+      // through the same hermesErrorToProblem the BFF handlers use, so every
+      // withSession route surfaces a governed (ADR-0020-safe) error Response
+      // instead of an opaque 500. HermesApiError keeps its class/status; any
+      // other throw becomes a 502 "service unavailable".
+      //
+      // Log first: anything reaching this catch is UNEXPECTED (the BFF handlers
+      // already map their own dispatch errors and return a Response), so mapping
+      // it to a governed 502 must not also swallow it silently -- otherwise a
+      // real route-setup bug is invisible. The client still gets the sanitized
+      // Response; the server keeps the diagnosable detail.
+      console.error(`[withSession] unhandled error in ${pathname}:`, err);
+      return hermesErrorToProblem(err);
+    }
   };
 }

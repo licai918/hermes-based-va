@@ -1,5 +1,11 @@
 # Composio eligibility by Domain Adapter tool for v1
 
+> **Storage substrate superseded by ADR-0140/0142.** The Layer-3-never-Composio boundary
+> holds in full. Only the substrate changes: Layer 3 tools read and write the **Toee
+> Business Datastore** (Postgres) plus internal governance state, not **Hermes Native
+> Memory**, which is conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 Composio may be used only as an internal implementation backend per ADR-0127. v1 adapters split into three layers by whether Composio is allowed behind the Toee tool contract.
 
 ## Layer 1 — Composio allowed as internal implementation

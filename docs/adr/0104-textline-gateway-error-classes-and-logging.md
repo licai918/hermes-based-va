@@ -1,5 +1,12 @@
 # Textline gateway error classes, logging, and case creation boundaries
 
+> **Substrate and service framing superseded (ADR-0140/0142, ADR-0139).** The error
+> classes, HTTP codes, case-creation boundaries, and retry semantics all still hold.
+> Superseded: the Persist stage targets the **Toee Business Datastore** (Postgres), not
+> **Hermes Native Memory**; and the Node `services/hermes-gateway` framing — the
+> gateway is the Python FastAPI `hermes-runtime/`.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 `services/hermes-gateway` classifies Textline webhook failures by pipeline stage and separates provider retry behavior from **Follow-up Case** creation.
 
 ## Pre-acknowledgment stages

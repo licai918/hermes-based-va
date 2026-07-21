@@ -1,5 +1,13 @@
 # Ingress-time silent phone match with session-scoped identity snapshots
 
+> **Storage substrate superseded by ADR-0140/0142.** Silent **Ingress Phone Match**,
+> **Session Identity Snapshot** semantics, the three match outcomes, per-session
+> re-resolution, and ambiguity handling all still hold. Only the substrate under
+> **Identity Graph persistence** changes: the **Identity Graph** (L1) lives in the **Toee
+> Business Datastore** (Postgres), not **Hermes Native Memory**, which is
+> conversation-only and off in practice today.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 **Phone Match Verification** is a backend identity resolution step, not a customer-facing verification ceremony. When Textline delivers an inbound SMS webhook, the **Channel Gateway** runs **Ingress Phone Match** synchronously through `toee_identity_lookup` before **Hermes Core** processes the message. By the time the agent turn begins, the current **SMS Session** already has a resolved identity outcome.
 
 Customers never receive a separate "verify your identity" flow, one-time code, or pre-answer verification prompt. **Phone Match Verification** is complete from the sender phone number alone at message receipt.

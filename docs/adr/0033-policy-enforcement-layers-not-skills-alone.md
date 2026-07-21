@@ -1,5 +1,11 @@
 # Policy enforcement through tools and profiles, not Skills alone
 
+> **Examples superseded (2026-07-20).** The decision stands in full: the five-layer
+> enforcement stack, and Skills are not a security boundary. Only the examples under
+> **Scheduled jobs vs conversational agents** are stale — there is no weekly **Shopify
+> Knowledge Sync** or **Tavily Gap Crawl** rebuild Skill. The distinction itself holds.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 Toee Tire policy boundaries such as **Product Media Reply**, **Payment Link**, zero disclosure for **Unmatched Caller**, and accounting read limits must not rely on Skills as the only enforcement mechanism.
 
 Hermes **Skills** are procedural markdown guidance loaded on demand through `skills_list` and `skill_view`. The model may skip, delay, or misapply a Skill. Skills are appropriate for playbooks, scheduled job procedures, and operator workflows, but they are not a hard security or compliance boundary for customer-facing actions.

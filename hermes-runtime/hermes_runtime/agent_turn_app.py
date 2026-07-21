@@ -151,6 +151,15 @@ def add_agent_turn_route(
             }
         else:  # sms
             data = {"channel": "sms", "draft": result["draft"]}
+        # S14 (FR-15): thread the structured Customer Memory proposals[] through
+        # unmodified, draft channels only (chat is a conversational reply, not a
+        # draft -- parity with the draft_generated audit's chat exclusion below).
+        # Omitted (not an empty list) when there is nothing to propose, so the
+        # existing exhaustive per-channel key-set contracts stay exact.
+        if channel != "chat":
+            proposals = result.get("proposals")
+            if proposals:
+                data["proposals"] = proposals
         data["provenance"] = {"model": result["model"], "profile": result["profile"]}
 
         # Option (i), #47: record draft_generated server-side on SUCCESS only, in the

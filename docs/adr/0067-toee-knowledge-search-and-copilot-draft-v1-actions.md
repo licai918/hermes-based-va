@@ -1,5 +1,13 @@
 # toee_knowledge_search and toee_copilot_draft v1 actions
 
+> **Corpus provenance superseded (2026-07-20).** Still holds: the two-action split, the
+> gate rules, published-only policy results, the governed no-policy fallback, and the
+> three `toee_copilot_draft` actions. Superseded: the `search_public_site` provenance
+> ("rebuilt from **Shopify Knowledge Sync** and **Tavily Gap Crawl**") — the corpus now
+> comes from the Shopify connector into a separate no-PII database, retrieved by the
+> in-house hybrid lexical + embedding retriever behind a driver-side deadline.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 ## toee_knowledge_search
 
 `toee_knowledge_search` exposes two v1 actions:

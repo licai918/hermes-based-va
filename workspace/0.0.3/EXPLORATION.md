@@ -13,19 +13,67 @@
 ## How to read this
 
 Same convention as 0.0.2's exploration: each candidate is sized (XS/S/M/L) and
-carries **options with trade-offs**, not a decision. The **likely 0.0.3 headline
-is the knowledge layer** — the one big capability 0.0.2 deliberately deferred so it
-gets a full spike → PRD cycle instead of being rushed. When a candidate is chosen,
+carries **options with trade-offs**, not a decision. When a candidate is chosen,
 it graduates into `workspace/0.0.3/PRD.md`.
 
+### GRILLED SCOPE — 0.0.3 commits to ALL EIGHT (2026-07-20 grilling session)
+
+The product owner grilled the full exploration and committed **all 8 candidates** plus a new
+deliverable. Eight locked decisions:
+
+1. **Scope = all 8 candidates** — the conditional gates on C3/C4/C5 are overridden by owner
+   decision; C8's precondition is resolved by (6) below.
+2. **NEW deliverable — Conversation Simulator:** a workbench surface where the owner role-plays
+   a customer ↔ external agent and an employee ↔ copilot. **Real pipeline + simulated ingress**:
+   the customer side injects simulated Textline webhooks into gateway:8080 (simulated phone
+   number) so identity → memory → knowledge → live model all run the production path; the
+   employee side uses the real copilot workbench. Channel switcher (SMS / email) for C5.
+3. **Knowledge gate runs in parallel** — build L5 now; the owner delivers the ~30 real customer
+   questions + fills the Shopify content gaps during the iteration; the final recall@3 ≥ 80%
+   gate runs on the real set before PAC sign-off (tune before signing if it misses).
+4. **Three-layer test gate on every slice:** ① technical (pytest/vitest, CI green);
+   ② browser E2E from the front end, screenshot-evidenced — **if a feature has no front-end
+   entry, the slice creates one**; ③ product acceptance by the owner in the simulator per PAC.
+5. **C2 × S20 — REVERSAL CONFIRMED (single-direction door):** the copilot draft agent loses its
+   0.0.2 autonomous write and becomes **propose-only**; proposals render in the preferences
+   panel; Accept routes through the governed dispatch path (`employee_confirmed`). The
+   `copilot_agent` source value stays (historical rows + the audit vocabulary). ADR ships with
+   the build.
+6. **C8 unblocked by the simulator:** build the governed learning loop (review-fork port +
+   propose→confirm gate + Postgres storage + audit) in-iteration and validate the MECHANISM on
+   simulator traffic; the "observe a week of proposals" calibration moves to post-launch real
+   traffic. Copilot-first; the external agent reads confirmed learnings only.
+7. **C5 = email + merge policy:** email turn path gets memory read-injection; cross-channel
+   provisional merge (once the Identity Graph links identities) gets defined + implemented;
+   **voice stays parked** (no turn path exists).
+8. **C6 includes customer self-service, verified-only:** a verified customer can ask over SMS
+   what is remembered (customer-safe summary) and request deletion (governed tool path);
+   unverified callers get neither. Plus the supervisor audit view (the PAC-1 closer).
+
+### Current direction (2026-07-20 — after the knowledge spike + the Hermes-memory research)
+
+- **Candidate 1 — knowledge layer: DECIDED.** **Path Y-embed *hybrid*** (lexical FTS + dense
+  embeddings) in a separate no-PII database, behind the proven `extra_drivers` driver seam.
+  gbrain rejected as over-engineering. Isolation ✅ and latency ✅ gates passed; the final
+  quality gate awaits ~30 **real** customer questions. Evidence: [`knowledge-spike/`](knowledge-spike/).
+- **Candidate 8 — agent-experience memory: NEW.** Inherit Hermes's "gets smarter with use" by
+  copying its **learning loop** (the background review fork) rather than its store — routed
+  through our governed tool → Postgres → audit, gated **propose → confirm**, starting on the
+  internal copilot where reps already review every draft.
+- **Together these are the 0.0.3 shape**: one new *capability* (knowledge) + one new *layer*
+  (agent experience). Candidate 2 (propose→confirm) turns out to share machinery with 8.
+- Structural view of all six memory layers →
+  [`docs/architecture/memory-layers.md`](../../docs/architecture/memory-layers.md).
+
 **Candidate index**
-1. Knowledge layer (gbrain vs in-house retriever) — *capability* (L) — **likely headline**
-2. Write-guardrail "propose → confirm" (option D) — *governance* (L)
+1. Knowledge layer — *capability* — **DECIDED: Path Y-embed hybrid (M+)**, spike-grounded
+2. Write-guardrail "propose → confirm" (option D) — *governance* (L) — *shares machinery with 8*
 3. Customer Memory retention sweep — *compliance* (M, conditional)
 4. Connection pooling — *scale* (M, conditional)
 5. Cross-channel memory continuity (email / voice) — *capability* (M, conditional)
 6. Customer memory transparency & control — *privacy/compliance* (M)
 7. Memory effectiveness instrumentation — *measurement* (S–M)
+8. **Agent-experience memory** — inherit Hermes's "gets smarter with use" — *capability* (M–L)
 
 ---
 
@@ -67,22 +115,34 @@ returns top-k chunks.
 - Cons: no knowledge-graph retrieval; we build/maintain the chunker+index; quality
   ceiling lower than gbrain on a large corpus.
 
-**Lean:** start with **Path Y (in-house, BM25 first)** for a v1 — the corpus is
-curated and small (company/brand/product/FAQ), retrieval quality needs are modest,
-and it avoids betting a customer-facing path on a churny dependency. Revisit gbrain
-(Path X) if the corpus grows and retrieval quality demands graph-aware search.
-*This reverses the 0.0.1 lean toward gbrain — worth an explicit call after the spikes.*
+**DECIDED (2026-07-16, after the spikes) → Path Y-embed, *hybrid*.** Build an in-house
+retriever that **fuses lexical FTS + dense embeddings**, indexed in the separate knowledge
+DB, injected via the proven `extra_drivers` seam. **gbrain (Path X) is not justified.**
+Evidence: [knowledge-spike/](knowledge-spike/). *This reverses the 0.0.1 lean toward gbrain
+**and** the earlier "BM25 first" lean — pure lexical is provably not enough.*
 
-### Spikes (hard gates, measure before committing to either path)
-1. **Latency** — top-k retrieval must return **< 800 ms** for an in-turn SMS tool
-   call (measured on the real corpus size). Synthesis/LLM-in-the-loop retrieval is
-   **out of scope in-turn** regardless of path. *Pass/fail: p95 < 800 ms.*
-2. **Retrieval quality** — on a hand-labeled set of ~30 real customer questions,
-   the right chunk in top-3. *Pass/fail: precision@3 acceptable to the product owner.*
-   (This is where Path X might beat Path Y — spike both if quality is borderline.)
-3. **Deployment isolation** — the knowledge index lives in a **separate database**
-   from the business datastore (knowledge carries no PII; physical separation).
-   *Pass/fail: index reachable, business DB untouched, connection isolated.*
+### Spikes — RUN, all three (2026-07-16) → [knowledge-spike/](knowledge-spike/)
+
+| Spike | Gate | Result |
+| --- | --- | --- |
+| **S-ISO** | index in a separate DB; business datastore untouched | ✅ **PASS** — separate `toee_knowledge` DB + `knowledge_chunk`+GIN; `toee_va` unchanged (16 tables), no leak |
+| **S-LAT** | in-turn p95 < 800 ms **+** a deadline that degrades instead of hanging | ✅ **PASS** — FTS p95 **1.4 ms** @1500 chunks; a forced 2 s query → governed `found=false` in 201 ms via a 200 ms driver deadline. (No tool-call timeout exists in-repo, so this deadline wiring is a **required build deliverable**, not optional.) |
+| **S-QUAL** | recall@3 ≥ 80% (gold chunk in top-3) | 🟡 **partial** — on a 30-question **synthetic** set: lexical FTS **50%** (out); dense embedding (bge-small) **73%** raw / ~76–83% fair. ~30 **real** customer questions still pending = the final arbiter |
+
+**Why lexical alone is out:** ~half the FTS misses are pure **vocabulary mismatch**
+(`money`→refund, `snow`→winter, "who are you"→Brand Story, "environmentally friendly"→green)
+where the gold doc shares *zero* query terms — no lexical ranking or tuning can ever retrieve it.
+
+**Why hybrid, not embeddings alone:** the two rungs fail *differently* — FTS nails exact tokens
+(brand names, model codes, SKUs) that embeddings blur; embeddings bridge the paraphrase FTS
+can't. Fusing them (RRF / union re-rank) covers both failure modes, and **both halves already
+exist** from the spike, so fusion is near-free.
+
+**Also learned:** Hermes ships **no native dense-vector RAG** to inherit — its built-in
+retrieval is SQLite **FTS5 (lexical)**, i.e. the very rung this spike rejected, and Customer
+Memory is exact-key **slot** storage, not RAG (ADR-0111/0140 chose that deliberately). So this
+layer is genuinely net-new. The separate question of applying Hermes's *own* memory to **agent
+learning** is Candidate 8 — a different layer, not a substitute for this one.
 
 ### Design sketch — the driver seam (same for both paths)
 - Tool surface unchanged: the agent still sees only the allowlisted
@@ -111,6 +171,17 @@ knowledge from the eval gate, so no conflict) → merge → index sync (Path X: 
 own loop; Path Y: a re-index step) → retrievable. No live facts / policy copy / PII
 ever committed.
 
+**Spike update — the corpus already lives in Shopify.** The spike pulled a real 27-doc corpus
+(13 pages, 10 articles, 4 policies → **167 chunks**) **read-only from the Shopify connector** —
+which is where staff already author and where the content actually is. That reopens the
+ingestion question: a **Shopify sync** (ADR-0031's original intent) may beat a `brain/` git-PR
+flow, since staff keep editing where they work and no parallel copy can drift.
+**Trade-off:** Shopify has no PR-review gate, so the git governance would be lost; a hybrid
+(Shopify sync for existing pages + `brain/` for net-new authored knowledge) is possible. **Open.**
+Filling the store's content gaps lifts recall directly — see
+[knowledge-spike/CONTENT-GAPS.md](knowledge-spike/CONTENT-GAPS.md) (no business hours anywhere,
+empty FAQ page, no payment-methods content, empty Shipping policy).
+
 ### Terminology / ADR deliverables (ship with the layer)
 - Redefine **Public Site Knowledge** = customer-facing content authored in `brain/`,
   indexed/retrieved by the chosen retriever.
@@ -120,14 +191,25 @@ ever committed.
   *implementation* mechanisms (their live-facts rule stays).
 
 ### Sizing
-- Path Y v1 (BM25 + `brain/` + driver + authoring + terminology/ADR): **M**.
-- Path X (gbrain deploy + driver + isolation + the above): **L**.
-- Spikes: half a day–2 days before committing.
+- **Path Y-embed hybrid (DECIDED)** — retriever driver (FTS + embedding fusion) + vector index
+  in the separate DB + corpus sync + deadline wiring + authoring/terminology/ADR: **M+**. The
+  spike already de-risked the retriever, the corpus pull, the isolation and both rungs.
+- ~~Path Y-FTS only~~ — **rejected**: 50% recall, categorical vocabulary-mismatch ceiling.
+- ~~Path X (gbrain)~~ — **rejected** as over-engineering for a curated FAQ-sized corpus
+  (external service + pgvector infra + read-scoped credential + churny v0.x upgrade burden).
+  Revisit only if real questions show hybrid failing badly.
+- Spikes: **done** (~1 day).
 
 ### Open questions
-- Path X vs Y (the core call) — resolve after the quality spike.
-- Same-repo `brain/` vs a separate content repo (0.0.1 leaned same-repo).
-- KnowledgeOps overlap: who authors/reviews `brain/` vs the policy slots?
+- ~~Path X vs Y (the core call)~~ — **resolved: Path Y-embed hybrid** (spike, 2026-07-16).
+- **Final gate number** — awaiting ~30 **real** customer questions to confirm hybrid clears 80%.
+- **Corpus source / authoring** — Shopify sync vs `brain/` git-PR vs a hybrid (see the spike
+  update above). This also decides where the review gate lives.
+- **Embedding model** — local (fastembed/onnx, no torch; spiked with bge-small) vs a larger
+  local model vs hosted. Local keeps queries in-house and costs nothing per call.
+- **Short-doc handling** — the 200-char Contact page and thin brand pages under-retrieve;
+  merge short pages, or add doc-level weighting/boosting.
+- KnowledgeOps overlap: who authors/reviews the public knowledge vs the policy slots?
 - Does PAC-8 (grounded knowledge) need synthesis, or are cited chunks enough for SMS?
 
 ---
@@ -212,9 +294,15 @@ access/deletion expectations).
 - **Customer-facing:** a governed way for a verified customer to ask "what do you
   remember about me?" and to clear it (a read/clear over their own slots, gated by
   verification — reuse the existing binding + a customer-safe summary).
-- **Supervisor/admin view:** a Workbench admin surface to view/audit/clear a
-  customer's memory + its change history (pairs with the `source` distinction +
-  the actor column shipped in 0.0.2 Candidate 1).
+- **Supervisor/admin view — now the concrete PAC-1 caveat-closer (triaged in from
+  0.0.2, 2026-07-16):** 0.0.2 SHIPPED the honest audit data — every write carries
+  `source` (`employee_confirmed` / `copilot_agent` / `merged_provisional`) and an
+  `actor_account_id` column — but there is NO Workbench surface for it, so PAC-1's
+  "a supervisor can tell" needs a raw SQL query today (the sign-off flagged this).
+  This candidate is that surface: a Workbench admin view to read/audit/clear a
+  customer's memory + its write-origin history. The data model is done; this is UI
+  + a read BFF route (mirrors S17/S18), so it is the cheapest, most concrete of the
+  0.0.2 caveats to close.
 - **Deletion honoring:** wire memory into whatever data-deletion process exists so a
   "forget me" removes preference slots too.
 
@@ -238,6 +326,127 @@ eval path — this candidate is the *production* aggregate view). **Open:** what
 success metric the business cares about (CSAT, handle time, repeat-contact rate)?
 **Size:** S–M.
 
+**Judge-quality tuning — triaged in from 0.0.2 (2026-07-16, PAC-4 caveat).** 0.0.2's
+advisory LLM-judge (`hermes/eval_runner/judge.py`, S06/S08) is correctly non-gating,
+but its per-transcript reasoning on the cheap model (haiku) is demonstrably weak — in
+a live run it conflated a numeric "2pm" delivery ETA with an "after 2pm Eastern"
+preference in *both* directions. Before the "honored / no-unprompted-recall" advisory
+signal is trustworthy enough to report on (or to feed this candidate's rubric), the
+judge needs tuning: a sharper rubric/prompt, a stronger model, and a small labelled
+fixture set to measure the judge's OWN precision/recall. **Size:** S.
+
+---
+
+## Candidate 8 — Agent-experience memory: inherit Hermes's "gets smarter with use" — M–L
+
+### Why
+Hermes's defining trait is that it **accumulates**. Our runtime turns all of it off:
+`live.py:154-162` passes `skip_memory=True`, and `HERMES_HOME` is a fresh `mkdtemp` per process
+(`live.py:146`), so even the transcript DB is discarded. **Every turn starts from zero** — neither
+the external agent nor the internal copilot gets better at the job by doing the job.
+
+This is a **new layer**, distinct from everything shipped: not customer PII (Customer Memory),
+not authored corpus (Candidate 1), not behaviour contract (`persona.py`). It is *what the agent
+learns from doing the work*.
+
+### This does not contradict ADR-0111/0140 — check the scope
+Those ADRs rejected Hermes built-in memory **as the store for customer business records**
+("weak schema"; "not a structured business datastore") and routed Customer Memory to Postgres.
+That stands, unchanged. They say nothing about the agent accumulating *its own operational
+experience*. Candidate 8 fills that gap — **a new layer, not a re-litigation.**
+
+### What Hermes actually ships (researched 2026-07-20 — five mechanisms)
+| # | Mechanism | Stock default | What it does |
+| --- | --- | --- | --- |
+| A | `MEMORY.md` / `USER.md` notes | **ON** | agent-written `§`-delimited plaintext in `$HERMES_HOME/memories/`; injected as a **frozen snapshot at session start** — mid-session writes hit disk but do **not** change the prompt (protects the prefix cache) |
+| B | FTS5 transcript store + `session_search` | **ON** | every message, reasoning trace and tool-call arg → `$HERMES_HOME/state.db`; **cross-session *and* cross-profile**; **pull-only** (the model must choose to search) |
+| C | External `MemoryProvider` plugin | OFF | the seam for **replacing the store** (8 plugins; only `holographic` is fully local, `openviking` self-hostable; rest are SaaS) |
+| D | **Background self-improvement review fork** | **ON, every 10 turns** | ← **the actual learning loop** |
+| E | Skill library + curator | skills ON, curator OFF | the agent writes reusable **procedures**, not just facts |
+
+### The load-bearing finding: the learning loop is (D), not (C)
+`agent/background_review.py` — every N turns a **daemon-thread clone of the agent** replays the
+conversation snapshot and asks itself *"should any skill/memory be saved or updated?"*, writing
+straight to the memory + skill stores. The main conversation and prompt cache are never touched;
+the fork runs under a **tool whitelist limited to memory/skill tools**.
+
+It is ~15 lines of trigger + a prompt + a whitelist. **That is the piece with no equivalent in
+our code, and the piece worth copying.** `MemoryProvider` is storage plumbing — and since we
+already run a governed Postgres store, it is arguably the part we *don't* need.
+
+### Hermes already ships the governance seams we'd want
+- **`write_approval: True`** — an approval gate on memory writes covering **both** foreground
+  turns and the background fork; staged writes land in `/memory pending|approve|reject`. Added
+  upstream *because* the reflection loop produced unprompted "wrong assumption" saves.
+  **This is Candidate 2's option D (propose → confirm), already built** — the two candidates are
+  the same mechanism over two stores.
+- **`on_memory_write(action, target, content, metadata)`** carries provenance (`write_origin`,
+  `execution_context`, `session_id`, `platform`, `tool_name`) — an audit hook that maps cleanly
+  onto our 0.0.2 source/actor matrix.
+- **`agent_context`** ("primary" / "subagent" / "cron") — providers are told to skip writes for
+  non-primary contexts.
+- Recalled context is fenced `<memory-context>`, labelled "NOT new user input", and scrubbed of
+  pre-wrapped fences inbound *and* outbound — the same hardening as our 0.0.2 S09.
+- Entries are injection-scanned at **strict** scope *precisely because* a poisoned entry persists
+  across sessions inside a frozen snapshot.
+
+### Design sketch
+1. **Copy the loop, not the store.** Port the review-fork pattern (trigger + self-review prompt +
+   tool whitelist); route its writes through **our** governed tool → Postgres → audit, not
+   plaintext `MEMORY.md`.
+2. **Start with the internal copilot.** Reps already review every draft before it sends — the
+   human gate exists, so the blast radius is contained. The external agent starts **read-only**
+   over confirmed learnings.
+3. **Propose → confirm from day one** (`write_approval` semantics): the fork *proposes*, a human
+   confirms, only confirmed entries inject. Shares machinery with Candidate 2.
+4. **Two stores, two purposes** — facts/preferences (notes) vs reusable procedures (skills).
+   Hermes's own boundary is a good one: *"Reusable procedures belong in a skill, not memory."*
+5. **Same-session vs next-session.** Built-in notes only close the loop at the *next* session
+   (frozen snapshot); a provider's `prefetch()` closes it *within* the session by injecting into
+   the user message. Pick per surface — the copilot probably wants within-session.
+
+### Risks (concrete, from the research)
+- **Model-authored PII.** The stock review prompt literally asks the agent to save *"personal
+  details worth remembering"* — for a customer-service agent that is **customer PII**, landing in
+  an unaudited plaintext store. Must be scoped/redacted, or the fork re-prompted to record
+  *operational* learnings only.
+- **`state.db` is unbounded** — no TTL by default, no redaction, and it stores full reasoning
+  traces, tool-call arguments and the system prompt per session (upstream reports 384 MB /
+  68K messages). Retention (ADR-0004) would have to cover a brand-new surface;
+  `sessions.auto_prune` is the one-line first control.
+- **Cross-profile recall is a boundary crossing.** `session_search` is cross-session and can open
+  *another profile's* `state.db` read-only. We use profiles (EXTERNAL / INTERNAL / SUPERVISOR) as
+  a **security boundary** — this must be locked down or internal content leaks into a customer turn.
+- **Poisoned memory persists**, with a bigger blast radius than per-customer memory: one malicious
+  customer message could steer *every* future turn. 0.0.2's S09 hardening is the floor, not the ceiling.
+- **Eval determinism.** The replay gate (ADR-0119) assumes reproducibility; evolving memory breaks
+  it unless pinned or disabled in eval.
+- **Naming collision.** Our `memory_enabled()` (`tool_backend.py:54`) means *Customer Memory*
+  (Postgres); Hermes's `memory.memory_enabled` means *agent notes*. Any config or doc must
+  disambiguate, or someone wires the wrong one.
+
+### The clean-slate advantage
+We sit at `skip_memory=True` today — **nothing accumulates yet**. Any adoption is a *net-new*
+retention surface, so the governance can be designed in from turn one instead of retrofitted.
+That makes now the cheapest possible moment to do this.
+
+### Sizing
+- Copilot-only, propose→confirm, notes only (no skills, no `session_search`): **M**.
+- Both surfaces + skills + within-session prefetch + retention/eval work: **L**.
+- **Prereq spike — BLOCKED, prerequisite not met.** The proposed probe (persistent `HERMES_HOME`,
+  review fork on with `write_approval: True`, **copilot only**, observe what it *proposes* for a
+  week) needs **real operational traffic** to observe. The product is not in operational use yet,
+  so there is nothing for the fork to learn from — a run today would measure noise. This is a
+  **precondition, not a scheduling choice**: the spike unblocks when the copilot is carrying real
+  rep work. Until then Candidate 8 stays exploratory and must not be sized into a build.
+
+### Open questions
+- Port the loop into our own code, or enable Hermes's and intercept via `on_memory_write`?
+- Is the external customer agent ever allowed to **write**, or read-only forever?
+- Does agent-experience memory live in the business Postgres, or its own store (as the knowledge
+  layer got its own DB)?
+- Skills (procedures) in scope for v1, or notes-only?
+
 ---
 
 ## Tech debt / carried forward
@@ -255,13 +464,28 @@ Populate as 0.0.2's reviews surface debt it does not fix. Seeds:
   Already on record (S13/S14).
 - **Third `_require_slot` near-duplicate** — deferred from 0.0.1 review; low-risk
   hygiene.
+- **Copilot persona QBO link-check gap — triaged in from 0.0.2 (2026-07-16 review).**
+  The copilot draft `_TOOL_PARAM_CONVENTIONS` (added in 0.0.2) documents the read
+  tools' parameter names but omits the QBO email-link-check workflow `persona.py:77-87`
+  spells out for the external agent (`get_email_link_status {shopify_customer_id}` →
+  must return `linked` before `get_invoice`/`get_ar_summary`). Pre-existing (the
+  link-check gate is wired only in the eval harness, not production dispatch), but now
+  that the copilot draft can actually reach QBO tools, tightening the mirror is
+  prudent. **Size:** XS.
 
 ## Live scratchpad — 0.0.2 dev spillover
 
 Dump ideas here the moment they surface while building 0.0.2, so they are not lost;
 triage at 0.0.3 kickoff. Format: `(date) one-line idea`.
 
-- (2026-07-14) opened — nothing yet.
+- (2026-07-14) opened.
+- (2026-07-16) 0.0.2 shipped + merged (PR #55). Triaged 3 surfaced items into their
+  candidates: PAC-1 supervisor view → Candidate 6; PAC-4 judge-quality tuning →
+  Candidate 7; copilot QBO link-check persona gap → Tech debt.
+- (2026-07-16) Resolved DURING 0.0.2 (not 0.0.3 work): copilot tool-param conventions
+  (agent guessed `order_id` for get_order) and the copilot business-read identity
+  decoupling (`_load_case_memory` gated identity behind `memory_enabled`) — both
+  diagnosed, fixed, reviewed, merged in #55.
 
 ---
 

@@ -9,9 +9,10 @@
 // every few seconds while the tab is visible so inbound SMS updates appear
 // without a manual refresh.
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import * as copilot from "@/lib/api/copilot-client";
-import type { DraftKind } from "@/lib/api/copilot-client";
+import type { DraftKind, DraftProposal } from "@/lib/api/copilot-client";
 import { ApiError } from "@/lib/api/http";
 import type {
   CustomerPreferences as CustomerPreferencesData,
@@ -22,6 +23,7 @@ import { useErrorBanner } from "@/components/shell/error-banner";
 import { CaseQueue } from "./CaseQueue";
 import { CopilotGateway } from "./CopilotGateway";
 import { CustomerPreferences } from "./CustomerPreferences";
+import { PendingProposals } from "./PendingProposals";
 import { ThreadContext } from "./ThreadContext";
 import type { QueueFilter } from "./QueueFilters";
 
@@ -54,9 +56,19 @@ export function CopilotDashboard({
   const [filter, setFilter] = useState<QueueFilter>(() => defaultFilter(role));
   const [cases, setCases] = useState<WorkbenchCase[]>([]);
   const [loadingCases, setLoadingCases] = useState(true);
-  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  // FR-12 (0.0.3 S03): the Simulator's "open case in copilot" link deep-links
+  // here via ?case=<id> so the owner can role-play the employee side (US5).
+  // useSearchParams returns null outside a router context (e.g. this
+  // component's own unit tests), matching AppShell's usePathname() fallback.
+  const searchParams = useSearchParams();
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(
+    () => searchParams?.get("case") ?? null,
+  );
   const [thread, setThread] = useState<Thread | null>(null);
   const [preferences, setPreferences] = useState<CustomerPreferencesData>({});
+  // Pending S14 proposals for the selected case (S15, FR-16), populated when a
+  // draft turn's response carries them; turn-scoped, so a case switch clears them.
+  const [proposals, setProposals] = useState<DraftProposal[]>([]);
 
   const elevated = isSupervisorOrAdmin(role);
 
@@ -108,6 +120,7 @@ export function CopilotDashboard({
   }, [loadCases]);
 
   useEffect(() => {
+    setProposals([]);
     if (selectedCaseId === null) {
       setThread(null);
       setPreferences({});
@@ -150,6 +163,36 @@ export function CopilotDashboard({
       await refresh();
     } catch (err) {
       surface(err, fallback);
+    }
+  }
+
+  // Accept a pending proposal (S15, FR-16): routes through the EXISTING governed
+  // dispatch write -- the same upsertPreference call CustomerPreferences' own
+  // onUpsert makes (actor-attributed -> employee_confirmed, no new write path).
+  // The proposal only clears from view once the write actually succeeds, so a
+  // failed Accept leaves it visible to retry rather than silently vanishing.
+  async function acceptProposal(proposal: DraftProposal) {
+    const caseId = thread?.case.caseId;
+    if (!caseId) return;
+    try {
+      await copilot.upsertPreference(caseId, proposal.slot, proposal.value);
+      setProposals((prev) => prev.filter((p) => p.slot !== proposal.slot));
+      await refresh();
+    } catch (err) {
+      surface(err, "Failed to accept proposal");
+    }
+  }
+
+  // Dismiss a pending proposal (S15, FR-16/US17): persists NO preference slot --
+  // a bad guess can't quietly land in memory -- only the FR-17 audit record.
+  async function dismissProposal(proposal: DraftProposal) {
+    const caseId = thread?.case.caseId;
+    if (!caseId) return;
+    try {
+      await copilot.dismissProposal(caseId, proposal.slot, proposal.value, proposal.evidenceTurn);
+      setProposals((prev) => prev.filter((p) => p.slot !== proposal.slot));
+    } catch (err) {
+      surface(err, "Failed to dismiss proposal");
     }
   }
 
@@ -207,6 +250,7 @@ export function CopilotDashboard({
 
         {thread !== null ? (
           <div style={{ flex: "0 0 auto", borderBottom: "1px solid #e2e2e2" }}>
+            <PendingProposals proposals={proposals} onAccept={acceptProposal} onDismiss={dismissProposal} />
             <CustomerPreferences
               preferences={preferences}
               onUpsert={(slot, value) =>
@@ -234,6 +278,16 @@ export function CopilotDashboard({
               const id = selectedCaseId;
               if (id === null) return "";
               const { draft } = await copilot.draft(kind, id);
+              // Merge in any fresh S14 proposals, latest write per slot wins (a
+              // repeat draft that re-derives the same slot shouldn't duplicate it).
+              const fresh = copilot.proposalsFromDraft(draft);
+              if (fresh.length > 0) {
+                setProposals((prev) => {
+                  const bySlot = new Map(prev.map((p) => [p.slot, p]));
+                  for (const p of fresh) bySlot.set(p.slot, p);
+                  return [...bySlot.values()];
+                });
+              }
               return copilot.normalizeDraft(draft);
             }}
             onSent={() => {

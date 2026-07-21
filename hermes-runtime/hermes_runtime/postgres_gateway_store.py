@@ -17,18 +17,38 @@ from psycopg.types.json import Jsonb
 from toee_hermes.drivers.mock.memory import MEMORY_SOURCE_MERGED_PROVISIONAL
 from toee_hermes.gateway.agent_turn import AgentTurnContext, build_agent_turn_context
 from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+from toee_hermes.gateway.normalize import is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
 
 from .datastore.config import database_url
 from .datastore.handlers._common import new_id
+from .datastore.pool import get_database_pool
 
 _SMS_CHANNEL = "sms"
-# Dev substrate: one Textline conversation maps to one SMS session (ADR-0115).
+_EMAIL_CHANNEL = "email"
+# Dev substrate: one conversation maps to one session (ADR-0115).
 _SESSION_TTL = "24 hours"
 
+# S25 (FR-25): the confirmed-L6-injection read cap. Confirmed learnings are shared
+# operational guidance prepended to every gated turn; cap the count so the prompt
+# can't grow unbounded as the store accumulates. Newest-confirmed first (ADR-0152).
+_CONFIRMED_EXPERIENCE_LIMIT = 20
 
-def _thread_id(from_phone: str) -> str:
-    return f"customer_thread:textline:{from_phone}"
+
+def _channel_column(channel: str) -> str:
+    """Map the ingress channel to the persisted channel vocabulary (S17).
+
+    ``customer_thread`` / ``session_identity_snapshot`` / ``cases`` / ``identity_link``
+    all use ``sms`` | ``email`` (CaseChannel), not the ingress ``textline_sms`` |
+    ``simulated_email``. Keeping the column value ``email`` is what makes the copilot
+    case view label an email ingress correctly and an Email Sender Match resolve.
+    """
+    return _EMAIL_CHANNEL if is_email_channel(channel) else _SMS_CHANNEL
+
+
+def _thread_id(channel: str, from_identity: str) -> str:
+    prefix = "email" if is_email_channel(channel) else "textline"
+    return f"customer_thread:{prefix}:{from_identity}"
 
 
 def _session_id(thread_id: str, conversation_id: str) -> str:
@@ -100,11 +120,8 @@ class PostgresGatewayStore:
         if self._connection is not None:
             yield self._connection
         else:
-            conn = psycopg.connect(self._dsn)
-            try:
+            with get_database_pool(self._dsn).connection() as conn:
                 yield conn
-            finally:
-                conn.close()
 
     def is_duplicate(self, event_id: str) -> bool:
         with self._connect() as conn:
@@ -125,7 +142,8 @@ class PostgresGatewayStore:
                 f"got action={decision.action!r}."
             )
 
-        thread_id = _thread_id(event.from_phone)
+        channel_col = _channel_column(event.channel)
+        thread_id = _thread_id(event.channel, event.from_phone)
         session_id = _session_id(thread_id, event.conversation_id)
         turn_id = _turn_id(session_id, event.event_id)
         body_ref = turn_id
@@ -156,7 +174,7 @@ class PostgresGatewayStore:
                             updated_at = now()
                         RETURNING id
                         """,
-                        (thread_id, _SMS_CHANNEL, event.from_phone, thread_shopify_id),
+                        (thread_id, channel_col, event.from_phone, thread_shopify_id),
                     )
                     thread_id = cur.fetchone()[0]
 
@@ -196,7 +214,7 @@ class PostgresGatewayStore:
                             (
                                 snapshot_id,
                                 event.event_id,
-                                _SMS_CHANNEL,
+                                channel_col,
                                 event.from_phone,
                                 Jsonb(_snapshot_to_json(snapshot)),
                             ),
@@ -220,6 +238,7 @@ class PostgresGatewayStore:
                         thread_id=thread_id,
                         session_id=session_id,
                         preview=event.body,
+                        channel=channel_col,
                     )
 
                 conn.commit()
@@ -251,7 +270,7 @@ class PostgresGatewayStore:
                 cur.execute(
                     """
                     SELECT c.event_id, c.customer_thread_id, c.sms_session_id,
-                           c.inbound_message_turn_id, t.channel_identity,
+                           c.inbound_message_turn_id, t.channel_identity, t.channel,
                            s.match_result, s.captured_at
                     FROM agent_turn_context c
                     JOIN customer_thread t ON t.id = c.customer_thread_id
@@ -270,6 +289,7 @@ class PostgresGatewayStore:
                     session_id,
                     turn_id,
                     from_phone,
+                    channel,
                     match_result,
                     captured_at,
                 ) = row
@@ -290,6 +310,9 @@ class PostgresGatewayStore:
             from_phone=from_phone,
             session_identity_snapshot=snapshot,
             inbound_body_ref=turn_id,
+            # S17: the persisted channel vocabulary ("email"|"sms") — is_email_channel
+            # recognizes it, so the reloaded email turn binds on the email identity.
+            channel=channel,
         )
 
     def load_inbound_body(self, inbound_body_ref: str) -> Optional[str]:
@@ -350,6 +373,63 @@ class PostgresGatewayStore:
                 )
                 rows = cur.fetchall()
         return [{"slot": name, "value": value} for name, value in rows]
+
+    def load_confirmed_experience(self) -> list[dict[str, Any]]:
+        """Bounded read of CONFIRMED ``agent_experience`` entries for injection (S25, FR-25).
+
+        Operational, NOT customer-scoped (unlike :meth:`load_customer_memory`): L6
+        learnings are shared team knowledge, so this is keyed by nothing but
+        ``status``. Returns ONLY ``status='confirmed'`` rows -- ``proposed``/
+        ``rejected`` are never injected into any turn -- newest-confirmed first,
+        capped at :data:`_CONFIRMED_EXPERIENCE_LIMIT`. Returns the
+        ``[{"content": ..., "kind": ...}, ...]`` shape ``hooks._render_experience``
+        expects.
+        # ponytail: fixed cap is fine at current volume; make it relevance-ranked
+        # only if the confirmed set ever outgrows the prompt budget (post-launch
+        # real-traffic calibration, FR-27 -- see ADR-0152)."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT content, kind FROM agent_experience
+                    WHERE status = 'confirmed'
+                    ORDER BY decided_at DESC NULLS LAST, created_at DESC
+                    LIMIT %s
+                    """,
+                    (_CONFIRMED_EXPERIENCE_LIMIT,),
+                )
+                rows = cur.fetchall()
+        return [{"content": content, "kind": kind} for content, kind in rows]
+
+    def list_channel_identities_for_customer(
+        self, shopify_customer_id: str
+    ) -> list[tuple[str, str]]:
+        """Every channel identity linked to a verified customer (S19, FR-19).
+
+        Mirrors the ``identity_link`` read the ``toee_identity_lookup`` datastore
+        handler's ``_match`` uses (``datastore/handlers/identity.py``), just the
+        other direction: given a verified ``shopify_customer_id``, which
+        ``(channel, channel_identity)`` pairs point at them. A plain, read-only,
+        context-safe lookup used internally by the cross-channel provisional
+        merge (``openrouter.py._merge_provisional_memory``) to enumerate every
+        source key to merge -- never surfaced as a tool action, since it returns
+        Identity Graph structure, not customer content (ADR-0151).
+
+        Ordered ``(channel, channel_identity)`` ascending for a deterministic,
+        reproducible merge order; the caller decides precedence on top of this
+        (this turn's own channel first, ADR-0151).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT channel, channel_identity FROM identity_link
+                    WHERE shopify_customer_id = %s
+                    ORDER BY channel, channel_identity
+                    """,
+                    (shopify_customer_id,),
+                )
+                return [(row[0], row[1]) for row in cur.fetchall()]
 
     def merge_provisional_memory(
         self, provisional_key: str, verified_key: str
@@ -483,6 +563,7 @@ def _ensure_open_case(
     thread_id: str,
     session_id: str,
     preview: str,
+    channel: str = _SMS_CHANNEL,
 ) -> None:
     """Open a Follow-up Case when none exists so Tier B Workbench shows the thread."""
     cur.execute(
@@ -503,7 +584,7 @@ def _ensure_open_case(
         """
         INSERT INTO cases
             (id, channel, customer_thread_id, sms_session_id, status, summary, urgency)
-        VALUES (%s, 'sms', %s, %s, 'open', %s, 'normal')
+        VALUES (%s, %s, %s, %s, 'open', %s, 'normal')
         """,
-        (case_id, thread_id, session_id, summary),
+        (case_id, channel, thread_id, session_id, summary),
     )

@@ -50,6 +50,18 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_copilot_draft",
             "toee_workbench_read",
             "toee_customer_memory",
+            # 0.0.3 S22 (FR-23): L6 Agent-experience proposals originate ONLY
+            # from the internal_copilot review fork (S23) -- never external,
+            # never supervisor (ADR-0140 boundary).
+            "toee_agent_experience",
+            # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over
+            # this profile's API by the admin BFF -- same reason
+            # toee_customer_memory.get_memory_audit lives here (ADR-0140).
+            "toee_metrics",
+            # 0.0.3 S28 (FR-30): Customer Memory retention sweep admin panel,
+            # reached over this profile's API by the admin BFF -- same
+            # precedent as toee_metrics/get_memory_audit above.
+            "toee_retention",
         }
     ),
     # ADR-0038 Supervisor Admin Profile (governance only).

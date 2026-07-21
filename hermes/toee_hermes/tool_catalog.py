@@ -14,6 +14,7 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "match_phone",
         "match_email_sender",
         "get_email_link_status",
+        "link_identity",
     ),
     "toee_knowledge_search": ("search_public_site", "search_operational_policy"),
     "toee_shopify_read": (
@@ -31,6 +32,25 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "upsert_preference",
         "clear_preference",
         "get_preferences",
+        # 0.0.3 S21 (FR-21): verified-only customer self-service "what do you
+        # remember about me" read -- slot values only, no source/actor/
+        # timestamps/binding_key (see the mock/datastore handlers). LLM-callable
+        # on the EXTERNAL profile (NOT in _AGENT_EXCLUDED_ACTIONS, unlike
+        # get_memory_audit below -- this one IS customer-facing by design).
+        # It's also LLM-callable on internal_copilot for the same reason --
+        # unexcluded actions ride this same shared toolset registration onto
+        # every profile the toolset is attached to. Not a security gap: INTERNAL
+        # already has get_preferences, a superset of this read.
+        "get_my_memory_summary",
+        # 0.0.3 S15 (FR-17): audit-only action for a dismissed S14 proposal --
+        # persists no slot, only a Workbench Audit Log row (see the datastore
+        # handler in hermes-runtime/hermes_runtime/datastore/handlers/memory.py).
+        "dismiss_proposal",
+        # 0.0.3 S20 (FR-20): Supervisor Memory Audit View read -- current slots +
+        # full workbench_audit_log write history for a binding. Read-only; listed
+        # in _AGENT_EXCLUDED_ACTIONS so it never reaches a live agent's tool loop,
+        # only the admin BFF's deterministic tools:dispatch call.
+        "get_memory_audit",
     ),
     "toee_case_manage": (
         "claim_case",
@@ -41,12 +61,13 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "send_textline_message",
     ),
     "toee_copilot_draft": ("draft_sms", "draft_email", "draft_internal_note"),
-    "toee_workbench_read": ("get_case", "list_cases", "get_audit_log", "get_thread", "list_auto_handled", "get_auto_handled", "list_sales_outreach", "get_sales_outreach"),
+    "toee_workbench_read": ("get_case", "list_cases", "get_audit_log", "get_thread", "get_thread_by_phone", "get_thread_by_email", "list_auto_handled", "get_auto_handled", "list_sales_outreach", "get_sales_outreach"),
     "toee_knowledge_ops": (
         "get_policy_slots",
         "update_policy_slot",
         "submit_for_eval",
         "rollback_published_policy",
+        "get_corpus_status",
     ),
     "toee_eval_review": (
         "list_eval_runs",
@@ -61,6 +82,35 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "disable_account",
         "authenticate",
     ),
+    # 0.0.3 S22 (FR-23, NFR-3): L6 Agent-experience store -- "what the agent
+    # learns from doing the job" (distinct from L4 Customer Memory and L5's
+    # authored corpus). The governed write is LLM-callable on internal_copilot
+    # only (the S23 copilot review fork proposes); list_agent_experience is
+    # admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
+    # precedent) -- reached only via the admin BFF's deterministic dispatch.
+    # 0.0.3 S24 (FR-24): confirm_experience/reject_experience, the human
+    # confirm gate -- also admin-only/_AGENT_EXCLUDED_ACTIONS, same reason.
+    "toee_agent_experience": (
+        "propose_experience",
+        "list_agent_experience",
+        "confirm_experience",
+        "reject_experience",
+    ),
+    # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
+    # over existing tables + the new metric_event counters (memory injection,
+    # knowledge found/miss). Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the
+    # get_memory_audit precedent) -- reached only via the admin BFF's
+    # deterministic tools:dispatch call, never a live agent's tool loop.
+    "toee_metrics": ("get_aggregate_metrics",),
+    # 0.0.3 S28 (FR-30): the Customer Memory retention sweep admin panel.
+    # trigger_retention_sweep is a governed WRITE (ages out customer_memory_slot
+    # rows per the ADR-0004/0116 class windows); get_retention_status is the
+    # read-only last-run/per-class-counts view. Both admin-only (listed in
+    # _AGENT_EXCLUDED_ACTIONS, the get_memory_audit precedent) -- reached only
+    # via the admin BFF's deterministic tools:dispatch call or the schedulable
+    # CLI entrypoint (hermes_runtime.retention_sweep), never a live agent's
+    # tool-calling loop.
+    "toee_retention": ("trigger_retention_sweep", "get_retention_status"),
 }
 
 
