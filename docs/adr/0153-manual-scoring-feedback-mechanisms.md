@@ -1,10 +1,17 @@
 # Manual scoring feedback: dual-side capture, actor-attributed, proposal-gated improvement
 
 > **Status: Accepted — design approved 2026-07-21** (grilling session with
-> product owner). Design spec:
-> `docs/superpowers/specs/2026-07-21-manual-scoring-feedback-design.md`.
+> product owner). **Targets 0.0.4 on the post-0.0.3 baseline** — it must not be
+> implemented until `feat/0.0.3-land-all` merges to `main`. Design spec:
+> `docs/superpowers/specs/2026-07-21-manual-scoring-feedback-design.md`;
+> module PRD: `workspace/0.0.4/quality-feedback/PRD.md`.
 > Builds on ADR-0148 (actor attribution invariant), ADR-0037/0085/0086 (audit
-> views), ADR-0083 (governed send), ADR-0059 (action enums).
+> views), ADR-0083 (governed send), ADR-0059 (action enums), and — from 0.0.3 —
+> ADR-0150 (propose→confirm as the governance pattern) and ADR-0152 (the L6
+> agent-experience propose→confirm→inject loop this design feeds rather than
+> duplicates).
+>
+> Numbered 0153 because 0.0.3 occupies 0149–0152.
 
 ## Context
 
@@ -35,11 +42,17 @@ framework-derived attribution) constrains how such a loop may close.
    by the ADR-0148 boot-path invariant, an agent draft turn can never carry
    one, so **the AI structurally cannot score itself**. Re-review appends; the
    audit trail keeps history.
-4. **The improvement loop is proposal-gated, not autonomous (Phase 2).**
-   Aggregated feedback yields **Improvement Proposals** (knowledge-slot
-   revision, new eval scenario, internal persona adjustment) that become
-   effective only after human approval and the applicable eval gate. Feedback
-   never writes directly into agent memory, prompts, or published knowledge.
+4. **The improvement loop is proposal-gated, not autonomous, and reuses
+   0.0.3's existing machinery (Phase 2).** Aggregated feedback yields
+   **Improvement Proposals** that become effective only after human approval
+   and the applicable eval gate. Feedback never writes directly into agent
+   memory, prompts, or published knowledge. Crucially, Phase 2 **builds no new
+   proposal pipeline**: operational-learning proposals ride the existing L6
+   `agent_experience` propose→confirm→inject loop and its admin Accept/Reject
+   queue (ADR-0152); knowledge-gap proposals ride the existing KnowledgeOps
+   `submit_for_eval` → **Knowledge Publish Eval Gate**; and feedback counters
+   are emitted as `metric_event` rows onto the existing aggregate metrics panel
+   rather than a bespoke dashboard.
 
 ## Consequences
 
@@ -63,8 +76,15 @@ framework-derived attribution) constrains how such a loop may close.
 - **Every failed conversation auto-becomes an eval fixture (deferred):**
   retained as one Phase 2 proposal type, not the sole mechanism — cost per
   fixture is high and tone-class failures don't fixture well.
-- **Standalone /admin/feedback subsystem with dashboards (rejected for Phase
-  1):** largest surface, no data yet to justify it.
+- **Standalone /admin/feedback subsystem with dashboards (rejected):** largest
+  surface, no data yet to justify it — and 0.0.3 already ships an aggregate
+  metrics panel plus an L6 review queue, so a parallel dashboard and a parallel
+  approval queue would duplicate shipped machinery.
+- **A second, feedback-specific propose→confirm pipeline (rejected):** the
+  0.0.3 L6 loop (ADR-0150/0152) already encodes propose→confirm→inject with a
+  human gate and an audit trail. Feeding it costs a proposal-source field;
+  duplicating it costs a whole subsystem and a second governance surface to
+  keep honest.
 - **Per-turn external scoring (rejected for Phase 1):** finer granularity at
   much higher review cost; whole-interaction verdicts match the existing
   audit-sampling workflow.

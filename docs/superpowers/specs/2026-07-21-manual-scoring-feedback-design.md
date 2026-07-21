@@ -1,11 +1,36 @@
 # Manual scoring feedback mechanisms — design (Phase 1: dual-side capture)
 
 Date: 2026-07-21
-Status: approved by product owner (grilling session, this date)
-Related: ADR-0149 (this design's governance decisions), ADR-0148 (actor
+Status: approved by product owner (grilling session, this date), then revised
+the same day after a gap analysis against the unmerged `feat/0.0.3-land-all`
+branch (see §0).
+Target: **0.0.4, on the post-0.0.3 baseline.** Do not implement until 0.0.3
+merges to `main`. Module PRD: `workspace/0.0.4/quality-feedback/PRD.md`.
+Related: ADR-0153 (this design's governance decisions), ADR-0148 (actor
 attribution invariant this design reuses), ADR-0037/0085/0086 (audit views),
 ADR-0083 (governed send flow), ADR-0059 (tool action enums), ADR-0004
-(retention).
+(retention), and from 0.0.3: ADR-0150 (propose→confirm), ADR-0152 (L6
+agent-experience loop), ADR-0121 (eval record/replay pin).
+
+## 0. Revision after the 0.0.3 gap analysis
+
+This design was first written on a `main` (0.0.2) worktree, blind to the
+unmerged 0.0.3 branch. Reconciling against it changed four things:
+
+1. **Migration number** — 0.0.3 takes `0008_agent_experience.sql` and
+   `0009_metric_event.sql`; this feature's migration is **0010**.
+2. **ADR number** — 0.0.3 takes 0149–0152; this ADR is **0153**.
+3. **Phase 2 builds no new pipeline.** 0.0.3 already ships the L6
+   `agent_experience` propose→confirm→inject loop, its admin Accept/Reject
+   queue, a proposal audit surface, and an aggregate metrics panel backed by
+   `metric_event`. Phase 2 feeds those; it does not duplicate them.
+4. **Testing adopts 0.0.3's three-layer gate** — technical CI, browser E2E
+   creating a front-end entry, and owner PAC in the **Conversation
+   Simulator** — replacing the original unit/datastore/component-only plan.
+
+Phase 1 capture (**Interaction Review**, **Draft Feedback**) survived the
+analysis unchanged: 0.0.3 has no conversation-quality scoring and no
+draft-quality signal, so it is genuinely net-new.
 
 ## Goal
 
@@ -39,9 +64,9 @@ accumulates.
 
 ## 1. Data model
 
-New migration `hermes-runtime/migrations/0008_feedback_tables.sql`. Two
-independent tables in the operational layer (Toee Business Datastore).
-Retention follows the operational layer (ADR-0004).
+New migration `hermes-runtime/migrations/0010_feedback_tables.sql` (0008 and
+0009 are taken by 0.0.3). Two independent tables in the operational layer
+(Toee Business Datastore). Retention follows the operational layer (ADR-0004).
 
 ### `interaction_review` (external)
 
@@ -164,39 +189,79 @@ and (Phase 2) separate proposal pipelines and publish gates. Shared: the
 `toee_feedback` tool shell, the migration file, and the dispatch plumbing —
 shared skeleton, not shared data or policy.
 
-## 5. Phase 2 sketch (not built now)
+## 5. Phase 2 sketch (not built now) — feeds existing machinery
 
 A Supervisor Admin Profile analysis task (manually triggered at first) uses
-`list_feedback` to aggregate unaddressed `fail`/`down` feedback and generate
-**Improvement Proposals** of three kinds:
+`list_feedback` to aggregate unaddressed `fail`/`down` feedback and route it
+into surfaces 0.0.3 already ships — **no new proposal pipeline, no new
+approval queue, no new dashboard**:
 
-1. Knowledge-slot revision draft → existing KnowledgeOps `submit_for_eval` →
+1. **Operational-learning proposals** (tone, procedure, tool-usage patterns) →
+   the existing L6 `agent_experience` store as `status='proposed'` rows via the
+   governed propose path, decided on the existing admin Accept/Reject queue,
+   injected only once confirmed (ADR-0152). Feedback-derived proposals carry a
+   distinguishing source so the queue can show where a proposal came from.
+2. **Knowledge-gap proposals** (`factual_error` / `missed_information` clusters)
+   → knowledge-slot revision draft → existing KnowledgeOps `submit_for_eval` →
    **Knowledge Publish Eval Gate**.
-2. New **Launch Eval Scenario** suggestion (YAML fixture draft, human-reviewed
-   before landing).
-3. Internal draft-persona adjustment draft → parallel eval + human approval.
+3. **New Launch Eval Scenario suggestions** → YAML fixture draft, human-reviewed
+   before landing.
 
-Approval UI lands in `/admin` (master-detail pattern). Concrete Phase 2 design
-waits for the real feedback distribution from Phase 1. No autonomous
-self-modification; no direct feedback-to-memory writes.
+Feedback counters (review pass rate, draft acceptance rate, top failing reason
+tags) are emitted as `metric_event` rows onto the existing aggregate metrics
+panel. Concrete Phase 2 design waits for the real feedback distribution from
+Phase 1. No autonomous self-modification; no direct feedback-to-memory writes.
+
+**Eval sensitivity.** Anything that ends up injected into a turn (path 1's
+confirmed L6 entries, path 2's published knowledge) is eval-sensitive and must
+respect the ADR-0121 record/replay pin — the same constraint ADR-0152 already
+carries. Phase 1 itself injects nothing.
 
 ## 6. Testing
 
-- **Unit (resolver/gate)**: no actor → `policy_blocked`; insufficient role →
-  `policy_blocked`; `fail`/`down` without tags → validation error; tags
-  outside enum → validation error; model-supplied actor/verdict params
-  ignored.
-- **Datastore (live Postgres)**: each write path SELECTed back directly
-  (source-of-truth proof, matching 0.0.2 practice); append-only proven (two
+Every slice passes 0.0.3's **three-layer gate**: ① technical CI, ② browser E2E
+from the front end (creating a front-end entry where none exists), ③ owner PAC
+in the **Conversation Simulator**.
+
+**Seams** — preferring existing, highest-possible seams:
+
+- **Primary: `POST /v1/tools:dispatch`.** All four `toee_feedback` actions flow
+  through it, and Tool Gate, actor attribution, and validation all resolve
+  there. One seam covers the governance-critical surface. Existing seam
+  (0.0.2 precedent).
+- **Secondary: live-Postgres read-back.** Assertions SELECT from Postgres
+  directly rather than trusting a tool return value (0.0.2 "live, not mock"
+  proof principle).
+- **Tertiary: UI component tests** (existing `*.test.tsx` seam) and the
+  workbench BFF routes.
+
+**Layer ① technical:**
+
+- Gate/validation at the dispatch seam: no actor → `policy_blocked`;
+  insufficient role → `policy_blocked`; `fail`/`down` without tags →
+  validation error; tags outside the mechanism's enum → validation error;
+  model-supplied actor/verdict params ignored.
+- Live Postgres: each write path SELECTed back; append-only proven (two
   reviews by one reviewer → two rows, latest wins on read).
-- **UI component tests**: review bar states (unreviewed / reviewed / fail
-  expansion / role-hidden), draft card rating flow, send-outcome capture
-  (as-is vs edited), outcome failure does not block send.
-- No new eval scenarios in Phase 1: `toee_feedback` is not agent-callable, so
-  there is no agent behavior to evaluate.
+- UI components: review bar states (unreviewed / reviewed / fail expansion /
+  role-hidden), draft rating flow, send-outcome capture (as-is vs edited),
+  and outcome-recording failure not blocking the send.
+
+**Layer ② browser E2E:** review bar reachable and submittable on both audit
+detail routes; review-status column reflects the result on the list.
+
+**Layer ③ owner PAC:** in the simulator — drive a conversation to an
+auto-handled interaction, then score it from the audit view; drive a case to a
+copilot draft, then rate it and send edited, and confirm both rows land.
+
+**Eval:** no new eval scenarios in Phase 1 — `toee_feedback` is not
+agent-callable and injects nothing, so there is no agent behavior to evaluate
+and the record/replay pin is untouched.
 
 ## 7. Documentation
 
 - CONTEXT.md: new terms **Interaction Review**, **Draft Feedback**, **Review
-  Reason Tag**, **Improvement Proposal** + relationships.
-- ADR-0149: manual scoring feedback mechanisms (governance decisions).
+  Reason Tag**, **Improvement Proposal** + relationships. These were authored
+  on the 0.0.2 base and must be re-applied onto post-0.0.3 CONTEXT.md, which
+  minted its own glossary terms in the same file.
+- ADR-0153: manual scoring feedback mechanisms (governance decisions).
