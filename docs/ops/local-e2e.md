@@ -240,7 +240,7 @@ These are deferred or optional for local Tier B:
 | **#45 lockout** | API-path login does not yet enforce in-memory brute-force lockout (ADR-0144 M-2). Repeated bad passwords are not throttled when the admin API is configured. |
 | **OpenRouter** | Agent-turn / LLM drafts against live models need `OPENROUTER_API_KEY` on the gateway path â€?not required for queue, login, or mock SMS send. |
 | **Live SimpleTexting** | Outbound SMS uses the mock capture in local dev; `SIMPLETEXTING_API_TOKEN` is for production/live integration. |
-| **Gateway** | Inbound SimpleTexting webhook + async agent turn — see [`local-gateway.md`](local-gateway.md) (`pnpm dev:gateway` is a stub; use uvicorn). |
+| **Gateway** | Inbound SimpleTexting webhook + async agent turn -- see [`local-gateway.md`](local-gateway.md). Boot it with uvicorn; there is no `pnpm dev:gateway` (the TypeScript `services/hermes-gateway` stub was deleted, ADR-0153). |
 
 Cloud SQL, Cloud Run, and Secret Manager wiring remain Slice 37 (#40).
 

@@ -32,7 +32,7 @@ use your own values — never commit secrets.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `SIMPLETEXTING_WEBHOOK_TOKEN` | yes | Shared token in the inbound `/webhooks/simpletexting?token=…` URL (ADR-0021) |
+| `SIMPLETEXTING_WEBHOOK_TOKEN` | yes | Shared token in the inbound `/webhooks/simpletexting?token=…` URL (ADR-0153) |
 | `INTERNAL_JOB_SECRET` | yes | Shared secret for `/internal/jobs/agent-turn` (ADR-0106) |
 | `SIMPLETEXTING_API_TOKEN` | yes | Outbound SimpleTexting sends (opt-out + agent turn, ADR-0083) |
 | `OPENROUTER_API_KEY` | yes | Live LLM for the async agent turn (ADR-0009) |
@@ -84,7 +84,9 @@ Production uses the same factory; Cloud Run sets `--host 0.0.0.0` and `$PORT` (s
 ## Simulate inbound SMS (no real SimpleTexting)
 
 **Route:** `POST /webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>`  
-No signature header — SimpleTexting authenticates via the shared URL token (ADR-0021).
+There is no signature header and no body-signature scheme at all — SimpleTexting does
+not sign webhooks, so the only inbound credential is the shared URL token, and replay
+protection is `messageId` idempotency (ADR-0153).
 
 ### Helper script (recommended)
 
@@ -131,7 +133,7 @@ Invoke-WebRequest -Method POST -Uri $uri -ContentType "application/json" -Body $
 | Missing / wrong `token` | **401** | Rejected before processing |
 | Normal inbound (e.g. stock question) | **200** | Persist + enqueue async agent turn |
 | Opt-out keyword (`STOP`, etc.) | **200** | Fixed compliance reply via SimpleTexting; **no** agent turn |
-| Duplicate `event_id` (when idempotency wired) | **200** | No-op ack |
+| Duplicate `messageId` | **200** | No-op ack (`claim_event` compare-and-set; ADR-0016/0153) |
 | Rate-limited sender | **200** | Persist snapshot; **no** enqueue |
 | Transient identity lookup failure | **500** | Retryable ingress error |
 
@@ -238,4 +240,5 @@ cd hermes-runtime
 uv run pytest tests/test_gateway_app.py tests/test_gateway_composition.py tests/test_gateway_healthz.py -q
 ```
 
-Signature crypto unit tests live under `hermes/tests/test_gateway_verify.py`.
+Webhook **token** verification unit tests live under `hermes/tests/test_gateway_verify.py`
+(constant-time token compare, fail-closed — there is no signature crypto to test).

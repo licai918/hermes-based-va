@@ -1,5 +1,9 @@
 # Textline inbound-only webhook normalization to InboundChannelEvent
 
+> **Provider retired (2026-07-21).** The provider-identifying literals are now
+> `simpletexting_sms` / `simpletexting` and the Node service below is deleted; the
+> canonical inbound-only event shape stands. Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `services/hermes-gateway` normalizes verified Textline webhooks into a canonical internal event before ingress matching and **External Customer Service Profile** execution.
 
 ## v1 accepted event scope

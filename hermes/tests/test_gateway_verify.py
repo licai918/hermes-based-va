@@ -1,4 +1,4 @@
-"""SimpleTexting webhook token verification tests (ADR-0021).
+"""SimpleTexting webhook token verification tests (ADR-0021 requirement, ADR-0153 mechanism).
 
 SimpleTexting does not sign webhook payloads: authenticity is a shared secret
 token in the registered webhook URL, compared in constant time (fail-closed).

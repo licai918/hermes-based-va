@@ -5,7 +5,7 @@ environment into the real production app. ``create_app`` and every factory below
 stay seam-injectable for tests; this module is where the live collaborators are
 assembled:
 
-* the SimpleTexting webhook URL token (ADR-0021/0153) and the internal-job shared
+* the SimpleTexting webhook URL token (ADR-0153) and the internal-job shared
   secret (ADR-0106), read from the environment;
 * the real SimpleTexting outbound ``ReplySender`` (ADR-0083) — used for both the
   opt-out confirmation and the agent reply;
@@ -45,7 +45,7 @@ from hermes_runtime.simpletexting_reply import (
 from hermes_runtime.tool_backend import resolve_tool_backend, select_tool_driver
 from hermes_runtime.turn_runner import make_gateway_turn_runner
 
-# SimpleTexting webhook URL token (ADR-0021/0153): SimpleTexting does not sign
+# SimpleTexting webhook URL token (ADR-0153): SimpleTexting does not sign
 # payloads, so the registered webhook URL carries ?token=<this secret>.
 WEBHOOK_SECRET_ENV = "SIMPLETEXTING_WEBHOOK_TOKEN"
 

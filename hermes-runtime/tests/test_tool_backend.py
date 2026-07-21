@@ -86,8 +86,10 @@ def test_simulated_mode_disabled_when_unset_or_empty() -> None:
     assert simulated_mode_enabled("") is False
 
 
-def test_simulated_mode_disabled_for_the_real_textline_sender() -> None:
-    assert simulated_mode_enabled("textline") is False
+def test_simulated_mode_disabled_for_the_real_simpletexting_sender() -> None:
+    # The only value that resolves the REAL sender (alongside unset/empty, covered
+    # above) -- so this is the case that proves production never opens the gate.
+    assert simulated_mode_enabled("simpletexting") is False
 
 
 def test_simulated_mode_enabled_for_simulated_case_insensitive() -> None:

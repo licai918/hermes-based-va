@@ -1,5 +1,5 @@
 # Simulate a SimpleTexting INCOMING_MESSAGE webhook against a local gateway
-# (ADR-0021: auth is the shared token in the webhook URL — no body signature).
+# (ADR-0153: auth is the shared token in the webhook URL — no body signature).
 #
 # Example (from repo root, gateway running via scripts/run-gateway.ps1):
 #   pwsh scripts/simulate-simpletexting-webhook.ps1 -Token dev-webhook-token

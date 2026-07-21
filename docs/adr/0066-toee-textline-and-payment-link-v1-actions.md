@@ -1,5 +1,9 @@
 # toee_textline_reply and toee_square_payment_link v1 actions
 
+> **Superseded in part (2026-07-21).** Textline is retired and `toee_textline_reply` is
+> renamed `toee_sms_reply`; its action and **Tool Gate** rules carry over under that name.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 ## toee_textline_reply
 
 `toee_textline_reply` exposes one v1 action:

@@ -8,6 +8,10 @@
 > option at the end was reversed by ADR-0139. Deploy details live in
 > `docs/ops/deploy-cloud-run.md`; this ADR is retained as historical record.
 
+> **Provider retired (2026-07-21).** `services/hermes-gateway` has since been deleted
+> outright, and the ingress route is `/webhooks/simpletexting`; Textline is gone.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `services/hermes-gateway` is a standalone Node.js service deployed to Cloud Run for external channel ingress and **External Customer Service Profile** runtime execution.
 
 ## Runtime stack

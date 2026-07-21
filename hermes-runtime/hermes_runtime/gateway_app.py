@@ -49,7 +49,7 @@ from hermes_runtime.gateway_store import (
     JobQueue,
 )
 
-# SimpleTexting does not sign webhook payloads (ADR-0021/0153): authenticity is a
+# SimpleTexting does not sign webhook payloads (ADR-0153): authenticity is a
 # shared secret token in the registered webhook URL, read from this query param.
 # The simulated-email route (S17) uses the same token — it is internal ingress.
 WEBHOOK_TOKEN_QUERY_PARAM = "token"

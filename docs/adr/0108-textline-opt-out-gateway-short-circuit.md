@@ -1,5 +1,9 @@
 # Textline opt-out keyword short-circuit in gateway pipeline
 
+> **Provider retired (2026-07-21).** Textline was cancelled for SimpleTexting; the opt-out
+> short-circuit below stands on the `/webhooks/simpletexting` pipeline.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 SMS opt-out handling is deterministic gateway policy, not a full **External Customer Service Profile** agent turn.
 
 ## Pipeline placement

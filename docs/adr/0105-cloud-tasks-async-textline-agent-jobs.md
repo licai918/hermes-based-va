@@ -1,5 +1,9 @@
 # Cloud Tasks handoff for async Textline agent execution
 
+> **Provider retired (2026-07-21).** The webhook is `/webhooks/simpletexting` and outbound
+> SMS uses `toee_sms_reply`; the Cloud Tasks handoff itself stands.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 After a Textline webhook returns `200`, **External Customer Service Profile** execution runs asynchronously through Google Cloud Tasks rather than inside the webhook request lifecycle.
 
 Cloud Tasks is the first queue-style Google Cloud service activated for **Hermes VA** because fast webhook acknowledgment in ADR-0103 requires durable post-ack work handoff on Cloud Run.

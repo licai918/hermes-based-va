@@ -50,7 +50,7 @@ missing.
 
 | Env var | Source | Required? | Notes |
 |---------|--------|-----------|-------|
-| `SIMPLETEXTING_WEBHOOK_TOKEN` | Secret Manager | yes | Shared token in the registered webhook URL (ADR-0021 — SimpleTexting does not sign payloads) |
+| `SIMPLETEXTING_WEBHOOK_TOKEN` | Secret Manager | yes | Shared token in the registered webhook URL (ADR-0153 — SimpleTexting does not sign payloads) |
 | `INTERNAL_JOB_SECRET` | Secret Manager | yes | Guards `/internal/jobs/agent-turn` (ADR-0106) |
 | `SIMPLETEXTING_API_TOKEN` | Secret Manager | yes | Outbound SimpleTexting sends (ADR-0083) |
 | `OPENROUTER_API_KEY` | Secret Manager | yes | Async agent turn (ADR-0009) |
@@ -153,7 +153,7 @@ resolved all required secrets (a missing secret fails the boot, not this probe).
 ### (b) One SMS path — tokened inbound webhook 200
 
 SimpleTexting does not sign webhook payloads, so authenticity is the shared token
-in the registered URL (ADR-0021/0149). Post a SimpleTexting-shaped report to
+in the registered URL (ADR-0153). Post a SimpleTexting-shaped report to
 `/webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>`. A normal inbound
 fast-acks 200 (ADR-0103); a wrong or missing token returns 401.
 

@@ -1,5 +1,9 @@
 # Required Textline webhook signature verification
 
+> **Superseded (2026-07-21).** The Textline signature scheme no longer exists —
+> SimpleTexting does not sign webhooks; inbound auth is a token in the registered URL.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 The first-version Textline integration must verify inbound webhook authenticity before Hermes processes an SMS event. Requests that fail signature or token validation return 401 and do not enter the **External Customer Service Profile** flow.
 
 Textline API credentials remain server-side environment variables only. Webhook logs may record source metadata and conversation identifiers but must not store secrets or full credential values.

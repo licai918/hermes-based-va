@@ -9,6 +9,10 @@
 > conversation-only.
 > Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
 
+> **Provider retired (2026-07-21).** Textline was cancelled for SimpleTexting; the SMS
+> channel, its webhook, and its outbound **Tool** carry provider-neutral names now.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 Textline is not its own Hermes Profile. It is a **channel** that routes inbound SMS into the **External Customer Service Profile**.
 
 For each customer phone number, Hermes maintains:
