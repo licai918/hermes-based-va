@@ -25,11 +25,7 @@ from fastapi import FastAPI, Request, Response
 
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.execute import ToolDriver
-from toee_hermes.gateway.agent_turn import (
-    AgentJobPayload,
-    AgentTurnContext,
-    to_job_payload,
-)
+from toee_hermes.gateway.agent_turn import AgentJobPayload, AgentTurnContext
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
     TextlineInboundFields,
@@ -43,12 +39,7 @@ from toee_hermes.gateway.rate_limit import (
 )
 
 from hermes_runtime.agent_turn_job import AgentJobOutcome, execute_agent_turn_job
-from hermes_runtime.gateway_store import (
-    GatewayStore,
-    InMemoryGatewayStore,
-    InMemoryJobQueue,
-    JobQueue,
-)
+from hermes_runtime.gateway_store import GatewayStore, InMemoryGatewayStore
 
 # Provider signature headers (ADR-0021). Live Textline (TGP) uses X-Tgp-*; local
 # simulate script uses the legacy X-Textline-Signature flat JSON shape.
@@ -234,7 +225,6 @@ def create_app(
     is_duplicate: Optional[DuplicateCheck] = None,
     clock: Optional[Clock] = None,
     store: Optional[GatewayStore] = None,
-    queue: Optional[JobQueue] = None,
     internal_job_secret: Optional[str] = None,
     turn_runner: Optional[TurnRunner] = None,
 ) -> FastAPI:
@@ -242,25 +232,35 @@ def create_app(
 
     Defaults are mock-first (ADR-0137) and in-memory (ADR-0140 dev substrate): an
     unconfigured app boots against the mock driver, a fresh in-process rate limiter,
-    and an in-memory store/queue. The deployment composition root injects the
-    resolved integration driver, the durable idempotency check, the real Textline
-    reply client, and the Postgres-backed store and Cloud Tasks queue.
+    and an in-memory store. The deployment composition root injects the resolved
+    integration driver, the durable idempotency check, the real Textline reply
+    client, and the Postgres-backed store.
+
+    There is no ``queue`` seam: enqueuing the turn job is the store's job, so that
+    it shares the persist transaction (see :meth:`GatewayStore.persist_accepted_inbound`).
+    To observe or run the enqueued turn in a test, inject the queue into the store
+    (``InMemoryGatewayStore(queue=...)``).
     """
     driver = driver or MockDriver(create_all_mock_handlers())
     rate_limiter = rate_limiter or create_inbound_rate_limiter()
     is_duplicate = is_duplicate or _never_duplicate
     clock = clock or _utc_now_iso
     store = store or InMemoryGatewayStore()
-    queue = queue or InMemoryJobQueue()
 
     app = FastAPI()
 
     def _dispatch_decision(decision) -> Response:
         # Shared tail for both ingress routes (SMS + simulated email): send the one
-        # fixed opt-out confirmation when required, then persist + enqueue an accepted
-        # turn before acking (memory is the source of truth, ADR-0105/0107). Only
+        # fixed opt-out confirmation when required, then hand an accepted turn to the
+        # store before acking (memory is the source of truth, ADR-0105/0107). Only
         # opt-out and enqueue decisions act here; duplicate/rate-limited/retry/reject
         # just map their status.
+        #
+        # persist_accepted_inbound persists AND enqueues, in one transaction. The
+        # route deliberately does not enqueue: an enqueue here is a second commit
+        # boundary, and a crash inside it loses a message this response has already
+        # acked -- with no redelivery to save it, since the persisted context makes
+        # the retry a `duplicate` upstream of this function (US3, S02 fix wave 1).
         if (
             decision.action == "opt_out"
             and reply_sender is not None
@@ -269,9 +269,7 @@ def create_app(
         ):
             reply_sender(decision.event.conversation_id, decision.reply)
         if decision.action == "enqueue":
-            context, created = store.persist_accepted_inbound(decision)
-            if created:
-                queue.enqueue(to_job_payload(context))
+            store.persist_accepted_inbound(decision)
         return Response(status_code=decision.status)
 
     @app.get("/healthz")

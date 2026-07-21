@@ -28,14 +28,18 @@ from hermes_runtime.gateway_composition import (
     build_gateway_app,
     resolve_reply_sender,
 )
-from hermes_runtime.job_queue import PostgresJobQueue
 
-# Every env var a correctly-configured deployment must set.
+# Every env var a correctly-configured deployment must set. TOOL_BACKEND is one of
+# them since 0.0.4 S02: the gateway and the turn worker are separate processes, so
+# only the shared datastore backend can carry a turn between them (see
+# test_build_gateway_app_fails_closed_when_a_required_secret_is_absent, which
+# parametrizes over this dict and therefore covers it).
 REQUIRED_ENV = {
     WEBHOOK_SECRET_ENV: "whsec-123",
     INTERNAL_JOB_SECRET_ENV: "job-secret-123",
     "TEXTLINE_ACCESS_TOKEN": "tok-123",
     "OPENROUTER_API_KEY": "or-key-123",
+    "TOOL_BACKEND": "datastore",
 }
 
 # Optional env that would otherwise leak from the developer's shell.
@@ -83,7 +87,7 @@ def test_build_gateway_app_wires_resolved_secrets_and_collaborators(
     assert callable(captured["turn_runner"])
 
 
-def test_build_gateway_app_wires_the_durable_postgres_queue(
+def test_build_gateway_app_wires_the_durable_path_without_touching_postgres(
     _full_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict = {}
@@ -98,14 +102,30 @@ def test_build_gateway_app_wires_the_durable_postgres_queue(
 
     build_gateway_app()
 
-    # 0.0.4 S02 (FR-10, ADR-0153): fast-ack enqueues one durable row; the separate
-    # turn-worker process runs the turn. No in-process dispatcher remains.
-    assert isinstance(captured["queue"], PostgresJobQueue)
+    # 0.0.4 S02 (FR-10, ADR-0153): the fast-ack path writes one durable `job` row
+    # and the separate turn-worker process runs the turn. No in-process dispatcher
+    # remains -- and no `queue` seam either: the enqueue happens inside the store's
+    # persist transaction, because a seam here would be a second commit boundary a
+    # crash could fall into after the webhook was already acked (fix wave 1).
+    assert "queue" not in captured
     assert captured["store"] is not None
-    # The pool is lazy: wiring the queue must not have opened a connection at boot.
+    # The pool is lazy: wiring this must not have opened a connection at boot, which
+    # is what keeps `build_gateway_app()` bootable with no database running.
     import hermes_runtime.datastore.pool as db_pool_mod
 
     assert db_pool_mod._pools == {}
+
+
+def test_build_gateway_app_fails_closed_on_a_tool_backend_that_cannot_reply(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-memory store cannot cross the gateway/worker process boundary, so a
+    gateway booted on it would authenticate, persist, ack 200 -- and never reply.
+    That is the silently dropped reply this composition root refuses to allow."""
+    monkeypatch.setenv("TOOL_BACKEND", "mock")
+
+    with pytest.raises(ValueError, match="TOOL_BACKEND"):
+        build_gateway_app()
 
 
 def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(
@@ -117,7 +137,6 @@ def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(
         captured.update(kwargs)
         return FastAPI()
 
-    monkeypatch.setenv("TOOL_BACKEND", "datastore")
     monkeypatch.setattr(
         "hermes_runtime.gateway_composition.create_app", _spy_create_app
     )
@@ -235,6 +254,7 @@ def test_build_gateway_app_wires_simulated_reply_sender_without_textline_token(
     monkeypatch.setenv(WEBHOOK_SECRET_ENV, "whsec-123")
     monkeypatch.setenv(INTERNAL_JOB_SECRET_ENV, "job-secret-123")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-123")
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
     monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
     monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
 

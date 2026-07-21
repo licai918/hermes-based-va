@@ -15,9 +15,9 @@ import json
 
 from starlette.testclient import TestClient
 
+from hermes_runtime.agent_turn_job import execute_agent_turn_job
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
-from hermes_runtime.agent_turn_job import execute_agent_turn_job
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 
 WEBHOOK_SECRET = "test-textline-shared-secret"
@@ -47,9 +47,11 @@ def _email_payload(*, from_address="accounts@acme-fleet.example", subject="Order
 class _InlineTurnQueue:
     """Test-only ``JobQueue`` that runs the shared bound-turn job body inline.
 
-    Production enqueues a durable row and the turn-worker process claims it
-    (0.0.4 S02, ADR-0153); this test is about the S17 email channel binding, not
-    the substrate, so running the job body inline keeps it synchronous and DB-free.
+    Production writes a durable row inside the store's persist transaction and the
+    turn-worker process claims it (0.0.4 S02, ADR-0153); this test is about the S17
+    email channel binding, not the substrate, so running the job body inline keeps
+    it synchronous and DB-free. Injected into the store, which is where the enqueue
+    lives now.
     """
 
     def __init__(self, *, store, turn_runner) -> None:
@@ -86,11 +88,13 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
         reply_sender=lambda conv, text: sent.append((conv, text)),
         run_turn=run_turn,
     )
+    # The inline queue needs the turn runner, which needs the store -- so it is
+    # attached after construction rather than passed to __init__.
+    store.queue = _InlineTurnQueue(store=store, turn_runner=turn_runner)
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=_InlineTurnQueue(store=store, turn_runner=turn_runner),
         turn_runner=turn_runner,
     )
     client = TestClient(app)

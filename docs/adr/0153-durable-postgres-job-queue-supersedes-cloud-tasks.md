@@ -193,12 +193,21 @@ requires a managed service.
   (docker-compose service `turn-worker`) is the consumer. `PostgresJobQueue.enqueue(payload)`
   kept the one-argument `JobQueue` Protocol shape, so the cutover was a wiring
   change rather than a rewrite, as intended.
-- **The durable path requires `TOOL_BACKEND=datastore`.** Two processes can only
-  share the turn context through a shared store, so the in-memory `GatewayStore`
-  no longer produces a working reply loop — it survives for tests and for a
-  gateway booted with no database at all. That is consistent with ADR-0142
-  (Postgres is the local substrate), but it is a real change to what an unset
-  `TOOL_BACKEND` does.
+- **The durable path requires `TOOL_BACKEND=datastore`, and `build_gateway_app()`
+  now enforces it at boot.** Two processes can only share the turn context through
+  a shared store, so the in-memory `GatewayStore` cannot produce a working reply
+  loop; a gateway on it would ack every webhook and silently never answer. It
+  survives for tests, which build `create_app()` directly. Consistent with ADR-0142
+  (Postgres is the local substrate), but a real change to what an unset
+  `TOOL_BACKEND` does: it is now a boot failure, not a degraded mode.
+- **The turn job is enqueued inside the persist transaction** (S02 fix wave 1,
+  US3). `PostgresGatewayStore.persist_accepted_inbound` calls
+  `job_queue.insert_job(cur, ...)` on its own cursor, so the `agent_turn_context`
+  row and the `job` row commit together. There is no `queue` seam on the gateway
+  route any more: an enqueue there is by construction a second commit boundary,
+  and a crash inside it loses a message the webhook response has already acked —
+  with no redelivery to recover it, because the persisted context makes the
+  provider's retry a `duplicate` upstream of the enqueue.
 - **Everything async gets one substrate.** Turn jobs, the L6 learning fork, the
   retention sweep, knowledge re-ingest, health probes and the honored-rate run all
   become a `type` string on one table, with one retry policy, one dead-letter

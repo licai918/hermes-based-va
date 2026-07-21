@@ -74,8 +74,13 @@ def _serve_backoff(conn, job_id: str) -> None:
     conn.commit()
 
 
-def _persisted_context(store, *, event_id: str, conversation_id: str, body: str):
-    """Persist an accepted inbound so the job has a context to reload (ADR-0107)."""
+def _persisted_turn(store, conn, *, event_id: str, conversation_id: str, body: str):
+    """Persist an accepted inbound; return ``(context, job_id)``.
+
+    The enqueue is the store's, not the caller's (S02 fix wave 1): context and job
+    row commit together, so there is no way to write a test that persists without
+    enqueueing -- production cannot do that either, which is the whole point.
+    """
     event = InboundChannelEvent(
         channel="textline_sms",
         provider="textline",
@@ -97,7 +102,11 @@ def _persisted_context(store, *, event_id: str, conversation_id: str, body: str)
         ),
     )
     context, _created = store.persist_accepted_inbound(decision)
-    return context
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM job WHERE payload->>'event_id' = %s", (event_id,))
+        rows = cur.fetchall()
+    assert len(rows) == 1, f"expected exactly one turn job for {event_id}, got {rows}"
+    return context, rows[0][0]
 
 
 def _reply_runner(reply: str, *, sent: list, store=None, before=None):
@@ -139,14 +148,8 @@ def _inbound_payload(*, event_id: str, conversation_id: str, body: str) -> bytes
 
 def test_run_once_claims_a_turn_job_runs_the_bound_turn_and_completes_it(wired):
     _driver, conn, store, queue = wired
-    context = _persisted_context(
-        store, event_id="evt-w1", conversation_id="conv-w1", body="Got 225/65R17?"
-    )
-    job_id = queue.enqueue(
-        AgentJobPayload(
-            event_id=context.event_id, conversation_id=context.conversation_id
-        ),
-        job_type=AGENT_TURN_JOB_TYPE,
+    _context, job_id = _persisted_turn(
+        store, conn, event_id="evt-w1", conversation_id="conv-w1", body="Got 225/65R17?"
     )
     sent: list = []
 
@@ -196,13 +199,8 @@ def test_the_turn_worker_never_claims_a_background_job(wired):
 
 def test_a_raising_turn_fails_the_job_with_its_error_and_leaves_it_retryable(wired):
     _driver, conn, store, queue = wired
-    context = _persisted_context(
-        store, event_id="evt-w2", conversation_id="conv-w2", body="hello"
-    )
-    job_id = queue.enqueue(
-        AgentJobPayload(
-            event_id=context.event_id, conversation_id=context.conversation_id
-        )
+    _context, job_id = _persisted_turn(
+        store, conn, event_id="evt-w2", conversation_id="conv-w2", body="hello"
     )
 
     def _explode(context, inbound_body):
@@ -257,13 +255,8 @@ def test_a_job_whose_worker_died_mid_turn_is_reclaimed_and_run_to_completion(wir
     forever, the second ``run_once`` claims nothing, and the reply never happens.
     """
     _driver, conn, store, queue = wired
-    context = _persisted_context(
-        store, event_id="evt-crash", conversation_id="conv-crash", body="Any 17s?"
-    )
-    job_id = queue.enqueue(
-        AgentJobPayload(
-            event_id=context.event_id, conversation_id=context.conversation_id
-        )
+    context, job_id = _persisted_turn(
+        store, conn, event_id="evt-crash", conversation_id="conv-crash", body="Any 17s?"
     )
 
     # The kill: worker-a claims the job and the process dies before completing it.
@@ -313,17 +306,49 @@ def test_a_job_whose_worker_died_mid_turn_is_reclaimed_and_run_to_completion(wir
         assert [r[0] for r in cur.fetchall()] == ["Yes -- 225/65R17, $148 each."]
 
 
+def test_a_crash_right_after_the_ack_still_leaves_the_turn_queued(wired):
+    """US3, the narrowest crash there is: the gateway persisted the accepted
+    inbound and the process died before *anything else* in the request ran.
+
+    The provider already holds its 200, so nothing will be redelivered on its own
+    schedule and nothing else knows the message exists. Unless the job row was
+    written inside ``persist_accepted_inbound``'s own transaction, this is a
+    silently lost customer message -- no job row, no dead-letter row, no trace.
+
+    RED-capable: with the enqueue as a second, separate unit of work (the shape
+    before this fix) no job exists here, ``run_once`` returns ``None``, and the
+    customer is never answered.
+    """
+    _driver, conn, store, queue = wired
+    context, _job_id = _persisted_turn(
+        store,
+        conn,
+        event_id="evt-ack-crash",
+        conversation_id="conv-ack-crash",
+        body="Any 17s?",
+    )
+    sent: list = []
+
+    # The restarted deployment's first poll.
+    job = run_once(
+        queue=queue,
+        store=store,
+        turn_runner=_reply_runner("Yes -- 225/65R17.", sent=sent, store=store),
+        worker="turn-worker-restarted",
+    )
+
+    assert job is not None, "no job row: the acked message was lost"
+    assert job.payload["event_id"] == context.event_id
+    assert sent == [("conv-ack-crash", "Yes -- 225/65R17.")]
+    assert _row(conn, job.id, "status") == ("succeeded",)
+
+
 def test_a_stale_lease_holder_logs_lease_lost_and_never_reruns_the_turn(wired, caplog):
     """``LeaseLost`` is the fence working, not a retry signal (S01 decision 2):
     the loop logs it and moves on, because another worker owns the outcome now."""
     _driver, conn, store, queue = wired
-    context = _persisted_context(
-        store, event_id="evt-stale", conversation_id="conv-stale", body="hi"
-    )
-    job_id = queue.enqueue(
-        AgentJobPayload(
-            event_id=context.event_id, conversation_id=context.conversation_id
-        )
+    _context, job_id = _persisted_turn(
+        store, conn, event_id="evt-stale", conversation_id="conv-stale", body="hi"
     )
     sent: list = []
 
@@ -368,7 +393,6 @@ def test_a_signed_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
         webhook_secret=WEBHOOK_SECRET,
         driver=driver,
         store=store,
-        queue=queue,
         is_duplicate=store.is_duplicate,
     )
     raw = _inbound_payload(

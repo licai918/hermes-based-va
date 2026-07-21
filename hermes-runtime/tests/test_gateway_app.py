@@ -125,9 +125,9 @@ def test_webhook_accepts_a_request_signed_with_the_shared_secret() -> None:
 
 
 def test_webhook_accepts_live_tgp_new_customer_post() -> None:
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     raw, headers = _tgp_new_customer_post(
         body="Hi",
@@ -187,9 +187,9 @@ def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
 def test_accepted_inbound_persists_context_and_enqueues_one_job() -> None:
     # ADR-0105/0107: an accepted turn is persisted (memory is the source of truth)
     # and a minimal job (eventId + conversationId) is enqueued for the async run.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     raw = _inbound_payload(
         body="Do you have 225/65R17 in stock?",
@@ -220,9 +220,9 @@ def test_accepted_inbound_persists_context_and_enqueues_one_job() -> None:
 def test_opt_out_inbound_persists_no_context_and_enqueues_nothing() -> None:
     # Only accepted (enqueue) decisions start a turn (ADR-0115): opt-out persists no
     # AgentTurnContext and enqueues no job.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     raw = _inbound_payload(
         body="STOP", event_id="evt-stop", conversation_id="conv-stop"
@@ -259,14 +259,13 @@ def test_internal_agent_turn_runs_the_turn_for_a_matching_authed_job() -> None:
     # End-to-end: a webhook persists + enqueues, then the internal job route reloads
     # the context by eventId, verifies the binding (ADR-0107), and runs the turn
     # with the loaded session context and inbound body.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
+    store = InMemoryGatewayStore(queue=queue)
     runs: list[tuple[str, str, str]] = []
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=queue,
         turn_runner=lambda context, body: runs.append(
             (context.event_id, context.conversation_id, body)
         ),
@@ -320,8 +319,8 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
     # reply is derived and delivered to the inbound turn's conversation. The model
     # is the only fake (scripted provider); the agent loop, governed dispatch, and
     # turn binding are all real.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
+    store = InMemoryGatewayStore(queue=queue)
     sent: list[tuple[str, str]] = []
     reply_body = "Your order TOEE-1001 shipped today - tracking to follow."
 
@@ -350,7 +349,6 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=queue,
         turn_runner=make_gateway_turn_runner(
             reply_sender=lambda conv, text: sent.append((conv, text)),
             run_turn=run_turn,
@@ -413,9 +411,9 @@ def test_ignored_tgp_webhook_with_bad_signature_is_rejected() -> None:
 
 
 def test_ignored_tgp_webhook_with_valid_signature_still_acks_200() -> None:
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     raw, headers = _tgp_whisper()
     assert _post_tgp_signed(TestClient(app), raw, headers).status_code == 200
     assert queue.payloads == []  # ignored: no turn enqueued

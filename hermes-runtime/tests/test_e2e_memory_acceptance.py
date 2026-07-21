@@ -174,23 +174,27 @@ def _write_preference(driver, *, identity, key, value):
     return result
 
 
-class _EnqueueAndDrain:
-    """Test-only ``JobQueue``: writes the real durable job row, then runs the turn
-    worker's poll inline.
+class _PersistAndDrain:
+    """Wraps the real ``PostgresGatewayStore``: after it persists the turn and its
+    job row (one transaction, S02 fix wave 1), run the turn worker's poll inline.
 
     Production splits those across two processes (0.0.4 S02) — this suite is about
     the four memory layers, not the substrate, so draining inline keeps one signed
     webhook deterministically driving one bound turn while still going through the
-    real ``PostgresJobQueue`` + ``run_once`` code path.
+    real ``insert_job`` + ``PostgresJobQueue.claim`` + ``run_once`` code path.
+    Everything other than the persist delegates untouched.
     """
 
-    def __init__(self, *, queue, store, turn_runner) -> None:
-        self._queue = queue
+    def __init__(self, *, store, queue, turn_runner) -> None:
         self._store = store
+        self._queue = queue
         self._turn_runner = turn_runner
 
-    def enqueue(self, payload) -> None:
-        self._queue.enqueue(payload)
+    def __getattr__(self, name):
+        return getattr(self._store, name)
+
+    def persist_accepted_inbound(self, decision):
+        persisted = self._store.persist_accepted_inbound(decision)
         assert (
             run_once(
                 queue=self._queue,
@@ -200,9 +204,10 @@ class _EnqueueAndDrain:
             )
             is not None
         )
+        return persisted
 
 
-def _build_app(*, store, run_turn, sent):
+def _build_app(*, store, conn, run_turn, sent):
     """The real gateway app: mock Ingress Phone Match, Postgres persistence, and the
     durable queue drained inline so a single signed webhook drives the bound turn."""
     turn_runner = make_gateway_turn_runner(
@@ -215,13 +220,12 @@ def _build_app(*, store, run_turn, sent):
         # Ingress identity resolution is the integration axis (mock here); the memory
         # system-of-record is the datastore axis under test. +14165550101 -> verified.
         driver=MockDriver(create_all_mock_handlers()),
-        store=store,
-        is_duplicate=store.is_duplicate,
-        queue=_EnqueueAndDrain(
-            queue=PostgresJobQueue(connection=store._connection),
+        store=_PersistAndDrain(
             store=store,
+            queue=PostgresJobQueue(connection=conn),
             turn_runner=turn_runner,
         ),
+        is_duplicate=store.is_duplicate,
     )
 
 
@@ -259,7 +263,7 @@ def test_matrix_all_four_layers_live_in_one_run(datastore, monkeypatch, caplog) 
             ]
         ),
     )
-    app = _build_app(store=store, run_turn=run_turn, sent=sent)
+    app = _build_app(store=store, conn=conn, run_turn=run_turn, sent=sent)
     client = TestClient(app)
 
     with caplog.at_level(logging.INFO, logger="hermes_runtime.openrouter"):
@@ -547,7 +551,7 @@ def test_dormancy_tripwire_is_red_when_driver_disabled(datastore, monkeypatch) -
             ]
         ),
     )
-    app = _build_app(store=store, run_turn=run_turn, sent=sent)
+    app = _build_app(store=store, conn=conn, run_turn=run_turn, sent=sent)
     client = TestClient(app)
 
     assert _post(

@@ -160,7 +160,7 @@ persisted (ADR-0107), and two processes can only share it through Postgres.
 
 When ``TOOL_BACKEND=datastore`` (recommended for Tier B + real inbound), ``build_gateway_app`` wires **`PostgresGatewayStore`** and **`PostgresDriver`** for ingress identity lookup. Accepted inbound turns write `customer_thread`, `sms_session`, `message_turn`, `session_identity_snapshot`, `agent_turn_context`, and an **open Follow-up Case** into the same Postgres database the Workbench BFF reads.
 
-When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemoryGatewayStore`** — inbound SMS does **not** appear in the Workbench queue, **and no agent reply is produced** (0.0.4 S02: the turn runs in the separate worker process, which cannot see another process's in-memory store).
+When ``TOOL_BACKEND`` is unset or ``mock``, ``build_gateway_app()`` **raises at boot** (0.0.4 S02 fix wave 1). The turn runs in a separate worker process, which cannot see another process's in-memory store, so that configuration could only ack webhooks and silently never reply — the exact failure this composition root's fail-closed posture exists to prevent. ``create_app()`` still defaults to **`InMemoryGatewayStore`** for DB-free tests, which build the app directly.
 
 **Honest limits (unchanged):**
 
@@ -172,8 +172,8 @@ When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemo
   *Unmatched Caller*. Manual seed (below) remains valid for dev overrides.
 - The async agent turn still routes **business tools** through the plugin's `INTEGRATION_DRIVER` (mock/composio), not `TOOL_BACKEND`. Case rows for inbound are opened at persist time so Workbench shows the thread immediately; agent `create_case` during the turn still uses mock unless you wire Composio + future composite driver work.
 - A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS, a working `TEXTLINE_ACCESS_TOKEN` + real `conversation_id`.
-- With `TOOL_BACKEND` unset the gateway still acks, but nothing consumes the queue
-  and no reply is produced — the in-memory store is not visible to the worker process.
+- With `TOOL_BACKEND` unset the production gateway does not boot at all: it fails
+  closed rather than acking webhooks it can never reply to.
 
 ### Tier B: gateway + Workbench on the same Postgres
 

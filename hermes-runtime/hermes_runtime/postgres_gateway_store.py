@@ -15,7 +15,11 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from toee_hermes.drivers.mock.memory import MEMORY_SOURCE_MERGED_PROVISIONAL
-from toee_hermes.gateway.agent_turn import AgentTurnContext, build_agent_turn_context
+from toee_hermes.gateway.agent_turn import (
+    AgentJobPayload,
+    AgentTurnContext,
+    build_agent_turn_context,
+)
 from toee_hermes.gateway.ingress import SessionIdentitySnapshot
 from toee_hermes.gateway.normalize import is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
@@ -23,6 +27,7 @@ from toee_hermes.gateway.pipeline import InboundDecision
 from .datastore.config import database_url
 from .datastore.handlers._common import new_id
 from .datastore.pool import get_database_pool
+from .job_queue import insert_job
 
 _SMS_CHANNEL = "sms"
 _EMAIL_CHANNEL = "email"
@@ -135,6 +140,22 @@ class PostgresGatewayStore:
     def persist_accepted_inbound(
         self, decision: InboundDecision
     ) -> tuple[AgentTurnContext, bool]:
+        """Persist the accepted inbound turn **and its turn job** in one transaction.
+
+        US3 ("a message that arrives while the service crashes runs when it
+        returns") is a transaction boundary question, not a retry question. The
+        provider gets its 200 the moment this returns; if the ``job`` row were a
+        second unit of work, a crash in between would leave a persisted context
+        nobody will ever act on -- and the redelivery that was supposed to save it
+        never reaches this method, because ``is_duplicate`` sees the context and
+        the pipeline short-circuits to ``action="duplicate"`` upstream. So the job
+        is written here, inside the same transaction as the ``agent_turn_context``
+        row that gates it: either both rows exist or neither does.
+
+        The ``job`` table's SQL still lives in ``job_queue.py``
+        (:func:`~hermes_runtime.job_queue.insert_job`) -- this store supplies its
+        cursor, never a statement.
+        """
         event = decision.event
         if not decision.enqueue or event is None:
             raise ValueError(
@@ -232,6 +253,17 @@ class PostgresGatewayStore:
                         (context_id, event.event_id, thread_id, session_id, turn_id),
                     )
                     created = cur.fetchone() is not None
+
+                    if created:
+                        # The outbox write. Same transaction, same commit -- the
+                        # turn worker can never see a context without its job.
+                        insert_job(
+                            cur,
+                            AgentJobPayload(
+                                event_id=event.event_id,
+                                conversation_id=event.conversation_id,
+                            ),
+                        )
 
                     _ensure_open_case(
                         cur,

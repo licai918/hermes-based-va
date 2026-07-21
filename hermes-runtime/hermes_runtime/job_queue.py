@@ -9,11 +9,15 @@ The queue is **type-agnostic**: the payload is JSONB and nothing here imports
 turn logic, so the same table carries inbound turn jobs, the L6 learning fork,
 retention sweeps, knowledge re-ingest, health probes and the honored-rate run.
 
-Nothing consumes it yet. S02 cuts the gateway over to :class:`PostgresJobQueue`
-(``enqueue`` keeps the one-argument shape of the existing ``JobQueue`` Protocol
-in ``gateway_store.py``, so that is a wiring change), S04 runs the background
-worker and the :meth:`PostgresJobQueue.tick_schedules` loop, S05 surfaces
-``dead`` rows for governed replay.
+Two ways in. :meth:`PostgresJobQueue.enqueue` owns its transaction, for a caller
+with nothing else to commit. :func:`insert_job` takes the *caller's* cursor, for
+a writer that must not have a commit boundary between its own rows and the job
+that acts on them -- the transactional outbox the gateway store uses (S02 fix
+wave 1). Both go through the same INSERT; the ``job`` table's SQL lives only here.
+
+S02 cut the gateway over to this queue and added ``hermes_runtime.turn_worker``,
+S04 runs the background worker and the :meth:`PostgresJobQueue.tick_schedules`
+loop, S05 surfaces ``dead`` rows for governed replay.
 """
 
 from __future__ import annotations
@@ -106,6 +110,46 @@ class Schedule:
     interval_seconds: int
 
 
+def insert_job(
+    cur: psycopg.Cursor,
+    payload: Any,
+    *,
+    job_type: str = AGENT_TURN_JOB_TYPE,
+    dedupe_key: Optional[str] = None,
+    run_at: Optional[datetime] = None,
+    max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+) -> tuple[str, bool]:
+    """Insert one job on a **caller-owned cursor**; ``(job_id, created)``.
+
+    Does not commit -- the caller's transaction decides. This is the seam that
+    lets a writer make its own business rows and the job that acts on them one
+    atomic unit (the transactional outbox): see
+    :meth:`hermes_runtime.postgres_gateway_store.PostgresGatewayStore.persist_accepted_inbound`,
+    where a commit boundary between the two would silently lose an already-acked
+    customer message. Every statement that touches the ``job`` table lives in
+    this module; a caller supplies a cursor, never SQL.
+
+    ``created`` is False on a dedupe no-op, in which case the returned id is the
+    job already holding the key (FR-7).
+    """
+    job_id = new_id("job")
+    cur.execute(
+        """
+        INSERT INTO job (id, type, payload, dedupe_key, run_at, max_attempts)
+        VALUES (%s, %s, %s, %s, COALESCE(%s, now()), %s)
+        ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
+        RETURNING id
+        """,
+        (job_id, job_type, Jsonb(_as_payload(payload)), dedupe_key, run_at, max_attempts),
+    )
+    row = cur.fetchone()
+    if row is not None:
+        return row[0], True
+    # Dedupe no-op: hand back the job that already owns the key.
+    cur.execute("SELECT id FROM job WHERE dedupe_key = %s", (dedupe_key,))
+    return cur.fetchone()[0], False
+
+
 def _as_payload(payload: Any) -> dict[str, Any]:
     """Accept a dataclass (e.g. ``AgentJobPayload``) or a plain mapping."""
     if is_dataclass(payload) and not isinstance(payload, type):
@@ -175,10 +219,15 @@ class PostgresJobQueue:
         and returns the id of the job already queued (FR-7).
 
         ponytail: ``job_type`` defaults to ``agent_turn`` only so ``enqueue(payload)``
-        stays call-compatible with the one-argument ``JobQueue`` Protocol, which is
-        what makes S02's cutover a wiring change. Ceiling: a call site that forgets
-        ``job_type=`` silently creates a *turn* job and the turn worker will execute
-        it. Drop the default once S02 has landed and every call site names its type.
+        stays call-compatible with the one-argument ``JobQueue`` Protocol. Ceiling: a
+        call site that forgets ``job_type=`` silently creates a *turn* job and the
+        turn worker will execute it. S01 assigned the default's removal to S02; S02
+        **kept it** deliberately -- after the cutover the only production enqueue is
+        the in-memory ``JobQueue`` seam (``gateway_store.py``), whose Protocol has no
+        ``job_type``, so removing the default would break the one thing it exists
+        for. **Owner: S04**, which grows the Protocol a ``job_type`` and adds the
+        first background enqueue sites; drop the default there, once every call site
+        names its type.
         """
         return self._insert(
             payload,
@@ -197,31 +246,17 @@ class PostgresJobQueue:
         run_at: Optional[datetime],
         max_attempts: int,
     ) -> tuple[str, bool]:
-        """``(job_id, created)`` -- ``created`` is False on a dedupe no-op."""
-        job_id = new_id("job")
+        """``(job_id, created)`` -- this queue's own unit of work around
+        :func:`insert_job`."""
         with self._unit_of_work() as cur:
-            cur.execute(
-                """
-                INSERT INTO job (id, type, payload, dedupe_key, run_at, max_attempts)
-                VALUES (%s, %s, %s, %s, COALESCE(%s, now()), %s)
-                ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
-                RETURNING id
-                """,
-                (
-                    job_id,
-                    job_type,
-                    Jsonb(_as_payload(payload)),
-                    dedupe_key,
-                    run_at,
-                    max_attempts,
-                ),
+            return insert_job(
+                cur,
+                payload,
+                job_type=job_type,
+                dedupe_key=dedupe_key,
+                run_at=run_at,
+                max_attempts=max_attempts,
             )
-            row = cur.fetchone()
-            if row is not None:
-                return row[0], True
-            # Dedupe no-op: hand back the job that already owns the key.
-            cur.execute("SELECT id FROM job WHERE dedupe_key = %s", (dedupe_key,))
-            return cur.fetchone()[0], False
 
     # -- claim / complete / fail -------------------------------------------
 
