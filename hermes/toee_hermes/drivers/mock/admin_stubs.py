@@ -165,6 +165,13 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 "chunk_count": 0,
                 "last_ingest_at": None,
                 "by_type": [],
+                # 0.0.4 S04: the `job` table is Postgres-only, so the mock has no
+                # re-ingest job to report either.
+                "last_ingest_job": None,
+            },
+            "enqueue_corpus_reingest": lambda params, context: {
+                "job_id": None,
+                "status": "unavailable",
             },
         },
         "toee_eval_review": {

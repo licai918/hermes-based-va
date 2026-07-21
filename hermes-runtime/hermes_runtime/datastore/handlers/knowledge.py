@@ -265,14 +265,93 @@ def _corpus_status_from_conn(kconn) -> Any:
     }
 
 
+def _last_ingest_job(conn) -> Any:
+    """The most recent ``ingest`` job's status, for the panel's readback (S04).
+
+    Unlike the corpus counts above this IS a business-database read -- the ``job``
+    table lives there -- so it uses the handler's own ``conn``. ``None`` when no
+    re-ingest has ever been queued, and ``None`` (not an error) on a database that
+    predates migration 0011, so an un-migrated deployment still renders the panel.
+    """
+    # Local import: job_queue reaches back into datastore.handlers._common for
+    # new_id, so a module-level import here would be a cycle.
+    from hermes_runtime.job_queue import INGEST_JOB_TYPE
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, status, attempts, last_error, created_at, updated_at"
+                " FROM job WHERE type = %s ORDER BY created_at DESC LIMIT 1",
+                (INGEST_JOB_TYPE,),
+            )
+            row = cur.fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    job_id, status, attempts, last_error, created_at, updated_at = row
+    return {
+        "job_id": job_id,
+        "status": status,
+        "attempts": attempts,
+        "last_error": last_error,
+        "queued_at": created_at.isoformat() if created_at else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
 def _get_corpus_status(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     # A read -> no actor required, no audit (parity with the other knowledge
-    # reads above). `conn` (the business connection) is unused on purpose.
-    del conn, params, context
+    # reads above).
+    del params, context
     from hermes_runtime.knowledge.pool import get_knowledge_pool
 
     with get_knowledge_pool().connection() as kconn:
-        return _corpus_status_from_conn(kconn)
+        status = _corpus_status_from_conn(kconn)
+    # S04 (FR-11): the re-ingest panel's status readback. Cross-database again --
+    # the counts came from toee_knowledge, the job row from the business `conn`.
+    status["last_ingest_job"] = _last_ingest_job(conn) if conn is not None else None
+    return status
+
+
+def _enqueue_corpus_reingest(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Queue an ``ingest`` job for the background worker (0.0.4 S04, FR-11).
+
+    Replaces 0.0.3 S11's display-only stub (the panel printed a CLI command). A
+    governed WRITE: it triggers a TRUNCATE-and-reload of the whole corpus, so it
+    is dispatchWrite/fail-closed on the acting supervisor and writes a
+    ``corpus_reingest_queued`` audit row -- the sibling precedent is
+    ``trigger_retention_sweep``'s own audit row.
+
+    ponytail: ``max_attempts=1``. Ingest is a heavy, non-idempotent-in-cost
+    TRUNCATE + re-embed of the whole corpus; three automatic attempts would wipe
+    and reload it three times over a transient fastembed/OOM failure. A failed
+    ingest goes straight to ``dead`` for S05's governed replay instead. Raise it
+    only if ingest ever becomes cheap and resumable.
+    """
+    del params
+    from hermes_runtime.job_queue import INGEST_JOB_TYPE, insert_job
+
+    _require_actor(context)
+    with conn.cursor() as cur:
+        job_id, _created = insert_job(
+            cur,
+            {"profile": context.profile, "actor_account_id": context.user_id},
+            job_type=INGEST_JOB_TYPE,
+            max_attempts=1,
+        )
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=context.user_id,
+        action="corpus_reingest_queued",
+        target_type="knowledge_chunk",
+        target_id=job_id,
+        details={"job_id": job_id},
+    )
+    return {"job_id": job_id, "status": "queued"}
 
 
 def knowledge_handlers() -> dict[str, dict[str, Any]]:
@@ -284,5 +363,6 @@ def knowledge_handlers() -> dict[str, dict[str, Any]]:
             "submit_for_eval": _submit_for_eval,
             "rollback_published_policy": _rollback_published_policy,
             "get_corpus_status": _get_corpus_status,
+            "enqueue_corpus_reingest": _enqueue_corpus_reingest,
         }
     }

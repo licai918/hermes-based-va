@@ -244,7 +244,15 @@ def test_get_corpus_status_checks_out_from_the_knowledge_pool(monkeypatch: pytes
     result = _get_corpus_status(None, {}, None)
 
     assert fake_pool.connection_calls == 1
-    assert result == {"doc_count": 0, "chunk_count": 0, "last_ingest_at": None, "by_type": []}
+    # last_ingest_job (0.0.4 S04) reads the BUSINESS conn, which is None here --
+    # the point of this test is that only the KNOWLEDGE pool was checked out.
+    assert result == {
+        "doc_count": 0,
+        "chunk_count": 0,
+        "last_ingest_at": None,
+        "by_type": [],
+        "last_ingest_job": None,
+    }
 
 
 # --- bounded under concurrency (RK-8, live Postgres) ------------------------

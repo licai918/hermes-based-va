@@ -68,6 +68,11 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "submit_for_eval",
         "rollback_published_policy",
         "get_corpus_status",
+        # 0.0.4 S04 (FR-11): queues an `ingest` job for the background worker,
+        # replacing 0.0.3 S11's display-only "run this CLI command" panel stub.
+        # Admin-only (_AGENT_EXCLUDED_ACTIONS) -- it TRUNCATEs and reloads the
+        # whole corpus, which is not a primitive any live turn may reach.
+        "enqueue_corpus_reingest",
     ),
     "toee_eval_review": (
         "list_eval_runs",
@@ -110,7 +115,14 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # via the admin BFF's deterministic tools:dispatch call or the schedulable
     # CLI entrypoint (hermes_runtime.retention_sweep), never a live agent's
     # tool-calling loop.
-    "toee_retention": ("trigger_retention_sweep", "get_retention_status"),
+    # 0.0.4 S04 (FR-11) adds enqueue_retention_sweep: the admin button now queues
+    # a `retention` job the background worker runs (which calls
+    # trigger_retention_sweep, unchanged, with the actor from the payload).
+    "toee_retention": (
+        "trigger_retention_sweep",
+        "enqueue_retention_sweep",
+        "get_retention_status",
+    ),
 }
 
 

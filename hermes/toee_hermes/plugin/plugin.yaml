@@ -54,6 +54,7 @@ provides_tools:
   - toee_knowledge_ops__submit_for_eval
   - toee_knowledge_ops__rollback_published_policy
   - toee_knowledge_ops__get_corpus_status
+  - toee_knowledge_ops__enqueue_corpus_reingest
   - toee_eval_review__list_eval_runs
   - toee_eval_review__get_eval_run
   - toee_eval_review__sign_off_medium_failure
@@ -69,6 +70,7 @@ provides_tools:
   - toee_agent_experience__reject_experience
   - toee_metrics__get_aggregate_metrics
   - toee_retention__trigger_retention_sweep
+  - toee_retention__enqueue_retention_sweep
   - toee_retention__get_retention_status
 provides_hooks:
   - pre_llm_call

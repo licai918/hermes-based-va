@@ -93,6 +93,12 @@ DriverSelector = Callable[[str], ToolDriver]
 # customer data" primitive is exactly the risk this exclusion list exists to
 # prevent. Reached only via the admin BFF's deterministic tools:dispatch call
 # or the schedulable CLI entrypoint (hermes_runtime.retention_sweep).
+#
+# 0.0.4 S04 (FR-11) adds two enqueue actions for the same reason: they are the
+# admin-only triggers that put a `retention` / `ingest` job on the durable queue.
+# Letting a model reach them would hand it the very primitives the two exclusions
+# above exist to withhold, one level of indirection away -- "delete customer
+# data" and "TRUNCATE and reload the whole knowledge corpus".
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
@@ -102,7 +108,9 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_agent_experience", "reject_experience"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
+        ("toee_retention", "enqueue_retention_sweep"),
         ("toee_retention", "get_retention_status"),
+        ("toee_knowledge_ops", "enqueue_corpus_reingest"),
     }
 )
 

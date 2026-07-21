@@ -69,11 +69,15 @@ def test_retention_actions_match_fr_30() -> None:
     # both excluded from the LLM tool-calling loop (see
     # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS), same precedent as
     # get_memory_audit/list_agent_experience/get_aggregate_metrics.
+    # 0.0.4 S04 (FR-11) adds enqueue_retention_sweep -- the admin trigger, which
+    # queues a `retention` job instead of sweeping inline. Also admin-only.
     assert TOOL_CATALOG["toee_retention"] == (
         "trigger_retention_sweep",
+        "enqueue_retention_sweep",
         "get_retention_status",
     )
     assert is_tool_action("toee_retention", "trigger_retention_sweep") is True
+    assert is_tool_action("toee_retention", "enqueue_retention_sweep") is True
     assert is_tool_action("toee_retention", "get_retention_status") is True
 
 
