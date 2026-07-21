@@ -139,6 +139,9 @@ class TurnCollaborators(NamedTuple):
     driver: Any
     turn_runner: Any
     reply_sender: Any
+    # The same durable record the turn runner's wrap uses; the gateway needs it
+    # directly for the opt-out confirmation, which runs in the webhook with no job.
+    outbound_log: Any
 
 
 def resolve_turn_collaborators() -> TurnCollaborators:
@@ -172,10 +175,13 @@ def resolve_turn_collaborators() -> TurnCollaborators:
         store = InMemoryGatewayStore()
         driver = None
 
+    outbound_log = OutboundSendLog() if backend == "datastore" else None
+
     return TurnCollaborators(
         store=store,
         driver=driver,
         reply_sender=reply_sender,
+        outbound_log=outbound_log,
         turn_runner=make_gateway_turn_runner(
             reply_sender=reply_sender,
             run_turn=run_turn,
@@ -191,7 +197,7 @@ def resolve_turn_collaborators() -> TurnCollaborators:
             # back to its in-memory record -- same wrap, process-lifetime memory,
             # which is all a single-process no-database boot can honestly offer
             # (and _require_datastore_backend already refuses to ship that way).
-            outbound_log=(OutboundSendLog() if backend == "datastore" else None),
+            outbound_log=outbound_log,
         ),
     )
 
@@ -244,4 +250,7 @@ def build_gateway_app() -> FastAPI:
         store=collaborators.store,
         driver=collaborators.driver,
         is_duplicate=collaborators.store.is_duplicate,
+        # FR-12 (fix wave 1): the opt-out confirmation is wrapped too, and only a
+        # durable record survives the webhook redelivery it guards against.
+        outbound_log=collaborators.outbound_log,
     )

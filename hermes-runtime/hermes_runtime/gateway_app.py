@@ -40,6 +40,11 @@ from toee_hermes.gateway.rate_limit import (
 
 from hermes_runtime.agent_turn_job import AgentJobOutcome, execute_agent_turn_job
 from hermes_runtime.gateway_store import GatewayStore, InMemoryGatewayStore
+from hermes_runtime.outbound_send import (
+    OPT_OUT_SLOT,
+    InMemoryOutboundSendLog,
+    deliver_once,
+)
 
 # Provider signature headers (ADR-0021). Live Textline (TGP) uses X-Tgp-*; local
 # simulate script uses the legacy X-Textline-Signature flat JSON shape.
@@ -230,6 +235,7 @@ def create_app(
     store: Optional[GatewayStore] = None,
     internal_job_secret: Optional[str] = None,
     turn_runner: Optional[TurnRunner] = None,
+    outbound_log: Optional[Any] = None,
 ) -> FastAPI:
     """Build the Textline gateway app from its injected collaborators.
 
@@ -237,7 +243,8 @@ def create_app(
     unconfigured app boots against the mock driver, a fresh in-process rate limiter,
     and an in-memory store. The deployment composition root injects the resolved
     integration driver, the durable idempotency check, the real Textline reply
-    client, and the Postgres-backed store.
+    client, the Postgres-backed store, and the durable ``outbound_log`` that fences
+    the opt-out confirmation against a webhook redelivery (FR-12).
 
     There is no ``queue`` seam: enqueuing the turn job is the store's job, so that
     it shares the persist transaction (see :meth:`GatewayStore.persist_accepted_inbound`).
@@ -249,6 +256,10 @@ def create_app(
     is_duplicate = is_duplicate or _never_duplicate
     clock = clock or _utc_now_iso
     store = store or InMemoryGatewayStore()
+    # FR-12: the opt-out confirmation is an outbound send too, so it needs the same
+    # record. Defaults in-memory for the DB-free callers, same reasoning as
+    # make_gateway_turn_runner -- never an unguarded branch.
+    outbound_log = outbound_log if outbound_log is not None else InMemoryOutboundSendLog()
 
     app = FastAPI()
 
@@ -264,13 +275,32 @@ def create_app(
         # boundary, and a crash inside it loses a message this response has already
         # acked -- with no redelivery to save it, since the persisted context makes
         # the retry a `duplicate` upstream of this function (US3, S02 fix wave 1).
+        #
+        # The confirmation goes through the SAME deliver_once wrap as the agent
+        # reply (FR-12, fix wave 1 finding 2). It is not covered by the
+        # `idempotency` stage upstream: that stage's `is_duplicate` reads
+        # `agent_turn_context`, and the opt_out branch returns before
+        # persist_accepted_inbound ever writes such a row -- so a redelivered STOP
+        # is NOT seen as a duplicate and used to text a second confirmation. There
+        # is no job here, so the key is derived from the event identity alone
+        # (`no-job:{event_id}:opt-out`), which is the same fencing the ADR-0106
+        # parity route already relies on: enforcement is on `event_id`.
         if (
             decision.action == "opt_out"
             and reply_sender is not None
             and decision.event is not None
             and decision.reply is not None
         ):
-            reply_sender(decision.event.conversation_id, decision.reply)
+            event, confirmation = decision.event, decision.reply
+            deliver_once(
+                log=outbound_log,
+                job_id=None,
+                event_id=event.event_id,
+                conversation_id=event.conversation_id,
+                channel=event.channel,
+                slot=OPT_OUT_SLOT,
+                deliver=lambda: reply_sender(event.conversation_id, confirmation),
+            )
         if decision.action == "enqueue":
             store.persist_accepted_inbound(decision)
         return Response(status_code=decision.status)

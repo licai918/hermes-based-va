@@ -165,6 +165,31 @@ def test_opt_out_inbound_acks_200_and_sends_one_fixed_confirmation() -> None:
     assert sent == [("conv-optout", SMS_OPT_OUT_CONFIRMATION)]
 
 
+def test_a_redelivered_stop_sends_exactly_one_confirmation() -> None:
+    # FR-12, fix wave 1 finding 2. The opt-out branch returns from process_inbound
+    # BEFORE persist_accepted_inbound, so no agent_turn_context row is ever written
+    # for a STOP -- which means `is_duplicate` (which reads exactly that table)
+    # never sees a redelivered STOP as a duplicate. Until this fix, a webhook
+    # redelivery -- which providers do routinely -- texted the customer a second
+    # confirmation. The guard is the same deliver_once wrap the agent reply uses,
+    # keyed off the event identity; no job row required.
+    sent: list[tuple[str, str]] = []
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(
+        body="STOP", event_id="evt-stop-redelivered", conversation_id="conv-optout"
+    )
+
+    first = _post_signed(client, raw)
+    redelivery = _post_signed(client, raw)
+
+    assert (first.status_code, redelivery.status_code) == (200, 200)
+    assert sent == [("conv-optout", SMS_OPT_OUT_CONFIRMATION)]
+
+
 def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
     # A non-opt-out inbound is acked (ADR-0103 fast-ack); the gateway sends no
     # compliance reply itself — the agent turn (enqueued) owns any response.

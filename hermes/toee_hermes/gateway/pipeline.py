@@ -106,8 +106,16 @@ def process_inbound(
         event = to_inbound_channel_event(fields)
     is_email = is_email_channel(event.channel)
 
-    # Idempotency: a redelivered eventId is a no-op ack — before opt-out so a
-    # duplicate STOP cannot trigger a second confirmation (ADR-0016).
+    # Idempotency: a redelivered eventId is a no-op ack — ordered before opt-out
+    # so a STOP the caller *already knows about* cannot trigger a second
+    # confirmation (ADR-0016).
+    #
+    # This stage is NOT what makes the opt-out confirmation safe. The durable
+    # `is_duplicate` (PostgresGatewayStore) reads `agent_turn_context`, and the
+    # opt_out branch below returns before anything persists such a row — so a
+    # redelivered STOP arrives here looking brand new every time. The guard that
+    # actually holds is the outbound record on the send itself (FR-12,
+    # gateway_app._dispatch_decision -> deliver_once).
     if is_duplicate(event.event_id):
         return InboundDecision(
             status=200, action="duplicate", stage="idempotency", event=event
