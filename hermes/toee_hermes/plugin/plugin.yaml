@@ -67,5 +67,6 @@ provides_tools:
   - toee_agent_experience__list_agent_experience
   - toee_agent_experience__confirm_experience
   - toee_agent_experience__reject_experience
+  - toee_metrics__get_aggregate_metrics
 provides_hooks:
   - pre_llm_call

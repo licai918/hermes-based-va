@@ -77,6 +77,13 @@ DriverSelector = Callable[[str], ToolDriver]
 # model-callable primitive the review fork (or a prompt injection) could use to
 # self-approve its own proposals. Reached ONLY via the admin BFF's
 # deterministic tools:dispatch call, never a live agent's tool loop.
+#
+# toee_metrics.get_aggregate_metrics (0.0.3 S26, FR-28) is excluded for the
+# same reason as get_memory_audit/list_agent_experience: an admin-only
+# aggregate read (rates/counts/distributions across ALL customers), meant only
+# for the admin BFF's deterministic tools:dispatch call, never a live agent's
+# tool-calling loop -- it carries no customer PII, but it is still an
+# operational surface a live turn has no business calling.
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
@@ -84,6 +91,7 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_agent_experience", "list_agent_experience"),
         ("toee_agent_experience", "confirm_experience"),
         ("toee_agent_experience", "reject_experience"),
+        ("toee_metrics", "get_aggregate_metrics"),
     }
 )
 

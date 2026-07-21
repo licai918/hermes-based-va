@@ -54,6 +54,10 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # from the internal_copilot review fork (S23) -- never external,
             # never supervisor (ADR-0140 boundary).
             "toee_agent_experience",
+            # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over
+            # this profile's API by the admin BFF -- same reason
+            # toee_customer_memory.get_memory_audit lives here (ADR-0140).
+            "toee_metrics",
         }
     ),
     # ADR-0038 Supervisor Admin Profile (governance only).

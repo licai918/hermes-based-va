@@ -40,6 +40,7 @@ from hermes_runtime.tool_backend import (
     agent_experience_external_injection_enabled,
     load_confirmed_experience,
     memory_enabled,
+    record_memory_injection_metric,
 )
 
 logger = logging.getLogger(__name__)
@@ -438,6 +439,11 @@ def make_openrouter_run_turn(
         # unbound, or the store errors).
         memory = _load_turn_memory(identity, store)
         _log_turn_memory(identity, memory, merge_fired)
+        # S26 (FR-28): memory-injection counter emit -- turn-safe + gated on the
+        # SAME axis as the feature (never touches DB in a mock/unset deployment,
+        # never fails the turn on any DB error). Reflects L4 Customer Memory
+        # specifically (bool(memory)), not the combined injection block.
+        record_memory_injection_metric(bool(memory))
         # S25 (FR-25): the external turn READS confirmed L6 learnings (read-only,
         # never proposing -- S23 kept propose off the external profile) behind its
         # OWN independent flag, so it can be disabled without touching the copilot

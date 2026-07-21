@@ -38,6 +38,7 @@ from .memory import (
     create_memory_mock_handlers,
     memory_baseline_data,
 )
+from .metrics import create_metrics_mock_handlers
 from .qbo import (
     QboMockData,
     create_qbo_mock_handlers,
@@ -74,6 +75,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_square_mock_handlers(),
         create_admin_stub_mock_handlers(),
         create_agent_experience_mock_handlers(),
+        create_metrics_mock_handlers(),
     )
 
 
@@ -112,4 +114,5 @@ __all__ = [
     "square_baseline_data",
     "create_admin_stub_mock_handlers",
     "create_agent_experience_mock_handlers",
+    "create_metrics_mock_handlers",
 ]

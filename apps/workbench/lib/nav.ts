@@ -20,6 +20,8 @@ const GOVERNANCE: NavItem[] = [
   { label: "Memory Audit", href: ROUTES.adminMemoryAudit },
   // FR-23 (0.0.3 S22): L6 Agent-experience minimal admin list.
   { label: "Agent Experience", href: ROUTES.adminAgentExperience },
+  // FR-28 (0.0.3 S26): aggregate-metrics admin panel.
+  { label: "Metrics", href: ROUTES.adminMetrics },
 ];
 
 export function navItemsForRole(role: WorkbenchRoleId): NavItem[] {

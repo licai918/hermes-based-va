@@ -316,6 +316,81 @@ def test_warm_knowledge_embedder_swallows_and_logs_a_failing_embedder(
     assert "RuntimeError" in warnings[0].getMessage()
 
 
+# --- found/miss counter emit (0.0.3 S26, FR-28 gap #2) ---------------------
+# Gated on knowledge_enabled() -- none of the tests above set KNOWLEDGE_BACKEND
+# before calling driver.execute()/._search_public_site(), so the emit is inert
+# there (proven by test_emit_skipped_when_knowledge_disabled below); these
+# tests set the env var explicitly to prove the emit fires with the right flag.
+
+
+def test_emit_skipped_when_knowledge_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(KNOWLEDGE_BACKEND_ENV, raising=False)
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        "hermes_runtime.knowledge.driver.emit_metric_event",
+        lambda metric, flag: calls.append((metric, flag)),
+    )
+    driver = KnowledgeDriver(retrieve_fn=lambda query, **kw: [_chunk()])
+    request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": "hours"})
+
+    driver.execute(request, _CTX)
+
+    assert calls == []
+
+
+def test_emit_found_true_on_a_hit_when_knowledge_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(KNOWLEDGE_BACKEND_ENV, "retriever")
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        "hermes_runtime.knowledge.driver.emit_metric_event",
+        lambda metric, flag: calls.append((metric, flag)),
+    )
+    driver = KnowledgeDriver(retrieve_fn=lambda query, **kw: [_chunk()])
+    request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": "hours"})
+
+    driver.execute(request, _CTX)
+
+    assert calls == [("knowledge_search", True)]
+
+
+def test_emit_found_false_on_a_miss_when_knowledge_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(KNOWLEDGE_BACKEND_ENV, "retriever")
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        "hermes_runtime.knowledge.driver.emit_metric_event",
+        lambda metric, flag: calls.append((metric, flag)),
+    )
+    driver = KnowledgeDriver(retrieve_fn=lambda query, **kw: [])
+    request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": "nope"})
+
+    driver.execute(request, _CTX)
+
+    assert calls == [("knowledge_search", False)]
+
+
+def test_emit_skipped_for_empty_query_even_when_knowledge_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An empty query is a caller bug (S10), not a genuine search attempt -- no
+    # found/miss signal is meaningful there.
+    monkeypatch.setenv(KNOWLEDGE_BACKEND_ENV, "retriever")
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        "hermes_runtime.knowledge.driver.emit_metric_event",
+        lambda metric, flag: calls.append((metric, flag)),
+    )
+    driver = KnowledgeDriver(
+        retrieve_fn=lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("must not call retrieve for an empty query")
+        )
+    )
+    request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": ""})
+
+    driver.execute(request, _CTX)
+
+    assert calls == []
+
+
 def test_warm_knowledge_embedder_primes_the_same_singleton_retrieve_uses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

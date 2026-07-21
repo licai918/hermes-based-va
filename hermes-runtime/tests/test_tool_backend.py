@@ -22,6 +22,7 @@ from hermes_runtime.datastore.handlers import build_datastore_registry
 from hermes_runtime.tool_backend import (
     _turn_extra_drivers,
     memory_enabled,
+    record_memory_injection_metric,
     resolve_tool_backend,
     select_tool_driver,
     simulated_mode_enabled,
@@ -208,3 +209,38 @@ def test_datastore_registry_is_subset_of_mock() -> None:
         assert tool in mock, f"datastore tool {tool} missing from mock registry"
         for action in actions:
             assert action in mock[tool], f"datastore {tool}.{action} missing from mock"
+
+
+# --- record_memory_injection_metric (0.0.3 S26, FR-28 gap #1) -----------------
+# Gated on the SAME axis as the feature itself (memory_enabled) so a mock/unset
+# deployment never attempts a metrics DB connection on every turn (NFR-5).
+
+
+def test_record_memory_injection_metric_skips_when_backend_is_mock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        "hermes_runtime.tool_backend.emit_metric_event",
+        lambda metric, flag: calls.append((metric, flag)),
+    )
+
+    record_memory_injection_metric(True)
+
+    assert calls == []
+
+
+def test_record_memory_injection_metric_emits_when_backend_is_datastore(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    calls: list[tuple[str, bool]] = []
+    monkeypatch.setattr(
+        "hermes_runtime.tool_backend.emit_metric_event",
+        lambda metric, flag: calls.append((metric, flag)),
+    )
+
+    record_memory_injection_metric(False)
+
+    assert calls == [("memory_injection", False)]

@@ -71,6 +71,7 @@ from hermes_runtime.tool_backend import (
     agent_experience_injection_enabled,
     load_confirmed_experience,
     memory_enabled,
+    record_memory_injection_metric,
 )
 
 logger = logging.getLogger(__name__)
@@ -464,6 +465,9 @@ def make_copilot_run_turn(
         # an employee-confirmed correction write binds from context, and prepend the
         # memory block so the draft is grounded in prior preferences.
         identity, memory = _load_case_memory(case_id, store)
+        # S26 (FR-28): memory-injection counter emit, same gate/rationale as the
+        # external turn (openrouter.py) -- turn-safe, gated on memory_enabled().
+        record_memory_injection_metric(bool(memory))
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.

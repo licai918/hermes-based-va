@@ -5,6 +5,7 @@
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
+import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
 import type {
@@ -193,4 +194,10 @@ export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
     "POST",
     `/api/admin/agent-experience/${encodeURIComponent(id)}/reject`,
   ).then((b) => b.entry);
+}
+
+// --- Aggregate-metrics admin panel (0.0.3 S26, FR-28) -------------------------
+
+export function getAggregateMetrics(): Promise<AggregateMetrics> {
+  return getJson<AggregateMetrics>("/api/admin/metrics");
 }

@@ -27,7 +27,9 @@ from hermes_runtime.copilot_turn import (
 )
 from hermes_runtime.live import _scripted_openai_factory, run_scripted_agent
 from hermes_runtime.openrouter import OPENROUTER_PRIMARY_MODEL, OpenRouterConfig
+from toee_hermes.plugin import _AGENT_EXCLUDED_ACTIONS
 from toee_hermes.plugin.profiles import INTERNAL, allowlisted_tools
+from toee_hermes.tool_catalog import TOOL_CATALOG
 
 
 @pytest.fixture(autouse=True)
@@ -70,8 +72,34 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         # tripwire guards. list_agent_experience is admin-only and excluded
         # from LLM registration entirely (_AGENT_EXCLUDED_ACTIONS).
         "toee_agent_experience",
+        # 0.0.3 S26 (FR-28): reviewed addition. toee_metrics.get_aggregate_metrics
+        # is a read-only aggregate-counts/rates report (never a customer value,
+        # never money) and is WHOLLY excluded from LLM registration
+        # (_AGENT_EXCLUDED_ACTIONS) -- it is the toolset's ONLY catalog action, so
+        # it never registers a handler and never appears in a booted tool_names()
+        # set (see _wholly_excluded_toolsets below). Declared here purely so the
+        # allowlist gate lets the admin BFF's deterministic tools:dispatch call
+        # reach it (ADR-0140 precedent: toee_customer_memory.get_memory_audit).
+        "toee_metrics",
     }
 )
+
+
+def _wholly_excluded_toolsets() -> set[str]:
+    """Toolsets whose EVERY catalog action is in ``_AGENT_EXCLUDED_ACTIONS``.
+
+    Such a toolset never registers a single handler in ``_register()`` (every
+    action is skipped), so it never appears in a booted ``tool_names()`` set
+    regardless of profile-allowlist membership -- 0.0.3 S26's ``toee_metrics``
+    is the first (a single admin-only aggregate-metrics read). Assertion (2)
+    below subtracts this set so a wholly-admin-only toolset doesn't break the
+    booted-set-equals-allowlist equality it isn't structurally able to satisfy.
+    """
+    return {
+        tool
+        for tool, actions in TOOL_CATALOG.items()
+        if all((tool, action) in _AGENT_EXCLUDED_ACTIONS for action in actions)
+    }
 
 
 def _booted_toolsets(profile: str) -> set[str]:
@@ -94,9 +122,10 @@ def test_internal_copilot_agent_turn_excludes_send_tools() -> None:
         assert send not in toolsets, f"{send} must not be booted for a draft turn"
 
     # (2) Allowlist-equality: the booted set is EXACTLY internal_copilot's declared
-    # allowlist — boot registers nothing beyond what the profile declares, so the
+    # allowlist minus any WHOLLY-excluded toolset (see _wholly_excluded_toolsets)
+    # — boot registers nothing beyond what the profile declares, so the
     # structural no-send rests entirely on that declaration (no transitive drift).
-    assert toolsets == set(allowlisted_tools(INTERNAL))
+    assert toolsets == set(allowlisted_tools(INTERNAL)) - _wholly_excluded_toolsets()
 
     # (3) Allowlist tripwire: the declared allowlist still equals the reviewed
     # snapshot. (2) on its own can't catch a send tool *added to the allowlist* —

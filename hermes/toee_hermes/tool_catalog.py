@@ -96,6 +96,12 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "confirm_experience",
         "reject_experience",
     ),
+    # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
+    # over existing tables + the new metric_event counters (memory injection,
+    # knowledge found/miss). Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the
+    # get_memory_audit precedent) -- reached only via the admin BFF's
+    # deterministic tools:dispatch call, never a live agent's tool loop.
+    "toee_metrics": ("get_aggregate_metrics",),
 }
 
 

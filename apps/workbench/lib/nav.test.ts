@@ -9,7 +9,7 @@ describe("navItemsForRole (ADR-0084)", () => {
     expect(items[1]?.href).toBe("/copilot/simulator");
   });
 
-  it("gives a supervisor the simulator plus the five governance entries", () => {
+  it("gives a supervisor the simulator plus the six governance entries", () => {
     const labels = navItemsForRole(WORKBENCH_ROLES.supervisor).map(
       (i) => i.label,
     );
@@ -21,10 +21,11 @@ describe("navItemsForRole (ADR-0084)", () => {
       "Accounts",
       "Memory Audit",
       "Agent Experience",
+      "Metrics",
     ]);
   });
 
-  it("gives an admin the same five entries as a supervisor", () => {
+  it("gives an admin the same six entries as a supervisor", () => {
     expect(navItemsForRole(WORKBENCH_ROLES.admin)).toEqual(
       navItemsForRole(WORKBENCH_ROLES.supervisor),
     );

@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from toee_hermes.drivers.mock import create_all_mock_handlers
 from toee_hermes.drivers.mock.driver import MockDriver
 
+from ..metrics import KNOWLEDGE_SEARCH, emit_metric_event
 from .retriever import EmbedQueryFn, retrieve
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -51,6 +52,20 @@ def _not_found() -> dict[str, Any]:
     """Fresh governed-miss shape per call — a shared constant would leak mutations
     (e.g. a future caller appending to result["results"]) across every miss process-wide."""
     return {"results": []}
+
+
+def _emit_found(flag: bool) -> None:
+    """Fire-and-forget knowledge found/miss counter emit (0.0.3 S26, FR-28 gap #2).
+
+    Gated on :func:`knowledge_enabled` -- the SAME axis the feature itself is
+    gated on -- so unit tests that construct :class:`KnowledgeDriver` directly
+    (without setting ``KNOWLEDGE_BACKEND``) never attempt a metrics DB
+    connection. Only a boolean ever leaves this call site: no query text, no
+    result content (FR-4/RK-2). Not called for the empty-query branch -- a
+    guessed/omitted param is a caller bug, not a genuine search attempt."""
+    if not knowledge_enabled():
+        return
+    emit_metric_event(KNOWLEDGE_SEARCH, flag)
 
 
 def knowledge_enabled(value: object = _UNSET) -> bool:
@@ -178,6 +193,7 @@ class KnowledgeDriver:
                     len(query),
                     deadline,
                 )
+                _emit_found(False)
                 return _not_found()
             except Exception:
                 logger.exception(
@@ -185,13 +201,16 @@ class KnowledgeDriver:
                     query_hash,
                     len(query),
                 )
+                _emit_found(False)
                 return _not_found()
         finally:
             pool.shutdown(wait=False)
 
         if not chunks:
+            _emit_found(False)
             return _not_found()
 
+        _emit_found(True)
         return {
             "results": [
                 {

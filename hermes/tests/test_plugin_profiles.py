@@ -44,6 +44,9 @@ ADR_0035_INTERNAL = {
     "toee_customer_memory",
     # 0.0.3 S22 (FR-23): L6 Agent-experience proposals -- internal_copilot only.
     "toee_agent_experience",
+    # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over this
+    # profile's API by the admin BFF (same reason get_memory_audit lives here).
+    "toee_metrics",
 }
 ADR_0038_SUPERVISOR = {
     "toee_knowledge_ops",

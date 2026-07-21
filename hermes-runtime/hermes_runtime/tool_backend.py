@@ -24,6 +24,8 @@ from typing import Any, Optional
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.execute import ToolDriver
 
+from .metrics import MEMORY_INJECTION, emit_metric_event
+
 logger = logging.getLogger(__name__)
 
 # Env var selecting the dispatch backend. Values: "mock" | "datastore".
@@ -179,6 +181,25 @@ def load_confirmed_experience(store: Optional[Any]) -> Optional[list[dict[str, A
             type(exc).__name__,
         )
         return None
+
+
+def record_memory_injection_metric(flag: bool) -> None:
+    """Fire-and-forget memory-injection counter emit (0.0.3 S26, FR-28 gap #1).
+
+    Shared by both turn seams (``openrouter.py``/``copilot_turn.py``); each
+    caller passes ``bool(memory)`` -- the raw Customer Memory slot list, NOT
+    the combined injection block (which also includes the Session Identity
+    Snapshot / L6 learnings) -- so the counter measures L4 Customer Memory
+    injection specifically, per FR-28's "memory injection rate".
+
+    Gated on :func:`memory_enabled` -- the SAME axis the feature itself is
+    gated on -- so a mock/unset deployment (the vast majority of unit/eval
+    runs) never attempts a metrics DB connection; the emit itself
+    (:func:`hermes_runtime.metrics.emit_metric_event`) is separately
+    turn-safe (never raises) for the datastore-backend case too."""
+    if not memory_enabled():
+        return
+    emit_metric_event(MEMORY_INJECTION, flag)
 
 
 def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
