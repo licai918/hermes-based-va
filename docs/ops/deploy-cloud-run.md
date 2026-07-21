@@ -50,11 +50,12 @@ missing.
 
 | Env var | Source | Required? | Notes |
 |---------|--------|-----------|-------|
-| `TEXTLINE_WEBHOOK_SECRET` | Secret Manager | yes | Inbound webhook HMAC verify (ADR-0021) |
+| `SIMPLETEXTING_WEBHOOK_TOKEN` | Secret Manager | yes | Shared token in the registered webhook URL (ADR-0021 — SimpleTexting does not sign payloads) |
 | `INTERNAL_JOB_SECRET` | Secret Manager | yes | Guards `/internal/jobs/agent-turn` (ADR-0106) |
-| `TEXTLINE_ACCESS_TOKEN` | Secret Manager | yes | Outbound Textline replies (ADR-0083) |
+| `SIMPLETEXTING_API_TOKEN` | Secret Manager | yes | Outbound SimpleTexting sends (ADR-0083) |
 | `OPENROUTER_API_KEY` | Secret Manager | yes | Async agent turn (ADR-0009) |
-| `TEXTLINE_API_BASE_URL` | plain env | no | Defaults to `https://application.textline.com/` |
+| `SIMPLETEXTING_ACCOUNT_PHONE` | plain env | no | Sending number; account primary when unset |
+| `SIMPLETEXTING_API_BASE_URL` | plain env | no | Defaults to `https://api-app2.simpletexting.com/v2/` |
 | `OPENROUTER_BASE_URL` / `OPENROUTER_MODEL` / `OPENROUTER_FALLBACK_MODEL` | plain env | no | Defaults pinned in code (ADR-0009) |
 | `INTEGRATION_DRIVER` | plain env | no | `mock` (default) until the integration phase |
 | `COMPOSIO_API_KEY` | Secret Manager | **optional until integration phase (#33)** | Only when `INTEGRATION_DRIVER=composio` |
@@ -90,7 +91,7 @@ gcloud run deploy toee-hermes-gateway \
   --image "$REPO/toee-hermes-gateway:latest" \
   --region "$REGION" \
   --no-allow-unauthenticated \
-  --set-secrets="TEXTLINE_WEBHOOK_SECRET=textline-webhook-secret:latest,INTERNAL_JOB_SECRET=internal-job-secret:latest,TEXTLINE_ACCESS_TOKEN=textline-access-token:latest,OPENROUTER_API_KEY=openrouter-api-key:latest"
+  --set-secrets="SIMPLETEXTING_WEBHOOK_TOKEN=simpletexting-webhook-token:latest,INTERNAL_JOB_SECRET=internal-job-secret:latest,SIMPLETEXTING_API_TOKEN=simpletexting-api-token:latest,OPENROUTER_API_KEY=openrouter-api-key:latest"
   # Add when wiring Composio (issue #33 / ADR-0129):
   #   --set-secrets=...,COMPOSIO_API_KEY=composio-api-key:latest
   #   --set-env-vars=INTEGRATION_DRIVER=composio,COMPOSIO_USER_ID=toee-staging,COMPOSIO_SHOPIFY_CONNECTED_ACCOUNT_ID=ca_...,COMPOSIO_QBO_CONNECTED_ACCOUNT_ID=ca_...,COMPOSIO_SQUARE_CONNECTED_ACCOUNT_ID=ca_...

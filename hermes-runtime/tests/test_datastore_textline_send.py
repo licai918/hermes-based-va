@@ -158,23 +158,24 @@ def test_send_textline_message_prefers_case_bound_session(datastore) -> None:
     assert result.data["message"]["conversation_id"] == real_conv
 
 
-def test_send_textline_message_live_when_access_token_set(datastore, monkeypatch) -> None:
-    """When TEXTLINE_ACCESS_TOKEN is set, the composite handler POSTs to Textline."""
+def test_send_textline_message_live_when_api_token_set(datastore, monkeypatch) -> None:
+    """When SIMPLETEXTING_API_TOKEN is set, the composite handler POSTs to SimpleTexting."""
     driver, conn, _ = datastore
     thread_id = "thr_live"
     case_id = "case_live"
     actor = "acct_rep"
-    session_id = _seed_thread(conn, thread_id)
+    # SimpleTexting sessions key the conversation by contact phone (ADR-0115 peel).
+    session_id = _seed_thread(conn, thread_id, textline_conversation_id="+15551230000")
     _seed_case(conn, case_id, thread_id, actor, session_id)
 
     posts: list[tuple[str, dict, bytes]] = []
 
     def fake_post(*, url: str, headers: dict, body: bytes) -> int:
         posts.append((url, headers, body))
-        return 200
+        return 201
 
-    monkeypatch.setenv("TEXTLINE_ACCESS_TOKEN", "test-access-token")
-    monkeypatch.setattr("hermes_runtime.textline_reply._urllib_post", fake_post)
+    monkeypatch.setenv("SIMPLETEXTING_API_TOKEN", "test-api-token")
+    monkeypatch.setattr("hermes_runtime.simpletexting_reply._urllib_post", fake_post)
 
     result = _run(
         driver,
@@ -184,6 +185,7 @@ def test_send_textline_message_live_when_access_token_set(datastore, monkeypatch
     )
     assert result.ok
     assert len(posts) == 1
-    assert "7931e83f-96d9-4070-9ca4-081bcf36afd0" in posts[0][0]
-    assert posts[0][1]["X-TGP-ACCESS-TOKEN"] == "test-access-token"
+    assert posts[0][0].endswith("/api/messages")
+    assert posts[0][1]["Authorization"] == "Bearer test-api-token"
+    assert b'"contactPhone": "15551230000"' in posts[0][2]
     assert b"Live outbound." in posts[0][2]

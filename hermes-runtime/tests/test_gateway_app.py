@@ -1,15 +1,14 @@
-"""Textline gateway HTTP surface (ADR-0095 Python-native, ADR-0021/0104).
+"""SMS gateway HTTP surface (ADR-0095 Python-native, ADR-0021/0104).
 
 The FastAPI app lives in the embedding venv (never in deps-free toee-hermes) and
 wraps the pure ``toee_hermes.gateway.*`` decision logic. G1 pins the first line of
-defense: every inbound webhook must carry a valid HMAC-SHA256 body signature
-(ADR-0021) or be rejected with 401 before any processing (ADR-0104).
+defense: every inbound webhook must carry the registered URL token (ADR-0021 —
+SimpleTexting does not sign payloads) or be rejected with 401 before any
+processing (ADR-0104).
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 
 from starlette.testclient import TestClient
@@ -23,15 +22,10 @@ from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
-SIGNATURE_HEADER = "X-Textline-Signature"
+WEBHOOK_SECRET = "test-simpletexting-url-token"
 JOB_SECRET = "test-internal-job-secret"
 
-
-def _sign(raw_body: bytes, secret: str = WEBHOOK_SECRET) -> str:
-    return hmac.new(
-        secret.encode("utf-8"), raw_body, hashlib.sha256
-    ).hexdigest()
+WEBHOOK_PATH = f"/webhooks/simpletexting?token={WEBHOOK_SECRET}"
 
 
 def _inbound_payload(
@@ -39,111 +33,69 @@ def _inbound_payload(
     body: str,
     from_phone: str = "+15551230000",
     event_id: str = "evt-1",
-    conversation_id: str = "conv-1",
+    report_type: str = "INCOMING_MESSAGE",
 ) -> bytes:
-    """Build a v1 Textline inbound webhook JSON body (route-layer schema)."""
+    """Build a SimpleTexting INCOMING_MESSAGE webhook report (API v2 shape)."""
     return json.dumps(
         {
-            "id": event_id,
-            "conversation_id": conversation_id,
-            "from": from_phone,
-            "body": body,
-            "received_at": "2026-01-01T00:00:00Z",
-            "type": "message.created",
+            "reportId": f"rep-{event_id}",
+            "webhookId": "wh-1",
+            "type": report_type,
+            "values": {
+                "messageId": event_id,
+                "text": body,
+                "accountPhone": "9053378266",
+                "contactPhone": from_phone,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "category": "SMS",
+            },
         }
     ).encode("utf-8")
 
 
-def _post_signed(client: TestClient, raw: bytes):
+def _post(client: TestClient, raw: bytes, *, token: str = WEBHOOK_SECRET):
     return client.post(
-        "/webhooks/textline", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
-    )
-
-
-def _tgp_new_customer_post(
-    *,
-    body: str = "Hi",
-    phone: str = "+17786803250",
-    event_id: str = "evt-tgp-1",
-    conversation_id: str = "conv-tgp-1",
-    event_time: str = "1782844993",
-) -> tuple[bytes, dict[str, str]]:
-    payload = {
-        "webhook": "new_customer_post",
-        "post": {
-            "body": body,
-            "created_at": int(event_time),
-            "uuid": event_id,
-            "conversation_uuid": conversation_id,
-            "is_whisper": False,
-            "creator": {
-                "type": "customer",
-                "phone_number": phone,
-            },
-        },
-        "conversation": {"uuid": conversation_id},
-    }
-    raw_text = json.dumps(payload, separators=(",", ":"))
-    raw = raw_text.encode("utf-8")
-    headers = {
-        "X-Tgp-Event-Signature": hashlib.sha256(
-            f"new_customer_post{event_time}{WEBHOOK_SECRET}".encode("utf-8")
-        ).hexdigest(),
-        "X-Tgp-Event-Time": event_time,
-        "X-Tgp-Event-Type": "new_customer_post",
-    }
-    return raw, headers
-
-
-def _post_tgp_signed(client: TestClient, raw: bytes, headers: dict[str, str]):
-    return client.post("/webhooks/textline", content=raw, headers=headers)
-
-
-def test_webhook_rejects_request_without_a_valid_signature() -> None:
-    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
-    raw = b'{"event":"message.created"}'
-
-    response = client.post(
-        "/webhooks/textline",
+        f"/webhooks/simpletexting?token={token}",
         content=raw,
-        headers={SIGNATURE_HEADER: "deadbeef-not-a-valid-hmac"},
+        headers={"Content-Type": "application/json"},
     )
 
-    assert response.status_code == 401
 
-
-def test_webhook_accepts_a_request_signed_with_the_shared_secret() -> None:
+def test_webhook_rejects_request_without_a_valid_token() -> None:
     client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
-    raw = b'{"event":"message.created"}'
+    raw = _inbound_payload(body="Hi")
 
-    response = client.post(
-        "/webhooks/textline",
-        content=raw,
-        headers={SIGNATURE_HEADER: _sign(raw)},
-    )
-
-    assert response.status_code == 200
+    assert _post(client, raw, token="wrong-token").status_code == 401
+    assert (
+        client.post("/webhooks/simpletexting", content=raw).status_code == 401
+    )  # missing token entirely
 
 
-def test_webhook_accepts_live_tgp_new_customer_post() -> None:
+def test_webhook_accepts_a_request_with_the_registered_token() -> None:
+    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
+    raw = _inbound_payload(body="Hi")
+
+    assert _post(client, raw).status_code == 200
+
+
+def test_webhook_accepts_live_incoming_message_report() -> None:
     store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
     app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
     client = TestClient(app)
-    raw, headers = _tgp_new_customer_post(
-        body="Hi",
-        phone="7786803250",
-        event_id="evt-tgp-live",
-        conversation_id="7931e83f-96d9-4070-9ca4-081bcf36afd0",
+    raw = _inbound_payload(
+        body="Hi", from_phone="7786803250", event_id="evt-st-live"
     )
 
-    response = _post_tgp_signed(client, raw, headers)
+    response = _post(client, raw)
 
     assert response.status_code == 200
+    # SimpleTexting has no conversation resource: the conversation IS the contact
+    # phone, E.164-normalized.
     assert [(p.event_id, p.conversation_id) for p in queue.payloads] == [
-        ("evt-tgp-live", "7931e83f-96d9-4070-9ca4-081bcf36afd0")
+        ("evt-st-live", "+17786803250")
     ]
-    context = store.load_context("evt-tgp-live")
+    context = store.load_context("evt-st-live")
     assert context is not None
     assert context.from_phone == "+17786803250"
     assert context.inbound_body_ref
@@ -158,12 +110,12 @@ def test_opt_out_inbound_acks_200_and_sends_one_fixed_confirmation() -> None:
         reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
     )
     client = TestClient(app)
-    raw = _inbound_payload(body="STOP", conversation_id="conv-optout")
+    raw = _inbound_payload(body="STOP", from_phone="+14165550188")
 
-    response = _post_signed(client, raw)
+    response = _post(client, raw)
 
     assert response.status_code == 200
-    assert sent == [("conv-optout", SMS_OPT_OUT_CONFIRMATION)]
+    assert sent == [("+14165550188", SMS_OPT_OUT_CONFIRMATION)]
 
 
 def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
@@ -179,7 +131,7 @@ def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
         body="Do you have 225/65R17 in stock?", from_phone="+14165550101"
     )
 
-    response = _post_signed(client, raw)
+    response = _post(client, raw)
 
     assert response.status_code == 200
     assert sent == []
@@ -196,18 +148,17 @@ def test_accepted_inbound_persists_context_and_enqueues_one_job() -> None:
         body="Do you have 225/65R17 in stock?",
         from_phone="+14165550101",
         event_id="evt-accept",
-        conversation_id="conv-accept",
     )
 
-    response = _post_signed(client, raw)
+    response = _post(client, raw)
 
     assert response.status_code == 200
     assert [(p.event_id, p.conversation_id) for p in queue.payloads] == [
-        ("evt-accept", "conv-accept")
+        ("evt-accept", "+14165550101")
     ]
     context = store.load_context("evt-accept")
     assert context is not None
-    assert context.conversation_id == "conv-accept"
+    assert context.conversation_id == "+14165550101"
     assert context.from_phone == "+14165550101"
     assert context.session_identity_snapshot is not None
     assert context.session_identity_snapshot.outcome == "verified_customer"
@@ -225,11 +176,9 @@ def test_opt_out_inbound_persists_no_context_and_enqueues_nothing() -> None:
     queue = InMemoryJobQueue()
     app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
     client = TestClient(app)
-    raw = _inbound_payload(
-        body="STOP", event_id="evt-stop", conversation_id="conv-stop"
-    )
+    raw = _inbound_payload(body="STOP", event_id="evt-stop")
 
-    response = _post_signed(client, raw)
+    response = _post(client, raw)
 
     assert response.status_code == 200
     assert queue.payloads == []
@@ -277,9 +226,8 @@ def test_internal_agent_turn_runs_the_turn_for_a_matching_authed_job() -> None:
         body="Where is my order?",
         from_phone="+14165550101",
         event_id="evt-turn",
-        conversation_id="conv-turn",
     )
-    assert _post_signed(client, raw).status_code == 200
+    assert _post(client, raw).status_code == 200
     payload = queue.payloads[0]
 
     response = client.post(
@@ -291,7 +239,7 @@ def test_internal_agent_turn_runs_the_turn_for_a_matching_authed_job() -> None:
     )
 
     assert response.status_code == 200
-    assert runs == [("evt-turn", "conv-turn", "Where is my order?")]
+    assert runs == [("evt-turn", "+14165550101", "Where is my order?")]
 
 
 def test_internal_agent_turn_404_when_context_is_unknown() -> None:
@@ -316,11 +264,11 @@ def test_internal_agent_turn_404_when_context_is_unknown() -> None:
 
 
 def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> None:
-    # Full loop (ADR-0103/0105/0106/0107): signed webhook -> persist + enqueue ->
-    # internal job -> a real bound governed AIAgent turn -> the governed Textline
-    # reply is derived and delivered to the inbound turn's conversation. The model
-    # is the only fake (scripted provider); the agent loop, governed dispatch, and
-    # turn binding are all real.
+    # Full loop (ADR-0103/0105/0106/0107): tokened webhook -> persist + enqueue ->
+    # internal job -> a real bound governed AIAgent turn -> the governed SMS reply
+    # is derived and delivered to the inbound turn's conversation. The model is the
+    # only fake (scripted provider); the agent loop, governed dispatch, and turn
+    # binding are all real.
     store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
     sent: list[tuple[str, str]] = []
@@ -362,9 +310,8 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
         body="Where is my order?",
         from_phone="+14165550101",
         event_id="evt-e2e",
-        conversation_id="conv-e2e",
     )
-    assert _post_signed(client, raw).status_code == 200
+    assert _post(client, raw).status_code == 200
     payload = queue.payloads[0]
 
     response = client.post(
@@ -376,12 +323,12 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
     )
 
     assert response.status_code == 200
-    assert sent == [("conv-e2e", reply_body)]
+    assert sent == [("+14165550101", reply_body)]
 
 
 def test_webhook_alone_drives_the_reply_through_the_local_dispatcher() -> None:
     # ADR-0105 local substrate: with the in-process LocalDispatchingJobQueue there is
-    # no Cloud Tasks and no manual internal-route call -- a single signed webhook
+    # no Cloud Tasks and no manual internal-route call -- a single tokened webhook
     # fast-acks and the dispatcher runs the bound turn, deriving + delivering the
     # reply. This is the end-to-end loop a locally-booted app actually executes.
     store = InMemoryGatewayStore()
@@ -429,74 +376,31 @@ def test_webhook_alone_drives_the_reply_through_the_local_dispatcher() -> None:
         body="Do you have 225/65R17?",
         from_phone="+14165550101",
         event_id="evt-local",
-        conversation_id="conv-local",
     )
 
-    assert _post_signed(client, raw).status_code == 200
+    assert _post(client, raw).status_code == 200
 
     # No internal-route call: the dispatcher alone drove the bound turn + reply.
-    assert sent == [("conv-local", reply_body)]
+    assert sent == [("+14165550101", reply_body)]
 
 
-# --- verify-before-ignore + TGP freshness (ADR-0021 fail-closed) -------------
-
-def _tgp_whisper(*, event_time: str = "1782844993", signature: str | None = None):
-    """An ignored (whisper) TGP post; signature overridable to forge a bad one."""
-    payload = {
-        "webhook": "new_customer_post",
-        "post": {
-            "body": "internal note",
-            "created_at": int(event_time),
-            "uuid": "evt-whisper-1",
-            "conversation_uuid": "conv-w-1",
-            "is_whisper": True,
-            "creator": {"type": "agent"},
-        },
-        "conversation": {"uuid": "conv-w-1"},
-    }
-    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    valid = hashlib.sha256(
-        f"new_customer_post{event_time}{WEBHOOK_SECRET}".encode("utf-8")
-    ).hexdigest()
-    headers = {
-        "X-Tgp-Event-Signature": signature if signature is not None else valid,
-        "X-Tgp-Event-Time": event_time,
-        "X-Tgp-Event-Type": "new_customer_post",
-    }
-    return raw, headers
+# --- verify-before-ignore (ADR-0021 fail-closed) ------------------------------
 
 
-def test_ignored_tgp_webhook_with_bad_signature_is_rejected() -> None:
+def test_ignored_report_type_with_bad_token_is_rejected() -> None:
     client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
-    raw, headers = _tgp_whisper(signature="deadbeef")
-    assert _post_tgp_signed(client, raw, headers).status_code == 401
+    raw = _inbound_payload(body="out", report_type="OUTGOING_MESSAGE")
+    assert _post(client, raw, token="deadbeef").status_code == 401
 
 
-def test_ignored_tgp_webhook_with_valid_signature_still_acks_200() -> None:
+def test_ignored_report_types_with_valid_token_still_ack_200() -> None:
+    # One webhook registration can carry several triggers; only INCOMING_MESSAGE
+    # starts a turn — delivery/outgoing/unsubscribe reports ack without agent work.
     store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
     app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
-    raw, headers = _tgp_whisper()
-    assert _post_tgp_signed(TestClient(app), raw, headers).status_code == 200
+    client = TestClient(app)
+    for report_type in ("OUTGOING_MESSAGE", "DELIVERY_REPORT", "UNSUBSCRIBE_REPORT"):
+        raw = _inbound_payload(body="x", report_type=report_type)
+        assert _post(client, raw).status_code == 200
     assert queue.payloads == []  # ignored: no turn enqueued
-
-
-def test_tgp_event_is_stale_only_when_window_set_and_exceeded() -> None:
-    from hermes_runtime.gateway_app import _tgp_event_is_stale
-
-    now = 1_000_000
-    assert _tgp_event_is_stale("999950", 60, now) is False  # 50s old, within 60
-    assert _tgp_event_is_stale("999900", 60, now) is True   # 100s old, over 60
-    assert _tgp_event_is_stale("999900", None, now) is False  # window off
-    assert _tgp_event_is_stale(None, 60, now) is False        # no event_time
-
-
-def test_stale_tgp_webhook_rejected_when_window_configured(monkeypatch) -> None:
-    import hermes_runtime.gateway_app as gw
-
-    monkeypatch.setenv("TEXTLINE_MAX_SIGNATURE_AGE_SECONDS", "60")
-    # Freeze "now" far past the event's timestamp so the correctly-signed event is stale.
-    monkeypatch.setattr(gw, "_now_unix", lambda: 1782844993 + 3600)
-    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
-    raw, headers = _tgp_new_customer_post(event_time="1782844993")
-    assert _post_tgp_signed(client, raw, headers).status_code == 401

@@ -1,5 +1,5 @@
-# Hermes Python Textline gateway (ADR-0095). Loads hermes-runtime/.env at boot.
-# Do NOT point Textline at the legacy toeetire-va (Gemini VA) service.
+# Hermes Python SMS gateway (ADR-0095, SimpleTexting). Loads hermes-runtime/.env at boot.
+# Do NOT point SimpleTexting at the legacy toeetire-va (Gemini VA) service.
 #
 # Example (from repo root):
 #   pwsh scripts/run-gateway.ps1
@@ -29,9 +29,9 @@ if (Test-Path $envFile) {
     }
 }
 
-Write-Host "Starting Hermes Textline gateway (OpenRouter + Composio from hermes-runtime/.env)"
+Write-Host "Starting Hermes SMS gateway (SimpleTexting; OpenRouter + Composio from hermes-runtime/.env)"
 Write-Host "  healthz:  http://127.0.0.1:$Port/healthz"
-Write-Host "  webhook:  POST http://127.0.0.1:$Port/webhooks/textline"
+Write-Host "  webhook:  POST http://127.0.0.1:$Port/webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>"
 Write-Host "  NOT the legacy toeetire-va Gemini VA URL."
 
 Push-Location $runtimeDir

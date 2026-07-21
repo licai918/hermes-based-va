@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "hermes-agent",
     "toee-hermes",
-    # FastAPI is the Textline gateway's HTTP surface. It lives here (the heavy-deps
+    # FastAPI is the SMS gateway's HTTP surface. It lives here (the heavy-deps
     # embedding venv), never in toee-hermes, so the plugin + eval_runner stay
     # dependency-free (ADR-0096/0100). The route layer wraps the pure
     # toee_hermes.gateway.* decision logic and the embedded AIAgent turn.

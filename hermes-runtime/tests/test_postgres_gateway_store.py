@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 
 from starlette.testclient import TestClient
@@ -15,14 +13,7 @@ from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
-SIGNATURE_HEADER = "X-Textline-Signature"
-
-
-def _sign(raw_body: bytes, secret: str = WEBHOOK_SECRET) -> str:
-    return hmac.new(
-        secret.encode("utf-8"), raw_body, hashlib.sha256
-    ).hexdigest()
+WEBHOOK_SECRET = "test-simpletexting-url-token"
 
 
 def _inbound_payload(
@@ -30,16 +21,20 @@ def _inbound_payload(
     body: str = "Real inbound from webhook",
     from_phone: str = "+15559876543",
     event_id: str = "evt-pg-1",
-    conversation_id: str = "conv-pg-1",
 ) -> bytes:
     return json.dumps(
         {
-            "id": event_id,
-            "conversation_id": conversation_id,
-            "from": from_phone,
-            "body": body,
-            "received_at": "2026-01-01T00:00:00Z",
-            "type": "message.created",
+            "reportId": f"rep-{event_id}",
+            "webhookId": "wh-1",
+            "type": "INCOMING_MESSAGE",
+            "values": {
+                "messageId": event_id,
+                "text": body,
+                "accountPhone": "9053378266",
+                "contactPhone": from_phone,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "category": "SMS",
+            },
         }
     ).encode("utf-8")
 
@@ -52,8 +47,8 @@ def test_persist_accepted_inbound_creates_workbench_case(datastore) -> None:
     from toee_hermes.gateway.pipeline import InboundDecision
 
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt-case-1",
         conversation_id="conv-case-1",
         from_phone="+15559876543",
@@ -102,8 +97,8 @@ def test_persist_is_idempotent_on_duplicate_event_id(datastore) -> None:
     from toee_hermes.gateway.pipeline import InboundDecision
 
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt-idem-1",
         conversation_id="conv-idem-1",
         from_phone="+15559876543",
@@ -141,8 +136,8 @@ def test_load_context_and_inbound_body_round_trip(datastore) -> None:
     from toee_hermes.gateway.pipeline import InboundDecision
 
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt-rt-1",
         conversation_id="conv-rt-1",
         from_phone="+15551112222",
@@ -238,8 +233,8 @@ def test_persist_agent_outbound_writes_hermes_message_turn(datastore) -> None:
     from toee_hermes.gateway.pipeline import InboundDecision
 
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt-out-1",
         conversation_id="conv-out-1",
         from_phone="+15559876543",
@@ -281,8 +276,8 @@ def test_persist_agent_outbound_is_idempotent_per_turn(datastore) -> None:
     from toee_hermes.gateway.pipeline import InboundDecision
 
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt-out-idem",
         conversation_id="conv-out-idem",
         from_phone="+15559876543",
@@ -326,9 +321,8 @@ def test_webhook_through_create_app_writes_case(datastore) -> None:
     raw = _inbound_payload(body="Real inbound from webhook")
 
     response = client.post(
-        "/webhooks/textline",
+        f"/webhooks/simpletexting?token={WEBHOOK_SECRET}",
         content=raw,
-        headers={SIGNATURE_HEADER: _sign(raw)},
     )
 
     assert response.status_code == 200
@@ -354,9 +348,8 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     raw = _inbound_payload(event_id="evt-dup-1")
 
     assert client.post(
-        "/webhooks/textline",
+        f"/webhooks/simpletexting?token={WEBHOOK_SECRET}",
         content=raw,
-        headers={SIGNATURE_HEADER: _sign(raw)},
     ).status_code == 200
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))
@@ -364,9 +357,8 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     assert len(queue.payloads) == 1
 
     assert client.post(
-        "/webhooks/textline",
+        f"/webhooks/simpletexting?token={WEBHOOK_SECRET}",
         content=raw,
-        headers={SIGNATURE_HEADER: _sign(raw)},
     ).status_code == 200
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))

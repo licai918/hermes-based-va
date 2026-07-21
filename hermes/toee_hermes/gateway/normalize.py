@@ -1,9 +1,11 @@
-"""Canonical inbound normalization for the Textline pipeline (ADR-0102).
+"""Canonical inbound normalization for the SMS gateway pipeline (ADR-0102).
 
 The provider-specific JSON shape and accepted/ignored event classification are
-extracted by the route layer once the Textline webhook schema is confirmed; this
-module owns the schema-independent canonical pieces: E.164 phone normalization
-and building the InboundChannelEvent the rest of the system consumes.
+extracted by the route layer; this module owns the schema-independent canonical
+pieces: E.164 phone normalization and building the InboundChannelEvent the rest
+of the system consumes. SimpleTexting has no conversation resource, so the
+canonical ``conversation_id`` is the contact's E.164 phone — the outbound
+ReplySender sends to that same phone.
 """
 
 from __future__ import annotations
@@ -16,8 +18,8 @@ _NON_DIGITS = re.compile(r"\D")
 
 
 @dataclass(frozen=True)
-class TextlineInboundFields:
-    """Extracted Textline inbound fields, provider key names already resolved."""
+class SmsInboundFields:
+    """Extracted provider inbound fields, provider key names already resolved."""
 
     event_id: str
     conversation_id: str
@@ -32,8 +34,8 @@ class TextlineInboundFields:
 class InboundChannelEvent:
     """Canonical inbound channel event consumed by the rest of the system."""
 
-    channel: Literal["textline_sms"]
-    provider: Literal["textline"]
+    channel: Literal["simpletexting_sms"]
+    provider: Literal["simpletexting"]
     event_id: str
     conversation_id: str
     from_phone: str
@@ -62,13 +64,13 @@ def normalize_e164(input: str) -> str:
     return f"+{digits}"
 
 
-def to_inbound_channel_event(fields: TextlineInboundFields) -> InboundChannelEvent:
+def to_inbound_channel_event(fields: SmsInboundFields) -> InboundChannelEvent:
     media_urls = (
         fields.media_urls if fields.media_urls else None
     )
     return InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id=fields.event_id,
         conversation_id=fields.conversation_id,
         from_phone=normalize_e164(fields.from_phone),

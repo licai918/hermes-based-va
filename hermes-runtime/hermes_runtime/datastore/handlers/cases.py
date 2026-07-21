@@ -389,21 +389,21 @@ def _capture_textline_send(
     body: str,
     media_url: Optional[str],
 ) -> dict[str, Any]:
-    """Outbound Textline capture: live REST when ``TEXTLINE_ACCESS_TOKEN`` is set, else mock."""
-    token = (os.environ.get("TEXTLINE_ACCESS_TOKEN") or "").strip()
+    """Outbound SMS capture: live SimpleTexting when ``SIMPLETEXTING_API_TOKEN`` is set, else mock."""
+    token = (os.environ.get("SIMPLETEXTING_API_TOKEN") or "").strip()
     if token:
-        from hermes_runtime.textline_reply import (
-            TextlineSendError,
-            make_textline_reply_sender,
-            resolve_textline_config,
+        from hermes_runtime.simpletexting_reply import (
+            SimpleTextingSendError,
+            make_simpletexting_reply_sender,
+            resolve_simpletexting_config,
         )
 
         try:
-            send = make_textline_reply_sender(config=resolve_textline_config())
+            send = make_simpletexting_reply_sender(config=resolve_simpletexting_config())
             send(conversation_id, body)
         except ValueError as exc:
             raise ToolDriverError("configuration_missing", str(exc)) from exc
-        except TextlineSendError as exc:
+        except SimpleTextingSendError as exc:
             raise ToolDriverError("vendor_timeout", str(exc)) from exc
     return _send_message(
         TextlineMockData(),
@@ -614,10 +614,10 @@ def _resolve_sms_session_id(
 def _send_textline_message(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
-    """Governed employee-confirmed Textline send (ADR-0083/0035 composite seam).
+    """Governed employee-confirmed SMS send (ADR-0083/0035 composite seam).
 
-    Validates SMS-session + assignee gating, sends via Textline when
-    ``TEXTLINE_ACCESS_TOKEN`` is set (else mock capture), mirrors a
+    Validates SMS-session + assignee gating, sends via SimpleTexting when
+    ``SIMPLETEXTING_API_TOKEN`` is set (else mock capture), mirrors a
     ``message_turn``, and appends a ``textline_send`` audit row atomically.
     """
     case_id = _require_case_id(params)

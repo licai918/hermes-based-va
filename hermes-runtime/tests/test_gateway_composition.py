@@ -2,9 +2,10 @@
 
 Everything below the gateway is a seam (reply sender, run_turn, store, queue) so the
 HTTP app stays testable with fakes. :func:`build_gateway_app` is the one place those
-seams are resolved from the environment into the *real* production app: the Textline
-webhook signing secret (ADR-0021), the internal-job shared secret (ADR-0106), the
-real Textline ReplySender (ADR-0083), and the OpenRouter-backed governed turn runner
+seams are resolved from the environment into the *real* production app: the
+SimpleTexting webhook URL token (ADR-0021), the internal-job shared secret
+(ADR-0106), the real SimpleTexting ReplySender (ADR-0083), and the
+OpenRouter-backed governed turn runner
 (ADR-0009/0107).
 
 The root fails closed: a missing secret raises at boot, never a silent
@@ -32,12 +33,12 @@ from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 REQUIRED_ENV = {
     WEBHOOK_SECRET_ENV: "whsec-123",
     INTERNAL_JOB_SECRET_ENV: "job-secret-123",
-    "TEXTLINE_ACCESS_TOKEN": "tok-123",
+    "SIMPLETEXTING_API_TOKEN": "tok-123",
     "OPENROUTER_API_KEY": "or-key-123",
 }
 
 # Optional env that would otherwise leak from the developer's shell.
-_OPTIONAL_ENV = ("TEXTLINE_API_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL")
+_OPTIONAL_ENV = ("SIMPLETEXTING_API_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL")
 
 
 @pytest.fixture
@@ -55,7 +56,7 @@ def test_build_gateway_app_returns_a_real_app_with_both_routes(
 
     assert isinstance(app, FastAPI)
     paths = {route.path for route in app.routes}
-    assert "/webhooks/textline" in paths
+    assert "/webhooks/simpletexting" in paths
     assert "/internal/jobs/agent-turn" in paths
 
 
@@ -76,7 +77,7 @@ def test_build_gateway_app_wires_resolved_secrets_and_collaborators(
 
     assert captured["webhook_secret"] == "whsec-123"
     assert captured["internal_job_secret"] == "job-secret-123"
-    # The real Textline sender and the OpenRouter-backed turn runner are both wired.
+    # The real SimpleTexting sender and the OpenRouter-backed turn runner are both wired.
     assert callable(captured["reply_sender"])
     assert callable(captured["turn_runner"])
 

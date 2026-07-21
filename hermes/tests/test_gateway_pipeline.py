@@ -2,35 +2,28 @@
 
 Composes the gateway primitives into one decision the route layer acts on:
 verify -> normalize -> idempotency -> opt-out -> rate-limit -> ingress -> accept.
-Mirrors the P0 gateway pipeline contract: signature fail 401, STOP short-circuit,
+Mirrors the P0 gateway pipeline contract: token fail 401, STOP short-circuit,
 duplicate ignore, rate-limit 200-no-enqueue, ingress transient 500, else enqueue.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 from typing import Any
 
 from toee_hermes.drivers.mock import MockDriver, create_identity_mock_handlers
 from toee_hermes.errors import ToolDriverError
 from toee_hermes.execute import ToolRequest
-from toee_hermes.gateway.normalize import TextlineInboundFields
+from toee_hermes.gateway.normalize import SmsInboundFields
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION
 from toee_hermes.gateway.pipeline import process_inbound
 from toee_hermes.gateway.rate_limit import create_inbound_rate_limiter
 from toee_hermes.tool_gate import ToolExecutionContext
 
-SECRET = "whsec_textline_test"
+SECRET = "whtok_simpletexting_test"
 RESOLVED_AT = "2026-06-19T12:00:00.000Z"
-RAW_BODY = '{"event":"message:received","id":"evt_1"}'
 
 
-def _sig(body: str = RAW_BODY, key: str = SECRET) -> str:
-    return hmac.new(key.encode(), body.encode(), hashlib.sha256).hexdigest()
-
-
-def _fields(**overrides: Any) -> TextlineInboundFields:
+def _fields(**overrides: Any) -> SmsInboundFields:
     base = dict(
         event_id="evt_1",
         conversation_id="conv_9",
@@ -40,7 +33,7 @@ def _fields(**overrides: Any) -> TextlineInboundFields:
         raw_event_type="message:received",
     )
     base.update(overrides)
-    return TextlineInboundFields(**base)
+    return SmsInboundFields(**base)
 
 
 def _identity_driver() -> MockDriver:
@@ -49,8 +42,7 @@ def _identity_driver() -> MockDriver:
 
 def _process(**overrides: Any):
     kwargs: dict[str, Any] = dict(
-        raw_body=RAW_BODY,
-        signature=_sig(),
+        token=SECRET,
         secret=SECRET,
         fields=_fields(),
         driver=_identity_driver(),
@@ -62,8 +54,8 @@ def _process(**overrides: Any):
     return process_inbound(**kwargs)
 
 
-def test_invalid_signature_rejected_401() -> None:
-    decision = _process(signature="deadbeef")
+def test_invalid_token_rejected_401() -> None:
+    decision = _process(token="deadbeef")
     assert decision.status == 401
     assert decision.action == "reject"
     assert decision.stage == "verify"
