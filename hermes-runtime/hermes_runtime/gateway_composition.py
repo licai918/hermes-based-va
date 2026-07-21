@@ -15,18 +15,25 @@ It fails closed: a missing secret raises at boot rather than allowing an
 unauthenticated webhook, an unauthed model call, or a silently dropped reply. The
 Textline and OpenRouter connections are resolved once here (fail-fast), so rotating
 a credential requires a restart. The store uses Postgres when ``TOOL_BACKEND=datastore``
-(same DB as Workbench Tier B); otherwise the in-memory defaults apply until Cloud
-Tasks is wired (ADR-0105/0140).
+(same DB as Workbench Tier B); otherwise the in-memory defaults apply (ADR-0140).
+
+Since 0.0.4 S02 the fast-ack path enqueues into the durable Postgres queue
+(:class:`~hermes_runtime.job_queue.PostgresJobQueue`, ADR-0153) and the separate
+``hermes_runtime.turn_worker`` process runs the turn -- the in-process
+``LocalDispatchingJobQueue`` daemon thread is gone. :func:`resolve_turn_collaborators`
+is the shared half both processes build.
 
 Launch (the function is an ASGI app factory)::
 
     uvicorn hermes_runtime.gateway_composition:build_gateway_app --factory
+    python -m hermes_runtime.turn_worker          # the other half
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any, NamedTuple
 
 from fastapi import FastAPI
 
@@ -34,7 +41,7 @@ from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
 
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
+from hermes_runtime.job_queue import PostgresJobQueue
 from hermes_runtime.openrouter import make_openrouter_run_turn, resolve_openrouter_config
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from hermes_runtime.textline_reply import (
@@ -110,14 +117,27 @@ def resolve_reply_sender():
     )
 
 
-def build_gateway_app() -> FastAPI:
-    """Assemble the production gateway app from the environment (fail-closed).
+class TurnCollaborators(NamedTuple):
+    """The substrate a bound agent turn needs, resolved once from the environment.
 
-    Raises ``ValueError`` when any required secret is absent (webhook secret,
-    internal-job secret, Textline access token, OpenRouter API key).
+    Shared by the two processes that run one: the gateway (for its internal
+    Cloud-Tasks-parity route, ADR-0106) and the turn worker, which is where
+    inbound turns actually execute after the 0.0.4 S02 cutover.
     """
-    webhook_secret = _require_env(WEBHOOK_SECRET_ENV)
-    internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
+
+    store: Any
+    driver: Any
+    turn_runner: Any
+    reply_sender: Any
+
+
+def resolve_turn_collaborators() -> TurnCollaborators:
+    """Resolve the store, tool driver, reply sender and bound turn runner.
+
+    Fails closed on a missing Textline token / OpenRouter key, and resolves both
+    connections once so a misconfiguration surfaces at boot rather than on the
+    first webhook (rotation therefore requires a restart).
+    """
     _apply_external_profile_env()
 
     # S10 cold-load mitigation: nudges the fastembed model into memory in the
@@ -127,15 +147,13 @@ def build_gateway_app() -> FastAPI:
 
     warm_knowledge_embedder()
 
-    # Resolved once at boot so a misconfiguration fails fast instead of on the first
-    # webhook (rotation therefore requires a restart).
     reply_sender = resolve_reply_sender()
     run_turn = make_openrouter_run_turn(config=resolve_openrouter_config())
 
-    # The store is the source of truth (ADR-0107); the local dispatcher reloads from
-    # the same instance the internal route uses. When TOOL_BACKEND=datastore, persist
-    # into the same Postgres Workbench reads (ADR-0140/0142); otherwise the in-memory
-    # substrate (ADR-0105 local dev without Docker).
+    # The store is the source of truth (ADR-0107): the turn worker reloads the
+    # context the gateway persisted. When TOOL_BACKEND=datastore that is the same
+    # Postgres Workbench reads (ADR-0140/0142); otherwise the in-memory substrate,
+    # which is now single-process only -- see build_gateway_app.
     backend = resolve_tool_backend()
     if backend == "datastore":
         store = PostgresGatewayStore()
@@ -144,25 +162,50 @@ def build_gateway_app() -> FastAPI:
         store = InMemoryGatewayStore()
         driver = None
 
-    turn_runner = make_gateway_turn_runner(
+    return TurnCollaborators(
+        store=store,
+        driver=driver,
         reply_sender=reply_sender,
-        run_turn=run_turn,
-        on_reply_sent=(
-            (lambda ctx, text: store.persist_agent_outbound(ctx, text))
-            if backend == "datastore"
-            else None
+        turn_runner=make_gateway_turn_runner(
+            reply_sender=reply_sender,
+            run_turn=run_turn,
+            on_reply_sent=(
+                (lambda ctx, text: store.persist_agent_outbound(ctx, text))
+                if backend == "datastore"
+                else None
+            ),
         ),
     )
 
-    queue = LocalDispatchingJobQueue(store=store, turn_runner=turn_runner)
+
+def build_gateway_app() -> FastAPI:
+    """Assemble the production gateway app from the environment (fail-closed).
+
+    Raises ``ValueError`` when any required secret is absent (webhook secret,
+    internal-job secret, Textline access token, OpenRouter API key).
+    """
+    webhook_secret = _require_env(WEBHOOK_SECRET_ENV)
+    internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
+    collaborators = resolve_turn_collaborators()
+
+    # 0.0.4 S02 (FR-10, ADR-0153): fast-ack writes one durable row instead of
+    # spawning a daemon thread, and the turn-worker process claims it. The pool is
+    # lazy, so constructing this never touches Postgres at boot.
+    # ponytail: the durable path needs a shared database, so TOOL_BACKEND must be
+    # `datastore` for the worker to find the context the gateway persisted -- with
+    # the in-memory store the two processes cannot see each other. That is the only
+    # supported production wiring (ADR-0142 makes Postgres the local substrate too);
+    # the in-memory branch survives for tests and for a gateway booted with no DB at
+    # all. Fail closed on it the day someone actually mis-deploys that way.
+    queue = PostgresJobQueue()
 
     return create_app(
         webhook_secret=webhook_secret,
         internal_job_secret=internal_job_secret,
-        reply_sender=reply_sender,
-        turn_runner=turn_runner,
-        store=store,
+        reply_sender=collaborators.reply_sender,
+        turn_runner=collaborators.turn_runner,
+        store=collaborators.store,
         queue=queue,
-        driver=driver,
-        is_duplicate=store.is_duplicate,
+        driver=collaborators.driver,
+        is_duplicate=collaborators.store.is_duplicate,
     )

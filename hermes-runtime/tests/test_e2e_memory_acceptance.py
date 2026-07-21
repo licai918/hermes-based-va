@@ -15,7 +15,8 @@ assertion obeys the §6.0 proof principles:
      dormant and would fail if memory were wrongly active).
 
 The gateway → async turn → datastore path is driven for real (signed webhook →
-``persist_accepted_inbound`` → ``LocalDispatchingJobQueue`` → the production
+``persist_accepted_inbound`` → the durable ``PostgresJobQueue`` → the turn
+worker's ``run_once`` → the production
 ``make_openrouter_run_turn``). The model is the only fake: the scripted OpenAI
 provider (``_scripted_openai_factory``) makes the turn deterministic, and
 ``run_agent_turn`` is wrapped so we capture the exact injected user message the
@@ -42,7 +43,7 @@ from toee_hermes.tool_gate import ToolExecutionContext
 import hermes_runtime.openrouter as openrouter_mod
 import hermes_runtime.tool_backend as tool_backend_mod
 from hermes_runtime.gateway_app import create_app
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
+from hermes_runtime.job_queue import PostgresJobQueue
 from hermes_runtime.live import _scripted_openai_factory
 from hermes_runtime.openrouter import (
     OPENROUTER_PRIMARY_MODEL,
@@ -51,6 +52,7 @@ from hermes_runtime.openrouter import (
 )
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from hermes_runtime.turn_runner import make_gateway_turn_runner
+from hermes_runtime.turn_worker import run_once
 
 WEBHOOK_SECRET = "test-textline-shared-secret"
 SIGNATURE_HEADER = "X-Textline-Signature"
@@ -172,9 +174,37 @@ def _write_preference(driver, *, identity, key, value):
     return result
 
 
+class _EnqueueAndDrain:
+    """Test-only ``JobQueue``: writes the real durable job row, then runs the turn
+    worker's poll inline.
+
+    Production splits those across two processes (0.0.4 S02) — this suite is about
+    the four memory layers, not the substrate, so draining inline keeps one signed
+    webhook deterministically driving one bound turn while still going through the
+    real ``PostgresJobQueue`` + ``run_once`` code path.
+    """
+
+    def __init__(self, *, queue, store, turn_runner) -> None:
+        self._queue = queue
+        self._store = store
+        self._turn_runner = turn_runner
+
+    def enqueue(self, payload) -> None:
+        self._queue.enqueue(payload)
+        assert (
+            run_once(
+                queue=self._queue,
+                store=self._store,
+                turn_runner=self._turn_runner,
+                worker="test-turn-worker",
+            )
+            is not None
+        )
+
+
 def _build_app(*, store, run_turn, sent):
-    """The real gateway app: mock Ingress Phone Match, Postgres persistence, and a
-    synchronous local dispatcher so a single signed webhook drives the bound turn."""
+    """The real gateway app: mock Ingress Phone Match, Postgres persistence, and the
+    durable queue drained inline so a single signed webhook drives the bound turn."""
     turn_runner = make_gateway_turn_runner(
         reply_sender=lambda conv, text: sent.append((conv, text)),
         run_turn=run_turn,
@@ -187,10 +217,10 @@ def _build_app(*, store, run_turn, sent):
         driver=MockDriver(create_all_mock_handlers()),
         store=store,
         is_duplicate=store.is_duplicate,
-        queue=LocalDispatchingJobQueue(
+        queue=_EnqueueAndDrain(
+            queue=PostgresJobQueue(connection=store._connection),
             store=store,
             turn_runner=turn_runner,
-            dispatch=lambda work: work(),  # synchronous: deterministic assertions
         ),
     )
 

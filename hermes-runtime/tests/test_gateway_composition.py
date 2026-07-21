@@ -28,7 +28,7 @@ from hermes_runtime.gateway_composition import (
     build_gateway_app,
     resolve_reply_sender,
 )
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
+from hermes_runtime.job_queue import PostgresJobQueue
 
 # Every env var a correctly-configured deployment must set.
 REQUIRED_ENV = {
@@ -83,7 +83,7 @@ def test_build_gateway_app_wires_resolved_secrets_and_collaborators(
     assert callable(captured["turn_runner"])
 
 
-def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
+def test_build_gateway_app_wires_the_durable_postgres_queue(
     _full_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict = {}
@@ -98,11 +98,14 @@ def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
 
     build_gateway_app()
 
-    # Locally there is no Cloud Tasks, so the queue itself drives the turn (ADR-0105
-    # local substrate) against the same store the internal route reloads from.
-    assert isinstance(captured["queue"], LocalDispatchingJobQueue)
+    # 0.0.4 S02 (FR-10, ADR-0153): fast-ack enqueues one durable row; the separate
+    # turn-worker process runs the turn. No in-process dispatcher remains.
+    assert isinstance(captured["queue"], PostgresJobQueue)
     assert captured["store"] is not None
-    assert captured["queue"]._store is captured["store"]
+    # The pool is lazy: wiring the queue must not have opened a connection at boot.
+    import hermes_runtime.datastore.pool as db_pool_mod
+
+    assert db_pool_mod._pools == {}
 
 
 def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(

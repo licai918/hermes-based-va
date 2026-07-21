@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
+from hermes_runtime.agent_turn_job import execute_agent_turn_job
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 
 WEBHOOK_SECRET = "test-textline-shared-secret"
@@ -42,6 +42,24 @@ def _email_payload(*, from_address="accounts@acme-fleet.example", subject="Order
             "type": "email.received",
         }
     ).encode("utf-8")
+
+
+class _InlineTurnQueue:
+    """Test-only ``JobQueue`` that runs the shared bound-turn job body inline.
+
+    Production enqueues a durable row and the turn-worker process claims it
+    (0.0.4 S02, ADR-0153); this test is about the S17 email channel binding, not
+    the substrate, so running the job body inline keeps it synchronous and DB-free.
+    """
+
+    def __init__(self, *, store, turn_runner) -> None:
+        self._store = store
+        self._turn_runner = turn_runner
+
+    def enqueue(self, payload) -> None:
+        execute_agent_turn_job(
+            store=self._store, turn_runner=self._turn_runner, payload=payload
+        )
 
 
 def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
@@ -72,9 +90,7 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=LocalDispatchingJobQueue(
-            store=store, turn_runner=turn_runner, dispatch=lambda work: work()
-        ),
+        queue=_InlineTurnQueue(store=store, turn_runner=turn_runner),
         turn_runner=turn_runner,
     )
     client = TestClient(app)

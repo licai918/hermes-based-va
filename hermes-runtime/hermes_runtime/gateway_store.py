@@ -47,9 +47,10 @@ class JobQueue(Protocol):
 
     The production implementation is the durable Postgres queue
     (:class:`hermes_runtime.job_queue.PostgresJobQueue`, ADR-0153, which
-    supersedes ADR-0105's Cloud Tasks target). This one-argument ``enqueue`` is
-    the shape both it and :class:`InMemoryJobQueue` satisfy; S02 cuts the
-    composition root over.
+    supersedes ADR-0105's Cloud Tasks target) -- wired by the composition root
+    since 0.0.4 S02 and consumed by ``hermes_runtime.turn_worker``. This
+    one-argument ``enqueue`` is the shape both it and :class:`InMemoryJobQueue`
+    satisfy, which is what kept the cutover a wiring change.
     """
 
     def enqueue(self, payload: AgentJobPayload) -> None: ...

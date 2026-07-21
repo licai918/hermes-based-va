@@ -25,5 +25,36 @@ services:
       timeout: 5s
       retries: 10
 
+  # Turn worker (0.0.4 S02, FR-9/FR-10, ADR-0153). Claims `agent_turn` jobs only --
+  # FR-9 isolation IS the claim allowlist, so a slow background job (S04) can never
+  # queue ahead of a customer turn. Same image as the gateway, different command;
+  # the gateway process now only enqueues.
+  #
+  #   docker compose up -d turn-worker      (needs a configured hermes-runtime/.env)
+  turn-worker:
+    build:
+      context: .
+      dockerfile: hermes-runtime/Dockerfile
+    container_name: toee-va-turn-worker
+    command: ["uv", "run", "--frozen", "python", "-m", "hermes_runtime.turn_worker"]
+    env_file:
+      # Secrets + integration config (OPENROUTER_API_KEY, TEXTLINE_ACCESS_TOKEN or
+      # REPLY_SENDER=simulated, COMPOSIO_*). Optional so `docker compose up postgres`
+      # still works on a checkout nobody has configured yet.
+      - path: ./hermes-runtime/.env
+        required: false
+    environment:
+      # In-network DSN; overrides the localhost-shaped one in hermes-runtime/.env.
+      DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_va
+      # One turn at a time -- see turn_worker.WORKER_POOL_MAX_SIZE for the reasoning.
+      DATABASE_POOL_MAX_SIZE: "4"
+      # The durable path needs the shared store: the worker reloads the context the
+      # gateway persisted (ADR-0107), which an in-memory store cannot cross.
+      TOOL_BACKEND: datastore
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   toee_pgdata:

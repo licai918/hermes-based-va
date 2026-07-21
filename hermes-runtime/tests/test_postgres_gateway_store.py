@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryJobQueue
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
+from hermes_runtime.job_queue import PostgresJobQueue
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
@@ -319,7 +319,7 @@ def test_webhook_through_create_app_writes_case(datastore) -> None:
         webhook_secret=WEBHOOK_SECRET,
         driver=driver,
         store=store,
-        queue=LocalDispatchingJobQueue(store=store, turn_runner=lambda *_: None),
+        queue=PostgresJobQueue(connection=conn),
         is_duplicate=store.is_duplicate,
     )
     client = TestClient(app)
