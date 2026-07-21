@@ -67,19 +67,19 @@ def test_governed_failure_result_marks_tool_call_not_ok() -> None:
     assert calls[0].ok is False
 
 
-def test_composer_reads_outbound_text_from_textline_send_body() -> None:
+def test_composer_reads_outbound_text_from_sms_send_body() -> None:
     body = "Your invoice INV-9001 is paid in full."
     messages = [
         _assistant_call("c1", "toee_qbo_read__get_invoice", {"invoice_number": "INV-9001"}),
         _tool_result("c1", "toee_qbo_read__get_invoice", {"balance": 0}),
         _assistant_call(
             "c2",
-            "toee_textline_reply__send_message",
+            "toee_sms_reply__send_message",
             {"conversation_id": "conv1", "body": body},
         ),
         _tool_result(
             "c2",
-            "toee_textline_reply__send_message",
+            "toee_sms_reply__send_message",
             {"message_id": "msg_x", "conversation_id": "conv1", "body": body},
         ),
     ]
@@ -89,12 +89,12 @@ def test_composer_reads_outbound_text_from_textline_send_body() -> None:
     assert result.outbound_text == body
     assert [(c.tool, c.action) for c in result.tool_calls] == [
         ("toee_qbo_read", "get_invoice"),
-        ("toee_textline_reply", "send_message"),
+        ("toee_sms_reply", "send_message"),
     ]
     assert result.case_created is False
 
 
-def test_composer_falls_back_to_final_response_without_textline_send() -> None:
+def test_composer_falls_back_to_final_response_without_sms_send() -> None:
     messages = [
         _assistant_call("c1", "toee_knowledge_search__search_public_site", {"query": "hours"}),
         _tool_result("c1", "toee_knowledge_search__search_public_site", {"results": []}),

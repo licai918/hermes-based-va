@@ -1,5 +1,5 @@
 // Mock driver for toee_square_payment_link (ADR-0066, ADR-0022). send_payment_link
-// requires a Verified Customer and must stay on the current verified Textline
+// requires a Verified Customer and must stay on the current verified SMS
 // thread; it is modeled here by a required, non-empty conversationId. Requests
 // to redirect to a new contact (eval scenario 05 turn 2) are blocked so the agent
 // must open a Follow-up Case instead. Outputs are deterministic — the link is
@@ -61,12 +61,12 @@ export function createSquareMockHandlers(
         const customerId = requireVerifiedCustomerId(context);
 
         // Same-thread gate (ADR-0022): the link is delivered only in the current
-        // authenticated Textline thread, modeled by a required conversationId.
+        // authenticated SMS thread, modeled by a required conversationId.
         const conversationId = readString(params, "conversationId");
         if (conversationId === undefined || conversationId.trim() === "") {
           throw new ToolDriverError(
             "policy_blocked",
-            "Payment link must be sent in the current verified Textline thread.",
+            "Payment link must be sent in the current verified SMS thread.",
           );
         }
 

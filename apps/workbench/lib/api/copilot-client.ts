@@ -123,12 +123,12 @@ export function chat(message: string, caseId?: string): Promise<ChatResponse> {
   return sendJson("POST", `${BASE}/chat`, { caseId, message });
 }
 
-export function sendTextline(
+export function sendSms(
   caseId: string,
   body: string,
   mediaUrl?: string,
 ): Promise<{ message: unknown }> {
-  return sendJson("POST", `${BASE}/messages/textline/send`, {
+  return sendJson("POST", `${BASE}/messages/sms/send`, {
     caseId,
     body,
     mediaUrl,

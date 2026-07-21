@@ -9,7 +9,7 @@ import {
   listCases,
   normalizeDraft,
   resolveCase,
-  sendTextline,
+  sendSms,
   setContactReason,
   setPriority,
   upsertPreference,
@@ -205,13 +205,13 @@ describe("mutation wrappers", () => {
     });
   });
 
-  it("sendTextline POSTs caseId + body (+ optional mediaUrl)", async () => {
+  it("sendSms POSTs caseId + body (+ optional mediaUrl)", async () => {
     const fetchMock = vi.fn().mockResolvedValue(ok({ message: { messageId: "m9" } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await sendTextline("c1", "Your tires are ready");
+    await sendSms("c1", "Your tires are ready");
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/copilot/messages/textline/send", {
+    expect(fetchMock).toHaveBeenCalledWith("/api/copilot/messages/sms/send", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ caseId: "c1", body: "Your tires are ready" }),

@@ -43,9 +43,9 @@ class _RetryableBoom(Exception):
     """A test-only retryable error standing in for an OpenRouter primary outage."""
 
 # The two customer-facing write tools a draft agent must never hold (ADR-0067):
-# the Textline reply send and the Square payment link. Both are outside the
+# the SMS reply send and the Square payment link. Both are outside the
 # internal_copilot allowlist (ADR-0035) and so are never registered for the turn.
-SEND_TOOLSETS = ("toee_textline_reply", "toee_square_payment_link")
+SEND_TOOLSETS = ("toee_sms_reply", "toee_square_payment_link")
 
 # The internal_copilot allowlist this no-auto-send design was reviewed against
 # (ADR-0147 / ADR-0035). Frozen here as a tripwire snapshot: any toolset added to
@@ -259,7 +259,7 @@ def test_a_send_tool_call_is_rejected_under_the_real_multistep_loop() -> None:
     # never admitted (valid_tool_names) and never dispatched — and the turn falls
     # through to proposed text. No send is ever executed.
     booted = boot_profile(INTERNAL)
-    assert "toee_textline_reply__send_message" not in booted.tool_names
+    assert "toee_sms_reply__send_message" not in booted.tool_names
 
     draft = "Here is a suggested reply for you to review and send."
     turn = run_scripted_agent(
@@ -269,7 +269,7 @@ def test_a_send_tool_call_is_rejected_under_the_real_multistep_loop() -> None:
             {
                 "tool_calls": [
                     {
-                        "name": "toee_textline_reply__send_message",
+                        "name": "toee_sms_reply__send_message",
                         "arguments": {"conversation_id": "conv1", "body": "sneaky auto-send"},
                     }
                 ]
@@ -287,7 +287,7 @@ def test_a_send_tool_call_is_rejected_under_the_real_multistep_loop() -> None:
         for m in turn["messages"]
         if isinstance(m, dict)
         and m.get("role") == "tool"
-        and m.get("name") == "toee_textline_reply__send_message"
+        and m.get("name") == "toee_sms_reply__send_message"
     ]
     assert send_results, "the send tool_call should produce a (rejection) tool result"
     rejection = send_results[0]["content"]
@@ -296,7 +296,7 @@ def test_a_send_tool_call_is_rejected_under_the_real_multistep_loop() -> None:
     # list the rejection enumerates (the prefix names the rejected tool; the gate
     # is the available set after it).
     available = rejection.split("Available tools:", 1)[-1]
-    assert "toee_textline_reply" not in available
+    assert "toee_sms_reply" not in available
 
     # The turn still produced the proposed draft; no send happened.
     assert turn["final_response"].strip() == draft
@@ -433,7 +433,7 @@ def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> No
     # tool_call is rejected — never admitted, never dispatched — and the turn falls
     # through to proposed conversational text. No send is ever executed.
     booted = boot_profile(INTERNAL)
-    assert "toee_textline_reply__send_message" not in booted.tool_names
+    assert "toee_sms_reply__send_message" not in booted.tool_names
 
     reply = "I can't send messages — here's a suggested reply for you to review and send."
     turn = run_scripted_agent(
@@ -443,7 +443,7 @@ def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> No
             {
                 "tool_calls": [
                     {
-                        "name": "toee_textline_reply__send_message",
+                        "name": "toee_sms_reply__send_message",
                         "arguments": {"conversation_id": "conv1", "body": "sneaky auto-send"},
                     }
                 ]
@@ -458,13 +458,13 @@ def test_a_send_tool_call_is_rejected_in_a_chat_turn_under_the_real_loop() -> No
         for m in turn["messages"]
         if isinstance(m, dict)
         and m.get("role") == "tool"
-        and m.get("name") == "toee_textline_reply__send_message"
+        and m.get("name") == "toee_sms_reply__send_message"
     ]
     assert send_results, "the send tool_call should produce a (rejection) tool result"
     rejection = send_results[0]["content"]
     assert "does not exist" in rejection  # rejected, not dispatched to a driver
     available = rejection.split("Available tools:", 1)[-1]
-    assert "toee_textline_reply" not in available
+    assert "toee_sms_reply" not in available
     assert turn["final_response"].strip() == reply
 
 

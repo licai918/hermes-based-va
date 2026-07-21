@@ -1,6 +1,6 @@
-"""Mock toee_textline_reply handlers (ports mock/textline.ts).
+"""Mock toee_sms_reply handlers (ports mock/sms-reply.ts).
 
-`send_message` captures the outbound Textline SMS into an in-memory outbox and
+`send_message` captures the outbound SMS into an in-memory outbox and
 returns a deterministic record. It performs NO network/external call — the
 capture is the side effect Launch Eval and the Copilot Workbench audit inspect
 (ADR-0066). Exercised through `execute_tool` so the governed boundary is covered
@@ -11,9 +11,9 @@ import re
 import socket
 
 from toee_hermes.drivers.mock.driver import MockDriver
-from toee_hermes.drivers.mock.textline import (
-    TextlineMockData,
-    create_textline_mock_handlers,
+from toee_hermes.drivers.mock.sms_reply import (
+    SmsReplyMockData,
+    create_sms_reply_mock_handlers,
 )
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
@@ -23,12 +23,12 @@ def _ctx() -> ToolExecutionContext:
     return ToolExecutionContext(profile="customer_service_external")
 
 
-def _send(params: dict, data: TextlineMockData | None = None):
+def _send(params: dict, data: SmsReplyMockData | None = None):
     """Run send_message through the governed boundary; return (result, data)."""
-    data = data if data is not None else TextlineMockData()
-    driver = MockDriver(create_textline_mock_handlers(data))
+    data = data if data is not None else SmsReplyMockData()
+    driver = MockDriver(create_sms_reply_mock_handlers(data))
     result = execute_tool(
-        tool="toee_textline_reply",
+        tool="toee_sms_reply",
         action="send_message",
         params=params,
         context=_ctx(),
@@ -117,10 +117,10 @@ def test_send_message_performs_no_network_call(monkeypatch) -> None:
 
 
 def test_unregistered_tool_is_governed_configuration_missing() -> None:
-    # The textline-only registry has no toee_shopify_read handler; the driver must
-    # surface a governed failure, not raise (ADR-0020). TS textline defines no
+    # The sms-reply-only registry has no toee_shopify_read handler; the driver must
+    # surface a governed failure, not raise (ADR-0020). TS sms-reply defines no
     # in-handler failure, so this exercises the framework's governed boundary.
-    driver = MockDriver(create_textline_mock_handlers(TextlineMockData()))
+    driver = MockDriver(create_sms_reply_mock_handlers(SmsReplyMockData()))
 
     result = execute_tool(
         tool="toee_shopify_read",

@@ -43,11 +43,11 @@ describe("GovernedSendModal", () => {
   });
 
   it("surfaces the error and keeps the modal open when the send fails", async () => {
-    const send = vi.fn().mockRejectedValue(new ApiError(502, "Textline unavailable"));
+    const send = vi.fn().mockRejectedValue(new ApiError(502, "SMS provider unavailable"));
     const { onSent, onClose } = renderModal({ send });
     fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Textline unavailable");
+    expect(await screen.findByRole("alert")).toHaveTextContent("SMS provider unavailable");
     expect(onSent).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole("dialog")).toBeInTheDocument();

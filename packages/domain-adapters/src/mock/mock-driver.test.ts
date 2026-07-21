@@ -16,13 +16,13 @@ describe("createMockDriver", () => {
 
   it("routes a tool and action to its registered handler", async () => {
     const driver = createMockDriver({
-      toee_textline_reply: {
+      toee_sms_reply: {
         send_message: (params) => ({ echoed: params.body }),
       },
     });
 
     const result = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params: { body: "hi" },
       context,
@@ -39,7 +39,7 @@ describe("createMockDriver", () => {
     const driver = createMockDriver({});
 
     const result = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       context,
       driver,

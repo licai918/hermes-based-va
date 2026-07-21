@@ -54,26 +54,26 @@ _Avoid_: Separate Hermes, separate bot
 
 **External Customer Service Profile**:
 The Hermes Profile used for customer-facing phone, SMS, email, and web chat conversations.
-_Avoid_: Internal assistant, supervisor agent, Textline as a separate profile
+_Avoid_: Internal assistant, supervisor agent, the SMS provider as a separate profile
 
 **Channel Gateway**:
-The thin ingress layer that receives channel webhooks such as Textline or Twilio, verifies authenticity, and routes normalized events into the correct **Hermes Profile**.
+The thin ingress layer that receives channel webhooks such as SimpleTexting or Twilio, verifies authenticity, and routes normalized events into the correct **Hermes Profile**.
 _Avoid_: Channel-specific agent brain, business logic in webhook handler
 
 **InboundChannelEvent**:
-The canonical normalized payload for an accepted inbound customer message after **Channel Gateway** provider-specific mapping. Textline SMS uses channel `textline_sms` and includes ids, sender phone, body, optional media, and receipt time for idempotent ingress.
+The canonical normalized payload for an accepted inbound customer message after **Channel Gateway** provider-specific mapping. SimpleTexting SMS uses channel `simpletexting_sms` and includes ids, sender phone, body, optional media, and receipt time for idempotent ingress.
 _Avoid_: Raw provider webhook JSON in agent prompts, processing delivery receipts as customer turns
 
 **Webhook Acknowledgment**:
-The point at which the **Channel Gateway** returns success to a provider after durable inbound preprocessing. For Textline SMS, Hermes returns `200` after verification, normalization, ingress matching, and inbound persistence, then runs the external agent asynchronously.
+The point at which the **Channel Gateway** returns success to a provider after durable inbound preprocessing. For SimpleTexting SMS, Hermes returns `200` after verification, normalization, ingress matching, and inbound persistence, then runs the external agent asynchronously.
 _Avoid_: Waiting for full agent completion before provider ack, acknowledging before persistence, using provider retries to replay completed inbound events
 
 **AgentTurnContext**:
-The persisted inbound-turn record that binds an accepted Textline message to `eventId`, `conversationId`, `smsSessionId`, **Customer Thread**, sender phone, and **Session Identity Snapshot** for async agent execution and governed outbound replies.
+The persisted inbound-turn record that binds an accepted inbound SMS to `eventId`, `conversationId`, `smsSessionId`, **Customer Thread**, sender phone, and **Session Identity Snapshot** for async agent execution and governed outbound replies.
 _Avoid_: Queue payload as source of truth, reply targeting from model-supplied alternate phone numbers, session re-resolution without ingress snapshot
 
 **Customer Thread**:
-The long-lived customer conversation record in **Hermes Native Memory** for a channel identity such as a Textline phone number, spanning multiple **SMS Session** windows and many **MessageTurn** records.
+The long-lived customer conversation record in **Hermes Native Memory** for a channel identity such as an SMS phone number, spanning multiple **SMS Session** windows and many **MessageTurn** records.
 _Avoid_: One-message memory, channel-only log outside Hermes, case-owned thread container
 
 **MessageTurn**:
@@ -113,7 +113,7 @@ The per-action accountability record in **Hermes Native Memory** for workbench e
 _Avoid_: Untracked employee actions, external-only audit spreadsheet
 
 **Text-First Launch**:
-The first-version go-live strategy that exposes the **External Customer Service Profile** on Textline SMS before adding the voice layer.
+The first-version go-live strategy that exposes the **External Customer Service Profile** on SimpleTexting SMS before adding the voice layer.
 _Avoid_: Phone-first go-live, parallel multi-channel launch
 
 **Voice Layer**:
@@ -129,7 +129,7 @@ A v1 **Internal Copilot Profile** capability that generates SMS, email, or inter
 _Avoid_: Autonomous customer send, accounting write, payment link creation
 
 **Copilot Governed Write**:
-A phased capability in which employees trigger approved write actions through **Copilot Gateway** only after explicit confirmation, role checks, and **Tool Gate** enforcement. Phase 1 is employee-confirmed Textline send from an editable **Copilot Draft Action** card and confirmation modal within a claimed **Human Intervention Case**.
+A phased capability in which employees trigger approved write actions through **Copilot Gateway** only after explicit confirmation, role checks, and **Tool Gate** enforcement. Phase 1 is employee-confirmed SMS send from an editable **Copilot Draft Action** card and confirmation modal within a claimed **Human Intervention Case**.
 _Avoid_: Autonomous AI write, unconfirmed one-click send, bypass of source-system controls, send outside an active human-intervention case
 
 **Copilot Workbench**:
@@ -138,7 +138,7 @@ _Avoid_: Customer portal, passive ticket UI only, merged supervisor governance c
 
 **Admin Governance Console**:
 The internal workspace entry that uses the **Supervisor Admin Profile** for **KnowledgeOps**, eval review, and workbench administration. v1 uses three routes: `/admin/knowledge`, `/admin/eval`, and `/admin/accounts`.
-_Avoid_: Customer case drafting, Textline send, live external customer-service reads, single-tabbed admin hub
+_Avoid_: Customer case drafting, SMS send, live external customer-service reads, single-tabbed admin hub
 
 **Customer Service Rep**:
 An employee role authorized to use the **Copilot Workbench** to review cases, read summaries and transcripts, draft replies, and mark **Case Resolution**.
@@ -217,7 +217,7 @@ The supplemental weekly crawl that indexes only **Approved Crawl URL** pages not
 _Avoid_: Full-site primary crawl, customer-time browsing
 
 **Product Media Reply**:
-A Textline SMS reply that sends one public-catalog product image or approved product page link resolved through a live Shopify Tool read in the **current SMS Session**. A **Verified Customer** may receive live price and inventory in the same reply when requested.
+An SMS reply that sends one public-catalog product image or approved product page link resolved through a live Shopify Tool read in the **current SMS Session**. A **Verified Customer** may receive live price and inventory in the same reply when requested.
 _Avoid_: RAG-cached image URL, stale weekly sync media, payment link, account-scoped pricing or inventory for unmatched callers
 
 **Prior Order Product Reference**:
@@ -543,7 +543,7 @@ _Avoid_: Automatic erasure, single-button delete
 - `toee_easyroutes_read` v1 actions are `get_delivery_status` and `get_route_details`.
 - `toee_easyroutes_read` actions require a **Verified Customer** and a matched customer order reference.
 - `toee_case` v1 actions are `create_case` and `update_case` for external **Follow-up Case** creation and limited urgency or **Contact Reason** updates.
-- `toee_textline_reply` v1 action is `send_message` for the current **SMS Session**, with optional `media_url` for **Product Media Reply**.
+- `toee_sms_reply` v1 action is `send_message` for the current **SMS Session**, with optional `media_url` for **Product Media Reply**.
 - `toee_square_payment_link` v1 action is `send_payment_link` for a verified current-thread **Payment Link** only.
 - `toee_knowledge_search` v1 actions are `search_public_site` and `search_operational_policy`.
 - `search_operational_policy` returns only **Published Operational Policy** content for external and Copilot use.

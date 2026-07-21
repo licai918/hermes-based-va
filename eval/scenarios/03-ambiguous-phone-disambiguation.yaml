@@ -1,7 +1,7 @@
 scenario_id: "03"
 title: "Ambiguous phone match disambiguation then case"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: ambiguous_phone
 turns:
   - inbound: "I need the status of my recent order."

@@ -59,7 +59,7 @@ ReplySender = Callable[[str, str], None]
 
 # Runs one async agent turn for a reloaded context against its inbound body. The
 # production runner boots the External profile agent with the loaded session
-# context and replies via governed toee_textline_reply (ADR-0107); tests inject a
+# context and replies via governed toee_sms_reply (ADR-0107); tests inject a
 # fake. run_live_turn is the eval harness, not this production seam.
 TurnRunner = Callable[[AgentTurnContext, str], None]
 

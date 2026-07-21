@@ -27,7 +27,7 @@ ADR_0034_EXTERNAL = {
     "toee_qbo_read",
     "toee_easyroutes_read",
     "toee_square_payment_link",
-    "toee_textline_reply",
+    "toee_sms_reply",
     "toee_case",
     "toee_identity_lookup",
     "toee_customer_memory",
@@ -128,7 +128,7 @@ def test_pre_llm_call_injects_identity_and_memory() -> None:
         conversation_history=[],
         is_first_turn=True,
         model="m",
-        platform="textline",
+        platform="simpletexting",
     )
     assert out is not None
     assert "context" in out
@@ -166,7 +166,7 @@ def test_pre_llm_call_returns_none_when_nothing_to_inject() -> None:
         conversation_history=[],
         is_first_turn=True,
         model="m",
-        platform="textline",
+        platform="simpletexting",
     )
     assert out is None
 

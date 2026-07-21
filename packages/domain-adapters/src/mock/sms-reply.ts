@@ -1,32 +1,32 @@
-// Mock driver fragment for `toee_textline_reply` (ADR-0066). `send_message`
-// captures the outbound Textline SMS into an in-memory outbox and returns a
+// Mock driver fragment for `toee_sms_reply` (ADR-0066). `send_message`
+// captures the outbound SMS into an in-memory outbox and returns a
 // deterministic record. It performs NO network/external call — the capture is
 // the side effect Launch Eval and the Copilot Workbench audit inspect. Optional
 // `media_url` supports Product Media Reply.
 import type { MockHandlerRegistry } from "./mock-driver";
 
-export interface OutboundTextlineMessage {
+export interface OutboundSmsMessage {
   messageId: string;
   conversationId: string;
   body: string;
   mediaUrl?: string;
 }
 
-export interface TextlineMockData {
+export interface SmsReplyMockData {
   // Captured outbound messages, in send order. The eval fixture loader inspects
   // this to assert what Hermes sent in the current SMS Session.
-  outbox: OutboundTextlineMessage[];
+  outbox: OutboundSmsMessage[];
   // Prefix for the deterministic messageId.
   messageIdPrefix: string;
 }
 
 // Fresh, isolated mock data — preferred for tests/scenarios so captured
 // messages never leak across runs.
-export function createTextlineMockData(): TextlineMockData {
+export function createSmsReplyMockData(): SmsReplyMockData {
   return { outbox: [], messageIdPrefix: "msg" };
 }
 
-export const textlineBaselineData: TextlineMockData = createTextlineMockData();
+export const smsReplyBaselineData: SmsReplyMockData = createSmsReplyMockData();
 
 function readString(
   params: Record<string, unknown>,
@@ -57,15 +57,15 @@ function deterministicId(
 }
 
 function sendMessage(
-  data: TextlineMockData,
+  data: SmsReplyMockData,
   params: Record<string, unknown>,
-): OutboundTextlineMessage {
+): OutboundSmsMessage {
   const conversationId =
     readString(params, "conversationId", "conversation_id") ?? "";
   const body = readString(params, "body") ?? "";
   const mediaUrl = readString(params, "mediaUrl", "media_url");
 
-  const message: OutboundTextlineMessage = {
+  const message: OutboundSmsMessage = {
     messageId: deterministicId(data.messageIdPrefix, [
       conversationId,
       body,
@@ -78,20 +78,20 @@ function sendMessage(
     message.mediaUrl = mediaUrl;
   }
 
-  // Capture only — never call Textline or any external API.
+  // Capture only — never call the SMS provider or any external API.
   data.outbox.push(message);
   return message;
 }
 
-export function createTextlineMockHandlers(
-  data: TextlineMockData = textlineBaselineData,
+export function createSmsReplyMockHandlers(
+  data: SmsReplyMockData = smsReplyBaselineData,
 ): MockHandlerRegistry {
   return {
-    toee_textline_reply: {
+    toee_sms_reply: {
       send_message: (params) => sendMessage(data, params),
     },
   };
 }
 
-export const textlineMockHandlers: MockHandlerRegistry =
-  createTextlineMockHandlers();
+export const smsReplyMockHandlers: MockHandlerRegistry =
+  createSmsReplyMockHandlers();

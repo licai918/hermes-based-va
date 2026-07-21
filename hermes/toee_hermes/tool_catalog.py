@@ -25,7 +25,7 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     "toee_qbo_read": ("get_invoice", "list_customer_invoices", "get_ar_summary"),
     "toee_easyroutes_read": ("get_delivery_status", "get_route_details"),
     "toee_square_payment_link": ("send_payment_link",),
-    "toee_textline_reply": ("send_message",),
+    "toee_sms_reply": ("send_message",),
     "toee_case": ("create_case", "update_case"),
     "toee_customer_memory": (
         "upsert_preference",
@@ -38,7 +38,7 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "update_priority",
         "update_contact_reason",
         "resolve_case",
-        "send_textline_message",
+        "send_sms_message",
     ),
     "toee_copilot_draft": ("draft_sms", "draft_email", "draft_internal_note"),
     "toee_workbench_read": ("get_case", "list_cases", "get_audit_log", "get_thread", "list_auto_handled", "get_auto_handled", "list_sales_outreach", "get_sales_outreach"),

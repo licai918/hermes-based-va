@@ -21,7 +21,7 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_qbo_read",
         "toee_easyroutes_read",
         "toee_square_payment_link",
-        "toee_textline_reply",
+        "toee_sms_reply",
         "toee_case",
         "toee_customer_memory",
         "toee_case_manage",

@@ -39,7 +39,7 @@ def test_live_turn_round_trips_through_record_and_replay() -> None:
     assert turn["final_response"].strip() == reply
     assert isinstance(turn["messages"], list) and turn["messages"]
 
-    # The captured turn records and replays deterministically. With no Textline
+    # The captured turn records and replays deterministically. With no SMS
     # send, the customer-facing text falls back to the agent's final_response.
     scenario = load_scenario("text_first_launch", "01", EVAL_DIR)
     with tempfile.TemporaryDirectory(prefix="live-turn-") as tmp:
@@ -50,12 +50,12 @@ def test_live_turn_round_trips_through_record_and_replay() -> None:
     assert result.outbound_text.strip() == reply
 
 
-def test_live_turn_dispatches_governed_textline_tool_through_real_loop() -> None:
+def test_live_turn_dispatches_governed_sms_tool_through_real_loop() -> None:
     """A scripted tool-call turn executes a governed toee_* tool in the real loop.
 
     Booting the External profile registers its allowlisted tools into the global
     Hermes registry; the live AIAgent then dispatches the scripted
-    ``toee_textline_reply__send_message`` call through governed execution (ADR-0139,
+    ``toee_sms_reply__send_message`` call through governed execution (ADR-0139,
     ADR-0066). The captured assistant tool_calls + tool result round-trip through
     record/replay into the recorded tool call and customer-facing text.
     """
@@ -69,7 +69,7 @@ def test_live_turn_dispatches_governed_textline_tool_through_real_loop() -> None
             {
                 "tool_calls": [
                     {
-                        "name": "toee_textline_reply__send_message",
+                        "name": "toee_sms_reply__send_message",
                         "arguments": {"conversation_id": "conv1", "body": body},
                     }
                 ]
@@ -85,7 +85,7 @@ def test_live_turn_dispatches_governed_textline_tool_through_real_loop() -> None
         result = ReplayAgentHarness(root).run_turn(scenario)
 
     assert [(c.tool, c.action) for c in result.tool_calls] == [
-        ("toee_textline_reply", "send_message")
+        ("toee_sms_reply", "send_message")
     ]
     assert result.tool_calls[0].ok
     assert result.outbound_text == body

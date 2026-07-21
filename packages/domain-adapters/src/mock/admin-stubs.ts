@@ -60,7 +60,7 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       status: "resolved",
     }),
-    send_textline_message: (params) => ({
+    send_sms_message: (params) => ({
       message: {
         messageId: "msg_stub",
         conversationId: readStringParam(params, "caseId", "thread_stub"),

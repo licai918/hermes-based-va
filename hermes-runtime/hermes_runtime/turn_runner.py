@@ -4,12 +4,12 @@ The internal agent-turn job (ADR-0106/0107) reloads the inbound turn's context,
 verifies the binding, then runs the customer-facing agent. :func:`run_gateway_turn`
 is that run: it boots the External profile *bound* to the turn's ``conversation_id``
 (:func:`hermes_runtime.boot.boot_profile`) so every governed dispatch carries the
-binding and the turn-binding gate constrains ``toee_textline_reply.send_message`` to
+binding and the turn-binding gate constrains ``toee_sms_reply.send_message`` to
 that conversation alone (ADR-0066). A scripted provider seam keeps the run
 deterministic for tests; the agent loop, governed dispatch, and capture are real.
 
 The reply is delivered from the captured turn by the gateway (the agent's governed
-Textline send, else its ``final_response``), so this returns the captured turn —
+SMS send, else its ``final_response``), so this returns the captured turn —
 ``{final_response, messages}`` — the same shape the recorder/replay layer consumes.
 """
 
@@ -41,7 +41,7 @@ _SMS_MAX_CHARS = 480
 
 
 def clip_sms_reply(body: str, *, max_chars: int = _SMS_MAX_CHARS) -> str:
-    """Trim an agent reply to SMS-friendly length before Textline delivery."""
+    """Trim an agent reply to SMS-friendly length before SMS delivery."""
     text = body.strip()
     if len(text) <= max_chars:
         return text
@@ -76,7 +76,7 @@ def run_gateway_turn(
 def outbound_reply_text(turn: Mapping[str, Any]) -> str:
     """Derive the one customer-facing reply from a captured turn (ADR-0083).
 
-    The reply is the governed Textline send body when the agent sent one, else the
+    The reply is the governed SMS send body when the agent sent one, else the
     agent's ``final_response``. A send the turn-binding gate blocked is a governed
     failure (``error_class``), so its body is not customer-facing text — the reply
     falls back rather than delivering the rejected content.

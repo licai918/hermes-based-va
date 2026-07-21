@@ -61,10 +61,10 @@ def boot_profile(
 ) -> BootedProfile:
     """Register the profile's allowlisted toee_* tools into a real PluginContext.
 
-    When ``conversation_id`` is given, the profile is booted for one async Textline
+    When ``conversation_id`` is given, the profile is booted for one async SMS
     turn via :func:`toee_hermes.plugin.register_turn`: every governed dispatch
     carries that turn binding and the turn-binding gate constrains
-    ``toee_textline_reply.send_message`` to the bound conversation (ADR-0107/0066).
+    ``toee_sms_reply.send_message`` to the bound conversation (ADR-0107/0066).
     Without it, the unbound :func:`register` path is used (eval/replay + Copilot).
 
     ``extra_drivers`` is the turn's per-tool driver override (S04): the embedding

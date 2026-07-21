@@ -38,7 +38,7 @@ describe("loadBaseMocks", () => {
 describe("parseScenarioContent", () => {
   it("parses an SMS scenario with tool assertions", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  tool:\n    expect_calls:\n      - tool: toee_shopify_read\n        action: get_order\n  max_severity: medium\n`,
+      `scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  tool:\n    expect_calls:\n      - tool: toee_shopify_read\n        action: get_order\n  max_severity: medium\n`,
       "01-x.yaml",
     );
     expect(fixture.scenario_id).toBe("01");
@@ -60,7 +60,7 @@ describe("parseScenarioContent", () => {
   it("rejects a fixture missing scenario_id with a readable error", () => {
     expect(() =>
       parseScenarioContent(
-        `title: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: x\nturns: []\nmock_overrides: {}\nassertions:\n  max_severity: medium\n`,
+        `title: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: x\nturns: []\nmock_overrides: {}\nassertions:\n  max_severity: medium\n`,
         "bad.yaml",
       ),
     ).toThrowError(/bad\.yaml.*scenario_id/s);
@@ -69,7 +69,7 @@ describe("parseScenarioContent", () => {
   it("rejects a fixture whose scenario_id does not match the filename prefix", () => {
     expect(() =>
       parseScenarioContent(
-        `scenario_id: "05"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  max_severity: medium\n`,
+        `scenario_id: "05"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  max_severity: medium\n`,
         "99-mismatch.yaml",
       ),
     ).toThrowError(/99-mismatch\.yaml.*05/s);
@@ -78,7 +78,7 @@ describe("parseScenarioContent", () => {
   it("rejects a fixture missing max_severity", () => {
     expect(() =>
       parseScenarioContent(
-        `scenario_id: "07"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  text:\n    must_contain: ["x"]\n`,
+        `scenario_id: "07"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  text:\n    must_contain: ["x"]\n`,
         "07-x.yaml",
       ),
     ).toThrowError(/max_severity/);
@@ -88,7 +88,7 @@ describe("parseScenarioContent", () => {
 describe("resolveScenario", () => {
   it("resolves a verified customer with a deterministic snapshot and linked accounting", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  behavioral:\n    case_created: false\n  max_severity: medium\n`,
+      `scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  behavioral:\n    case_created: false\n  max_severity: medium\n`,
       "01-x.yaml",
     );
     const merged = resolveScenario(fixture, base(), "01-x.yaml");
@@ -107,7 +107,7 @@ describe("resolveScenario", () => {
 
   it("resolves an unmatched caller", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "02"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: unmatched_phone\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  disclosure:\n    no_account_disclosure: true\n  max_severity: high\n`,
+      `scenario_id: "02"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: unmatched_phone\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  disclosure:\n    no_account_disclosure: true\n  max_severity: high\n`,
       "02-x.yaml",
     );
     const merged = resolveScenario(fixture, base(), "02-x.yaml");
@@ -116,7 +116,7 @@ describe("resolveScenario", () => {
 
   it("resolves an ambiguous phone match with both candidate ids", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "03"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: ambiguous_phone\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  text:\n    must_contain: ["order number"]\n  max_severity: medium\n`,
+      `scenario_id: "03"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: ambiguous_phone\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  text:\n    must_contain: ["order number"]\n  max_severity: medium\n`,
       "03-x.yaml",
     );
     const merged = resolveScenario(fixture, base(), "03-x.yaml");
@@ -130,7 +130,7 @@ describe("resolveScenario", () => {
 
   it("applies an email-link failure override (failed -> unlinked)", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "04"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides:\n  qbo:\n    email_links:\n      verified_customer_a: failed\nassertions:\n  behavioral:\n    case_created: true\n  max_severity: high\n`,
+      `scenario_id: "04"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: verified_customer_a\nturns:\n  - inbound: hi\nmock_overrides:\n  qbo:\n    email_links:\n      verified_customer_a: failed\nassertions:\n  behavioral:\n    case_created: true\n  max_severity: high\n`,
       "04-x.yaml",
     );
     const merged = resolveScenario(fixture, base(), "04-x.yaml");
@@ -141,7 +141,7 @@ describe("resolveScenario", () => {
 
   it("carries a domain error override (scenario 13)", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "13"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: unmatched_phone\nturns:\n  - inbound: hi\nmock_overrides:\n  shopify:\n    error: unavailable\nassertions:\n  behavioral:\n    case_created: true\n  text:\n    must_contain: ["temporarily unavailable"]\n  max_severity: medium\n`,
+      `scenario_id: "13"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: unmatched_phone\nturns:\n  - inbound: hi\nmock_overrides:\n  shopify:\n    error: unavailable\nassertions:\n  behavioral:\n    case_created: true\n  text:\n    must_contain: ["temporarily unavailable"]\n  max_severity: medium\n`,
       "13-x.yaml",
     );
     const merged = resolveScenario(fixture, base(), "13-x.yaml");
@@ -150,7 +150,7 @@ describe("resolveScenario", () => {
 
   it("injects memory_preset into memory mock data", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "25"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: verified_customer_a\nmemory_preset:\n  contact_time_preference: "after 2pm Eastern"\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  memory_assertions:\n    honor_injected_preference: true\n  max_severity: medium\n`,
+      `scenario_id: "25"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: verified_customer_a\nmemory_preset:\n  contact_time_preference: "after 2pm Eastern"\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  memory_assertions:\n    honor_injected_preference: true\n  max_severity: medium\n`,
       "25-x.yaml",
     );
     const merged = resolveScenario(fixture, base(), "25-x.yaml");
@@ -164,7 +164,7 @@ describe("resolveScenario", () => {
 
   it("throws a readable error for an unknown identity_preset", () => {
     const fixture = parseScenarioContent(
-      `scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: textline\nidentity_preset: nope_preset\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  max_severity: medium\n`,
+      `scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\nidentity_preset: nope_preset\nturns:\n  - inbound: hi\nmock_overrides: {}\nassertions:\n  max_severity: medium\n`,
       "01-x.yaml",
     );
     expect(() => resolveScenario(fixture, base(), "01-x.yaml")).toThrowError(

@@ -32,7 +32,7 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_qbo_read",
             "toee_easyroutes_read",
             "toee_square_payment_link",
-            "toee_textline_reply",
+            "toee_sms_reply",
             "toee_case",
             "toee_identity_lookup",
             "toee_customer_memory",

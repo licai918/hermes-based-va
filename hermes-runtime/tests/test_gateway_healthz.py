@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 
 from hermes_runtime.gateway_app import create_app
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
+WEBHOOK_SECRET = "test-simpletexting-url-token"
 
 
 def test_healthz_returns_ok_without_secrets_or_turn_runner() -> None:

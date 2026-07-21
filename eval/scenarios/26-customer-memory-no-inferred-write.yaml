@@ -1,7 +1,7 @@
 scenario_id: "26"
 title: "Customer Memory no inferred preference write"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "What's the status of order 1042?"

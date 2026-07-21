@@ -1,7 +1,7 @@
 scenario_id: "06"
 title: "Refund and discount refused with case"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "I want a refund and a 15% discount on invoice INV-9001."

@@ -10,7 +10,7 @@ runnable and testable without a database.
 The in-memory store mirrors the ADR-0115 entity hierarchy:
 
     CustomerThread (one per channel identity / phone)
-      -> SmsSession (one per 24h window; dev maps one Textline conversation = one)
+      -> SmsSession (one per 24h window; dev maps one provider conversation = one)
         -> MessageTurn (one per inbound/outbound/Hermes message event)
     AgentTurnContext (one per accepted inbound eventId; refs thread/session/turn)
 """
@@ -59,11 +59,11 @@ class InMemoryGatewayStore:
 
     def _thread_id(self, from_phone: str) -> str:
         # CustomerThread: one per stable channel identity (the phone number).
-        return f"customer_thread:textline:{from_phone}"
+        return f"customer_thread:sms:{from_phone}"
 
     def _session_id(self, thread_id: str, conversation_id: str) -> str:
         # SmsSession: bounded by the 24h window (ADR-0019). The dev store maps one
-        # Textline conversation to one session; the real store applies the window.
+        # provider conversation to one session; the real store applies the window.
         return f"sms_session:{thread_id}:{conversation_id}"
 
     def _persist_inbound_turn(

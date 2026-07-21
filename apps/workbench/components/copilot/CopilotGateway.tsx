@@ -3,7 +3,7 @@
 // Copilot Gateway (ADR-0081 interaction states, ADR-0083 governed send). With no
 // selected case it shows the idle "needs case" prompt and no drafting. With a
 // case it offers chat + Copilot Draft Actions; a returned draft becomes an
-// editable draft card. The governed "Send via Textline" affordance only appears
+// editable draft card. The governed "Send via SMS" affordance only appears
 // for an SMS case with an active session that the operator holds, and routes
 // through the confirmation modal. Network lives in injected chat/draft callbacks
 // so this stays presentational and unit-testable.
@@ -14,9 +14,9 @@ import { ApiError } from "@/lib/api/http";
 import { useErrorBanner } from "@/components/shell/error-banner";
 import { GovernedSendModal } from "./GovernedSendModal";
 
-// Phase-1 Textline send gate (ADR-0083): SMS case, active SMS session, held by
+// Phase-1 SMS send gate (ADR-0083): SMS case, active SMS session, held by
 // the signed-in operator.
-export function canSendViaTextline(
+export function canSendViaSms(
   workbenchCase: WorkbenchCase | null,
   accountId: string,
 ): boolean {
@@ -81,7 +81,7 @@ export function CopilotGateway({
   }
 
   const caseId = workbenchCase.caseId;
-  const eligible = canSendViaTextline(workbenchCase, accountId);
+  const eligible = canSendViaSms(workbenchCase, accountId);
 
   async function handleSend() {
     const message = input.trim();
@@ -190,12 +190,12 @@ export function CopilotGateway({
           {eligible ? (
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
               <button type="button" onClick={() => setModalOpen(true)}>
-                Send via Textline
+                Send via SMS
               </button>
             </div>
           ) : (
             <span style={{ fontSize: "0.72rem", color: "#888" }}>
-              Copy this draft to send manually — governed Textline send is available
+              Copy this draft to send manually — governed SMS send is available
               only on an active SMS case you hold.
             </span>
           )}

@@ -67,7 +67,7 @@ describe("TOOL_CATALOG", () => {
         "toee_qbo_read",
         "toee_shopify_read",
         "toee_square_payment_link",
-        "toee_textline_reply",
+        "toee_sms_reply",
         "toee_workbench_admin",
         "toee_workbench_read",
       ].sort(),

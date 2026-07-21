@@ -2,7 +2,7 @@
 
 The async job runs a bound governed turn (ADR-0107) and must deliver exactly one
 customer-facing reply. :func:`outbound_reply_text` derives that reply from the
-captured turn: the governed Textline send body when the agent sent one, else the
+captured turn: the governed SMS send body when the agent sent one, else the
 agent's ``final_response`` (ADR-0083). A send the turn-binding gate blocked is a
 governed failure, so its (leaked) body is never delivered — the reply falls back.
 
@@ -30,7 +30,7 @@ def _send_turn(*, conversation_id: str, body: str, final_response: str) -> dict:
                     {
                         "id": "c1",
                         "function": {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": json.dumps(
                                 {"conversation_id": conversation_id, "body": body}
                             ),
@@ -59,7 +59,7 @@ def _blocked_turn(*, leaked_body: str, final_response: str) -> dict:
                     {
                         "id": "c1",
                         "function": {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": json.dumps(
                                 {"conversation_id": "conv-OTHER", "body": leaked_body}
                             ),
@@ -81,7 +81,7 @@ def _blocked_turn(*, leaked_body: str, final_response: str) -> dict:
 # --- G6a: outbound_reply_text ---------------------------------------------
 
 
-def test_outbound_reply_text_uses_the_governed_textline_body() -> None:
+def test_outbound_reply_text_uses_the_governed_sms_body() -> None:
     turn = _send_turn(
         conversation_id="conv-A", body="Out for delivery.", final_response="done"
     )

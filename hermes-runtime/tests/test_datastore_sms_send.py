@@ -1,4 +1,4 @@
-"""Slice 35 / #42: Postgres-backed governed Textline send composite handler."""
+"""Slice 35 / #42: Postgres-backed governed SMS send composite handler."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _seed_thread(
     thread_id: str,
     *,
     sms_active: bool = True,
-    textline_conversation_id: str = "7931e83f-96d9-4070-9ca4-081bcf36afd0",
+    sms_conversation_id: str = "7931e83f-96d9-4070-9ca4-081bcf36afd0",
 ) -> str:
     with conn.cursor() as cur:
         cur.execute(
@@ -33,7 +33,7 @@ def _seed_thread(
             " VALUES (%s, 'sms', '+15551230000')",
             (thread_id,),
         )
-        session_id = f"sms_session:{thread_id}:{textline_conversation_id}"
+        session_id = f"sms_session:{thread_id}:{sms_conversation_id}"
         expiry = "now() + interval '1 hour'" if sms_active else "now() - interval '1 hour'"
         cur.execute(
             f"INSERT INTO sms_session (id, customer_thread_id, expires_at)"
@@ -57,7 +57,7 @@ def _seed_case(conn, case_id: str, thread_id: str, assignee: str, session_id: st
     conn.commit()
 
 
-def test_send_textline_message_mirrors_turn_and_audit(datastore) -> None:
+def test_send_sms_message_mirrors_turn_and_audit(datastore) -> None:
     driver, conn, _ = datastore
     thread_id = "thr_send"
     case_id = "case_send"
@@ -67,7 +67,7 @@ def test_send_textline_message_mirrors_turn_and_audit(datastore) -> None:
 
     result = _run(
         driver,
-        "send_textline_message",
+        "send_sms_message",
         {"case_id": case_id, "body": "Your tires arrive today."},
         _ctx(actor),
     )
@@ -96,10 +96,10 @@ def test_send_textline_message_mirrors_turn_and_audit(datastore) -> None:
     )
     assert audit.ok
     actions = [e["action"] for e in audit.data["entries"]]
-    assert "textline_send" in actions
+    assert "sms_send" in actions
 
 
-def test_send_textline_message_denies_ineligible_case(datastore) -> None:
+def test_send_sms_message_denies_ineligible_case(datastore) -> None:
     driver, conn, _ = datastore
     thread_id = "thr_inelig"
     case_id = "case_inelig"
@@ -108,7 +108,7 @@ def test_send_textline_message_denies_ineligible_case(datastore) -> None:
 
     result = _run(
         driver,
-        "send_textline_message",
+        "send_sms_message",
         {"case_id": case_id, "body": "hello"},
         _ctx("acct_rep"),
     )
@@ -116,14 +116,14 @@ def test_send_textline_message_denies_ineligible_case(datastore) -> None:
     assert result.error_class == "policy_blocked"
 
 
-def test_send_textline_message_prefers_case_bound_session(datastore) -> None:
+def test_send_sms_message_prefers_case_bound_session(datastore) -> None:
     """When several SMS sessions are live, reply on the case-bound conversation."""
     driver, conn, _ = datastore
     thread_id = "thr_multi_sess"
     case_id = "case_multi_sess"
     real_conv = "7931e83f-96d9-4070-9ca4-081bcf36afd0"
     case_session = _seed_thread(
-        conn, thread_id, textline_conversation_id=real_conv
+        conn, thread_id, sms_conversation_id=real_conv
     )
     # A newer active session on the same thread (legacy simulate id) must not win.
     with conn.cursor() as cur:
@@ -150,7 +150,7 @@ def test_send_textline_message_prefers_case_bound_session(datastore) -> None:
 
     result = _run(
         driver,
-        "send_textline_message",
+        "send_sms_message",
         {"case_id": case_id, "body": "Bound session reply."},
         _ctx("acct_rep"),
     )
@@ -158,14 +158,14 @@ def test_send_textline_message_prefers_case_bound_session(datastore) -> None:
     assert result.data["message"]["conversation_id"] == real_conv
 
 
-def test_send_textline_message_live_when_api_token_set(datastore, monkeypatch) -> None:
+def test_send_sms_message_live_when_api_token_set(datastore, monkeypatch) -> None:
     """When SIMPLETEXTING_API_TOKEN is set, the composite handler POSTs to SimpleTexting."""
     driver, conn, _ = datastore
     thread_id = "thr_live"
     case_id = "case_live"
     actor = "acct_rep"
     # SimpleTexting sessions key the conversation by contact phone (ADR-0115 peel).
-    session_id = _seed_thread(conn, thread_id, textline_conversation_id="+15551230000")
+    session_id = _seed_thread(conn, thread_id, sms_conversation_id="+15551230000")
     _seed_case(conn, case_id, thread_id, actor, session_id)
 
     posts: list[tuple[str, dict, bytes]] = []
@@ -179,7 +179,7 @@ def test_send_textline_message_live_when_api_token_set(datastore, monkeypatch) -
 
     result = _run(
         driver,
-        "send_textline_message",
+        "send_sms_message",
         {"case_id": case_id, "body": "Live outbound."},
         _ctx(actor),
     )

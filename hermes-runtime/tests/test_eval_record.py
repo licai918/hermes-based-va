@@ -115,7 +115,7 @@ def test_record_scenario_turn_dispatches_through_the_scenario_driver() -> None:
 
 
 def test_record_scenario_turn_falls_back_to_final_response_text() -> None:
-    # A pure-text turn (no governed Textline send) records, and the customer-facing
+    # A pure-text turn (no governed SMS send) records, and the customer-facing
     # text falls back to the agent's final_response (ADR-0083) through the parser.
     scenario = load_scenario("text_first_launch", "01", EVAL_DIR)
     reply = "Happy to help with order 1042 - let me pull that up."

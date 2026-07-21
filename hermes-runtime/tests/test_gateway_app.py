@@ -283,7 +283,7 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
                 {
                     "tool_calls": [
                         {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": {
                                 "conversation_id": context.conversation_id,
                                 "body": reply_body,
@@ -344,7 +344,7 @@ def test_webhook_alone_drives_the_reply_through_the_local_dispatcher() -> None:
                 {
                     "tool_calls": [
                         {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": {
                                 "conversation_id": context.conversation_id,
                                 "body": reply_body,

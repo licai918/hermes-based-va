@@ -2,7 +2,7 @@ import type { ToolDriver } from "../execute-tool";
 import { createMockDriver, type MockHandlerRegistry } from "./mock-driver";
 import { identityMockHandlers } from "./identity";
 import { caseMockHandlers } from "./case";
-import { textlineMockHandlers } from "./textline";
+import { smsReplyMockHandlers } from "./sms-reply";
 import { shopifyMockHandlers } from "./shopify";
 import { qboMockHandlers } from "./qbo";
 import { easyroutesMockHandlers } from "./easyroutes";
@@ -14,7 +14,7 @@ import { adminStubMockHandlers } from "./admin-stubs";
 export * from "./mock-driver";
 export * from "./identity";
 export * from "./case";
-export * from "./textline";
+export * from "./sms-reply";
 export * from "./shopify";
 export * from "./qbo";
 export * from "./easyroutes";
@@ -30,7 +30,7 @@ export * from "./admin-stubs";
 export const defaultMockRegistry: MockHandlerRegistry = {
   ...identityMockHandlers,
   ...caseMockHandlers,
-  ...textlineMockHandlers,
+  ...smsReplyMockHandlers,
   ...shopifyMockHandlers,
   ...qboMockHandlers,
   ...easyroutesMockHandlers,

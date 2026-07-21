@@ -23,12 +23,12 @@ from .datastore.config import database_url
 from .datastore.handlers._common import new_id
 
 _SMS_CHANNEL = "sms"
-# Dev substrate: one Textline conversation maps to one SMS session (ADR-0115).
+# Dev substrate: one provider conversation maps to one SMS session (ADR-0115).
 _SESSION_TTL = "24 hours"
 
 
 def _thread_id(from_phone: str) -> str:
-    return f"customer_thread:textline:{from_phone}"
+    return f"customer_thread:sms:{from_phone}"
 
 
 def _session_id(thread_id: str, conversation_id: str) -> str:
@@ -274,7 +274,7 @@ class PostgresGatewayStore:
                     captured_at,
                 ) = row
 
-                # ponytail: conversation_id is the Textline id suffix on the session key.
+                # ponytail: conversation_id is the suffix on the session key (contact phone).
                 conversation_id = session_id.rsplit(":", 1)[-1]
 
                 snapshot = _snapshot_from_json(

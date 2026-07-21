@@ -15,7 +15,7 @@ from psycopg.rows import dict_row
 
 import os
 
-from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
+from toee_hermes.drivers.mock.sms_reply import SmsReplyMockData, _send_message
 from toee_hermes.errors import ToolDriverError
 
 from toee_hermes.identity.summary import (
@@ -384,7 +384,7 @@ def _update_contact_reason(
     }
 
 
-def _capture_textline_send(
+def _capture_sms_send(
     conversation_id: str,
     body: str,
     media_url: Optional[str],
@@ -406,7 +406,7 @@ def _capture_textline_send(
         except SimpleTextingSendError as exc:
             raise ToolDriverError("vendor_timeout", str(exc)) from exc
     return _send_message(
-        TextlineMockData(),
+        SmsReplyMockData(),
         {
             "conversation_id": conversation_id,
             "body": body,
@@ -587,10 +587,10 @@ def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:
     return row[0] if row else None
 
 
-def _textline_conversation_id(sms_session_id: str) -> str:
-    """Textline conversation UUID suffix on the gateway session key (ADR-0115).
+def _sms_conversation_id(sms_session_id: str) -> str:
+    """Conversation suffix (contact phone) on the gateway session key (ADR-0115).
 
-    ``sms_session:{thread_id}:{textline_uuid}`` — same peel as
+    ``sms_session:{thread_id}:{conversation_id}`` — same peel as
     :meth:`PostgresGatewayStore.load_context`.
     """
     return sms_session_id.rsplit(":", 1)[-1]
@@ -611,14 +611,14 @@ def _resolve_sms_session_id(
     return _active_sms_session_id(conn, thread_id)
 
 
-def _send_textline_message(
+def _send_sms_message(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
     """Governed employee-confirmed SMS send (ADR-0083/0035 composite seam).
 
     Validates SMS-session + assignee gating, sends via SimpleTexting when
     ``SIMPLETEXTING_API_TOKEN`` is set (else mock capture), mirrors a
-    ``message_turn``, and appends a ``textline_send`` audit row atomically.
+    ``message_turn``, and appends a ``sms_send`` audit row atomically.
     """
     case_id = _require_case_id(params)
     actor = _require_actor(context)
@@ -642,7 +642,7 @@ def _send_textline_message(
         or not _thread_sms_active(conn, thread_id)
     ):
         raise ToolDriverError(
-            "policy_blocked", "case not eligible for Textline send"
+            "policy_blocked", "case not eligible for SMS send"
         )
 
     session_id = _resolve_sms_session_id(
@@ -652,11 +652,11 @@ def _send_textline_message(
     )
     if session_id is None:
         raise ToolDriverError(
-            "policy_blocked", "case not eligible for Textline send"
+            "policy_blocked", "case not eligible for SMS send"
         )
 
-    conversation_id = _textline_conversation_id(session_id)
-    sent = _capture_textline_send(conversation_id, body, media_url)
+    conversation_id = _sms_conversation_id(session_id)
+    sent = _capture_sms_send(conversation_id, body, media_url)
 
     turn_id = new_id("mt")
     with conn.cursor() as cur:
@@ -677,7 +677,7 @@ def _send_textline_message(
         conn,
         profile=context.profile,
         account_id=actor,
-        action="textline_send",
+        action="sms_send",
         target_type="case",
         target_id=case_id,
         details={"detail": body},
@@ -832,7 +832,7 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "update_priority": _update_priority,
             "update_contact_reason": _update_contact_reason,
             "resolve_case": _resolve_case,
-            "send_textline_message": _send_textline_message,
+            "send_sms_message": _send_sms_message,
         },
         "toee_workbench_read": {
             "get_case": _get_case,

@@ -19,7 +19,7 @@ expects) instead of a real case row -- mirrors ``_NullStore`` in
 
 The copilot ``channel`` (sms/email/internal_note/chat -- which system message
 frames the draft) is a different axis from the scenario's own ``channel`` field
-(textline/email -- which structural disclosures apply, ADR-0056); the recorder
+(sms/email -- which structural disclosures apply, ADR-0056); the recorder
 picks it explicitly rather than reusing the scenario's value (S05 spike "naming
 trap").
 """

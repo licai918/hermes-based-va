@@ -1,6 +1,6 @@
 """Ingress Phone Match — synchronous gateway identity step (ADR-0043, ADR-0104).
 
-When Textline delivers an inbound SMS, the Channel Gateway resolves the sender
+When the SMS provider delivers an inbound message, the Channel Gateway resolves the sender
 phone through ``toee_identity_lookup.match_phone`` *before* the agent turn and
 writes a Session Identity Snapshot (verified / unmatched / ambiguous). The
 External Customer Service Profile uses only this snapshot for tool authorization.
