@@ -122,6 +122,7 @@ describe("handleGetMemoryAuditViaApi", () => {
           {
             id: "audit_1",
             account_id: "acct_rep_1",
+            actor_username: "rep_1",
             action: "proposal_dismissed",
             target_type: "customer_memory_slot",
             target_id: "channel_preference",
@@ -131,6 +132,7 @@ describe("handleGetMemoryAuditViaApi", () => {
           {
             id: "audit_2",
             account_id: "acct_sup_1",
+            actor_username: "sup_1",
             action: "preference_cleared",
             target_type: "customer_memory_slot",
             target_id: "channel_preference",
@@ -143,13 +145,20 @@ describe("handleGetMemoryAuditViaApi", () => {
 
     const res = await handleGetMemoryAuditViaApi(client, "case_1");
     const body = (await res.json()) as {
-      history: Array<{ action: string; actorAccountId: string | null; slot: string | null; at: number }>;
+      history: Array<{
+        action: string;
+        actorAccountId: string | null;
+        actorUsername?: string | null;
+        slot: string | null;
+        at: number;
+      }>;
     };
     const actions = body.history.map((h) => h.action);
     expect(actions).toContain("proposal_dismissed");
     expect(actions).toContain("preference_cleared");
     const cleared = body.history.find((h) => h.action === "preference_cleared");
     expect(cleared?.actorAccountId).toBe("acct_sup_1");
+    expect(cleared?.actorUsername).toBe("sup_1");
     expect(cleared?.slot).toBe("channel_preference");
     expect(typeof cleared?.at).toBe("number");
   });

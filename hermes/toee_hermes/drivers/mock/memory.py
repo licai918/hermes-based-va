@@ -376,7 +376,9 @@ def create_memory_mock_handlers(
         # with the Postgres handler (same keys) so a caller can't drift between
         # backends, but the mock has no per-write source/actor/timestamp store and
         # no audit sink (same convention as dismiss_proposal/clear_preference above)
-        # -- source/actor/timestamps come back null and audit is always empty.
+        # -- source/actor/timestamps come back null and audit is always empty (so
+        # there is never a row lacking the Postgres twin's joined actor_username --
+        # the empty list is itself the documented null for that field).
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots = [
             {

@@ -154,6 +154,7 @@ export interface MemoryAuditEntry {
   entryId: string;
   at: number;
   actorAccountId: string | null;
+  actorUsername?: string | null;
   action: string;
   slot: string | null;
   detail?: string;

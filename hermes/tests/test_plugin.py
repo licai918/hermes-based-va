@@ -203,6 +203,20 @@ def test_link_identity_stays_excluded_on_register_turn_too() -> None:
     assert "toee_identity_lookup__link_identity" not in ctx.registered_names()
 
 
+# --- 0.0.3 S20: get_memory_audit is never LLM-callable (governance) --------
+
+
+def test_get_memory_audit_is_never_registered_as_an_llm_tool_for_any_profile() -> None:
+    # toee_customer_memory is allowlisted for BOTH external and internal_copilot;
+    # get_memory_audit must stay off the model's tool-calling surface on every
+    # profile that would otherwise expose it, since it's an admin-only read
+    # meant only for the Memory Audit Console's gated HTTP path (FR-20).
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_customer_memory__get_memory_audit" not in ctx.registered_names()
+
+
 def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     ctx = RecordingCtx(profile="supervisor_admin")
     register(ctx)

@@ -223,6 +223,7 @@ export function mapMemoryAuditEntry(raw: unknown): MemoryAuditEntry {
     entryId: requiredString(r.id, "audit id"),
     at: isoToMs(r.created_at, "created_at"),
     actorAccountId: nullableString(r.account_id),
+    actorUsername: nullableString(r.actor_username),
     action: optionalString(r.action),
     slot,
   };

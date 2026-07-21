@@ -158,7 +158,7 @@ export function MemoryAuditConsole() {
                       <td style={td}>{formatTime(entry.at)}</td>
                       <td style={td}>{entry.action}</td>
                       <td style={td}>{entry.slot ?? "—"}</td>
-                      <td style={td}>{entry.actorAccountId ?? "—"}</td>
+                      <td style={td}>{entry.actorUsername ?? entry.actorAccountId ?? "—"}</td>
                       <td style={td}>{entry.detail ?? ""}</td>
                     </tr>
                   ))}
