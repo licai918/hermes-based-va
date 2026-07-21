@@ -32,7 +32,7 @@ from toee_hermes.drivers.mock.memory import (
 )
 from toee_hermes.errors import ToolDriverError
 
-from ._common import new_id
+from ._common import insert_audit, new_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -120,6 +120,38 @@ def _get_preferences(conn, params: dict[str, Any], context: "ToolExecutionContex
     }
 
 
+def _dismiss_proposal(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Audit-only write for a dismissed S14 proposal (0.0.3 S15, FR-16/FR-17).
+
+    Persists no preference slot -- a bad guess can't quietly persist (US17) --
+    only a Workbench Audit Log row recording the proposal (slot/value/evidence),
+    the deciding employee, and the timestamp (``created_at``), mirroring the
+    ``insert_audit`` calls the case handlers already make. Requires an
+    attributed actor like every other governed employee decision (ADR-0141):
+    a dismissal is always a rep at the keyboard, never the AI draft turn.
+    """
+    slot = _require_slot(params)
+    value = _require_value(params)
+    evidence = _read_evidence(params)
+    account_id = context.user_id
+    if not account_id:
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed proposal dismissal requires an attributed actor.",
+        )
+    binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=account_id,
+        action="proposal_dismissed",
+        target_type="customer_memory_slot",
+        target_id=slot,
+        details={"slot": slot, "value": value, "evidence": evidence, "binding_key": binding_key},
+    )
+    return {"binding_key": binding_key, "slot": slot, "dismissed": True}
+
+
 def memory_handlers() -> dict[str, dict[str, Any]]:
     """Registry fragment for the Customer Memory datastore tool."""
     return {
@@ -127,5 +159,6 @@ def memory_handlers() -> dict[str, dict[str, Any]]:
             "upsert_preference": _upsert_preference,
             "clear_preference": _clear_preference,
             "get_preferences": _get_preferences,
+            "dismiss_proposal": _dismiss_proposal,
         }
     }

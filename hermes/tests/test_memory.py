@@ -235,6 +235,40 @@ def test_clear_rejects_open_ended_key() -> None:
     assert result.error_class == "unexpected_error"
 
 
+# --- dismiss_proposal (0.0.3 S15, FR-16/FR-17) ------------------------------
+
+
+def test_dismiss_proposal_acknowledges_without_persisting_a_slot() -> None:
+    driver = _driver()
+    ctx = _verified_ctx()
+
+    dismissed = _call(
+        driver,
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        ctx,
+    )
+    assert dismissed.ok is True
+    assert dismissed.data["slot"] == "channel_preference"
+    assert dismissed.data["dismissed"] is True
+
+    # A bad guess can't quietly land in memory (US17): nothing was stored.
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"] == {}
+
+
+def test_dismiss_proposal_rejects_open_ended_key() -> None:
+    result = _call(
+        _driver(),
+        "dismiss_proposal",
+        {"key": "favorite_color", "value": "blue"},
+        _verified_ctx(),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
 # --- round-trip ------------------------------------------------------------
 
 

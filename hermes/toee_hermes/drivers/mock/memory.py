@@ -332,10 +332,24 @@ def create_memory_mock_handlers(
             "preferences": dict(slots_for(binding_key)),
         }
 
+    def dismiss_proposal(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.3 S15 (FR-16/US17): a dismissed proposal persists NO slot -- a bad
+        # guess can't quietly land in memory. Only the Postgres datastore handler
+        # records the FR-17 audit row (this mock driver has no audit sink, same
+        # no-op-in-mock-mode convention as every other governed write here), so
+        # this is just a governed acknowledgment.
+        slot = _require_slot(params)
+        _require_value(params)
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+        return {"binding_key": binding_key, "slot": slot, "dismissed": True}
+
     return {
         "toee_customer_memory": {
             "upsert_preference": upsert_preference,
             "clear_preference": clear_preference,
             "get_preferences": get_preferences,
+            "dismiss_proposal": dismiss_proposal,
         }
     }

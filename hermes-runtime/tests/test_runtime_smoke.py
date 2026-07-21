@@ -11,11 +11,17 @@ import json
 from hermes_runtime.boot import boot_profile
 
 
-def test_external_profile_boots_21_governed_toee_tools() -> None:
-    # ADR-0034 external allowlist registers exactly 21 action-tools (ADR-0139).
+def test_external_profile_boots_22_governed_toee_tools() -> None:
+    # ADR-0034 external allowlist registers exactly 22 action-tools (ADR-0139).
+    # 0.0.3 S15 adds toee_customer_memory.dismiss_proposal: it rides the same
+    # shared toolset upsert/clear/get_preferences already use, so it is also
+    # registered here even though the external (customer-facing) profile never
+    # legitimately calls it -- a call would still be policy_blocked (no
+    # attributed actor), same defense-in-depth as every other employee-only
+    # write on this toolset.
     booted = boot_profile("customer_service_external")
     toee_tools = [name for name in booted.tool_names if name.startswith("toee_")]
-    assert len(toee_tools) == 21
+    assert len(toee_tools) == 22
 
 
 def test_external_profile_dispatch_returns_governed_json() -> None:

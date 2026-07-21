@@ -17,7 +17,9 @@ import type {
 } from "@/lib/gateway/types";
 import { PREFERENCE_SLOTS } from "@/lib/gateway/types";
 
-const SLOT_LABELS: Record<MemoryPreferenceSlot, string> = {
+// Exported for reuse by PendingProposals (0.0.3 S15): a proposal names the same
+// slot, so it should read with the same human label.
+export const SLOT_LABELS: Record<MemoryPreferenceSlot, string> = {
   contact_time_preference: "Preferred contact time",
   channel_preference: "Preferred channel",
   delivery_habit_note: "Delivery habit note",

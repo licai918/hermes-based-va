@@ -24,10 +24,12 @@ vi.mock("@/lib/api/copilot-client", () => ({
   getPreferences: vi.fn().mockResolvedValue({ preferences: {} }),
   upsertPreference: vi.fn(),
   clearPreference: vi.fn(),
+  dismissProposal: vi.fn(),
   draft: vi.fn(),
   chat: vi.fn(),
   sendTextline: vi.fn(),
   normalizeDraft: (x: unknown) => String(x),
+  proposalsFromDraft: vi.fn().mockReturnValue([]),
 }));
 
 const NOW = 1_000_000_000_000;
@@ -174,6 +176,110 @@ describe("CopilotDashboard", () => {
       expect(copilot.upsertPreference).toHaveBeenCalledWith("c9", "channel_preference", "sms"),
     );
     await waitFor(() => expect(copilot.getPreferences).toHaveBeenCalledTimes(2));
+  });
+
+  it("shows a proposal from a draft's response and Accept routes through the existing preferences write", async () => {
+    vi.mocked(copilot.listCases).mockResolvedValue({
+      cases: [makeCase({ caseId: "c9", identitySummary: "Pick Me" })],
+    });
+    vi.mocked(copilot.getThread).mockResolvedValue({
+      case: makeCase({ caseId: "c9", identitySummary: "Pick Me" }),
+      messages: [],
+    });
+    vi.mocked(copilot.draft).mockResolvedValue({ draft: { channel: "sms", draft: "ok" } });
+    vi.mocked(copilot.proposalsFromDraft).mockReturnValue([
+      { slot: "channel_preference", value: "sms" },
+    ]);
+    vi.mocked(copilot.upsertPreference).mockResolvedValue({
+      slot: "channel_preference",
+      value: "sms",
+      stored: true,
+    });
+    renderDashboard(WORKBENCH_ROLES.rep);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+    await waitFor(() => expect(copilot.getPreferences).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Draft SMS" }));
+    await waitFor(() => expect(copilot.draft).toHaveBeenCalledWith("sms", "c9"));
+
+    expect(
+      await screen.findByText('Suggest setting Preferred channel = "sms"'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /accept preferred channel proposal/i }));
+
+    await waitFor(() =>
+      expect(copilot.upsertPreference).toHaveBeenCalledWith("c9", "channel_preference", "sms"),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Suggest setting Preferred channel = "sms"'),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("Dismiss clears a proposal without writing any preference", async () => {
+    vi.mocked(copilot.listCases).mockResolvedValue({
+      cases: [makeCase({ caseId: "c9", identitySummary: "Pick Me" })],
+    });
+    vi.mocked(copilot.getThread).mockResolvedValue({
+      case: makeCase({ caseId: "c9", identitySummary: "Pick Me" }),
+      messages: [],
+    });
+    vi.mocked(copilot.draft).mockResolvedValue({ draft: { channel: "sms", draft: "ok" } });
+    vi.mocked(copilot.proposalsFromDraft).mockReturnValue([
+      { slot: "channel_preference", value: "sms" },
+    ]);
+    vi.mocked(copilot.dismissProposal).mockResolvedValue({
+      slot: "channel_preference",
+      dismissed: true,
+    });
+    renderDashboard(WORKBENCH_ROLES.rep);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Draft SMS" }));
+    await screen.findByText('Suggest setting Preferred channel = "sms"');
+
+    fireEvent.click(screen.getByRole("button", { name: /dismiss preferred channel proposal/i }));
+
+    await waitFor(() =>
+      expect(copilot.dismissProposal).toHaveBeenCalledWith("c9", "channel_preference", "sms", undefined),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Suggest setting Preferred channel = "sms"'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(copilot.upsertPreference).not.toHaveBeenCalled();
+  });
+
+  it("clears pending proposals when switching to a different case", async () => {
+    vi.mocked(copilot.listCases).mockResolvedValue({
+      cases: [
+        makeCase({ caseId: "c9", identitySummary: "Pick Me" }),
+        makeCase({ caseId: "c10", identitySummary: "Other Case" }),
+      ],
+    });
+    vi.mocked(copilot.getThread).mockImplementation(async (caseId: string) => ({
+      case: makeCase({ caseId, identitySummary: caseId === "c9" ? "Pick Me" : "Other Case" }),
+      messages: [],
+    }));
+    vi.mocked(copilot.draft).mockResolvedValue({ draft: { channel: "sms", draft: "ok" } });
+    vi.mocked(copilot.proposalsFromDraft).mockReturnValue([
+      { slot: "channel_preference", value: "sms" },
+    ]);
+    renderDashboard(WORKBENCH_ROLES.rep);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pick Me" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Draft SMS" }));
+    await screen.findByText('Suggest setting Preferred channel = "sms"');
+
+    fireEvent.click(screen.getByRole("button", { name: "Other Case" }));
+    await waitFor(() => expect(copilot.getThread).toHaveBeenCalledWith("c10"));
+    expect(
+      screen.queryByText('Suggest setting Preferred channel = "sms"'),
+    ).not.toBeInTheDocument();
   });
 
   it("polls queue and thread while the tab is visible", async () => {

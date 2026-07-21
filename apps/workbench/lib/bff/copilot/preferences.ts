@@ -89,3 +89,36 @@ export async function handleClearPreferenceViaApi(
     return hermesErrorToProblem(err);
   }
 }
+
+// Dismiss a pending S14 proposal (S15, FR-16/FR-17). Distinct from clear: there
+// is no slot to clear (the proposal never persisted), so this dispatches the
+// audit-only `dismiss_proposal` action -- it writes a Workbench Audit Log row
+// (proposal, decider, timestamp) and NO preference slot (US17). `evidence`
+// matches the wire param name upsert_preference already uses (see
+// hermes/toee_hermes/drivers/mock/memory.py `_read_evidence`); the browser's
+// `evidenceTurn` field name is translated here, not renamed end-to-end.
+export async function handleDismissProposalViaApi(
+  req: Request,
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const slot = body?.slot;
+  if (!isPreferenceSlot(slot)) {
+    return problem(400, "slot must be one of the 4 preference slots");
+  }
+  const value = readNonEmptyString(body, "value");
+  if (!value) return problem(400, "value is required");
+  const evidence = readNonEmptyString(body, "evidenceTurn") ?? undefined;
+  try {
+    await client.dispatchWrite("toee_customer_memory", "dismiss_proposal", {
+      case_id: caseId,
+      key: slot,
+      value,
+      evidence,
+    });
+    return json({ slot, dismissed: true });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}

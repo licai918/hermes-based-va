@@ -32,6 +32,10 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "upsert_preference",
         "clear_preference",
         "get_preferences",
+        # 0.0.3 S15 (FR-17): audit-only action for a dismissed S14 proposal --
+        # persists no slot, only a Workbench Audit Log row (see the datastore
+        # handler in hermes-runtime/hermes_runtime/datastore/handlers/memory.py).
+        "dismiss_proposal",
     ),
     "toee_case_manage": (
         "claim_case",

@@ -392,3 +392,69 @@ def test_evidence_is_optional_and_defaults_to_null(datastore) -> None:
         row = cur.fetchone()
     assert row is not None
     assert row[0] is None
+
+
+# --- dismiss_proposal (0.0.3 S15, FR-16/FR-17) ------------------------------
+# Acceptance criterion ①: "dismissed leaves no slot but an audit row -- read
+# back directly from Postgres."
+
+
+def test_dismiss_proposal_persists_no_slot_but_writes_an_audit_row(datastore) -> None:
+    driver, conn, _ = datastore
+    result = _run(
+        driver,
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms", "evidence": "text me on sms"},
+        identity=_PROVISIONAL_A,
+        profile="internal_copilot",
+        user_id="acct_rep_1",
+    )
+    assert result.ok
+    assert result.data["dismissed"] is True
+    binding_key = result.data["binding_key"]
+
+    with conn.cursor() as cur:
+        # No slot: a dismissed proposal can't quietly persist (US17).
+        cur.execute(
+            "SELECT count(*) FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (binding_key, "channel_preference"),
+        )
+        assert cur.fetchone()[0] == 0
+
+        # But an audit row exists, attributed to the deciding employee.
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id, details "
+            "FROM workbench_audit_log WHERE action = 'proposal_dismissed' "
+            "AND target_id = %s",
+            ("channel_preference",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id, details = row
+    assert account_id == "acct_rep_1"
+    assert action == "proposal_dismissed"
+    assert target_type == "customer_memory_slot"
+    assert target_id == "channel_preference"
+    assert details["slot"] == "channel_preference"
+    assert details["value"] == "sms"
+    assert details["evidence"] == "text me on sms"
+
+
+def test_dismiss_proposal_with_no_actor_is_policy_blocked(datastore) -> None:
+    driver, conn, _ = datastore
+    result = _run(
+        driver,
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        identity=_PROVISIONAL_A,
+        profile="internal_copilot",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'proposal_dismissed'"
+        )
+        assert cur.fetchone()[0] == 0
