@@ -342,6 +342,16 @@ def create_memory_mock_handlers(
         # this is just a governed acknowledgment.
         slot = _require_slot(params)
         _require_value(params)
+        # Requires an attributed actor, same gate as the Postgres twin
+        # (_dismiss_proposal): a dismissal is always a rep at the keyboard, never
+        # the customer and never the unbound AI draft turn -- so on the EXTERNAL
+        # profile (no context.user_id) this is policy_blocked, same as every
+        # other governed write on toee_customer_memory (FR-16).
+        if not context.user_id:
+            raise ToolDriverError(
+                "policy_blocked",
+                "A governed proposal dismissal requires an attributed actor.",
+            )
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         return {"binding_key": binding_key, "slot": slot, "dismissed": True}
 

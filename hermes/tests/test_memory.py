@@ -239,8 +239,10 @@ def test_clear_rejects_open_ended_key() -> None:
 
 
 def test_dismiss_proposal_acknowledges_without_persisting_a_slot() -> None:
+    # A dismissal is always a rep at the keyboard (FR-16) -- attributed internal
+    # context, mirroring the Postgres twin's success path.
     driver = _driver()
-    ctx = _verified_ctx()
+    ctx = _internal_ctx(user_id="acct_rep_1")
 
     dismissed = _call(
         driver,
@@ -262,11 +264,40 @@ def test_dismiss_proposal_rejects_open_ended_key() -> None:
         _driver(),
         "dismiss_proposal",
         {"key": "favorite_color", "value": "blue"},
-        _verified_ctx(),
+        _internal_ctx(user_id="acct_rep_1"),
     )
 
     assert result.ok is False
     assert result.error_class == "unexpected_error"
+
+
+def test_dismiss_proposal_on_external_profile_is_policy_blocked() -> None:
+    # FR-16: on the EXTERNAL customer profile a dismissal must be policy_blocked
+    # (employee-only write), same as every other write on toee_customer_memory --
+    # a dismissal is always a rep at the keyboard, never the customer.
+    result = _call(
+        _driver(),
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        _verified_ctx(),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_dismiss_proposal_on_internal_profile_without_user_id_is_policy_blocked() -> None:
+    # The unbound AI draft-turn path (S20) never sets context.user_id -- no rep
+    # attributed the dismissal, so it is policy_blocked, not a silent success.
+    result = _call(
+        _driver(),
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        _internal_ctx(),  # no user_id: unbound draft turn
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
 
 
 # --- round-trip ------------------------------------------------------------
