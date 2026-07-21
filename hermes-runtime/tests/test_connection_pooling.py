@@ -250,24 +250,33 @@ def test_get_corpus_status_checks_out_from_the_knowledge_pool(monkeypatch: pytes
 # --- bounded under concurrency (RK-8, live Postgres) ------------------------
 
 
-def _connection_count(dsn: str) -> int:
-    """Server-side connection count for ``dsn``'s database, via an independent
-    (non-pooled) monitoring connection so it never counts itself."""
+def _connection_count(dsn: str, application_name: str) -> int:
+    """Server-side count of backends tagged with ``application_name``, via an
+    independent (non-pooled) monitoring connection so it never counts itself.
+
+    Scoped to ``application_name`` rather than the whole database: a raw
+    ``datname = current_database()`` count also picks up any other process's
+    pool on the same database (e.g. a developer's own dispatch server), which
+    has nothing to do with whether THIS pool caps at its max_size."""
     with psycopg.connect(dsn) as monitor_conn:
         with monitor_conn.cursor() as cur:
             cur.execute(
                 "SELECT count(*) FROM pg_stat_activity"
                 " WHERE datname = current_database() AND pid <> pg_backend_pid()"
+                " AND application_name = %s",
+                (application_name,),
             )
             (count,) = cur.fetchone()
     return count
 
 
-def _poll_max_connections_while_alive(dsn: str, threads: list[threading.Thread], *, deadline_s: float) -> int:
+def _poll_max_connections_while_alive(
+    dsn: str, application_name: str, threads: list[threading.Thread], *, deadline_s: float
+) -> int:
     max_seen = 0
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline and any(t.is_alive() for t in threads):
-        max_seen = max(max_seen, _connection_count(dsn))
+        max_seen = max(max_seen, _connection_count(dsn, application_name))
         time.sleep(0.02)
     for t in threads:
         t.join(timeout=deadline_s)
@@ -294,7 +303,13 @@ def test_business_pool_connection_count_stays_bounded_under_parallel_turns(
 
     from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 
-    store = PostgresGatewayStore()
+    # Tag this pool's own DSN so `_connection_count` can scope pg_stat_activity
+    # to backends THIS pool opened -- other processes on the same database
+    # (e.g. a developer's own dispatch server, holding its own pool) must not
+    # be counted against this pool's max_size.
+    application_name = "s29_business_pool_test"
+    tagged_dsn = f"{dsn}?application_name={application_name}"
+    store = PostgresGatewayStore(dsn=tagged_dsn)
     n_concurrent = 20
 
     def worker() -> None:
@@ -306,7 +321,7 @@ def test_business_pool_connection_count_stays_bounded_under_parallel_turns(
     for t in threads:
         t.start()
 
-    max_seen = _poll_max_connections_while_alive(dsn, threads, deadline_s=10)
+    max_seen = _poll_max_connections_while_alive(dsn, application_name, threads, deadline_s=10)
 
     assert max_seen <= 4, f"observed {max_seen} concurrent business-DB connections, pool max is 4"
     assert max_seen >= 2, "expected real overlap across the 20 concurrent callers, saw none"
@@ -326,6 +341,13 @@ def test_knowledge_pool_connection_count_stays_bounded_under_parallel_load(
     monkeypatch.setenv("KNOWLEDGE_DATABASE_POOL_MIN_SIZE", "1")
     monkeypatch.setenv("KNOWLEDGE_DATABASE_POOL_MAX_SIZE", "3")
 
+    # get_knowledge_pool() takes no dsn override -- tag via KNOWLEDGE_DATABASE_URL
+    # itself so `_connection_count` can scope pg_stat_activity to backends THIS
+    # pool opened, not any other process sharing the same database.
+    application_name = "s29_knowledge_pool_test"
+    tagged_dsn = f"{dsn}?application_name={application_name}"
+    monkeypatch.setenv("KNOWLEDGE_DATABASE_URL", tagged_dsn)
+
     from hermes_runtime.knowledge.pool import get_knowledge_pool
 
     pool = get_knowledge_pool()
@@ -340,7 +362,7 @@ def test_knowledge_pool_connection_count_stays_bounded_under_parallel_load(
     for t in threads:
         t.start()
 
-    max_seen = _poll_max_connections_while_alive(dsn, threads, deadline_s=10)
+    max_seen = _poll_max_connections_while_alive(dsn, application_name, threads, deadline_s=10)
 
     assert max_seen <= 3, f"observed {max_seen} concurrent knowledge-DB connections, pool max is 3"
     assert max_seen >= 2, "expected real overlap across the 20 concurrent callers, saw none"
