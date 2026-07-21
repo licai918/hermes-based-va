@@ -96,10 +96,15 @@ export function MemoryAuditConsole() {
     setError(null);
     try {
       await clearMemorySlot(caseId.trim(), slot);
-      setConfirmClearSlot(null);
       await load(caseId);
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Failed to clear the slot");
+    } finally {
+      // Close the inline confirm/cancel UI on BOTH success and failure -- a
+      // failed clear used to leave it hanging open under the error banner
+      // (final-review Minor). The error banner still shows the failure; the
+      // supervisor re-opens the confirm to retry.
+      setConfirmClearSlot(null);
     }
   }
 

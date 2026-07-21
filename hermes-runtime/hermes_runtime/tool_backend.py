@@ -103,6 +103,19 @@ AGENT_EXPERIENCE_ENV = "AGENT_EXPERIENCE_LEARNING"
 _AGENT_EXPERIENCE_ON_VALUES = frozenset({"1", "on", "true", "enabled", "yes"})
 
 
+def _flag_on(env_var: str, value: object = _UNSET) -> bool:
+    """Shared fail-closed reader for the L6 on/off flags (S25 dedup, review nit).
+
+    ``value`` defaults to ``os.environ[env_var]``; True only when it is a string
+    in the explicit on-set. One implementation so the three agent-experience
+    flags below can't drift on parsing. (``memory_enabled``/``simulated_mode_
+    enabled`` use different discriminators and stay separate.)
+    """
+    if value is _UNSET:
+        value = os.environ.get(env_var)
+    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+
+
 def agent_experience_enabled(value: object = _UNSET) -> bool:
     """Whether the L6 learning-loop review pass runs (0.0.3 S23, FR-22).
 
@@ -112,9 +125,7 @@ def agent_experience_enabled(value: object = _UNSET) -> bool:
     Customer Memory datastore, and default-off keeps the copilot eval replay
     gate deterministic (the review pass never runs on the record/replay path).
     """
-    if value is _UNSET:
-        value = os.environ.get(AGENT_EXPERIENCE_ENV)
-    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+    return _flag_on(AGENT_EXPERIENCE_ENV, value)
 
 
 # S25 (FR-25/26, NFR-6): confirmed-entry INJECTION flags. INJECTION is a separate
@@ -134,9 +145,7 @@ def agent_experience_injection_enabled(value: object = _UNSET) -> bool:
     Fail-closed by construction (mirrors :func:`agent_experience_enabled`): unset,
     empty, or any value outside the on-set returns ``False``. Its OWN axis, default
     off -- so the copilot eval replay gate stays deterministic."""
-    if value is _UNSET:
-        value = os.environ.get(AGENT_EXPERIENCE_INJECTION_ENV)
-    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+    return _flag_on(AGENT_EXPERIENCE_INJECTION_ENV, value)
 
 
 def agent_experience_external_injection_enabled(value: object = _UNSET) -> bool:
@@ -146,9 +155,7 @@ def agent_experience_external_injection_enabled(value: object = _UNSET) -> bool:
     axis) so the external read is disable-able without touching the copilot path.
     Fail-closed / default off -- the external turn only ever READS confirmed
     learnings and never proposes (S23 kept propose off the external profile)."""
-    if value is _UNSET:
-        value = os.environ.get(AGENT_EXPERIENCE_EXTERNAL_INJECTION_ENV)
-    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+    return _flag_on(AGENT_EXPERIENCE_EXTERNAL_INJECTION_ENV, value)
 
 
 def load_confirmed_experience(store: Optional[Any]) -> Optional[list[dict[str, Any]]]:
