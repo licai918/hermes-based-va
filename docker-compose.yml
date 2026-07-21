@@ -65,5 +65,48 @@ services:
     # lease is sized for). The two move together: change the lease, change this.
     stop_grace_period: 310s
 
+  # Background worker (0.0.4 S04, FR-9 background half / FR-11, ADR-0153). Claims
+  # `l6_review`, `retention` and `ingest` -- never `agent_turn`. That allowlist IS
+  # the isolation: a corpus re-ingest that runs for minutes cannot queue ahead of
+  # a customer's turn, because the two processes claim disjoint type sets.
+  #
+  # It also runs the SCHEDULE TICK (background_worker.SCHEDULES). There is no cron
+  # in this repo: if this service is not up, no recurring job type ever runs.
+  #
+  #   docker compose up -d background-worker
+  background-worker:
+    build:
+      context: .
+      dockerfile: hermes-runtime/Dockerfile
+    container_name: toee-va-background-worker
+    command: ["uv", "run", "--frozen", "python", "-m", "hermes_runtime.background_worker"]
+    env_file:
+      - path: ./hermes-runtime/.env
+        required: false
+    environment:
+      # In-network DSNs; override the localhost-shaped ones in hermes-runtime/.env.
+      DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_va
+      # Ingest reads/writes the SEPARATE knowledge database (S-ISO).
+      KNOWLEDGE_DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_knowledge
+      # One job at a time -- see background_worker.WORKER_POOL_MAX_SIZE. The heavy
+      # ingest work lives on the knowledge pool, not this one.
+      DATABASE_POOL_MAX_SIZE: "4"
+      # Same boot requirement as the turn worker: the job bodies read and write the
+      # shared store, which an in-memory backend cannot cross. main() fails closed.
+      TOOL_BACKEND: datastore
+      # Stage A's pull artifact, for a queued re-ingest. Left unset here on purpose:
+      # an operator mounts the corpus and sets this, and an ingest job with nothing
+      # to ingest fails loudly naming this variable rather than wiping the corpus.
+      # INGEST_CORPUS_PATH: /corpus/corpus.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    # Same coupling as turn-worker: keep this ABOVE job_queue.DEFAULT_LEASE_SECONDS
+    # (300s). SIGTERM only sets a flag, so the in-flight job -- which for `ingest`
+    # is the longest thing this process runs -- gets this long to finish and release
+    # its lease before Docker SIGKILLs. Change the lease, change this.
+    stop_grace_period: 310s
+
 volumes:
   toee_pgdata:
