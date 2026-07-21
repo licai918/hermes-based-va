@@ -17,6 +17,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from toee_hermes.drivers.mock.agent_experience import (
+    _context_strings,
     _read_proposer_context,
     _require_content,
     _require_kind,
@@ -28,12 +29,6 @@ from ._common import insert_audit, new_id, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
-
-
-def _context_strings(ctx: Optional[dict[str, Any]]) -> list[str]:
-    if not ctx:
-        return []
-    return [value for value in ctx.values() if isinstance(value, str)]
 
 
 def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
