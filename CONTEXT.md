@@ -517,8 +517,8 @@ A fixed-enum reason attached to a failing **Interaction Review** or a down-rated
 _Avoid_: Free-form-only feedback, one shared cross-mechanism tag set
 
 **Improvement Proposal**:
-A governed change suggestion produced by aggregating failed **Interaction Reviews** and negative **Draft Feedback** — a knowledge-slot revision draft, a new **Launch Eval Scenario** suggestion, or an internal draft-persona adjustment — that becomes effective only after human approval and the applicable eval gate.
-_Avoid_: Autonomous prompt or knowledge self-modification, ungated memory writes from feedback
+A governed change suggestion produced by aggregating failed **Interaction Reviews** and negative **Draft Feedback**, routed into an existing approval surface rather than a new one: an operational learning enters **Agent-Experience Memory (L6)** as a proposed entry decided on its confirm gate, a knowledge gap becomes a knowledge-slot revision draft passing the **Knowledge Publish Eval Gate**, and a coverage gap becomes a **Launch Eval Scenario** suggestion. It becomes effective only after human approval and the applicable eval gate.
+_Avoid_: Autonomous prompt or knowledge self-modification, ungated memory writes from feedback, a second parallel proposal pipeline or approval queue
 
 ## Relationships
 

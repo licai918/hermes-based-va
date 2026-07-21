@@ -2,8 +2,9 @@
 
 - **Status:** drafted 2026-07-21 from the grilled design
   ([design spec](../../../docs/superpowers/specs/2026-07-21-manual-scoring-feedback-design.md)),
-  reconciled against the unmerged `feat/0.0.3-land-all` branch.
-- **Governance:** [ADR-0153](../../../docs/adr/0153-manual-scoring-feedback-mechanisms.md).
+  reconciled against 0.0.3 and then rebased onto post-0.0.3 `main`.
+  **Ready to slice.**
+- **Governance:** [ADR-0154](../../../docs/adr/0154-manual-scoring-feedback-mechanisms.md).
   Invariants of [ADR-0148](../../../docs/adr/0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)
   (framework-derived actor) and [ADR-0150](../../../docs/adr/0150-s20-reversal-copilot-draft-turn-propose-only.md)
   (propose→confirm) hold throughout.
@@ -11,10 +12,13 @@
   does not collide with sibling 0.0.4 tracks. `FR-`/`NFR-`/`PAC-`/`US` numbers in
   this file are **module-scoped** — qualify them as `quality-feedback FR-n` when
   referenced from outside.
-- **Baseline (hard prerequisite):** post-0.0.3 `main`. **Do not start until
-  `feat/0.0.3-land-all` merges.** This module reuses 0.0.3's L6 loop, admin
-  review queue, metric_event panel, and Conversation Simulator; on a 0.0.2 base
-  it would duplicate all four and collide on migration/ADR numbers.
+- **Baseline:** post-0.0.3 `main` (0.0.3 merged 2026-07-21, as did the
+  SimpleTexting migration). This module reuses 0.0.3's L6 loop, admin review
+  queue, `metric_event` panel, and Conversation Simulator rather than
+  rebuilding them. Reserved numbers against that baseline: **ADR-0154**,
+  migration **0012**.
+- **Terminology:** Textline is retired (ADR-0153). The governed customer send is
+  the provider-neutral `toee_sms_reply`, surfaced as "Send via SMS".
 
 ---
 
@@ -52,7 +56,7 @@ actor-attributed and append-only, sharing a tool shell but no data or policy:
   more fixed **Review Reason Tags** and takes an optional comment. Both audit
   lists gain a Reviewed / Not reviewed column so sampling coverage is visible.
 - **Internal — Draft Feedback.** The copilot draft card gains 👍/👎 (👎 expands
-  internal reason tags + optional comment), and the governed Textline send
+  internal reason tags + optional comment), and the governed SMS send
   silently records whether the sent text matched the generated draft
   (`sent_as_is` / `sent_edited` + edit distance). Reps get a zero-effort implicit
   signal and an optional explicit one.
@@ -146,7 +150,7 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
 
 ## 4. Functional Requirements
 
-- **FR-1 Storage.** Migration `0010_feedback_tables.sql` adds two independent,
+- **FR-1 Storage.** Migration `0012_feedback_tables.sql` adds two independent,
   append-only operational-layer tables. `interaction_review`: subject kind
   (`auto_handled_record` | `sales_outreach_case`), subject id, verdict
   (`pass` | `fail`), reason tags, optional comment, reviewer account, timestamp;
@@ -185,7 +189,7 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
 - **FR-8 Explicit draft rating.** 👍/👎 on the draft card; 👎 expands internal tags
   plus an optional comment. Never blocks drafting or sending. A rating with no
   send records outcome `rated_only`.
-- **FR-9 Implicit send outcome.** After a successful governed Textline send, record
+- **FR-9 Implicit send outcome.** After a successful governed SMS send, record
   `sent_as_is` when the sent text equals the generated snapshot after trimming,
   otherwise `sent_edited` with a normalized edit-distance ratio. Recording is
   fire-and-forget: a failure is logged and never fails the send (FR-17/US-17).
@@ -213,7 +217,7 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
   approval UI and no bespoke dashboard.
 - **NFR-5 Migration safety.** Additive only — two new tables, no change to
   existing tables, no backfill.
-- **NFR-6 Docs.** ADR-0153 ships with the build; CONTEXT.md gains **Interaction
+- **NFR-6 Docs.** ADR-0154 ships with the build; CONTEXT.md gains **Interaction
   Review**, **Draft Feedback**, **Review Reason Tag**, **Improvement Proposal**
   and their relationships, re-applied onto post-0.0.3 CONTEXT.md.
 
@@ -307,13 +311,13 @@ which applies directly to "an agent-initiated feedback call persists nothing."
 
 ## 9. Further Notes
 
-- **Sequencing.** Blocked on `feat/0.0.3-land-all` merging to `main`. The design
-  work is done and the collisions are already resolved on paper (ADR-0153,
-  migration 0010); what cannot be done early is the code, because it integrates
-  with 0.0.3 surfaces and is PAC-tested through the 0.0.3 simulator.
-- **Carried forward from the 0.0.2 base.** The ADR, the CONTEXT.md terms, and the
-  design spec were authored against `main` (0.0.2). CONTEXT.md will need
-  re-application onto post-0.0.3 CONTEXT.md, which edits the same file.
+- **Sequencing.** Unblocked — 0.0.3 is on `main` and this branch is rebased onto
+  it. Ready to slice into issues.
+- **Numbering is reserved, not held.** ADR-0154 and migration 0012 were free at
+  rebase time, but sibling 0.0.4 tracks are landing concurrently and both
+  namespaces are first-come. This module already lost 0149→0153→0154 and
+  0008→0010→0012 to two such races; **re-check both immediately before the
+  implementation PR** rather than trusting these numbers.
 - **Known open risk (inherited).** Both mechanisms' honesty rests on
   `context.user_id`'s own contract — ADR-0148's RK-2. A future non-UI caller that
   sets `user_id` without a real employee present would forge feedback attribution

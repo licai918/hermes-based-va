@@ -6,7 +6,7 @@ the same day after a gap analysis against the unmerged `feat/0.0.3-land-all`
 branch (see §0).
 Target: **0.0.4, on the post-0.0.3 baseline.** Do not implement until 0.0.3
 merges to `main`. Module PRD: `workspace/0.0.4/quality-feedback/PRD.md`.
-Related: ADR-0153 (this design's governance decisions), ADR-0148 (actor
+Related: ADR-0154 (this design's governance decisions), ADR-0148 (actor
 attribution invariant this design reuses), ADR-0037/0085/0086 (audit views),
 ADR-0083 (governed send flow), ADR-0059 (tool action enums), ADR-0004
 (retention), and from 0.0.3: ADR-0150 (propose→confirm), ADR-0152 (L6
@@ -17,9 +17,13 @@ agent-experience loop), ADR-0121 (eval record/replay pin).
 This design was first written on a `main` (0.0.2) worktree, blind to the
 unmerged 0.0.3 branch. Reconciling against it changed four things:
 
-1. **Migration number** — 0.0.3 takes `0008_agent_experience.sql` and
-   `0009_metric_event.sql`; this feature's migration is **0010**.
-2. **ADR number** — 0.0.3 takes 0149–0152; this ADR is **0153**.
+1. **Migration number** — 0.0.3 takes `0008`/`0009`, and the post-0.0.3 merges
+   take `0010_customer_memory_retention_index.sql` and
+   `0011_inbound_event_claim.sql`; this feature's migration is **0012**.
+2. **ADR number** — 0.0.3 takes 0149–0152 and the SimpleTexting migration took
+   0153; this ADR is **0154**.
+2b. **Textline is retired** (ADR-0153) — the governed send is provider-neutral
+   `toee_sms_reply` / "Send via SMS", so this design says SMS, not Textline.
 3. **Phase 2 builds no new pipeline.** 0.0.3 already ships the L6
    `agent_experience` propose→confirm→inject loop, its admin Accept/Reject
    queue, a proposal audit surface, and an aggregate metrics panel backed by
@@ -64,9 +68,9 @@ accumulates.
 
 ## 1. Data model
 
-New migration `hermes-runtime/migrations/0010_feedback_tables.sql` (0008 and
-0009 are taken by 0.0.3). Two independent tables in the operational layer
-(Toee Business Datastore). Retention follows the operational layer (ADR-0004).
+New migration `hermes-runtime/migrations/0012_feedback_tables.sql` (0008–0011
+are taken). Two independent tables in the operational layer (Toee Business
+Datastore). Retention follows the operational layer (ADR-0004).
 
 ### `interaction_review` (external)
 
@@ -112,7 +116,7 @@ otherwise `sent_edited` + ratio. Explicit rating without a send records
 Internal tag enum: `factual_error`, `wrong_tone`, `missing_context`,
 `too_verbose`, `wrong_action`, `other`.
 
-Known Phase 1 gap (accepted): only the governed Textline send produces an
+Known Phase 1 gap (accepted): only the governed SMS send produces an
 implicit outcome. Email and note drafts leave via manual copy — no send event
 — so they carry explicit ratings only.
 
@@ -264,4 +268,4 @@ and the record/replay pin is untouched.
   Reason Tag**, **Improvement Proposal** + relationships. These were authored
   on the 0.0.2 base and must be re-applied onto post-0.0.3 CONTEXT.md, which
   minted its own glossary terms in the same file.
-- ADR-0153: manual scoring feedback mechanisms (governance decisions).
+- ADR-0154: manual scoring feedback mechanisms (governance decisions).

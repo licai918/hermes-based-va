@@ -1,17 +1,19 @@
 # Manual scoring feedback: dual-side capture, actor-attributed, proposal-gated improvement
 
 > **Status: Accepted — design approved 2026-07-21** (grilling session with
-> product owner). **Targets 0.0.4 on the post-0.0.3 baseline** — it must not be
-> implemented until `feat/0.0.3-land-all` merges to `main`. Design spec:
+> product owner). **Targets 0.0.4**, on the post-0.0.3 baseline now on `main`.
+> Design spec:
 > `docs/superpowers/specs/2026-07-21-manual-scoring-feedback-design.md`;
 > module PRD: `workspace/0.0.4/quality-feedback/PRD.md`.
 > Builds on ADR-0148 (actor attribution invariant), ADR-0037/0085/0086 (audit
 > views), ADR-0083 (governed send), ADR-0059 (action enums), and — from 0.0.3 —
 > ADR-0150 (propose→confirm as the governance pattern) and ADR-0152 (the L6
 > agent-experience propose→confirm→inject loop this design feeds rather than
-> duplicates).
+> duplicates). The governed send is the provider-neutral `toee_sms_reply` per
+> ADR-0153; Textline is retired.
 >
-> Numbered 0153 because 0.0.3 occupies 0149–0152.
+> Numbered 0154: 0.0.3 landed 0149–0152 and the SimpleTexting migration
+> landed 0153.
 
 ## Context
 
@@ -29,7 +31,7 @@ framework-derived attribution) constrains how such a loop may close.
    supervisor/admin pass/fail on one `auto_handled_record` or
    `sales_outreach_case` audit subject, from the read-only audit views.
    Internal: **Draft Feedback** — implicit outcome (`sent_as_is` /
-   `sent_edited`, captured at governed Textline send) plus optional explicit
+   `sent_edited`, captured at governed SMS send) plus optional explicit
    👍/👎 on the draft card. Separate tables, separate fixed **Review Reason
    Tag** enums, separate role gates, separate (future) proposal pipelines.
 2. **Pass/fail + fixed reason tags, not a 1–5 scale.** Binary verdicts are
