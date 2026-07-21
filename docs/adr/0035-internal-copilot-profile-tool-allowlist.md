@@ -1,5 +1,11 @@
 # Internal Copilot Profile tool allowlist with phased write path
 
+> **Storage substrate superseded by ADR-0140/0142.** The **Profile Tool Allowlist** is
+> the decision here and is intact. Only the substrate changes: `toee_case_manage` writes
+> **Case Resolution** metadata to the **Toee Business Datastore** (Postgres), not
+> **Hermes Native Memory**, which is conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 The **Internal Copilot Profile** uses its own default-deny **Profile Tool Allowlist** for **Copilot Gateway** sessions in the first version. It is broader than the **External Customer Service Profile**, but still excludes business-system writes.
 
 **Allowed in v1 (in addition to external read tools):**

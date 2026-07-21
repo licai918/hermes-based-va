@@ -34,6 +34,78 @@ ProviderFactory = Callable[[str], ContextProvider]
 # driver.kind accurate when Composio backs only the Layer 1 tools (ADR-0128).
 DriverSelector = Callable[[str], ToolDriver]
 
+# Catalog actions that must NEVER become an LLM-callable tool, even though their
+# toolset is profile-allowlisted for other actions (0.0.3 S05). Registering
+# every allowlisted-toolset action is otherwise correct (ADR-0034 default-deny
+# is by toolset), but toee_identity_lookup.link_identity is a governed Identity
+# Graph WRITE meant only for the deterministic tools:dispatch HTTP surface
+# (hermes-runtime/hermes_runtime/tool_dispatch_composition.py's
+# _simulated_only_gate), reached from the Conversation Simulator only. Both
+# EXTERNAL and INTERNAL profiles allowlist toee_identity_lookup (for
+# match_phone/match_email_sender), so without this exclusion a live customer or
+# copilot turn would expose link_identity to the model -- a prompt-injectable
+# account-linking primitive. Still present in TOOL_CATALOG (so the HTTP
+# dispatch surface's catalog validation accepts it) and in plugin.yaml's
+# provides_tools (the manifest declares the full catalog surface); this only
+# stops it reaching a live agent's tool-calling loop.
+#
+# toee_customer_memory.get_memory_audit (0.0.3 S20, FR-20) is excluded for the
+# same reason, with a sharper stake: both EXTERNAL and INTERNAL allowlist
+# toee_customer_memory, so without this exclusion the customer-facing model
+# itself would gain a callable tool to read another customer's full write
+# history, including employee actor_account_id -- exactly the admin-gated
+# supervisor-only surface FR-20 exists to restrict. Reached only from the admin
+# BFF's deterministic tools:dispatch call (over the internal_copilot profile's
+# per-profile API, the only profile whose allowlist carries this tool).
+#
+# By contrast, toee_customer_memory.get_my_memory_summary (0.0.3 S21, FR-21) is
+# deliberately NOT here: it's the verified-only customer self-service "what do
+# you remember about me" read, meant to reach the EXTERNAL model's live
+# tool-calling loop (its own verified-identity gate, not this list, is what
+# keeps it safe -- see is_verified_customer_identity).
+#
+# toee_agent_experience.list_agent_experience (0.0.3 S22, FR-23) is excluded
+# for the same reason as get_memory_audit: an admin-only read of the L6 store
+# (proposed/confirmed/rejected entries, including proposer_context), meant only
+# for the admin BFF's deterministic tools:dispatch call, never the copilot
+# model's own tool-calling loop. propose_experience is deliberately NOT here --
+# it's the governed write the S23 review fork calls.
+#
+# toee_agent_experience.confirm_experience / .reject_experience (0.0.3 S24,
+# FR-24) are excluded for the same reason: the human confirm-gate decision --
+# US23, the agent only "learns" what a human approved -- must never become a
+# model-callable primitive the review fork (or a prompt injection) could use to
+# self-approve its own proposals. Reached ONLY via the admin BFF's
+# deterministic tools:dispatch call, never a live agent's tool loop.
+#
+# toee_metrics.get_aggregate_metrics (0.0.3 S26, FR-28) is excluded for the
+# same reason as get_memory_audit/list_agent_experience: an admin-only
+# aggregate read (rates/counts/distributions across ALL customers), meant only
+# for the admin BFF's deterministic tools:dispatch call, never a live agent's
+# tool-calling loop -- it carries no customer PII, but it is still an
+# operational surface a live turn has no business calling.
+#
+# toee_retention.trigger_retention_sweep / .get_retention_status (0.0.3 S28,
+# FR-30) are excluded for the same reason: the retention sweep is an
+# admin-triggered batch job (ages out customer_memory_slot rows per the
+# ADR-0004/0116 class windows) and its last-run/per-class-counts read, neither
+# meant for a live agent's tool-calling loop -- a model with a live "delete
+# customer data" primitive is exactly the risk this exclusion list exists to
+# prevent. Reached only via the admin BFF's deterministic tools:dispatch call
+# or the schedulable CLI entrypoint (hermes_runtime.retention_sweep).
+_AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("toee_identity_lookup", "link_identity"),
+        ("toee_customer_memory", "get_memory_audit"),
+        ("toee_agent_experience", "list_agent_experience"),
+        ("toee_agent_experience", "confirm_experience"),
+        ("toee_agent_experience", "reject_experience"),
+        ("toee_metrics", "get_aggregate_metrics"),
+        ("toee_retention", "trigger_retention_sweep"),
+        ("toee_retention", "get_retention_status"),
+    }
+)
+
 
 def _build_driver_selector(
     injected: Optional[ToolDriver],
@@ -138,6 +210,8 @@ def _register(
 
     for entry in build_tool_schemas():
         if entry["toolset"] not in allow:
+            continue
+        if (entry["tool"], entry["action"]) in _AGENT_EXCLUDED_ACTIONS:
             continue
         handler = make_tool_handler(
             tool=entry["tool"],

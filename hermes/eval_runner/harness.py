@@ -17,6 +17,7 @@ from toee_hermes.drivers.mock import (
     MockHandler,
     MockHandlerRegistry,
     create_admin_stub_mock_handlers,
+    create_agent_experience_mock_handlers,
     create_case_mock_handlers,
     create_easyroutes_mock_handlers,
     create_identity_mock_handlers,
@@ -129,6 +130,7 @@ def build_scenario_registry(ctx: MergedMockContext) -> MockHandlerRegistry:
         create_case_mock_handlers(),
         create_sms_reply_mock_handlers(),
         create_admin_stub_mock_handlers(),
+        create_agent_experience_mock_handlers(),
     )
 
     for domain, reason in ctx.domain_errors.items():

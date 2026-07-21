@@ -22,8 +22,10 @@ boundary by grepping every deterministic-path module's source for the word "judg
 
 from __future__ import annotations
 
+from typing import Optional
+
 from .harness import AgentTurnResult
-from .judge import DEFAULT_JUDGE_MODEL, JudgeClient, JudgeLeg, JudgeVerdict, judge_reply
+from .judge import JudgeClient, JudgeLeg, JudgeVerdict, judge_reply
 from .types import MergedScenario
 
 
@@ -33,7 +35,7 @@ def judge_scenario_leg(
     *,
     leg: JudgeLeg,
     client: JudgeClient,
-    model: str = DEFAULT_JUDGE_MODEL,
+    model: Optional[str] = None,
 ) -> JudgeVerdict:
     """Judge one scenario's reply for one leg — advisory only, never gates.
 

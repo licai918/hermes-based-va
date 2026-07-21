@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
 
 
@@ -101,6 +102,48 @@ def _email_link_status(data: IdentityMockData, params: dict[str, Any]) -> dict[s
     return {"status": "unlinked"}
 
 
+def _link_identity(data: IdentityMockData, params: dict[str, Any]) -> dict[str, Any]:
+    """Mock counterpart of the datastore ``link_identity`` action (0.0.3 S05).
+
+    Upserts a verified match record into ``phone_matches``/``email_matches`` so a
+    *subsequent* ``match_phone``/``match_email_sender`` call on the SAME driver
+    instance resolves ``verified_customer`` -- mirrors the datastore handler's
+    ``identity_link`` upsert, just against the injected mock table instead of
+    Postgres. ``data`` mutates in place (ponytail: the default arg is the
+    process-wide ``identity_baseline_data`` singleton, so under TOOL_BACKEND=mock
+    a link made through the running gateway/dispatch process is visible to every
+    later request in that process -- dev-only, resets on restart, never touches
+    real data).
+    """
+    channel = _read_string(params, "channel") or "sms"
+    channel_identity = _read_string(
+        params, "channel_identity", "phone", "from_phone", "fromPhone"
+    )
+    shopify_customer_id = _read_string(params, "shopify_customer_id", "shopifyCustomerId")
+    company_name = _read_string(params, "company_name", "companyName")
+    if not channel_identity:
+        raise ToolDriverError("unexpected_error", "channel_identity is required.")
+    if not shopify_customer_id:
+        raise ToolDriverError("unexpected_error", "shopify_customer_id is required.")
+
+    record: dict[str, Any] = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": shopify_customer_id,
+    }
+    if company_name:
+        record["company_name"] = company_name
+
+    table = data.email_matches if channel == "email" else data.phone_matches
+    table[channel_identity] = record
+
+    return {
+        "outcome": "linked",
+        "channel": channel,
+        "channel_identity": channel_identity,
+        "shopify_customer_id": shopify_customer_id,
+    }
+
+
 def create_identity_mock_handlers(
     data: IdentityMockData = identity_baseline_data,
 ) -> MockHandlerRegistry:
@@ -128,5 +171,6 @@ def create_identity_mock_handlers(
             "get_email_link_status": lambda params, context: _email_link_status(
                 data, params
             ),
+            "link_identity": lambda params, context: _link_identity(data, params),
         }
     }

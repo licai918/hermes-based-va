@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from eval_runner.transcript import turn_result_from_transcript
+from toee_hermes.gateway.normalize import SIMPLETEXTING_SMS, is_email_channel
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -57,13 +58,22 @@ def run_gateway_turn(
     sms_session_id: Optional[str] = None,
     system_message: Optional[str] = None,
     profile: str = EXTERNAL,
+    extra_drivers: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run one governed External turn bound to ``conversation_id`` (ADR-0107).
+
+    ``extra_drivers`` threads the per-tool driver overlay (S04/S09/S10) into this
+    boot, same reasoning as :func:`hermes_runtime.live.run_live_turn` -- a bare
+    boot after an overlay boot silently clobbers it back to mock in the shared
+    upstream ``tools.registry`` singleton.
 
     Returns the captured ``{"final_response": str, "messages": list}`` turn.
     """
     booted = boot_profile(
-        profile, conversation_id=conversation_id, sms_session_id=sms_session_id
+        profile,
+        conversation_id=conversation_id,
+        sms_session_id=sms_session_id,
+        extra_drivers=extra_drivers,
     )
     return run_scripted_agent(
         user_message=inbound_body,
@@ -104,7 +114,10 @@ def make_gateway_turn_runner(
 
     def turn_runner(context: Any, inbound_body: str) -> None:
         turn = run_turn(context, inbound_body)
-        reply = clip_sms_reply(outbound_reply_text(turn))
+        reply = outbound_reply_text(turn)
+        # S17: SMS is clipped to one segment; an email reply is not 480-char-clipped.
+        if not is_email_channel(getattr(context, "channel", SIMPLETEXTING_SMS)):
+            reply = clip_sms_reply(reply)
         reply_sender(context.conversation_id, reply)
         if on_reply_sent is not None:
             on_reply_sent(context, reply)

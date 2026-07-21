@@ -1,18 +1,22 @@
 // Canonical inbound event passed from gateway normalization into ingress and
 // Hermes runtime code (ADR-0102). Provider-specific field names stay inside the
 // gateway's normalize step; agent prompts and tools consume this shape only.
-export type ChannelId = "simpletexting_sms";
+// `simpletexting_sms` is the SMS channel; `simulated_email` is the simulator-driven
+// email channel (0.0.3 S17/FR-18, RK-4: no real email provider). The SMS literal is
+// ingress-only — the persisted vocabulary is `sms`|`email` — so the provider rename
+// (ADR-0153) needed no migration.
+export type ChannelId = "simpletexting_sms" | "simulated_email";
 
-export type ProviderId = "simpletexting";
+export type ProviderId = "simpletexting" | "simulated_email";
 
 export interface InboundChannelEvent {
-  /** Fixed `simpletexting_sms` in v1. */
+  /** `simpletexting_sms` (SMS) or `simulated_email` (S17). */
   channel: ChannelId;
-  /** Fixed `simpletexting` in v1. */
+  /** `simpletexting` (SMS) or `simulated_email` (S17). */
   provider: ProviderId;
   /** Provider event or message identifier used for idempotency. */
   eventId: string;
-  /** Contact-phone conversation identifier (SimpleTexting has no conversation resource). */
+  /** Conversation identifier; the contact phone for SMS (no conversation resource). */
   conversationId: string;
   /** Sender phone in normalized E.164 form. */
   fromPhone: string;

@@ -10,8 +10,10 @@ from __future__ import annotations
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
     SmsInboundFields,
+    canonicalize_email,
     normalize_e164,
     to_inbound_channel_event,
+    to_inbound_email_event,
 )
 
 
@@ -68,3 +70,44 @@ def test_media_urls_only_when_present_and_nonempty() -> None:
     assert to_inbound_channel_event(
         _fields(media_urls=["https://cdn/x.jpg"])
     ).media_urls == ["https://cdn/x.jpg"]
+
+
+# --- S17: simulated email normalization (FR-18) ------------------------------
+
+
+def test_canonicalize_email_trims_and_lowercases() -> None:
+    assert canonicalize_email("  Accounts@Acme-Fleet.Example ") == "accounts@acme-fleet.example"
+
+
+def test_builds_canonical_email_event_folding_subject_into_body() -> None:
+    event = to_inbound_email_event(
+        event_id="evt-e1",
+        conversation_id="conv-e1",
+        from_address="Accounts@Acme-Fleet.Example",
+        subject="Order 10444",
+        body="Where is it?",
+        received_at="2026-06-19T12:00:00.000Z",
+    )
+    assert event == InboundChannelEvent(
+        channel="simulated_email",
+        provider="simulated_email",
+        event_id="evt-e1",
+        conversation_id="conv-e1",
+        from_phone="accounts@acme-fleet.example",
+        body="Subject: Order 10444\n\nWhere is it?",
+        received_at="2026-06-19T12:00:00.000Z",
+        raw_event_type="email.received",
+        media_urls=None,
+    )
+
+
+def test_email_event_without_subject_keeps_body_verbatim() -> None:
+    event = to_inbound_email_event(
+        event_id="evt-e2",
+        conversation_id="conv-e2",
+        from_address="a@b.com",
+        subject="",
+        body="just the body",
+        received_at="2026-06-19T12:00:00.000Z",
+    )
+    assert event.body == "just the body"

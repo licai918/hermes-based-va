@@ -6,6 +6,7 @@ the Launch Eval runner.
 """
 
 from .admin_stubs import create_admin_stub_mock_handlers
+from .agent_experience import create_agent_experience_mock_handlers
 from .case import (
     CaseMockData,
     case_baseline_data,
@@ -37,11 +38,13 @@ from .memory import (
     create_memory_mock_handlers,
     memory_baseline_data,
 )
+from .metrics import create_metrics_mock_handlers
 from .qbo import (
     QboMockData,
     create_qbo_mock_handlers,
     qbo_baseline_data,
 )
+from .retention import create_retention_mock_handlers
 from .shopify import (
     ShopifyMockData,
     create_shopify_mock_handlers,
@@ -60,7 +63,7 @@ from .sms_reply import (
 
 
 def create_all_mock_handlers() -> MockHandlerRegistry:
-    """Merge every tool's baseline mock fragment into one registry (all 15 v1 tools)."""
+    """Merge every tool's baseline mock fragment into one registry (all 17 v1 tools)."""
     return merge_registries(
         create_identity_mock_handlers(),
         create_shopify_mock_handlers(),
@@ -72,6 +75,9 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_sms_reply_mock_handlers(),
         create_square_mock_handlers(),
         create_admin_stub_mock_handlers(),
+        create_agent_experience_mock_handlers(),
+        create_metrics_mock_handlers(),
+        create_retention_mock_handlers(),
     )
 
 
@@ -109,4 +115,7 @@ __all__ = [
     "create_square_mock_handlers",
     "square_baseline_data",
     "create_admin_stub_mock_handlers",
+    "create_agent_experience_mock_handlers",
+    "create_metrics_mock_handlers",
+    "create_retention_mock_handlers",
 ]

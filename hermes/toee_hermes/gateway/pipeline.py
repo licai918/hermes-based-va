@@ -1,4 +1,4 @@
-"""Inbound SMS pipeline orchestrator (ADR-0104, ADR-0108, ADR-0109, ADR-0043).
+"""Inbound SMS/email pipeline orchestrator (ADR-0104, ADR-0108, ADR-0109, ADR-0043).
 
 Composes the stable gateway primitives into a single, deterministic decision the
 route/embedding layer acts on. This is the "Hermes embedding" seam: it resolves
@@ -30,11 +30,13 @@ from toee_hermes.errors import ToolErrorClass
 from toee_hermes.execute import ToolDriver
 from toee_hermes.gateway.ingress import (
     SessionIdentitySnapshot,
+    match_ingress_email,
     match_ingress_phone,
 )
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
     SmsInboundFields,
+    is_email_channel,
     to_inbound_channel_event,
 )
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION, is_opt_out_keyword
@@ -69,19 +71,32 @@ def process_inbound(
     *,
     token: Optional[str],
     secret: str,
-    fields: SmsInboundFields,
+    fields: Optional[SmsInboundFields] = None,
+    event: Optional[InboundChannelEvent] = None,
     driver: ToolDriver,
     rate_limiter: InboundRateLimiter,
     resolved_at: str,
     is_duplicate: DuplicateCheck = lambda event_id: False,
     at_ms: Optional[float] = None,
 ) -> InboundDecision:
+    """Decide an inbound turn for SMS (``fields``) or email (``event``, S17/FR-18).
+
+    SMS callers pass ``fields`` (normalized here via ``to_inbound_channel_event``);
+    the simulated-email route passes an already-built ``event`` (subject folded into
+    the body upstream). The channel-agnostic core — verify, dedup, rate-limit,
+    accept — is shared; only identity match and the SMS-only opt-out short-circuit
+    branch on the channel.
+    """
     # Verify: reject traffic without the shared webhook-URL token before any
-    # processing (ADR-0021; SimpleTexting does not sign payloads).
+    # processing (ADR-0021; SimpleTexting does not sign payloads, ADR-0153).
     if not verify_webhook_token(token=token, secret=secret):
         return InboundDecision(status=401, action="reject", stage="verify")
 
-    event = to_inbound_channel_event(fields)
+    if event is None:
+        if fields is None:
+            raise ValueError("process_inbound requires exactly one of fields/event.")
+        event = to_inbound_channel_event(fields)
+    is_email = is_email_channel(event.channel)
 
     # Idempotency: a redelivered eventId is a no-op ack — before opt-out so a
     # duplicate STOP cannot trigger a second confirmation (ADR-0016).
@@ -90,9 +105,9 @@ def process_inbound(
             status=200, action="duplicate", stage="idempotency", event=event
         )
 
-    # Opt-out: compliance short-circuit, one fixed confirmation, no agent turn
-    # and no rate-limit consumption (ADR-0108, ADR-0015, ADR-0016).
-    if is_opt_out_keyword(event.body):
+    # Opt-out: SMS-only compliance short-circuit (ADR-0108/0015/0016). Email is not
+    # STOP-gated the same way (S17/RK-4) — its "STOP" is prose, not a keyword.
+    if not is_email and is_opt_out_keyword(event.body):
         return InboundDecision(
             status=200,
             action="opt_out",
@@ -101,12 +116,18 @@ def process_inbound(
             reply=SMS_OPT_OUT_CONFIRMATION,
         )
 
-    # Ingress Phone Match: resolve the Session Identity Snapshot synchronously
-    # before persist (ADR-0103 step 4, ADR-0043). Transient lookup failure is a
-    # retryable 500 (ADR-0104); no-match and ambiguous are normal 200 states.
-    ingress = match_ingress_phone(
-        phone=event.from_phone, driver=driver, resolved_at=resolved_at
-    )
+    # Ingress identity match: resolve the Session Identity Snapshot synchronously
+    # before persist (ADR-0103 step 4, ADR-0043). Phone for SMS, From address for
+    # email (ADR-0052/0054). Transient lookup failure is a retryable 500 (ADR-0104);
+    # no-match and ambiguous are normal 200 states.
+    if is_email:
+        ingress = match_ingress_email(
+            from_address=event.from_phone, driver=driver, resolved_at=resolved_at
+        )
+    else:
+        ingress = match_ingress_phone(
+            phone=event.from_phone, driver=driver, resolved_at=resolved_at
+        )
     if ingress.retryable_error:
         return InboundDecision(
             status=500,

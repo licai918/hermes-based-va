@@ -1,5 +1,12 @@
 # Human-intervention cases only for Copilot; auto-handled interactions audit-only
 
+> **Storage substrate superseded by ADR-0140/0142.** The **Auto-Handled Interaction** vs
+> **Human Intervention Case** split and the phase-1 governed-write rule still hold. Only
+> the substrate changes: **Auto-Handled Interaction** conversation, tool-call, and outcome
+> records go to the **Toee Business Datastore** (Postgres), not **Hermes Native Memory**,
+> which is conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 Not every customer interaction enters the **Copilot Workbench** queue. When the **External Customer Service Profile** completes a request within policy, Hermes records the interaction for audit and does not open a human workflow in Copilot.
 
 **Auto-Handled Interaction:** an external customer-service turn that Hermes completes without creating a **Follow-up Case**. Hermes still writes conversation, tool-call, and outcome records to **Hermes Native Memory** and audit logs for traceability. These interactions are reviewable for compliance and quality, but they do not require **Copilot Draft Action** or employee send in v1.

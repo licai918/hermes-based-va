@@ -13,6 +13,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from toee_hermes.drivers.mock.agent_experience import AGENT_EXPERIENCE_KINDS
+from toee_hermes.drivers.mock.memory import MEMORY_PREFERENCE_SLOTS
+
 from .harness import AgentTurnResult, RecordedToolCall
 
 
@@ -98,6 +101,107 @@ def _str_field(call: _ParsedCall, *keys: str) -> str | None:
             if isinstance(value, str) and value:
                 return value
     return None
+
+
+@dataclass(frozen=True)
+class MemoryProposal:
+    """One structured Customer Memory proposal extracted from a turn (S14, FR-15).
+
+    ``evidence_turn`` is the optional verbatim customer phrase the write carried as
+    ``evidence`` (PRD FR-3) -- named to match the PRD's ``(slot, value,
+    evidence-turn)`` envelope wording.
+    """
+
+    slot: str
+    value: str
+    evidence_turn: str | None = None
+
+
+def memory_proposals_from_messages(messages: list[dict]) -> list[MemoryProposal]:
+    """Structured ``toee_customer_memory.upsert_preference`` proposals (S14, FR-15).
+
+    Reads each successful call's governed RESULT -- the tool gate already validated
+    the slot/value there -- never the raw model-supplied call arguments, so a
+    proposal can't smuggle prose past the tool (mirrors the framework-derived, not
+    model-narrated, discipline ``resolve_memory_write_source``/``resolve_customer_
+    memory_binding`` already hold to). A failed call (bad slot, oversized value,
+    unresolvable identity, ...) is already ``ok is False`` from ``_parsed_calls`` and
+    is skipped; a slot outside the current ``MEMORY_PREFERENCE_SLOTS`` enum is
+    dropped too, defense in depth against a future driver that behaves differently.
+    This turn is propose-only (S13/ADR-0150): nothing here writes anywhere.
+    """
+    proposals: list[MemoryProposal] = []
+    for call in _parsed_calls(messages):
+        if (
+            call.tool != "toee_customer_memory"
+            or call.action != "upsert_preference"
+            or not call.ok
+        ):
+            continue
+        result = call.result if isinstance(call.result, dict) else {}
+        slot = result.get("slot")
+        value = result.get("value")
+        if slot not in MEMORY_PREFERENCE_SLOTS or not isinstance(value, str):
+            continue
+        evidence = result.get("evidence")
+        proposals.append(
+            MemoryProposal(
+                slot=slot,
+                value=value,
+                evidence_turn=evidence if isinstance(evidence, str) else None,
+            )
+        )
+    return proposals
+
+
+@dataclass(frozen=True)
+class ExperienceProposal:
+    """One L6 agent-experience proposal extracted from a review-fork turn (S23, FR-22).
+
+    The learning-loop twin of :class:`MemoryProposal`: ``kind``/``content``/``status``
+    are read from the governed ``propose_experience`` RESULT, never the model's
+    free text -- so a proposal can't smuggle prose past the tool.
+    """
+
+    kind: str
+    content: str
+    status: str = "proposed"
+
+
+def experience_proposals_from_messages(messages: list[dict]) -> list[ExperienceProposal]:
+    """Structured ``toee_agent_experience.propose_experience`` proposals (S23, FR-22).
+
+    Same framework-derived discipline as :func:`memory_proposals_from_messages`:
+    reads each SUCCESSFUL governed call's RESULT (the write-side scan + kind/content
+    validation already ran there), never the raw model-supplied args. A failed
+    call (PII/injection rejected by the S22 scan, bad kind, ...) is already
+    ``ok is False`` and is skipped, so a fork that tried to propose person-specific
+    content yields nothing. A ``kind`` outside the current enum is dropped too,
+    defense in depth. The review fork writes ``status='proposed'`` only; this is
+    pure extraction from the transcript, no write path.
+    """
+    proposals: list[ExperienceProposal] = []
+    for call in _parsed_calls(messages):
+        if (
+            call.tool != "toee_agent_experience"
+            or call.action != "propose_experience"
+            or not call.ok
+        ):
+            continue
+        result = call.result if isinstance(call.result, dict) else {}
+        kind = result.get("kind")
+        content = result.get("content")
+        if kind not in AGENT_EXPERIENCE_KINDS or not isinstance(content, str) or not content:
+            continue
+        status = result.get("status")
+        proposals.append(
+            ExperienceProposal(
+                kind=kind,
+                content=content,
+                status=status if isinstance(status, str) and status else "proposed",
+            )
+        )
+    return proposals
 
 
 def turn_result_from_transcript(

@@ -13,6 +13,17 @@ dependencies = [
     "fastapi",
     "psycopg[binary]>=3",
     "composio>=0.15.0",
+    "psycopg-pool>=3",
+    # numpy is a real production dep: knowledge/retriever.py imports it at module
+    # top-level for _cosine_ranking (RRF hybrid retrieval). It reached the local
+    # venv transitively via the spike's fastembed install and was never declared
+    # -> a fresh `uv sync --frozen` (CI runtime job) failed at test COLLECTION
+    # (the pytest.skip("fastembed not installed") guards are inside functions, so
+    # they never run when the module import itself dies). fastembed stays
+    # UNDECLARED on purpose: it is lazy-imported inside fastembed_query_embedder,
+    # and the CI skip-whitelist is designed around its absence (declaring it would
+    # pull ~100MB models). See 0.0.3 final whole-branch review.
+    "numpy>=2",
 ]
 
 # ADR-0101 / ADR-0139: the official Hermes core is pinned to an exact git rev and

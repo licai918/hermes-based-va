@@ -100,12 +100,15 @@ def test_upsert_is_idempotent_overwrite(datastore) -> None:
 
 
 def test_clear_preference_removes_the_slot(datastore) -> None:
+    # 0.0.3 S20 (FR-20): clear is a governed employee/supervisor action, same
+    # attributed-actor requirement as dismiss_proposal.
     driver, _, _ = datastore
     identity = {"channel": "sms", "channel_identity": "+14165550002"}
     _run(driver, "upsert_preference",
          {"key": "delivery_habit_note", "value": "leave at dock"}, identity=identity)
     cleared = _run(driver, "clear_preference",
-                   {"key": "delivery_habit_note"}, identity=identity)
+                   {"key": "delivery_habit_note"}, identity=identity,
+                   profile="internal_copilot", user_id="acct_rep_1")
     assert cleared.ok
     assert cleared.data["cleared"] is True
     got = _run(driver, "get_preferences", {}, identity=identity)
@@ -392,3 +395,392 @@ def test_evidence_is_optional_and_defaults_to_null(datastore) -> None:
         row = cur.fetchone()
     assert row is not None
     assert row[0] is None
+
+
+# --- dismiss_proposal (0.0.3 S15, FR-16/FR-17) ------------------------------
+# Acceptance criterion ①: "dismissed leaves no slot but an audit row -- read
+# back directly from Postgres."
+
+
+def test_dismiss_proposal_persists_no_slot_but_writes_an_audit_row(datastore) -> None:
+    driver, conn, _ = datastore
+    result = _run(
+        driver,
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms", "evidence": "text me on sms"},
+        identity=_PROVISIONAL_A,
+        profile="internal_copilot",
+        user_id="acct_rep_1",
+    )
+    assert result.ok
+    assert result.data["dismissed"] is True
+    binding_key = result.data["binding_key"]
+
+    with conn.cursor() as cur:
+        # No slot: a dismissed proposal can't quietly persist (US17).
+        cur.execute(
+            "SELECT count(*) FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (binding_key, "channel_preference"),
+        )
+        assert cur.fetchone()[0] == 0
+
+        # But an audit row exists, attributed to the deciding employee.
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id, details "
+            "FROM workbench_audit_log WHERE action = 'proposal_dismissed' "
+            "AND target_id = %s",
+            ("channel_preference",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id, details = row
+    assert account_id == "acct_rep_1"
+    assert action == "proposal_dismissed"
+    assert target_type == "customer_memory_slot"
+    assert target_id == "channel_preference"
+    assert details["slot"] == "channel_preference"
+    assert details["value"] == "sms"
+    assert details["evidence"] == "text me on sms"
+
+
+def test_dismiss_proposal_with_no_actor_is_policy_blocked(datastore) -> None:
+    driver, conn, _ = datastore
+    result = _run(
+        driver,
+        "dismiss_proposal",
+        {"key": "channel_preference", "value": "sms"},
+        identity=_PROVISIONAL_A,
+        profile="internal_copilot",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'proposal_dismissed'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+# --- clear_preference audit (0.0.3 S20, FR-20) ------------------------------
+# Acceptance criterion ①(b): "a clear removes the slot AND persists an
+# attributed preference_cleared audit entry, read back from the real
+# workbench_audit_log" -- closes the 0.0.2 PAC-1 caveat (a clear used to leave
+# zero trace). Plus: "a handler test proving clear with no actor is
+# policy_blocked."
+
+
+def test_clear_preference_with_no_actor_is_policy_blocked(datastore) -> None:
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550098"}
+    _run(driver, "upsert_preference",
+         {"key": "delivery_habit_note", "value": "leave at dock"}, identity=identity)
+
+    result = _run(driver, "clear_preference", {"key": "delivery_habit_note"}, identity=identity)
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+    # Fail-closed, not fail-open: the slot survives an unattributed clear attempt.
+    got = _run(driver, "get_preferences", {}, identity=identity)
+    assert got.data["preferences"]["delivery_habit_note"] == "leave at dock"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'preference_cleared'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_clear_preference_persists_an_attributed_audit_row(datastore) -> None:
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550097"}
+    _run(driver, "upsert_preference",
+         {"key": "communication_style_note", "value": "prefers texts"}, identity=identity)
+
+    cleared = _run(
+        driver, "clear_preference", {"key": "communication_style_note"},
+        identity=identity, profile="internal_copilot", user_id="acct_sup_1",
+    )
+    assert cleared.ok
+    assert cleared.data["cleared"] is True
+    binding_key = cleared.data["binding_key"]
+
+    # The slot is really gone -- read back from Postgres, not the response echo.
+    got = _run(driver, "get_preferences", {}, identity=identity)
+    assert "communication_style_note" not in got.data["preferences"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id, details "
+            "FROM workbench_audit_log WHERE action = 'preference_cleared' "
+            "AND target_id = %s",
+            ("communication_style_note",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id, details = row
+    assert account_id == "acct_sup_1"
+    assert action == "preference_cleared"
+    assert target_type == "customer_memory_slot"
+    assert target_id == "communication_style_note"
+    assert details["slot"] == "communication_style_note"
+    assert details["binding_key"] == binding_key
+    assert details["initiator"] == "rep"
+
+
+# --- clear_preference / get_my_memory_summary: verified customer self-service
+# (0.0.3 S21, FR-21, NFR-2) -- EXTENDS the S20 gate above to also authorize a
+# VERIFIED customer clearing their OWN binding on the EXTERNAL profile, and
+# adds the verified-only customer-safe summary read. The make-or-break
+# property: an UNVERIFIED caller gets ZERO data and CANNOT clear.
+
+
+def test_clear_preference_verified_external_customer_clears_own_slot_and_audits(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    identity = VERIFIED
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+
+    cleared = _run(driver, "clear_preference", {"key": "channel_preference"}, identity=identity)
+    assert cleared.ok
+    assert cleared.data["cleared"] is True
+    binding_key = cleared.data["binding_key"]
+    assert binding_key == identity["shopify_customer_id"]
+
+    # The slot is really gone -- read back from Postgres.
+    got = _run(driver, "get_preferences", {}, identity=identity)
+    assert "channel_preference" not in got.data["preferences"]
+
+    # Audited: customer-initiated, NULL actor (the customer is not a workbench
+    # account) -- distinguishable from a rep clear via details.initiator.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id, details "
+            "FROM workbench_audit_log WHERE action = 'preference_cleared' "
+            "AND target_id = %s",
+            ("channel_preference",),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id, details = row
+    assert account_id is None
+    assert action == "preference_cleared"
+    assert target_type == "customer_memory_slot"
+    assert target_id == "channel_preference"
+    assert details["binding_key"] == binding_key
+    assert details["initiator"] == "customer"
+
+
+def test_clear_preference_unverified_external_caller_is_policy_blocked(datastore) -> None:
+    # FR-21/US13: a provisional (unmatched/ambiguous) EXTERNAL caller must
+    # still be policy_blocked -- a resolvable provisional binding is not
+    # authorization.
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550080"}
+    _run(driver, "upsert_preference",
+         {"key": "delivery_habit_note", "value": "leave at dock"}, identity=identity)
+
+    result = _run(driver, "clear_preference", {"key": "delivery_habit_note"}, identity=identity)
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+    # Fail-closed, not fail-open: the slot survives.
+    got = _run(driver, "get_preferences", {}, identity=identity)
+    assert got.data["preferences"]["delivery_habit_note"] == "leave at dock"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'preference_cleared'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_clear_preference_unmatched_external_caller_is_policy_blocked(datastore) -> None:
+    # No channel identity in context at all -- resolve_customer_memory_binding
+    # itself fails closed, and the verified-only gate rejects before that too.
+    driver, _, _ = datastore
+    result = _run(driver, "clear_preference", {"key": "delivery_habit_note"})
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+
+def test_get_my_memory_summary_verified_external_returns_slot_values_only(
+    datastore,
+) -> None:
+    driver, _, _ = datastore
+    identity = VERIFIED
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+    _run(driver, "upsert_preference",
+         {"key": "contact_time_preference", "value": "mornings"}, identity=identity)
+
+    result = _run(driver, "get_my_memory_summary", {}, identity=identity)
+    assert result.ok
+    assert result.data == {
+        "preferences": {
+            "channel_preference": "sms",
+            "contact_time_preference": "mornings",
+        }
+    }
+    # No internal metadata: no source, actor, timestamps, or binding_key.
+    assert set(result.data.keys()) == {"preferences"}
+
+
+def test_get_my_memory_summary_unverified_provisional_caller_gets_no_data(
+    datastore,
+) -> None:
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550081"}
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+
+    result = _run(driver, "get_my_memory_summary", {}, identity=identity)
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_unmatched_caller_gets_no_data(datastore) -> None:
+    driver, _, _ = datastore
+    result = _run(driver, "get_my_memory_summary", {})
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert result.data is None
+
+
+def test_get_my_memory_summary_internal_copilot_verified_still_requires_verified_identity(
+    datastore,
+) -> None:
+    # The gate is verified-identity, not profile -- an internal_copilot call
+    # with no resolvable/verified identity is blocked the same way.
+    driver, _, _ = datastore
+    result = _run(driver, "get_my_memory_summary", {}, profile="internal_copilot")
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+
+def test_get_my_memory_summary_isolated_by_verified_binding(datastore) -> None:
+    # Mirrors the mock-layer test of the same name: two distinct verified
+    # customers bind to two distinct Shopify customer ids, so customer B's
+    # summary must never surface customer A's slots.
+    driver, _, _ = datastore
+    customer_a = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": "gid://shopify/Customer/9001",
+    }
+    customer_b = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": "gid://shopify/Customer/9002",
+    }
+    _run(driver, "upsert_preference",
+         {"key": "contact_time_preference", "value": "mornings"}, identity=customer_a)
+
+    result = _run(driver, "get_my_memory_summary", {}, identity=customer_b)
+    assert result.ok
+    assert result.data == {"preferences": {}}
+
+
+# --- get_memory_audit (0.0.3 S20, FR-20: supervisor memory audit view) ------
+# "The audit view's full write history is the UNION of two sources": current
+# slot rows (who wrote what's live now) and the workbench_audit_log trail for
+# the binding. The S16 boundary requires proposal_dismissed rows to surface
+# here already, not be filtered out.
+
+
+def test_get_memory_audit_surfaces_current_slot_attribution(datastore) -> None:
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550096"}
+    _run(
+        driver, "upsert_preference", {"key": "channel_preference", "value": "sms"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_2",
+    )
+
+    result = _run(driver, "get_memory_audit", {}, identity=identity)
+    assert result.ok
+    slots = result.data["slots"]
+    assert len(slots) == 1
+    assert slots[0]["slot_name"] == "channel_preference"
+    assert slots[0]["slot_value"] == "sms"
+    assert slots[0]["source"] == "employee_confirmed"
+    assert slots[0]["actor_account_id"] == "acct_rep_2"
+    assert slots[0]["updated_at"] is not None
+
+
+def test_get_memory_audit_surfaces_dismissed_and_cleared_history_not_filtered(
+    datastore,
+) -> None:
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550095"}
+    _run(
+        driver, "dismiss_proposal",
+        {"key": "delivery_habit_note", "value": "back door", "evidence": "leave it out back"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_3",
+    )
+    _run(
+        driver, "upsert_preference", {"key": "channel_preference", "value": "sms"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_3",
+    )
+    _run(
+        driver, "clear_preference", {"key": "channel_preference"},
+        identity=identity, profile="internal_copilot", user_id="acct_sup_3",
+    )
+
+    result = _run(driver, "get_memory_audit", {}, identity=identity)
+    assert result.ok
+    # The cleared slot is gone from the live view.
+    assert result.data["slots"] == []
+
+    # S16 boundary: dismiss + clear are both already surfaced here (S16 only
+    # adds presentation, it does not need a second backend read).
+    history = result.data["audit"]
+    actions = [row["action"] for row in history]
+    assert "proposal_dismissed" in actions
+    assert "preference_cleared" in actions
+    cleared_row = next(r for r in history if r["action"] == "preference_cleared")
+    assert cleared_row["account_id"] == "acct_sup_3"
+    dismissed_row = next(r for r in history if r["action"] == "proposal_dismissed")
+    assert dismissed_row["account_id"] == "acct_rep_3"
+
+
+def test_get_memory_audit_surfaces_accepted_slot_and_dismissed_proposal_together(
+    datastore,
+) -> None:
+    """S16 (FR-17): the proposal-history section reads BOTH proposal outcomes
+    off this one payload, no second backend read -- accepted (an
+    employee_confirmed slot, S15's model: the slot row IS the acceptance
+    record) and dismissed (a proposal_dismissed audit row, S15) for the same
+    binding, each carrying the fields the section needs: slot+value, actor,
+    timestamp.
+    """
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550093"}
+    _run(
+        driver, "upsert_preference", {"key": "channel_preference", "value": "sms"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_4",
+    )
+    _run(
+        driver, "dismiss_proposal",
+        {"key": "delivery_habit_note", "value": "back door", "evidence": "leave it out back"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_4",
+    )
+
+    result = _run(driver, "get_memory_audit", {}, identity=identity)
+    assert result.ok
+
+    slots = result.data["slots"]
+    assert len(slots) == 1
+    assert slots[0]["slot_name"] == "channel_preference"
+    assert slots[0]["slot_value"] == "sms"
+    assert slots[0]["source"] == "employee_confirmed"
+    assert slots[0]["actor_account_id"] == "acct_rep_4"
+    assert slots[0]["updated_at"] is not None
+
+    history = result.data["audit"]
+    dismissed_row = next(r for r in history if r["action"] == "proposal_dismissed")
+    assert dismissed_row["account_id"] == "acct_rep_4"
+    assert dismissed_row["details"]["slot"] == "delivery_habit_note"
+    assert dismissed_row["details"]["value"] == "back door"
+    assert dismissed_row["created_at"] is not None

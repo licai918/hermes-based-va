@@ -353,6 +353,49 @@ describe("handleDraftViaApi (drafts over the agent-turn API)", () => {
     expect(actions("missing")).not.toContain("draft_generated");
   });
 
+  // S14 (FR-15): the agent-turn envelope's `proposals[]` (when the draft turn
+  // proposed a Customer Memory write) must ride through to the BFF body intact —
+  // this handler does a bare rest-spread (`{ provenance: _p, ...draft }`), so a new
+  // envelope field like `proposals` needs no code change here, only proof it works.
+  it("passes proposals through from the agent-turn envelope unmodified", async () => {
+    const proposals = [
+      { slot: "contact_time_preference", value: "after 2pm", evidence_turn: null },
+    ];
+    const { agent, client } = clients(
+      fakeFetch({ case_id: "case_api" }, () =>
+        new Response(
+          JSON.stringify({ ok: true, data: { ...SMS_DRAFT, proposals } }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    const res = await handleDraftViaApi(
+      draftReq({ caseId: "case_api" }),
+      agent,
+      client,
+      "draft_sms",
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { draft: { proposals?: unknown } };
+    expect(body.draft.proposals).toEqual(proposals);
+  });
+
+  it("omits proposals from the BFF body when the turn proposed nothing", async () => {
+    const { agent, client } = clients(fakeFetch({ case_id: "case_api" }));
+
+    const res = await handleDraftViaApi(
+      draftReq({ caseId: "case_api" }),
+      agent,
+      client,
+      "draft_sms",
+    );
+
+    const body = (await res.json()) as { draft: Record<string, unknown> };
+    expect("proposals" in body.draft).toBe(false);
+  });
+
   it("threads the email channel + case to the agent-turn body", async () => {
     let turnBody: Record<string, unknown> | undefined;
     const { agent, client } = clients(

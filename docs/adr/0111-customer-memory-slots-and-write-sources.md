@@ -2,7 +2,9 @@
 
 > **Storage substrate superseded by ADR-0140.** Slots and governed write sources
 > hold; they are stored in the Toee Business Datastore (Postgres), not Hermes
-> Native Memory.
+> Native Memory. The **Hermes Runtime Shim** under **Storage rule** is superseded
+> too: reads and writes go through the Python `toee_hermes` plugin tool and its
+> `pre_llm_call` hook, not a TypeScript shim (ADR-0139).
 
 > **Amended by [ADR-0148](0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)**
 > (2026-07-14, 0.0.2). "After employee confirmation," below, no longer covers

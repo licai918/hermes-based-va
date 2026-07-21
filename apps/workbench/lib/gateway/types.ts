@@ -124,3 +124,72 @@ export interface CaseListFilter {
 export const PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = MEMORY_PREFERENCE_SLOTS;
 
 export type CustomerPreferences = Partial<Record<MemoryPreferenceSlot, string>>;
+
+// Supervisor Memory Audit View (0.0.3 S20, FR-20): a customer's 4 slots with
+// full write attribution -- source/actor/timestamps -- plus the append-only
+// workbench_audit_log trail for the same binding (dismissed proposals,
+// attributed clears). `binding_key` never crosses this boundary, same rule as
+// CustomerPreferences/mapPreferences above -- it is the customer's raw
+// identity key.
+export type MemoryWriteSource =
+  | "customer_explicit"
+  | "employee_confirmed"
+  | "copilot_agent"
+  | "merged_provisional";
+
+export interface MemorySlotAttribution {
+  slot: MemoryPreferenceSlot;
+  value: string;
+  source: MemoryWriteSource | null;
+  actorAccountId: string | null;
+  evidence: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Not a closed enum: the audit trail carries whatever governed actions land in
+// workbench_audit_log (proposal_dismissed, preference_cleared, future kinds), so
+// an unrecognized action string is passed through rather than rejected. (S16
+// surfaces *accepted* proposals from employee_confirmed slots, not by joining
+// rows into this history — but keeping the field open still avoids brittle
+// rejection of any action this mapper doesn't yet know about.)
+export interface MemoryAuditEntry {
+  entryId: string;
+  at: number;
+  actorAccountId: string | null;
+  actorUsername?: string | null;
+  action: string;
+  slot: string | null;
+  detail?: string;
+  // S16 (FR-17): the proposed value for a proposal_dismissed row, lifted from
+  // ``details.value`` (S15 writes it) the same way ``slot`` is lifted from
+  // ``details.slot`` above -- so the proposal-history section can show what
+  // was proposed, not just that something was dismissed.
+  value?: string;
+}
+
+export interface MemoryAuditView {
+  slots: MemorySlotAttribution[];
+  history: MemoryAuditEntry[];
+}
+
+// L6 Agent-experience store (0.0.3 S22, FR-23/NFR-3): "what the agent learns
+// from doing the job" -- a NEW governed store distinct from L4 Customer Memory
+// above and L5's authored corpus. Proposals persist with status="proposed"
+// directly (the propose/confirm gate is status-based, not an envelope): an
+// entry here is inert until an admin flips it (S24 confirm/reject queue,
+// out of scope here -- this is a read-only list).
+export type AgentExperienceKind = "note" | "procedure";
+export type AgentExperienceStatus = "proposed" | "confirmed" | "rejected";
+
+export interface AgentExperienceEntry {
+  id: string;
+  kind: AgentExperienceKind;
+  status: AgentExperienceStatus;
+  content: string;
+  source: string;
+  proposerContext: Record<string, unknown> | null;
+  deciderAccountId: string | null;
+  decidedAt: number | null;
+  createdAt: number;
+}

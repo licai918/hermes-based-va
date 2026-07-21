@@ -12,13 +12,16 @@ a recorded real-agent turn reproduces deterministically with no model or network
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
 from eval_runner.fixtures import load_scenario
 from eval_runner.recorder import record_turn
 from eval_runner.replay import ReplayAgentHarness
+from tools.registry import registry
 
+from hermes_runtime.boot import boot_profile
 from hermes_runtime.live import run_live_turn
 
 EVAL_DIR = Path(__file__).resolve().parents[2] / "eval"
@@ -89,3 +92,42 @@ def test_live_turn_dispatches_governed_sms_tool_through_real_loop() -> None:
     ]
     assert result.tool_calls[0].ok
     assert result.outbound_text == body
+
+
+class _SentinelDriver:
+    """A distinguishable driver: any dispatch through it proves it, not mock, ran."""
+
+    kind = "sentinel"
+
+    def execute(self, request, context):  # noqa: ANN001 - matches ToolDriver protocol
+        return {"sentinel": True}
+
+
+def test_run_live_turn_preserves_a_prior_overlay_boot() -> None:
+    """Regression: a live-shaped turn must not clobber an already-booted overlay.
+
+    ``boot_profile`` always re-registers every allowlisted tool into the shared
+    upstream ``tools.registry`` singleton (ADR-0139) -- registering is not
+    additive/merge-aware, it's last-boot-wins. Mirroring the production shape
+    (``openrouter.py``'s ``_turn_extra_drivers()`` overlay boot), this boots once
+    with a sentinel driver for ``toee_knowledge_search``, then drives
+    ``run_live_turn`` -- the code path that used to boot bare, with no
+    ``extra_drivers`` of its own, silently falling every tool (including the
+    already-overlaid one) back to mock. Dispatching the tool afterwards must
+    still reach the sentinel, not mock.
+    """
+    sentinel = _SentinelDriver()
+    boot_profile(EXTERNAL_PROFILE, extra_drivers={"toee_knowledge_search": sentinel})
+
+    run_live_turn(
+        profile=EXTERNAL_PROFILE,
+        user_message="Where is my order?",
+        system_message="You are Toee Tire support.",
+        scripted_completions=[{"content": "ok, no tools needed"}],
+        extra_drivers={"toee_knowledge_search": sentinel},
+    )
+
+    result = registry.dispatch(
+        "toee_knowledge_search__search_public_site", {"query": "warranty policy"}
+    )
+    assert json.loads(result) == {"sentinel": True}

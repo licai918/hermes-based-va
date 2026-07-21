@@ -4,8 +4,16 @@
 // whose 400 carries a policy `errors[]` we surface inline rather than throw.
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
+import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
+import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { RetentionStatus, RetentionSweepResult } from "@/lib/bff/admin/retention";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
+import type {
+  AgentExperienceEntry,
+  MemoryAuditView,
+  MemoryPreferenceSlot,
+} from "@/lib/gateway/types";
 import { getJson, sendJson } from "./http";
 
 // --- Knowledge (Required Operational Policy Slots) ---------------------------
@@ -42,6 +50,20 @@ export function rollbackSlot(slotId: string): Promise<PolicySlot> {
     "POST",
     `/api/admin/knowledge/slots/${slotId}/rollback`,
   ).then((b) => b.slot);
+}
+
+// --- S11: corpus status + retrieval probe (FR-6) ------------------------------
+
+export function getCorpusStatus(): Promise<CorpusStatus> {
+  return getJson<{ status: CorpusStatus }>("/api/admin/knowledge/corpus-status").then(
+    (b) => b.status,
+  );
+}
+
+export function probeKnowledge(query: string): Promise<ProbeResult[]> {
+  return sendJson<{ results: ProbeResult[] }>("POST", "/api/admin/knowledge/probe", {
+    query,
+  }).then((b) => b.results);
 }
 
 // --- Eval review (Knowledge Publish Eval Gate) -------------------------------
@@ -130,4 +152,63 @@ export function disableAccount(accountId: string): Promise<PublicAccount> {
     "POST",
     `/api/admin/accounts/${accountId}/disable`,
   ).then((b) => b.account);
+}
+
+// --- Supervisor Memory Audit View (0.0.3 S20, FR-20) --------------------------
+
+export function getMemoryAudit(caseId: string): Promise<MemoryAuditView> {
+  return getJson<MemoryAuditView>(
+    `/api/admin/memory-audit?case_id=${encodeURIComponent(caseId)}`,
+  );
+}
+
+export function clearMemorySlot(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+): Promise<{ slot: string; cleared: boolean }> {
+  return sendJson<{ slot: string; cleared: boolean }>(
+    "POST",
+    `/api/admin/memory-audit/clear?case_id=${encodeURIComponent(caseId)}`,
+    { slot },
+  );
+}
+
+// --- L6 Agent-experience store (0.0.3 S22, FR-23) -----------------------------
+
+export function listAgentExperience(): Promise<AgentExperienceEntry[]> {
+  return getJson<{ entries: AgentExperienceEntry[] }>("/api/admin/agent-experience").then(
+    (b) => b.entries,
+  );
+}
+
+// --- L6 confirm gate: Accept/Reject (0.0.3 S24, FR-24) ------------------------
+
+export function confirmExperience(id: string): Promise<AgentExperienceEntry> {
+  return sendJson<{ entry: AgentExperienceEntry }>(
+    "POST",
+    `/api/admin/agent-experience/${encodeURIComponent(id)}/confirm`,
+  ).then((b) => b.entry);
+}
+
+export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
+  return sendJson<{ entry: AgentExperienceEntry }>(
+    "POST",
+    `/api/admin/agent-experience/${encodeURIComponent(id)}/reject`,
+  ).then((b) => b.entry);
+}
+
+// --- Aggregate-metrics admin panel (0.0.3 S26, FR-28) -------------------------
+
+export function getAggregateMetrics(): Promise<AggregateMetrics> {
+  return getJson<AggregateMetrics>("/api/admin/metrics");
+}
+
+// --- Customer Memory retention sweep admin panel (0.0.3 S28, FR-30) ----------
+
+export function getRetentionStatus(): Promise<RetentionStatus> {
+  return getJson<RetentionStatus>("/api/admin/retention");
+}
+
+export function triggerRetentionSweep(): Promise<RetentionSweepResult> {
+  return sendJson<RetentionSweepResult>("POST", "/api/admin/retention/sweep");
 }

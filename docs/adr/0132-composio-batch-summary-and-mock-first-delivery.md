@@ -1,5 +1,10 @@
 # Composio integration batch summary and mock-first delivery order
 
+> **One phrase superseded by ADR-0140/0142.** The whole summary and delivery order hold.
+> Under **What Composio does not replace**, "**Hermes Native Memory**" no longer names the
+> store — the **Toee Business Datastore** (Postgres) is the system of record.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 This ADR closes the Composio architecture grill. It summarizes ADR-0127 through ADR-0131 and records the v1 delivery order for Text-First Launch.
 
 ## Decision summary

@@ -13,6 +13,7 @@ import pytest
 
 from hermes_runtime.datastore.config import database_url
 from hermes_runtime.datastore.migrate import DEV_ONLY_MIGRATIONS, run_migrations
+from hermes_runtime.knowledge.config import knowledge_database_url
 
 try:  # psycopg lives in the hermes-runtime venv (ADR-0142); guard for safety.
     import psycopg
@@ -20,19 +21,35 @@ except ImportError:  # pragma: no cover - exercised only without the driver
     psycopg = None  # type: ignore[assignment]
 
 
-@pytest.fixture
-def temp_schema_conn():
-    """An open connection whose search_path points at a fresh throwaway schema."""
+def _temp_schema(dsn: str, *, env_label: str, ensure_db=None):
+    """Shared throwaway-schema logic for both the business and knowledge DSNs.
+
+    Opens ``dsn``, creates a fresh schema, points ``search_path`` at it, and
+    drops it on teardown -- so tests never touch real data and never leak
+    schemas. Skips (not fails) when the target Postgres is unreachable.
+
+    ``ensure_db``, if given, is called before connecting (self-heal: e.g. the
+    knowledge fixture uses it to create ``toee_knowledge`` on a fresh Postgres
+    that only provisioned the business database -- see ``ensure_database`` in
+    ``hermes_runtime.knowledge.migrate``). Its own failures are folded into the
+    skip reason below rather than raised, since a maintenance-DB hiccup should
+    still just skip, not error the test.
+    """
     if psycopg is None:
         pytest.skip("psycopg not installed")
     from psycopg import sql
 
     try:
+        if ensure_db is not None:
+            ensure_db()
         # connect_timeout so an unreachable/black-holed host (Docker down, IPv6
         # localhost SYN drop) skips fast instead of hanging forever in select().
-        conn = psycopg.connect(database_url(), connect_timeout=2)
+        conn = psycopg.connect(dsn, connect_timeout=2)
     except Exception as exc:  # OperationalError and friends -> no DB available.
-        pytest.skip(f"no Postgres at DATABASE_URL: {exc}")
+        # Include the exception type + text so a missing database ("database
+        # \"toee_knowledge\" does not exist") reads differently in test output
+        # than an actually-unreachable Postgres (connection refused/timeout).
+        pytest.skip(f"Postgres unavailable at {env_label}: {type(exc).__name__}: {exc}")
 
     schema = f"test_{uuid.uuid4().hex[:12]}"
     schema_id = sql.Identifier(schema)
@@ -50,6 +67,28 @@ def temp_schema_conn():
             cur.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(schema_id))
         conn.commit()
         conn.close()
+
+
+@pytest.fixture
+def temp_schema_conn():
+    """An open connection (on the business ``toee_va`` DSN) whose search_path
+    points at a fresh throwaway schema."""
+    yield from _temp_schema(database_url(), env_label="DATABASE_URL")
+
+
+@pytest.fixture
+def temp_knowledge_schema_conn():
+    """An open connection on the SEPARATE knowledge ``toee_knowledge`` DSN
+    (``KNOWLEDGE_DATABASE_URL``), whose search_path points at a fresh throwaway
+    schema. Never the same database as ``temp_schema_conn`` (S-ISO).
+
+    Self-heals a fresh Postgres (incl. CI, which only provisions ``toee_va``)
+    by creating ``toee_knowledge`` before connecting -- see ``ensure_database``.
+    """
+    from hermes_runtime.knowledge.migrate import ensure_database
+
+    dsn = knowledge_database_url()
+    yield from _temp_schema(dsn, env_label="KNOWLEDGE_DATABASE_URL", ensure_db=lambda: ensure_database(dsn))
 
 
 @pytest.fixture

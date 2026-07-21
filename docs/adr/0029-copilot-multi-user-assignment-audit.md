@@ -1,5 +1,12 @@
 # Multi-user Copilot workbench with assignment and audit
 
+> **Storage substrate superseded by ADR-0140/0142.** Per-account attribution,
+> claim/assign/reassign, **Case Resolution**, and the audit event list all still hold.
+> Superseded: the substrate — **Workbench Audit Log** entries write to the **Toee Business
+> Datastore** (Postgres, L3), not **Hermes Native Memory** — and the "breaks Hermes-native
+> memory goal" rejection rationale, which no longer describes the goal.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 Each human employee uses their own **Workbench Account** to sign in to the **Copilot Workbench**. Case handling is attributed per person, not shared anonymously.
 
 **Case Assignee** tracks who owns or is actively handling a **Follow-up Case**. Employees may claim, be assigned, or reassign cases. **Case Resolution** records the resolving **Workbench Account**.

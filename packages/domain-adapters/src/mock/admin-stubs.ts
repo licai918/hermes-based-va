@@ -31,6 +31,7 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
       caseId: readStringParam(params, "caseId", "case_stub"),
       messages: [],
     }),
+    get_thread_by_phone: () => ({ case: null, messages: [] }),
     list_auto_handled: () => ({ records: [] }),
     get_auto_handled: () => ({ record: null }),
     list_sales_outreach: () => ({ cases: [] }),
@@ -91,6 +92,15 @@ export const adminStubMockHandlers: MockHandlerRegistry = {
     rollback_published_policy: (params) => ({
       slot: readStringParam(params, "slot", "slot_stub"),
       rolledBack: true,
+    }),
+    // S11: deterministic empty-corpus shape — the mock has no corpus, so counts
+    // are zero and there is no ingest to report yet. The real datastore handler
+    // (hermes-runtime) returns the live toee_knowledge counts.
+    get_corpus_status: () => ({
+      docCount: 0,
+      chunkCount: 0,
+      lastIngestAt: null,
+      byType: [],
     }),
   },
   toee_eval_review: {

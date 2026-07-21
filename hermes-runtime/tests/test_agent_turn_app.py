@@ -259,6 +259,56 @@ def test_agent_turn_chat_end_to_end_default_provider_boots_internal_copilot() ->
     assert data["provenance"]["profile"] == "internal_copilot"
 
 
+# --- S14 (FR-15): the structured proposals[] envelope threads through unmodified ---
+
+
+def _run_turn_with_proposals(*, channel: str, case_id: str, prompt: str | None = None) -> dict:
+    return {
+        "draft": f"draft for {case_id}",
+        "model": "scripted",
+        "profile": "internal_copilot",
+        "proposals": [
+            {"slot": "contact_time_preference", "value": "after 2pm", "evidence_turn": None}
+        ],
+    }
+
+
+def test_agent_turn_sms_data_includes_proposals_when_present() -> None:
+    response = _client(_run_turn_with_proposals).post(
+        AGENT_TURN_PATH, headers=_auth(), json={"channel": "sms", "case_id": "case_p"}
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert set(data) == {"channel", "draft", "provenance", "proposals"}
+    assert data["proposals"] == [
+        {"slot": "contact_time_preference", "value": "after 2pm", "evidence_turn": None}
+    ]
+
+
+def test_agent_turn_omits_proposals_key_when_run_turn_has_none() -> None:
+    # _fake_run_turn returns no "proposals" key at all (matches an inert turn with no
+    # memory tool calls) -- the envelope omits the key rather than adding an empty
+    # list, so the existing exhaustive per-channel key-set contracts stay exact.
+    response = _client(_fake_run_turn).post(
+        AGENT_TURN_PATH, headers=_auth(), json={"channel": "sms", "case_id": "case_none"}
+    )
+    assert response.status_code == 200
+    assert "proposals" not in response.json()["data"]
+
+
+def test_agent_turn_chat_never_surfaces_proposals() -> None:
+    # Chat is a conversational reply, not a draft (FR-15 is "the draft turn emits
+    # proposals[] alongside draft") -- even when run_turn returns proposals, the chat
+    # envelope must not carry them (parity with the draft_generated audit exclusion).
+    response = _client(_run_turn_with_proposals).post(
+        AGENT_TURN_PATH, headers=_auth(), json={"channel": "chat", "case_id": "case_p"}
+    )
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert set(data) == {"reply", "provenance"}
+    assert "proposals" not in data
+
+
 def test_agent_turn_end_to_end_email_default_provider_includes_subject() -> None:
     # The email seam end to end with the default scripted/stub provider: boots
     # internal_copilot unbound and returns a {channel:email, subject, draft} envelope

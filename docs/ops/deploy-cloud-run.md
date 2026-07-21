@@ -54,7 +54,7 @@ missing.
 | `INTERNAL_JOB_SECRET` | Secret Manager | yes | Guards `/internal/jobs/agent-turn` (ADR-0106) |
 | `SIMPLETEXTING_API_TOKEN` | Secret Manager | yes | Outbound SimpleTexting sends (ADR-0083) |
 | `OPENROUTER_API_KEY` | Secret Manager | yes | Async agent turn (ADR-0009) |
-| `DEPLOY_ENVIRONMENT` | plain env | yes on deployed revisions | `production`/`staging`. Makes the boot refuse the per-process in-memory store, which would leave webhooks replayable across instances (ADR-0149) |
+| `DEPLOY_ENVIRONMENT` | plain env | yes on deployed revisions | `production`/`staging`. Makes the boot refuse the per-process in-memory store, which would leave webhooks replayable across instances (ADR-0153) |
 | `TOOL_BACKEND` | plain env | yes in deployed envs | Must be `datastore`: messageId dedup is the only replay protection SimpleTexting allows |
 | `DATABASE_URL` | Secret Manager | with `TOOL_BACKEND=datastore` | Cloud SQL DSN for the gateway store |
 | `SIMPLETEXTING_ACCOUNT_PHONE` | plain env | no | Sending number; account primary when unset |

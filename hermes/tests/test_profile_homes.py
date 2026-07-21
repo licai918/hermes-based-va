@@ -40,7 +40,7 @@ def test_profile_config_enables_toee_plugin(profile: str) -> None:
 
 # Vendors we no longer use. SOUL.md is loaded into the model's context, so a
 # retired provider named there is something the agent can repeat to a live
-# customer ("I'll follow up on Textline") — ADR-0149.
+# customer ("I'll follow up on Textline") — ADR-0153.
 RETIRED_VENDORS = ("textline",)
 
 

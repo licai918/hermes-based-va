@@ -16,6 +16,14 @@ describe("canAccess", () => {
     }
   });
 
+  it("allows every role on the Conversation Simulator (FR-8, 0.0.3 S03)", () => {
+    for (const role of [rep, supervisor, admin]) {
+      expect(canAccess(role, "/copilot/simulator")).toBe(true);
+      expect(canAccess(role, "/api/copilot/simulator/messages")).toBe(true);
+      expect(canAccess(role, "/api/copilot/simulator/thread")).toBe(true);
+    }
+  });
+
   it("denies reps on audit paths but allows supervisor/admin", () => {
     expect(canAccess(rep, "/copilot/audit/auto-handled")).toBe(false);
     expect(canAccess(rep, "/api/copilot/audit/auto-handled")).toBe(false);

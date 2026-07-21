@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from ._common import new_id, read_string
 from ..shopify_identity import ShopifyPhoneMatch, lookup_shopify_customers_by_phone
+from toee_hermes.errors import ToolDriverError
 from toee_hermes.identity.summary import display_name_from_match_result
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -186,6 +187,50 @@ def _match_email_sender(conn, params: dict[str, Any], context: "ToolExecutionCon
     return _match(conn, _EMAIL_CHANNEL, from_address, params)
 
 
+def _link_identity(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Explicit Identity Graph link (0.0.3 S05, FR-13 "link identity" control).
+
+    Every other write to ``identity_link`` is an implicit side effect of ingress
+    resolution (``_shopify_phone_fallback`` above). This is the one place a
+    caller can ask for a link directly -- upserts the SAME row shape
+    ``_upsert_identity_link`` writes, so a later ``match_phone``/
+    ``match_email_sender`` for this ``channel_identity`` resolves
+    ``verified_customer`` and the ADR-0112 provisional-merge trigger fires on
+    the next ingress, exactly as it would for an organically-resolved match.
+    Gated to simulated-mode-only at the tool-dispatch composition root
+    (``tool_dispatch_composition._simulated_only_gate``) -- this handler itself
+    has no notion of "simulated"; it trusts the gate already ran.
+
+    "channel identity -> channel identity" (the second FR-13 link shape) is not
+    a distinct code path: link both channel identities to the SAME
+    ``shopify_customer_id`` and they are linked to each other via that shared
+    customer, matching how the schema already represents cross-channel
+    continuity (no new columns needed).
+    """
+    channel = read_string(params, "channel") or _PHONE_CHANNEL
+    channel_identity = read_string(
+        params, "channel_identity", "phone", "from_phone", "fromPhone"
+    )
+    shopify_customer_id = read_string(params, "shopify_customer_id", "shopifyCustomerId")
+    if not channel_identity:
+        raise ToolDriverError("unexpected_error", "channel_identity is required.")
+    if not shopify_customer_id:
+        raise ToolDriverError("unexpected_error", "shopify_customer_id is required.")
+
+    _upsert_identity_link(
+        conn,
+        channel=channel,
+        channel_identity=channel_identity,
+        shopify_customer_id=shopify_customer_id,
+    )
+    return {
+        "outcome": "linked",
+        "channel": channel,
+        "channel_identity": channel_identity,
+        "shopify_customer_id": shopify_customer_id,
+    }
+
+
 def _get_email_link_status(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
@@ -215,5 +260,6 @@ def identity_handlers() -> dict[str, dict[str, Any]]:
             "match_phone": _match_phone,
             "match_email_sender": _match_email_sender,
             "get_email_link_status": _get_email_link_status,
+            "link_identity": _link_identity,
         }
     }

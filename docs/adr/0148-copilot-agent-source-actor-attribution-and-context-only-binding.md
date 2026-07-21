@@ -6,6 +6,15 @@
 > [ADR-0114](0114-toee-customer-memory-v1-actions.md). Ships on
 > `feat/0.0.2-memory-governance`: S01 `37806ea`, S02 `38644f1`, S04 `1ad97fe`.
 
+> **Superseded in part by [ADR-0150](0150-s20-reversal-copilot-draft-turn-propose-only.md)**
+> (0.0.3, S13). The `copilot_agent` **source discriminator and vocabulary** (decision 1),
+> the **`actor_account_id` column** (decision 2), and the **context-only binding**
+> (decision 3) all still hold exactly as decided here. What ADR-0150 removes is the
+> *production write path* that could ever exercise decision 1's `copilot_agent` branch
+> with a real datastore write: the copilot draft turn's write overlay is gone, so an
+> agent-initiated write is discarded on the shared mock driver, never persisted.
+> `copilot_agent` becomes history/vocabulary-only going forward.
+
 ## Context
 
 0.0.1 shipped Customer Memory's governed write path (ADR-0111/0112/0114): the

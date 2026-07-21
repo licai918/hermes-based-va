@@ -17,6 +17,7 @@ import os
 
 from toee_hermes.drivers.mock.sms_reply import SmsReplyMockData, _send_message
 from toee_hermes.errors import ToolDriverError
+from toee_hermes.gateway.normalize import canonicalize_email
 
 from toee_hermes.identity.summary import (
     display_name_from_match_result,
@@ -745,6 +746,71 @@ def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     return {"case": case, "messages": messages}
 
 
+# Deterministic customer_thread key for an inbound SMS (mirrors
+# postgres_gateway_store._thread_id -- no hashing, just the literal format).
+def _sms_thread_id(from_phone: str) -> str:
+    return f"customer_thread:textline:{from_phone}"
+
+
+def _latest_case_id_for_thread(conn, thread_id: str) -> Optional[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM cases WHERE customer_thread_id = %s"
+            " ORDER BY opened_at DESC LIMIT 1",
+            (thread_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _get_thread_by_phone(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Simulator read-back (FR-9/S02): the BFF only knows the simulated
+    from-phone it posted, not a case_id (the gateway's inbound webhook creates
+    the case asynchronously). Resolve the case via the same deterministic
+    customer_thread key the gateway store uses, then defer to ``_get_thread``
+    so the response shape and the case_view audit stay identical either way.
+    """
+    from_phone = read_string(params, "from_phone", "fromPhone")
+    if not from_phone:
+        raise ToolDriverError("unexpected_error", "from_phone is required.")
+    thread_id = _sms_thread_id(from_phone)
+    case_id = _latest_case_id_for_thread(conn, thread_id)
+    if case_id is None:
+        return {"case": None, "messages": []}
+    return _get_thread(conn, {"case_id": case_id}, context)
+
+
+# Deterministic customer_thread key for an inbound simulated email (S18/FR-11;
+# mirrors postgres_gateway_store._thread_id's email branch -- from_identity is
+# already canonicalize_email'd by to_inbound_email_event before it reaches
+# _thread_id, so the read side must apply the SAME canonicalize_email to the
+# raw address to reconstruct a byte-identical key. Reusing S17's exact helper
+# (not a local re-implementation) is what keeps this from silently reading
+# back empty).
+def _email_thread_id(from_address: str) -> str:
+    return f"customer_thread:email:{canonicalize_email(from_address)}"
+
+
+def _get_thread_by_email(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Simulator email read-back (S18/FR-11): the email sibling of
+    ``_get_thread_by_phone`` -- same "BFF only knows the identity it posted,
+    not a case_id" shape, resolved via the email customer_thread key S17's
+    gateway store writes.
+    """
+    from_address = read_string(params, "from_address", "fromAddress")
+    if not from_address:
+        raise ToolDriverError("unexpected_error", "from_address is required.")
+    thread_id = _email_thread_id(from_address)
+    case_id = _latest_case_id_for_thread(conn, thread_id)
+    if case_id is None:
+        return {"case": None, "messages": []}
+    return _get_thread(conn, {"case_id": case_id}, context)
+
+
 # Mirrors store.ts DEFAULT_STATUSES: resolved cases are hidden by default.
 _DEFAULT_STATUSES = ("open", "in_progress")
 
@@ -839,6 +905,8 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "list_cases": _list_cases,
             "get_audit_log": _get_audit_log,
             "get_thread": _get_thread,
+            "get_thread_by_phone": _get_thread_by_phone,
+            "get_thread_by_email": _get_thread_by_email,
             "list_auto_handled": _list_auto_handled,
             "get_auto_handled": _get_auto_handled,
             "list_sales_outreach": _list_sales_outreach,

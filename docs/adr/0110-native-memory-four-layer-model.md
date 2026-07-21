@@ -3,7 +3,12 @@
 > **Storage substrate superseded by ADR-0140.** The four-layer model, slot
 > binding, and write-source rules still hold, but the system-of-record is the
 > Toee Business Datastore (Postgres), not Hermes Native Memory. Hermes memory is
-> conversation-only.
+> conversation-only. The **Hermes Runtime Shim** is superseded too: reads and
+> writes go through the Python `toee_hermes` plugin tool and its `pre_llm_call`
+> hook, not a TypeScript shim (ADR-0139). Note the **Considered options** line
+> below: "create a separate PostgreSQL preference table (rejected—conflicts with
+> ADR-0026)" — that rejection **no longer applies**; a Postgres table is exactly
+> what shipped, and ADR-0026's memory clause is itself retired.
 
 Tooe Tire **Hermes VA** partitions **Hermes Native Memory** into four layers. The repository does not create a parallel preference database.
 

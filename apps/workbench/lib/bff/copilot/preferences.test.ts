@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
 import {
   handleClearPreferenceViaApi,
+  handleDismissProposalViaApi,
   handleGetPreferencesViaApi,
   handleUpsertPreferenceViaApi,
 } from "./preferences";
@@ -271,6 +272,111 @@ describe("handleClearPreferenceViaApi", () => {
       "case_1",
     );
     expect(res.status).toBe(504);
+  });
+});
+
+describe("handleDismissProposalViaApi", () => {
+  function writeClient(capture?: (sent: SentDispatch) => void): HermesApiClient {
+    return apiClient(async (_url, init) => {
+      const sent = JSON.parse(init.body as string) as SentDispatch;
+      capture?.(sent);
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: { binding_key: "cust_900", slot: sent.params.key, dismissed: true },
+        }),
+        { status: 200 },
+      );
+    }, WRITE_ACTOR);
+  }
+
+  it("dispatches dismiss_proposal (not upsert_preference) and persists no slot", async () => {
+    let captured: SentDispatch | null = null;
+    const res = await handleDismissProposalViaApi(
+      jsonReq({
+        slot: "contact_time_preference",
+        value: "evenings",
+        evidenceTurn: "text me evenings",
+      }),
+      writeClient((s) => (captured = s)),
+      "case_1",
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      slot: string;
+      dismissed: boolean;
+      binding_key?: string;
+    };
+    expect(body).toEqual({ slot: "contact_time_preference", dismissed: true });
+    const sent = captured as SentDispatch | null;
+    expect(sent?.tool).toBe("toee_customer_memory");
+    expect(sent?.action).toBe("dismiss_proposal");
+    expect(sent?.params).toEqual({
+      case_id: "case_1",
+      key: "contact_time_preference",
+      value: "evenings",
+      evidence: "text me evenings",
+    });
+    expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
+  });
+
+  it("400s an invalid slot before any dispatch", async () => {
+    let dispatched = false;
+    const client = apiClient(async () => {
+      dispatched = true;
+      return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 });
+    }, WRITE_ACTOR);
+    const res = await handleDismissProposalViaApi(
+      jsonReq({ slot: "not_a_real_slot", value: "x" }),
+      client,
+      "case_1",
+    );
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("400s a missing value", async () => {
+    const res = await handleDismissProposalViaApi(
+      jsonReq({ slot: "channel_preference" }),
+      writeClient(),
+      "case_1",
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("maps a governed denial to its per-class status", async () => {
+    const res = await handleDismissProposalViaApi(
+      jsonReq({ slot: "channel_preference", value: "sms" }),
+      apiClient(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              error: { class: "policy_blocked", message: "no" },
+            }),
+            { status: 200 },
+          ),
+        WRITE_ACTOR,
+      ),
+      "case_1",
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("rejects with no actor and never dispatches the mutation (BFF defense-in-depth)", async () => {
+    const seen: string[] = [];
+    const client = apiClient(async (_url, init) => {
+      const sent = JSON.parse(init.body as string) as SentDispatch;
+      seen.push(sent.action);
+      return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 });
+    });
+    const res = await handleDismissProposalViaApi(
+      jsonReq({ slot: "channel_preference", value: "sms" }),
+      client,
+      "case_1",
+    );
+    expect(res.status).toBe(403);
+    expect(seen).not.toContain("dismiss_proposal");
   });
 });
 

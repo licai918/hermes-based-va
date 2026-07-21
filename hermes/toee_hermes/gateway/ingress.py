@@ -23,6 +23,7 @@ from toee_hermes.tool_gate import ToolExecutionContext
 
 _IDENTITY_TOOL = "toee_identity_lookup"
 _MATCH_PHONE = "match_phone"
+_MATCH_EMAIL = "match_email_sender"
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,31 @@ def match_ingress_phone(
         context=context,
         driver=driver,
         params={"phone": phone, "resolved_at": resolved_at},
+    )
+    if not result.ok:
+        return IngressMatchResult(retryable_error=True, error_class=result.error_class)
+    return IngressMatchResult(snapshot=_to_snapshot(result.data, resolved_at))
+
+
+def match_ingress_email(
+    *, from_address: str, driver: ToolDriver, resolved_at: str
+) -> IngressMatchResult:
+    """Email Sender Match — the sibling of :func:`match_ingress_phone` (S17/FR-18).
+
+    Resolves the authenticated From address through ``toee_identity_lookup.
+    match_email_sender`` under the same EXTERNAL context, returning the same
+    ``IngressMatchResult`` shape (verified / unmatched / ambiguous, or a retryable
+    ingress error). ADR-0052: a single From match is a silent Verified Customer, no
+    verification ceremony. ADR-0054: only the authenticated From address is matched
+    — never Reply-To or a body-supplied address (the route passes the envelope From).
+    """
+    context = ToolExecutionContext(profile=EXTERNAL)
+    result = execute_tool(
+        tool=_IDENTITY_TOOL,
+        action=_MATCH_EMAIL,
+        context=context,
+        driver=driver,
+        params={"from_address": from_address, "resolved_at": resolved_at},
     )
     if not result.ok:
         return IngressMatchResult(retryable_error=True, error_class=result.error_class)

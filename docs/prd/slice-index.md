@@ -2,7 +2,13 @@
 
 Parent: [Issue #2](https://github.com/licai918/hermes-based-va/issues/2)
 
-All slices labeled `ready-for-agent`.
+> **⚠️ Delivery status is NOT tracked here (2026-07-20).** The `ready-for-agent` labels below
+> are the *original authoring* state and are now wrong for several rows. **Customer Memory
+> (Slice 20 / #22) SHIPPED** in 0.0.1 (PR #54) and was hardened in 0.0.2 (PR #55) — the GitHub
+> issue is still open, but the work is done: **do not rebuild it.** **Slice 13 (#15, Hermes
+> Runtime Shim) is void** — ADR-0139 removed the TypeScript shim. Slices 32–37 shipped.
+> **Always check the GitHub issue and `workspace/<iteration>/` before starting any slice.**
+> Current memory-layer state → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
 
 > **Architecture update (ADR-0139/0140/0141/0142) — local-first.**
 > Slices 1–31 were authored against the original in-process TypeScript Hermes

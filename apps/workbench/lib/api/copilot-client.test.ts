@@ -3,11 +3,13 @@ import {
   chat,
   claimCase,
   clearPreference,
+  dismissProposal,
   draft,
   getPreferences,
   getThread,
   listCases,
   normalizeDraft,
+  proposalsFromDraft,
   resolveCase,
   sendSms,
   setContactReason,
@@ -218,6 +220,41 @@ describe("mutation wrappers", () => {
     });
   });
 
+  it("dismissProposal POSTs the slot/value/evidenceTurn to the dismiss endpoint", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ok({ slot: "channel_preference", dismissed: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await dismissProposal("c1", "channel_preference", "sms", "text me on sms");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/copilot/cases/c1/preferences/dismiss", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        slot: "channel_preference",
+        value: "sms",
+        evidenceTurn: "text me on sms",
+      }),
+    });
+  });
+
+  it("dismissProposal omits evidenceTurn when not provided", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(ok({ slot: "channel_preference", dismissed: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await dismissProposal("c1", "channel_preference", "sms");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/copilot/cases/c1/preferences/dismiss",
+      expect.objectContaining({
+        body: JSON.stringify({ slot: "channel_preference", value: "sms" }),
+      }),
+    );
+  });
+
   it("propagates ApiError from the shared http layer (e.g. rep assign 403)", async () => {
     vi.stubGlobal(
       "fetch",
@@ -231,6 +268,42 @@ describe("mutation wrappers", () => {
       status: 403,
       message: "forbidden",
     });
+  });
+});
+
+describe("proposalsFromDraft", () => {
+  it("returns an empty array when the draft carries no proposals", () => {
+    expect(proposalsFromDraft({ channel: "sms", draft: "hi" })).toEqual([]);
+  });
+
+  it("returns an empty array for a non-object draft", () => {
+    expect(proposalsFromDraft("just a string draft")).toEqual([]);
+  });
+
+  it("maps each valid proposal, defaulting a missing evidence_turn to null", () => {
+    const result = proposalsFromDraft({
+      channel: "sms",
+      draft: "hi",
+      proposals: [
+        { slot: "channel_preference", value: "sms", evidence_turn: "text me on sms" },
+        { slot: "delivery_habit_note", value: "leave at back door" },
+      ],
+    });
+    expect(result).toEqual([
+      { slot: "channel_preference", value: "sms", evidenceTurn: "text me on sms" },
+      { slot: "delivery_habit_note", value: "leave at back door", evidenceTurn: null },
+    ]);
+  });
+
+  it("drops an entry with an unrecognized slot or a non-string value", () => {
+    const result = proposalsFromDraft({
+      proposals: [
+        { slot: "not_a_real_slot", value: "x" },
+        { slot: "channel_preference", value: 123 },
+        { slot: "channel_preference", value: "sms" },
+      ],
+    });
+    expect(result).toEqual([{ slot: "channel_preference", value: "sms", evidenceTurn: null }]);
   });
 });
 

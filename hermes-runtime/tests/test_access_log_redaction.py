@@ -1,4 +1,4 @@
-"""The webhook token must never reach the access log (ADR-0021, ADR-0149).
+"""The webhook token must never reach the access log (ADR-0021, ADR-0153).
 
 SimpleTexting authenticates webhooks with a shared token in the registered URL —
 its webhook API accepts only ``{url, triggers, requestPerSecLimit, accountPhone,

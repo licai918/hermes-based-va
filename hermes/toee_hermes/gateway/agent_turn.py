@@ -19,7 +19,12 @@ from toee_hermes.gateway.pipeline import InboundDecision
 
 @dataclass(frozen=True)
 class AgentTurnContext:
-    """Durable per-inbound-turn context reloaded by the async job (ADR-0107)."""
+    """Durable per-inbound-turn context reloaded by the async job (ADR-0107).
+
+    ``channel`` (S17) threads the ingress channel to the async turn so the turn
+    binds Customer Memory on the correct channel identity (email vs SMS). Defaulted
+    to ``simpletexting_sms`` so pre-S17 construction sites remain byte-compatible.
+    """
 
     event_id: str
     conversation_id: str
@@ -28,6 +33,7 @@ class AgentTurnContext:
     from_phone: str
     session_identity_snapshot: Optional[SessionIdentitySnapshot]
     inbound_body_ref: str
+    channel: str = "simpletexting_sms"
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,7 @@ def build_agent_turn_context(
         from_phone=event.from_phone,
         session_identity_snapshot=decision.snapshot,
         inbound_body_ref=inbound_body_ref,
+        channel=event.channel,
     )
 
 

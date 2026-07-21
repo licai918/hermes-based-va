@@ -164,3 +164,89 @@ export async function handleRollbackSlotViaApi(
     return hermesErrorToProblem(err);
   }
 }
+
+// --- S11: corpus status + retrieval probe (FR-6) ------------------------------
+// Both routes are API-only (no in-memory store fallback -- there is no corpus to
+// fake): the thin app/api route returns 503 up front when the admin API client
+// isn't configured (see createAdminApiClient), so these handlers can assume a
+// real client.
+
+export type CorpusStatus = {
+  docCount: number;
+  chunkCount: number;
+  lastIngestAt: string | null;
+  byType: { pageType: string; count: number }[];
+};
+
+// Maps the snake_case toee_knowledge_ops.get_corpus_status payload onto the wire
+// CorpusStatus, rejecting a malformed upstream as a governed HermesApiError
+// (mirrors mapPolicySlot).
+export function mapCorpusStatus(raw: unknown): CorpusStatus {
+  if (typeof raw !== "object" || raw === null) {
+    throw new HermesApiError("unexpected_error", "malformed corpus status payload");
+  }
+  const r = raw as Record<string, unknown>;
+  const byType = Array.isArray(r.by_type) ? r.by_type : [];
+  return {
+    docCount: typeof r.doc_count === "number" ? r.doc_count : 0,
+    chunkCount: typeof r.chunk_count === "number" ? r.chunk_count : 0,
+    lastIngestAt: typeof r.last_ingest_at === "string" ? r.last_ingest_at : null,
+    byType: byType.map((row) => {
+      const rr = row as Record<string, unknown>;
+      return {
+        pageType: typeof rr.page_type === "string" ? rr.page_type : "",
+        count: typeof rr.count === "number" ? rr.count : 0,
+      };
+    }),
+  };
+}
+
+export async function handleGetCorpusStatusViaApi(
+  client: HermesApiClient,
+): Promise<Response> {
+  try {
+    const data = await client.dispatch("toee_knowledge_ops", "get_corpus_status");
+    return json({ status: mapCorpusStatus(data) });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export type ProbeResult = {
+  title: string;
+  url: string | null;
+  snippet: string;
+};
+
+function mapProbeResult(raw: unknown): ProbeResult {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    title: typeof r.title === "string" ? r.title : "",
+    url: typeof r.url === "string" ? r.url : null,
+    snippet: typeof r.snippet === "string" ? r.snippet : "",
+  };
+}
+
+// Retrieval probe (S08's re-scoped layer-② evidence, per S11's scope addition):
+// dispatches toee_knowledge_search.search_public_site through the admin profile
+// API, hitting the REAL S09/S10 driver when the dispatch server runs with
+// KNOWLEDGE_BACKEND=retriever. A blank query is rejected before dispatch (mirrors
+// the KnowledgeDriver's own empty-query guard, but as a normal 400 -- there's no
+// governed tool call to make yet).
+export async function handleProbeQueryViaApi(
+  req: Request,
+  client: HermesApiClient,
+): Promise<Response> {
+  const body = await readJsonBody(req);
+  const query = typeof body?.query === "string" ? body.query : "";
+  if (!query.trim()) return problem(400, "query is required");
+  try {
+    const data = (await client.dispatch("toee_knowledge_search", "search_public_site", {
+      query,
+    })) as { results?: unknown };
+    const rows = Array.isArray(data?.results) ? data.results : [];
+    return json({ results: rows.map(mapProbeResult) });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}

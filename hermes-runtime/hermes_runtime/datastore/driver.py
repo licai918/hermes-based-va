@@ -20,6 +20,7 @@ from toee_hermes.errors import ToolDriverError
 from .config import database_url
 from .handlers import DatastoreRegistry, build_datastore_registry
 from .handlers._common import insert_audit
+from .pool import get_database_pool
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.execute import ToolRequest
@@ -34,9 +35,9 @@ class PostgresDriver:
     * ``connection=`` — a caller-owned open connection (tests / single-process
       local dev). Its lifecycle (and ``search_path``) belong to the caller; the
       driver only commits/rolls back its unit of work, never closes it.
-    * ``dsn=`` (default) — open a fresh connection per ``execute`` and close it.
-      Simple and correct for local-first; pooling is a later cloud concern
-      (ADR-0142, Slice 34/37).
+    * ``dsn=`` (default) — a connection checked out from the process-level
+      pool (``pool.get_database_pool``, S29/FR-31) per ``execute`` and
+      returned when done, instead of opened/closed fresh each time (ADR-0142).
     """
 
     kind = "datastore"
@@ -59,11 +60,8 @@ class PostgresDriver:
         if self._connection is not None:
             yield self._connection
         else:
-            conn = psycopg.connect(self._dsn)
-            try:
+            with get_database_pool(self._dsn).connection() as conn:
                 yield conn
-            finally:
-                conn.close()
 
     def execute(self, request: "ToolRequest", context: "ToolExecutionContext") -> Any:
         actions = self._registry.get(request.tool)

@@ -1,4 +1,4 @@
-"""Keep the webhook token out of the access log (ADR-0021, ADR-0149).
+"""Keep the webhook token out of the access log (ADR-0021, ADR-0153).
 
 SimpleTexting's webhook registration accepts only ``{url, triggers,
 requestPerSecLimit, accountPhone, contactPhone}`` — no header, no secret, no

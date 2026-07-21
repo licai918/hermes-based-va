@@ -30,7 +30,51 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_knowledge_ops",
         "toee_eval_review",
         "toee_workbench_admin",
+        "toee_agent_experience",
+        "toee_metrics",
+        "toee_retention",
     }
+
+
+def test_agent_experience_actions_match_fr_23() -> None:
+    # 0.0.3 S22 (FR-23): the L6 Agent-experience store's governed write
+    # (propose_experience) and its admin-only read (list_agent_experience,
+    # excluded from the LLM tool-calling loop -- see
+    # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS). 0.0.3 S24 (FR-24) adds the
+    # human confirm-gate decision actions, also excluded.
+    assert TOOL_CATALOG["toee_agent_experience"] == (
+        "propose_experience",
+        "list_agent_experience",
+        "confirm_experience",
+        "reject_experience",
+    )
+    assert is_tool_action("toee_agent_experience", "propose_experience") is True
+    assert is_tool_action("toee_agent_experience", "list_agent_experience") is True
+    assert is_tool_action("toee_agent_experience", "confirm_experience") is True
+    assert is_tool_action("toee_agent_experience", "reject_experience") is True
+
+
+def test_metrics_actions_match_fr_28() -> None:
+    # 0.0.3 S26 (FR-28): the aggregate-metrics admin panel's single read-only
+    # action, excluded from the LLM tool-calling loop (see
+    # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS), same precedent as
+    # get_memory_audit/list_agent_experience.
+    assert TOOL_CATALOG["toee_metrics"] == ("get_aggregate_metrics",)
+    assert is_tool_action("toee_metrics", "get_aggregate_metrics") is True
+
+
+def test_retention_actions_match_fr_30() -> None:
+    # 0.0.3 S28 (FR-30): the Customer Memory retention sweep's governed write
+    # (trigger_retention_sweep) and its admin-only read (get_retention_status),
+    # both excluded from the LLM tool-calling loop (see
+    # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS), same precedent as
+    # get_memory_audit/list_agent_experience/get_aggregate_metrics.
+    assert TOOL_CATALOG["toee_retention"] == (
+        "trigger_retention_sweep",
+        "get_retention_status",
+    )
+    assert is_tool_action("toee_retention", "trigger_retention_sweep") is True
+    assert is_tool_action("toee_retention", "get_retention_status") is True
 
 
 def test_identity_lookup_actions_match_adr_0060() -> None:
@@ -38,22 +82,34 @@ def test_identity_lookup_actions_match_adr_0060() -> None:
         "match_phone",
         "match_email_sender",
         "get_email_link_status",
+        # 0.0.3 S05 (FR-13): explicit Identity Graph link, used by the
+        # Conversation Simulator's "link identity" control -- see
+        # hermes-runtime/hermes_runtime/datastore/handlers/identity.py.
+        "link_identity",
     )
 
 
 def test_workbench_read_exposes_get_thread_for_case_thread_context() -> None:
-    # ADR-0143 extends ADR-0068 with the Case Thread Context read.
+    # ADR-0143 extends ADR-0068 with the Case Thread Context read; 0.0.3 S02 adds
+    # get_thread_by_phone for the Conversation Simulator's read-back (FR-9), which
+    # has no case_id to key off until the gateway's async webhook creates one.
+    # 0.0.3 S18 adds get_thread_by_email, the same read-back shape for the
+    # simulator's email channel switcher (FR-11).
     assert TOOL_CATALOG["toee_workbench_read"] == (
         "get_case",
         "list_cases",
         "get_audit_log",
         "get_thread",
+        "get_thread_by_phone",
+        "get_thread_by_email",
         "list_auto_handled",
         "get_auto_handled",
         "list_sales_outreach",
         "get_sales_outreach",
     )
     assert is_tool_action("toee_workbench_read", "get_thread") is True
+    assert is_tool_action("toee_workbench_read", "get_thread_by_phone") is True
+    assert is_tool_action("toee_workbench_read", "get_thread_by_email") is True
     assert is_tool_action("toee_workbench_read", "list_auto_handled") is True
 
 

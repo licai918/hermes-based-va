@@ -1,5 +1,11 @@
 # Composio as an internal integration backend behind Domain Adapters
 
+> **Storage substrate superseded by ADR-0140/0142.** The Composio-behind-adapters
+> boundary is unchanged. Only the substrate changes: adapters write audit records
+> to the **Toee Business Datastore** (Postgres), not **Hermes Native Memory**, which is
+> conversation-only.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
+
 Tooe Tire may use the Composio CLI SDK and Composio toolkits as an internal HTTP and OAuth helper behind **Domain Adapter Tools**. Composio is not an agent-facing integration surface in **Hermes VA**.
 
 ## Agent-facing boundary unchanged

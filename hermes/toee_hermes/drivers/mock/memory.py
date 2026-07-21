@@ -140,6 +140,23 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
     return evidence
 
 
+def is_verified_customer_identity(identity: Any) -> bool:
+    """True when ``identity`` is a resolved Session Identity Snapshot for a
+    VERIFIED customer (``identity["outcome"] == "verified_customer"``).
+
+    The SAME signal :func:`binding_key_from_identity` uses to bind to the
+    Shopify customer id rather than a provisional channel key. 0.0.3 S21 (FR-21,
+    NFR-2) reuses it as the verified-only gate for EXTERNAL customer
+    self-service (the customer-safe summary read and the customer's own
+    governed clear): an unverified caller -- unmatched, provisional, or
+    ambiguous -- still resolves a binding (their own provisional channel key,
+    see ``test_unmatched_caller_outcome_still_binds_provisionally_from_context``)
+    but is NOT a verified customer, so self-service must still refuse it
+    (fail-closed, US13) -- a resolvable binding alone is not authorization.
+    """
+    return isinstance(identity, dict) and identity.get("outcome") == "verified_customer"
+
+
 def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     """Pure identity dict -> ``(binding_key, binding_kind)`` core, or ``None``.
 
@@ -164,12 +181,12 @@ def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     # init (which ``toee_hermes.plugin`` imports in turn), so importing ``gateway``
     # at module scope here would re-enter that partially-initialized package during
     # a cold import and raise ImportError.
-    from ...gateway.normalize import normalize_e164
+    from ...gateway.normalize import canonicalize_email, is_email_channel, normalize_e164
 
     if not isinstance(identity, dict):
         return None
 
-    if identity.get("outcome") == "verified_customer":
+    if is_verified_customer_identity(identity):
         shopify_customer_id = identity.get("shopify_customer_id")
         if isinstance(shopify_customer_id, str) and shopify_customer_id:
             return shopify_customer_id, "verified"
@@ -177,9 +194,17 @@ def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     channel = identity.get("channel")
     channel_identity = identity.get("channel_identity")
     if isinstance(channel, str) and channel and isinstance(channel_identity, str):
-        normalized = normalize_e164(channel_identity)
-        if normalized != "+":
-            return f"provisional:{channel}:{normalized}", "provisional"
+        # S17: email channel identities are addresses, not phones — canonicalize
+        # them (never E.164, which strips an address to a bare "+"). SMS keeps the
+        # E.164 normalization so the provisional key round-trips byte-for-byte.
+        if is_email_channel(channel):
+            normalized = canonicalize_email(channel_identity)
+            if normalized:
+                return f"provisional:{channel}:{normalized}", "provisional"
+        else:
+            normalized = normalize_e164(channel_identity)
+            if normalized != "+":
+                return f"provisional:{channel}:{normalized}", "provisional"
 
     return None
 
@@ -255,6 +280,57 @@ def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
     )
 
 
+def resolve_clear_authorization(context: "ToolExecutionContext") -> tuple[str | None, str]:
+    """Framework-derived ``(account_id, initiator)`` gate for a governed
+    ``clear_preference`` (0.0.3 S20/S21, FR-20/FR-21).
+
+    ONE shared resolver for both the mock and Postgres datastore handlers --
+    same reasoning as :func:`resolve_memory_write_source` and
+    :func:`resolve_customer_memory_binding`: this is the security-sensitive
+    authorization gate for the clear action, and a duplicated gate is exactly
+    the kind of thing that silently drifted before (the S15 mock/dismiss
+    audit-sink gap). Raises the fail-closed ``ToolDriverError("policy_blocked",
+    ...)`` itself when unauthorized, so both call sites just call it and use
+    the returned tuple:
+
+    - EXTERNAL + a verified customer identity (:func:`is_verified_customer_identity`)
+      -> ``(None, "customer")``: the customer clearing their own binding: no
+      ``account_id`` since the customer is not a workbench account.
+    - EXTERNAL + not verified (unmatched, provisional, or ambiguous) ->
+      ``policy_blocked`` -- a resolvable provisional binding is not
+      authorization (US13).
+    - INTERNAL + ``context.user_id`` -> ``(context.user_id, "rep")``.
+    - INTERNAL with no ``context.user_id`` -> ``policy_blocked`` -- a clear is
+      always an attributed actor at the keyboard, never the unbound AI draft
+      turn.
+    - Any other profile -> ``policy_blocked`` (fail-closed, defense in depth --
+      ``toee_customer_memory`` is not allowlisted outside these two today,
+      ADR-0034/35, same posture as ``resolve_memory_write_source``).
+    """
+    # Deferred import: same partially-initialized-package hazard documented on
+    # resolve_memory_write_source above.
+    from ...plugin.profiles import EXTERNAL, INTERNAL
+
+    if context.profile == EXTERNAL:
+        if is_verified_customer_identity(context.identity):
+            return None, "customer"
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed preference clear requires a verified customer identity.",
+        )
+    if context.profile == INTERNAL:
+        if context.user_id:
+            return context.user_id, "rep"
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed preference clear requires an attributed actor.",
+        )
+    raise ToolDriverError(
+        "policy_blocked",
+        f'Customer Memory clears are not permitted for profile "{context.profile}".',
+    )
+
+
 def create_memory_mock_handlers(
     data: MemoryMockData = memory_baseline_data,
     *,
@@ -315,8 +391,18 @@ def create_memory_mock_handlers(
     def clear_preference(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
-        # Clears one preference slot and acknowledges the removal.
+        # Clears one preference slot and acknowledges the removal. The gate --
+        # who is authorized to clear (rep/supervisor with an attributed actor,
+        # or a verified EXTERNAL customer clearing their own binding) -- lives
+        # in the shared resolve_clear_authorization (see its docstring for the
+        # full S20/S21 rationale), the SAME resolver the Postgres handler calls,
+        # so the two twins can't drift the way the S15 mock/dismiss gate did.
+        # The Postgres handler additionally writes a preference_cleared audit
+        # row from the returned (account_id, initiator); this mock driver has
+        # no audit sink (same no-op-in-mock-mode convention as
+        # dismiss_proposal), so it only needs the gate check here.
         slot = _require_slot(params)
+        resolve_clear_authorization(context)
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key).pop(slot, None)
         return {"binding_key": binding_key, "slot": slot, "cleared": True}
@@ -332,10 +418,84 @@ def create_memory_mock_handlers(
             "preferences": dict(slots_for(binding_key)),
         }
 
+    def get_my_memory_summary(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.3 S21 (FR-21, NFR-2): the customer-facing "what do you remember
+        # about me" read -- verified-only (same signal as the extended
+        # clear_preference gate above), and strips ALL internal metadata: slot
+        # values only, no source, no actor, no timestamps, no binding_key. An
+        # unverified caller (unmatched/provisional/ambiguous) must get ZERO
+        # data, never a probe surface for whoever holds a phone number/email
+        # (US13) -- a resolvable provisional binding is not authorization.
+        # NOTE: despite the "customer-facing" framing, this action is also
+        # LLM-callable on internal_copilot -- it isn't in _AGENT_EXCLUDED_ACTIONS,
+        # so it rides the shared toolset registration onto INTERNAL's tool loop
+        # too. Not a gap: INTERNAL already has get_preferences, a superset read.
+        if not is_verified_customer_identity(context.identity):
+            raise ToolDriverError(
+                "policy_blocked",
+                "Customer Memory self-service requires a verified customer "
+                "identity.",
+            )
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+        return {"preferences": dict(slots_for(binding_key))}
+
+    def dismiss_proposal(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.3 S15 (FR-16/US17): a dismissed proposal persists NO slot -- a bad
+        # guess can't quietly land in memory. Only the Postgres datastore handler
+        # records the FR-17 audit row (this mock driver has no audit sink, same
+        # no-op-in-mock-mode convention as every other governed write here), so
+        # this is just a governed acknowledgment.
+        slot = _require_slot(params)
+        _require_value(params)
+        # Requires an attributed actor, same gate as the Postgres twin
+        # (_dismiss_proposal): a dismissal is always a rep at the keyboard, never
+        # the customer and never the unbound AI draft turn -- so on the EXTERNAL
+        # profile (no context.user_id) this is policy_blocked, same as every
+        # other governed write on toee_customer_memory (FR-16).
+        if not context.user_id:
+            raise ToolDriverError(
+                "policy_blocked",
+                "A governed proposal dismissal requires an attributed actor.",
+            )
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+        return {"binding_key": binding_key, "slot": slot, "dismissed": True}
+
+    def get_memory_audit(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.3 S20 (FR-20): the Supervisor Memory Audit View read. Shape-compatible
+        # with the Postgres handler (same keys) so a caller can't drift between
+        # backends, but the mock has no per-write source/actor/timestamp store and
+        # no audit sink (same convention as dismiss_proposal/clear_preference above)
+        # -- source/actor/timestamps come back null and audit is always empty (so
+        # there is never a row lacking the Postgres twin's joined actor_username --
+        # the empty list is itself the documented null for that field).
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+        slots = [
+            {
+                "slot_name": slot,
+                "slot_value": value,
+                "source": None,
+                "actor_account_id": None,
+                "evidence": evidence.get(binding_key, {}).get(slot),
+                "created_at": None,
+                "updated_at": None,
+            }
+            for slot, value in slots_for(binding_key).items()
+        ]
+        return {"binding_key": binding_key, "slots": slots, "audit": []}
+
     return {
         "toee_customer_memory": {
             "upsert_preference": upsert_preference,
             "clear_preference": clear_preference,
             "get_preferences": get_preferences,
+            "get_my_memory_summary": get_my_memory_summary,
+            "dismiss_proposal": dismiss_proposal,
+            "get_memory_audit": get_memory_audit,
         }
     }

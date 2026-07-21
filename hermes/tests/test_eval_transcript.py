@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import json
 
-from eval_runner.transcript import tool_calls_from_messages, turn_result_from_transcript
+from eval_runner.transcript import (
+    memory_proposals_from_messages,
+    tool_calls_from_messages,
+    turn_result_from_transcript,
+)
 
 
 def _assistant_call(call_id: str, name: str, arguments: dict) -> dict:
@@ -148,6 +152,85 @@ def test_composer_collects_explicit_memory_upsert_slots() -> None:
     result = turn_result_from_transcript(final_response="", messages=messages)
 
     assert result.memory_upserts == ["channel_preference"]
+
+
+# --- S14 (FR-15): structured proposals[] extracted from upsert_preference calls ---
+
+
+def test_memory_proposals_extracts_slot_value_and_evidence_from_two_calls() -> None:
+    messages = [
+        _assistant_call(
+            "c1",
+            "toee_customer_memory__upsert_preference",
+            {"key": "contact_time_preference", "value": "after 2pm"},
+        ),
+        _tool_result(
+            "c1",
+            "toee_customer_memory__upsert_preference",
+            {
+                "slot": "contact_time_preference",
+                "value": "after 2pm",
+                "evidence": "call me after 2pm please",
+                "stored": True,
+            },
+        ),
+        _assistant_call(
+            "c2",
+            "toee_customer_memory__upsert_preference",
+            {"key": "channel_preference", "value": "sms"},
+        ),
+        _tool_result(
+            "c2",
+            "toee_customer_memory__upsert_preference",
+            {"slot": "channel_preference", "value": "sms", "stored": True},
+        ),
+    ]
+
+    proposals = memory_proposals_from_messages(messages)
+
+    assert [(p.slot, p.value, p.evidence_turn) for p in proposals] == [
+        ("contact_time_preference", "after 2pm", "call me after 2pm please"),
+        ("channel_preference", "sms", None),
+    ]
+
+
+def test_memory_proposals_empty_when_no_memory_tool_calls() -> None:
+    messages = [
+        _assistant_call("c1", "toee_qbo_read__get_invoice", {"invoice_number": "INV-9001"}),
+        _tool_result("c1", "toee_qbo_read__get_invoice", {"balance": 0}),
+    ]
+
+    assert memory_proposals_from_messages(messages) == []
+
+
+def test_memory_proposals_drops_a_failed_or_unknown_slot_call() -> None:
+    messages = [
+        # A governed rejection (e.g. an open-ended/unknown slot, ADR-0111): ok=False.
+        _assistant_call(
+            "c1",
+            "toee_customer_memory__upsert_preference",
+            {"key": "favorite_color", "value": "blue"},
+        ),
+        _tool_result(
+            "c1",
+            "toee_customer_memory__upsert_preference",
+            {"error": "rejected", "error_class": "unexpected_error"},
+        ),
+        # A successful call whose echoed slot is somehow outside the current enum
+        # (a stale/mismatched driver) -- dropped too, defense in depth.
+        _assistant_call(
+            "c2",
+            "toee_customer_memory__upsert_preference",
+            {"key": "channel_preference", "value": "sms"},
+        ),
+        _tool_result(
+            "c2",
+            "toee_customer_memory__upsert_preference",
+            {"slot": "not_a_real_slot", "value": "sms", "stored": True},
+        ),
+    ]
+
+    assert memory_proposals_from_messages(messages) == []
 
 
 def test_composer_ignores_blocked_case_create_for_case_created() -> None:

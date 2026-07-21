@@ -19,13 +19,28 @@ from pathlib import Path
 
 import pytest
 
+from toee_hermes.plugin import _AGENT_EXCLUDED_ACTIONS
 from toee_hermes.plugin.profiles import PROFILE_TOOL_ALLOWLIST, PROFILES
+from toee_hermes.tool_catalog import TOOL_CATALOG
 
 _RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 
 # Every toolset that appears in any profile — used to derive each profile's
 # default-deny set (toolsets exclusive to the other profiles).
 _ALL_TOOLSETS: frozenset[str] = frozenset().union(*PROFILE_TOOL_ALLOWLIST.values())
+
+# Toolsets whose EVERY catalog action is in _AGENT_EXCLUDED_ACTIONS (0.0.3 S26:
+# toee_metrics is the first -- a single admin-only aggregate-metrics read).
+# Such a toolset never registers a single native tool handler, so it can never
+# appear in a profile's registered toolset set regardless of allowlist
+# membership -- excluded from the "missing" check below for that structural
+# reason (mirrors the same fix in test_copilot_turn.py's
+# _wholly_excluded_toolsets).
+_WHOLLY_EXCLUDED_TOOLSETS: frozenset[str] = frozenset(
+    tool
+    for tool, actions in TOOL_CATALOG.items()
+    if all((tool, action) in _AGENT_EXCLUDED_ACTIONS for action in actions)
+)
 
 _PROBE = r"""
 import json, os, sys, tempfile
@@ -82,7 +97,7 @@ def test_profile_home_loads_only_its_toolset_natively(profile: str) -> None:
     assert report["loaded"], f"{profile} home did not natively load the toee plugin"
 
     allowed = set(PROFILE_TOOL_ALLOWLIST[profile])
-    missing = allowed - registered
+    missing = allowed - registered - _WHOLLY_EXCLUDED_TOOLSETS
     assert not missing, f"{profile} did not register allowlisted toolsets: {missing}"
 
     forbidden = (_ALL_TOOLSETS - allowed) & registered

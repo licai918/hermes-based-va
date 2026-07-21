@@ -207,7 +207,7 @@ def test_replayed_opt_out_sends_exactly_one_confirmation() -> None:
     # ADR-0016: exactly one confirmation per opt-out. The provider does not sign
     # webhooks, so a captured request can be replayed verbatim; without a seen
     # record for the opt-out branch every replay re-sent a real SMS to the
-    # contact — an amplification primitive billed to us (ADR-0149 follow-up).
+    # contact — an amplification primitive billed to us (ADR-0153 follow-up).
     store = InMemoryGatewayStore()
     sent: list[tuple[str, str]] = []
     app = create_app(

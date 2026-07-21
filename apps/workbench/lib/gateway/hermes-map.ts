@@ -14,6 +14,11 @@ import {
   type CaseChannel,
   type CaseStatus,
   type CustomerPreferences,
+  type MemoryAuditEntry,
+  type MemoryAuditView,
+  type MemoryPreferenceSlot,
+  type MemorySlotAttribution,
+  type MemoryWriteSource,
   type ThreadAuthor,
   type ThreadMessage,
   type ToolCallEvidence,
@@ -167,6 +172,79 @@ export function mapPreferences(raw: unknown): CustomerPreferences {
     if (typeof value === "string") result[slot] = value;
   }
   return result;
+}
+
+const MEMORY_WRITE_SOURCES: readonly MemoryWriteSource[] = [
+  "customer_explicit",
+  "employee_confirmed",
+  "copilot_agent",
+  "merged_provisional",
+];
+
+function nullableSource(value: unknown): MemoryWriteSource | null {
+  return (MEMORY_WRITE_SOURCES as readonly unknown[]).includes(value)
+    ? (value as MemoryWriteSource)
+    : null;
+}
+
+// Supervisor Memory Audit View (0.0.3 S20, FR-20). ``binding_key`` on the raw
+// dispatch payload is deliberately never read here -- same rule mapPreferences
+// follows -- so it can't accidentally leak into the mapped view a route returns
+// to the browser.
+export function mapMemorySlotAttribution(raw: unknown): MemorySlotAttribution {
+  const r = asObject(raw, "memory slot");
+  const slot = r.slot_name;
+  if (!(PREFERENCE_SLOTS as readonly unknown[]).includes(slot)) {
+    throw new HermesApiError("unexpected_error", `unknown memory slot: ${String(slot)}`);
+  }
+  return {
+    slot: slot as MemoryPreferenceSlot,
+    value: requiredString(r.slot_value, "slot_value"),
+    source: nullableSource(r.source),
+    actorAccountId: nullableString(r.actor_account_id),
+    evidence: nullableString(r.evidence),
+    createdAt: isoToMs(r.created_at, "created_at"),
+    updatedAt: isoToMs(r.updated_at, "updated_at"),
+  };
+}
+
+// Not a closed enum (unlike mapAuditEntry's case AuditAction): the audit trail
+// carries whatever governed actions land in workbench_audit_log
+// (proposal_dismissed, preference_cleared, future kinds), so an action this
+// mapper doesn't yet know about is passed through rather than rejected.
+export function mapMemoryAuditEntry(raw: unknown): MemoryAuditEntry {
+  const r = asObject(raw, "memory audit entry");
+  const details = r.details;
+  const detailsObj =
+    details && typeof details === "object" ? (details as Record<string, unknown>) : null;
+  const slot =
+    detailsObj && typeof detailsObj.slot === "string" ? detailsObj.slot : nullableString(r.target_id);
+  const entry: MemoryAuditEntry = {
+    entryId: requiredString(r.id, "audit id"),
+    at: isoToMs(r.created_at, "created_at"),
+    actorAccountId: nullableString(r.account_id),
+    actorUsername: nullableString(r.actor_username),
+    action: optionalString(r.action),
+    slot,
+  };
+  // S16 (FR-17): a proposal_dismissed row's proposed value, pulled from
+  // details.value the same way slot is pulled from details.slot above -- the
+  // proposal-history section needs it to show what was proposed, not just
+  // that a slot was dismissed.
+  if (detailsObj && typeof detailsObj.value === "string") entry.value = detailsObj.value;
+  const detail = optionalDetail(details);
+  if (detail) entry.detail = detail;
+  return entry;
+}
+
+export function mapMemoryAuditView(raw: unknown): MemoryAuditView {
+  const r = asObject(raw, "memory audit view");
+  const slotsRaw = Array.isArray(r.slots) ? r.slots : [];
+  const historyRaw = Array.isArray(r.audit) ? r.audit : [];
+  return {
+    slots: slotsRaw.map(mapMemorySlotAttribution),
+    history: historyRaw.map(mapMemoryAuditEntry),
+  };
 }
 
 export function mapAutoHandledRecord(raw: unknown): AutoHandledRecord {

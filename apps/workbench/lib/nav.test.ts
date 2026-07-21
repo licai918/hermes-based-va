@@ -2,20 +2,30 @@ import { WORKBENCH_ROLES } from "@toee/shared";
 import { navItemsForRole, roleLabel } from "./nav";
 
 describe("navItemsForRole (ADR-0084)", () => {
-  it("gives a rep only the Copilot entry", () => {
+  it("gives a rep the Copilot and Simulator entries", () => {
     const items = navItemsForRole(WORKBENCH_ROLES.rep);
-    expect(items.map((i) => i.label)).toEqual(["Copilot"]);
+    expect(items.map((i) => i.label)).toEqual(["Copilot", "Simulator"]);
     expect(items[0]?.href).toBe("/copilot");
+    expect(items[1]?.href).toBe("/copilot/simulator");
   });
 
-  it("gives a supervisor the four governance entries", () => {
+  it("gives a supervisor the simulator plus the six governance entries", () => {
     const labels = navItemsForRole(WORKBENCH_ROLES.supervisor).map(
       (i) => i.label,
     );
-    expect(labels).toEqual(["Copilot", "Knowledge", "Eval", "Accounts"]);
+    expect(labels).toEqual([
+      "Copilot",
+      "Simulator",
+      "Knowledge",
+      "Eval",
+      "Accounts",
+      "Memory Audit",
+      "Agent Experience",
+      "Metrics",
+    ]);
   });
 
-  it("gives an admin the same four entries as a supervisor", () => {
+  it("gives an admin the same six entries as a supervisor", () => {
     expect(navItemsForRole(WORKBENCH_ROLES.admin)).toEqual(
       navItemsForRole(WORKBENCH_ROLES.supervisor),
     );

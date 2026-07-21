@@ -1,7 +1,26 @@
 # Memory architecture activation: Customer Memory wiring (M1) + gbrain knowledge layer (M2)
 
+> **Superseded in part (2026-07-20).** **M1 (Customer Memory wiring) SHIPPED** — 0.0.1 (PR #54)
+> and 0.0.2 (PR #55); the "L4 Dormant / three broken wires" state described below is now
+> historical. **M2 (gbrain knowledge layer) is SUPERSEDED** — the 0.0.3 spike evaluated gbrain
+> and rejected it, choosing an in-house **hybrid lexical + dense-embedding** retriever over a
+> separate index. Current direction →
+> [`docs/architecture/memory-layers.md`](../../architecture/memory-layers.md) (L5) and
+> [`workspace/0.0.3/knowledge-spike/`](../../../workspace/0.0.3/knowledge-spike/).
+> Retained as the historical record of how M1 was designed.
+>
+> **Also AMENDED, not merely shipped — do not implement §M1c as written.** 0.0.2 /
+> [ADR-0148](../../adr/0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)
+> *changed* two decisions below: the `source` enum gained a fourth value **`copilot_agent`**
+> (§M1c.5 lists only three), and the `channel_identity_id` carve-out was **removed entirely**
+> (§M1c.2 says it "remains" — it does not; an unresolvable identity now fails closed to
+> `policy_blocked`, guarded by a dedicated removal-tripwire test). An `actor_account_id` column
+> was also added. Separately, the **hard-boundary table** in §Decision predates the gbrain
+> rejection — knowledge now targets a hybrid FTS + embedding retriever over a Shopify-sourced
+> corpus.
+
 Date: 2026-07-10
-Status: approved-direction, pending user review of this spec
+Status: **superseded in part** (M1 shipped; M2 superseded 2026-07-20) — was: approved-direction
 Decision owner: licai
 
 ## Context (verified against code, 2026-07-10)

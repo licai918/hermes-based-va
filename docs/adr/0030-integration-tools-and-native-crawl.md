@@ -1,5 +1,13 @@
 # Business integrations via Hermes Tools; knowledge crawl via native web stack
 
+> **Partially superseded (2026-07-20).** **Still holds — and this is the ADR's primary
+> decision:** business integrations go through **Hermes Tools / Domain Adapters**, not MCP
+> shims. **Superseded:** everything below about knowledge ingestion — "Knowledge Crawl
+> orchestration", the Tavily/Brave "Primary fetch stack", and the "Render fallback chain".
+> No crawl was ever built; the 0.0.3 spike ingests storefront content through the Shopify
+> connector and retrieves with an in-house hybrid index.
+> Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md) (L5).
+
 Shopify, QBO, Square, EasyRoutes, Textline, and Twilio have no official MCP servers Toee Tire can rely on in production. The first version connects these systems through **Hermes Tools** implemented as thin **Domain Adapter** layers, not through third-party MCP assumptions or self-hosted MCP wrappers around the same REST APIs.
 
 **Why Tools over MCP for business APIs:** Hermes Tools already sit inside profile allowlists, field masking, idempotency, and audit logging. A bespoke MCP server would duplicate that surface without adding capability. Third-party MCP shims add schema drift, credential exposure, and weaker accountability for accounting and payment actions.

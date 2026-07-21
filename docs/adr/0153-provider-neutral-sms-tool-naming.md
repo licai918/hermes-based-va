@@ -1,5 +1,8 @@
 # Provider-neutral SMS naming: toee_textline_reply → toee_sms_reply
 
+> ADR number: originally drafted as 0149; renumbered to 0153 on merge because
+> 0.0.3 landed ADR-0149..0152 on main first.
+
 > **Status: Accepted** (2026-07-21). Completes the Textline retirement started by
 > the SimpleTexting migration (commit `079f878`): the provider integration moved
 > first with internal names deliberately kept to limit that diff; this ADR renames
