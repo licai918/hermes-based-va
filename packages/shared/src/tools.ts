@@ -56,8 +56,14 @@ export const TOOL_CATALOG = {
     "authenticate",
   ],
   // 0.0.3 S22 (FR-23, NFR-3): L6 Agent-experience store -- see
-  // hermes/toee_hermes/tool_catalog.py for the full rationale.
-  toee_agent_experience: ["propose_experience", "list_agent_experience"],
+  // hermes/toee_hermes/tool_catalog.py for the full rationale. 0.0.3 S24
+  // (FR-24) adds confirm_experience/reject_experience, the human confirm gate.
+  toee_agent_experience: [
+    "propose_experience",
+    "list_agent_experience",
+    "confirm_experience",
+    "reject_experience",
+  ],
 } as const satisfies Record<string, readonly string[]>;
 
 export type ToolName = keyof typeof TOOL_CATALOG;

@@ -80,6 +80,29 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         },
         "required": ["kind", "content"],
     },
+    # 0.0.3 S24 (FR-24): the human confirm-gate decision actions. Neither is
+    # LLM-callable (both are in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's
+    # deterministic dispatch still goes through this same schema/param
+    # validation path, so `id` is declared the same way as every other
+    # diagnosed action rather than left to an open object.
+    ("toee_agent_experience", "confirm_experience"): {
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The agent_experience entry id to confirm.",
+            },
+        },
+        "required": ["id"],
+    },
+    ("toee_agent_experience", "reject_experience"): {
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The agent_experience entry id to reject.",
+            },
+        },
+        "required": ["id"],
+    },
 }
 
 

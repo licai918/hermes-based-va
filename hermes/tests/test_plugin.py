@@ -246,6 +246,19 @@ def test_agent_experience_is_not_registered_for_external_profile() -> None:
     assert "toee_agent_experience" not in ctx.registered_toolsets()
 
 
+# --- 0.0.3 S24: confirm/reject_experience are never LLM-callable (governance) -
+
+
+def test_confirm_and_reject_experience_are_never_registered_as_llm_tools() -> None:
+    # The human confirm gate (US23, FR-24): the model must never be able to
+    # self-approve/-reject its own L6 proposals. Admin-only, reached only from
+    # the admin BFF's gated dispatch.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert "toee_agent_experience__confirm_experience" not in ctx.registered_names()
+    assert "toee_agent_experience__reject_experience" not in ctx.registered_names()
+
+
 # --- 0.0.3 S21: get_my_memory_summary IS LLM-callable on EXTERNAL (FR-21) ---
 
 

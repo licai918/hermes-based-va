@@ -178,3 +178,19 @@ export function listAgentExperience(): Promise<AgentExperienceEntry[]> {
     (b) => b.entries,
   );
 }
+
+// --- L6 confirm gate: Accept/Reject (0.0.3 S24, FR-24) ------------------------
+
+export function confirmExperience(id: string): Promise<AgentExperienceEntry> {
+  return sendJson<{ entry: AgentExperienceEntry }>(
+    "POST",
+    `/api/admin/agent-experience/${encodeURIComponent(id)}/confirm`,
+  ).then((b) => b.entry);
+}
+
+export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
+  return sendJson<{ entry: AgentExperienceEntry }>(
+    "POST",
+    `/api/admin/agent-experience/${encodeURIComponent(id)}/reject`,
+  ).then((b) => b.entry);
+}

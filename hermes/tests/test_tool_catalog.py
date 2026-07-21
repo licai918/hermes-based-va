@@ -38,13 +38,18 @@ def test_agent_experience_actions_match_fr_23() -> None:
     # 0.0.3 S22 (FR-23): the L6 Agent-experience store's governed write
     # (propose_experience) and its admin-only read (list_agent_experience,
     # excluded from the LLM tool-calling loop -- see
-    # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS).
+    # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS). 0.0.3 S24 (FR-24) adds the
+    # human confirm-gate decision actions, also excluded.
     assert TOOL_CATALOG["toee_agent_experience"] == (
         "propose_experience",
         "list_agent_experience",
+        "confirm_experience",
+        "reject_experience",
     )
     assert is_tool_action("toee_agent_experience", "propose_experience") is True
     assert is_tool_action("toee_agent_experience", "list_agent_experience") is True
+    assert is_tool_action("toee_agent_experience", "confirm_experience") is True
+    assert is_tool_action("toee_agent_experience", "reject_experience") is True
 
 
 def test_identity_lookup_actions_match_adr_0060() -> None:

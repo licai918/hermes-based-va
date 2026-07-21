@@ -88,7 +88,14 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # only (the S23 copilot review fork proposes); list_agent_experience is
     # admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
     # precedent) -- reached only via the admin BFF's deterministic dispatch.
-    "toee_agent_experience": ("propose_experience", "list_agent_experience"),
+    # 0.0.3 S24 (FR-24): confirm_experience/reject_experience, the human
+    # confirm gate -- also admin-only/_AGENT_EXCLUDED_ACTIONS, same reason.
+    "toee_agent_experience": (
+        "propose_experience",
+        "list_agent_experience",
+        "confirm_experience",
+        "reject_experience",
+    ),
 }
 
 

@@ -70,11 +70,20 @@ DriverSelector = Callable[[str], ToolDriver]
 # for the admin BFF's deterministic tools:dispatch call, never the copilot
 # model's own tool-calling loop. propose_experience is deliberately NOT here --
 # it's the governed write the S23 review fork calls.
+#
+# toee_agent_experience.confirm_experience / .reject_experience (0.0.3 S24,
+# FR-24) are excluded for the same reason: the human confirm-gate decision --
+# US23, the agent only "learns" what a human approved -- must never become a
+# model-callable primitive the review fork (or a prompt injection) could use to
+# self-approve its own proposals. Reached ONLY via the admin BFF's
+# deterministic tools:dispatch call, never a live agent's tool loop.
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
         ("toee_customer_memory", "get_memory_audit"),
         ("toee_agent_experience", "list_agent_experience"),
+        ("toee_agent_experience", "confirm_experience"),
+        ("toee_agent_experience", "reject_experience"),
     }
 )
 

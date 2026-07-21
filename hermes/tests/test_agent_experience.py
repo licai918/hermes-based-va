@@ -55,6 +55,26 @@ def _list(driver, context):
     )
 
 
+def _confirm(driver, context, entry_id):
+    return execute_tool(
+        tool="toee_agent_experience",
+        action="confirm_experience",
+        params={"id": entry_id},
+        context=context,
+        driver=driver,
+    )
+
+
+def _reject(driver, context, entry_id):
+    return execute_tool(
+        tool="toee_agent_experience",
+        action="reject_experience",
+        params={"id": entry_id},
+        context=context,
+        driver=driver,
+    )
+
+
 # --- propose_experience: happy path ------------------------------------------
 
 
@@ -202,3 +222,122 @@ def test_list_agent_experience_returns_seeded_proposed_entries() -> None:
     # Inert by construction: no decider/decided_at until S24 confirms/rejects.
     assert all(e["decider_account_id"] is None for e in entries)
     assert all(e["decided_at"] is None for e in entries)
+
+
+# --- confirm_experience / reject_experience: the human confirm gate (S24) ---
+
+
+def _propose_one(driver, **params) -> str:
+    result = _propose(driver, _internal_ctx(), kind="note", content="A clean note.", **params)
+    assert result.ok is True
+    return result.data["id"]
+
+
+def test_confirm_experience_sets_status_decider_and_timestamp() -> None:
+    driver = _driver()
+    entry_id = _propose_one(driver)
+
+    result = _confirm(driver, _internal_ctx(user_id="acct_admin_1"), entry_id)
+
+    assert result.ok is True
+    assert result.data["status"] == "confirmed"
+    assert result.data["decider_account_id"] == "acct_admin_1"
+    assert result.data["decided_at"] is not None
+
+    entries = _list(driver, _internal_ctx()).data["entries"]
+    assert entries[0]["status"] == "confirmed"
+    assert entries[0]["decider_account_id"] == "acct_admin_1"
+
+
+def test_reject_experience_sets_status_decider_and_timestamp() -> None:
+    driver = _driver()
+    entry_id = _propose_one(driver)
+
+    result = _reject(driver, _internal_ctx(user_id="acct_admin_2"), entry_id)
+
+    assert result.ok is True
+    assert result.data["status"] == "rejected"
+    assert result.data["decider_account_id"] == "acct_admin_2"
+    assert result.data["decided_at"] is not None
+
+
+def test_confirm_experience_with_no_actor_is_policy_blocked() -> None:
+    # Governance non-negotiable: decider is framework-derived; no attributed
+    # actor is never a decision.
+    driver = _driver()
+    entry_id = _propose_one(driver)
+
+    result = _confirm(driver, _internal_ctx(user_id=None), entry_id)
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    # Nothing transitioned: still proposed, no decider.
+    entries = _list(driver, _internal_ctx()).data["entries"]
+    assert entries[0]["status"] == "proposed"
+    assert entries[0]["decider_account_id"] is None
+
+
+def test_reject_experience_with_no_actor_is_policy_blocked() -> None:
+    driver = _driver()
+    entry_id = _propose_one(driver)
+
+    result = _reject(driver, _internal_ctx(user_id=None), entry_id)
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_confirm_experience_is_policy_blocked_outside_internal_copilot() -> None:
+    driver = _driver()
+    entry_id = _propose_one(driver)
+
+    result = _confirm(driver, _external_ctx(), entry_id)
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_confirm_experience_on_unknown_id_is_not_found() -> None:
+    driver = _driver()
+
+    result = _confirm(driver, _internal_ctx(user_id="acct_admin_1"), "aexp_does_not_exist")
+
+    assert result.ok is False
+    assert result.error_class == "not_found"
+
+
+def test_confirm_experience_on_already_decided_entry_is_a_safe_no_op() -> None:
+    # Idempotency-safe: deciding an already-decided entry never re-decides or
+    # corrupts state -- the SECOND call must not overwrite the FIRST decider.
+    driver = _driver()
+    entry_id = _propose_one(driver)
+    first = _confirm(driver, _internal_ctx(user_id="acct_admin_1"), entry_id)
+    assert first.ok is True
+
+    second = _reject(driver, _internal_ctx(user_id="acct_admin_2"), entry_id)
+
+    assert second.ok is True
+    # Unchanged: still confirmed, still the FIRST decider -- reject never wins.
+    assert second.data["status"] == "confirmed"
+    assert second.data["decider_account_id"] == "acct_admin_1"
+    assert second.data["decided_at"] == first.data["decided_at"]
+
+
+def test_reject_experience_on_already_decided_entry_is_a_safe_no_op() -> None:
+    driver = _driver()
+    entry_id = _propose_one(driver)
+    first = _reject(driver, _internal_ctx(user_id="acct_admin_1"), entry_id)
+    assert first.ok is True
+
+    second = _confirm(driver, _internal_ctx(user_id="acct_admin_2"), entry_id)
+
+    assert second.ok is True
+    assert second.data["status"] == "rejected"
+    assert second.data["decider_account_id"] == "acct_admin_1"
+
+
+def test_confirm_experience_requires_id_param() -> None:
+    driver = _driver()
+    result = _confirm(driver, _internal_ctx(user_id="acct_admin_1"), "")
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"

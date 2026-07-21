@@ -20,10 +20,13 @@ from toee_hermes.drivers.mock.agent_experience import (
     _context_strings,
     _read_proposer_context,
     _require_content,
+    _require_id,
     _require_kind,
     resolve_agent_experience_source,
+    resolve_experience_decision_authorization,
     scan_agent_experience_content,
 )
+from toee_hermes.errors import ToolDriverError
 
 from ._common import insert_audit, new_id, serialize_row
 
@@ -91,11 +94,92 @@ def _list_agent_experience(conn, params: dict[str, Any], context: "ToolExecution
     return {"entries": [serialize_row(r) for r in rows]}
 
 
+_ENTRY_COLUMNS = (
+    "id, kind, status, content, source, proposer_context, "
+    "decider_account_id, decided_at, created_at, updated_at"
+)
+
+
+def _decide_experience(
+    conn,
+    params: dict[str, Any],
+    context: "ToolExecutionContext",
+    *,
+    new_status: str,
+    audit_action: str,
+) -> Any:
+    """Shared UPDATE for confirm_experience/reject_experience (0.0.3 S24, FR-24).
+
+    ONE code path for both governed decisions (only ``new_status``/
+    ``audit_action`` differ), using the SAME ``resolve_experience_decision_
+    authorization`` gate the mock twin calls, so the two can't drift on who is
+    authorized to decide (the S15/S21 mock/Postgres lesson). The gate runs
+    BEFORE the row lookup, so a missing actor is always ``policy_blocked``
+    regardless of ``id``. The ``UPDATE ... WHERE status = 'proposed'``
+    guard is the idempotency floor: only a still-proposed row transitions; a
+    missing/already-decided row never corrupts state or re-decides -- a
+    missing id is a governed ``not_found``, an already-decided id is a safe
+    no-op that returns its current (unchanged) row.
+    """
+    entry_id = _require_id(params)
+    decider = resolve_experience_decision_authorization(context)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            UPDATE agent_experience
+            SET status = %s, decider_account_id = %s, decided_at = now(), updated_at = now()
+            WHERE id = %s AND status = 'proposed'
+            RETURNING {_ENTRY_COLUMNS}
+            """,
+            (new_status, decider, entry_id),
+        )
+        row = cur.fetchone()
+    if row is None:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"SELECT {_ENTRY_COLUMNS} FROM agent_experience WHERE id = %s",
+                (entry_id,),
+            )
+            existing = cur.fetchone()
+        if existing is None:
+            raise ToolDriverError(
+                "not_found", f'agent_experience entry "{entry_id}" not found.'
+            )
+        # Already decided: safe no-op, no re-decide, no second audit row.
+        return serialize_row(existing)
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=decider,
+        action=audit_action,
+        target_type="agent_experience",
+        target_id=entry_id,
+        details={"status": new_status},
+    )
+    return serialize_row(row)
+
+
+def _confirm_experience(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    return _decide_experience(
+        conn, params, context,
+        new_status="confirmed", audit_action="agent_experience_confirmed",
+    )
+
+
+def _reject_experience(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    return _decide_experience(
+        conn, params, context,
+        new_status="rejected", audit_action="agent_experience_rejected",
+    )
+
+
 def agent_experience_handlers() -> dict[str, dict[str, Any]]:
     """Registry fragment for the L6 Agent-experience datastore tool."""
     return {
         "toee_agent_experience": {
             "propose_experience": _propose_experience,
             "list_agent_experience": _list_agent_experience,
+            "confirm_experience": _confirm_experience,
+            "reject_experience": _reject_experience,
         }
     }

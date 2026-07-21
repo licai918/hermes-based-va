@@ -1,15 +1,18 @@
 import {
   clearMemorySlot,
+  confirmExperience,
   createAccount,
   disableAccount,
   getCorpusStatus,
   getMemoryAudit,
   getRun,
   listAccounts,
+  listAgentExperience,
   listRuns,
   listSlots,
   probeKnowledge,
   promote,
+  rejectExperience,
   rollbackSlot,
   saveDraft,
   signOff,
@@ -267,5 +270,49 @@ describe("admin-client memory audit (0.0.3 S20, FR-20)", () => {
         body: JSON.stringify({ slot: "channel_preference" }),
       },
     );
+  });
+});
+
+describe("admin-client agent experience (0.0.3 S22/S24, FR-23/FR-24)", () => {
+  it("listAgentExperience GETs the agent-experience endpoint and unwraps entries", async () => {
+    const entry = { id: "aexp_1", kind: "note", status: "proposed" };
+    const fetchMock = stubFetch({ entries: [entry] });
+
+    await expect(listAgentExperience()).resolves.toEqual([entry]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agent-experience", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("confirmExperience POSTs the confirm endpoint for the entry id and unwraps entry", async () => {
+    const entry = { id: "aexp_1", kind: "note", status: "confirmed", deciderAccountId: "seed-admin" };
+    const fetchMock = stubFetch({ entry });
+
+    await expect(confirmExperience("aexp_1")).resolves.toEqual(entry);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agent-experience/aexp_1/confirm", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: undefined,
+    });
+  });
+
+  it("rejectExperience POSTs the reject endpoint for the entry id and unwraps entry", async () => {
+    const entry = { id: "aexp_1", kind: "note", status: "rejected", deciderAccountId: "seed-admin" };
+    const fetchMock = stubFetch({ entry });
+
+    await expect(rejectExperience("aexp_1")).resolves.toEqual(entry);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/agent-experience/aexp_1/reject", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: undefined,
+    });
+  });
+
+  it("confirmExperience throws ApiError carrying a governed denial message", async () => {
+    stubFetch({ error: "agent_experience entry \"aexp_missing\" not found." }, 404);
+    await expect(confirmExperience("aexp_missing")).rejects.toMatchObject({
+      name: "ApiError",
+      status: 404,
+    });
   });
 });

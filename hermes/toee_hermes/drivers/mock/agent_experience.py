@@ -16,6 +16,7 @@ loop that GENERATES proposals is S23 -- out of scope here.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from ...errors import ToolDriverError
@@ -169,6 +170,46 @@ def resolve_agent_experience_source(context: "ToolExecutionContext") -> str:
     )
 
 
+def _require_id(params: dict[str, Any]) -> str:
+    entry_id = params.get("id")
+    if not isinstance(entry_id, str) or not entry_id.strip():
+        raise ToolDriverError(
+            "unexpected_error",
+            "confirm_experience/reject_experience requires a non-empty string id.",
+        )
+    return entry_id
+
+
+def resolve_experience_decision_authorization(context: "ToolExecutionContext") -> str:
+    """Framework-derived decider account id for confirm/reject (0.0.3 S24, FR-24).
+
+    ONE shared resolver for the mock and Postgres datastore handlers -- same
+    "one resolver, both twins" discipline as ``resolve_agent_experience_source``
+    and Customer Memory's ``resolve_clear_authorization``, so this
+    security-sensitive gate can't drift between the two. A decision is always
+    an admin at the keyboard, reached only via the admin BFF's deterministic
+    ``tools:dispatch`` call over the internal_copilot profile (the only profile
+    ``toee_agent_experience`` is allowlisted on) -- never a model-supplied
+    param, never the unbound AI review-fork turn. No ``context.user_id`` ->
+    ``policy_blocked``. Any other profile is fail-closed, defense in depth
+    (both actions are also excluded from the LLM tool-calling surface via
+    ``_AGENT_EXCLUDED_ACTIONS``).
+    """
+    from ...plugin.profiles import INTERNAL
+
+    if context.profile != INTERNAL:
+        raise ToolDriverError(
+            "policy_blocked",
+            f'agent_experience decisions are not permitted for profile "{context.profile}".',
+        )
+    if not context.user_id:
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed agent_experience decision requires an attributed actor.",
+        )
+    return context.user_id
+
+
 def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
     """Build ``toee_agent_experience`` handlers backed by an in-memory list.
 
@@ -210,9 +251,42 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
         # precedent) -- never reached by a live agent's tool loop.
         return {"entries": list(store)}
 
+    def _decide(
+        params: dict[str, Any], context: "ToolExecutionContext", new_status: str
+    ) -> dict[str, Any]:
+        # 0.0.3 S24 (FR-24): the human confirm gate. Decider is framework-
+        # derived (never a model/client param); the gate runs BEFORE the store
+        # lookup so a missing actor is always policy_blocked regardless of
+        # entry_id. Only a "proposed" entry transitions -- an already-decided
+        # or missing entry is idempotency-safe, never corrupted or re-decided.
+        entry_id = _require_id(params)
+        decider = resolve_experience_decision_authorization(context)
+        for entry in store:
+            if entry["id"] == entry_id:
+                if entry["status"] == "proposed":
+                    entry["status"] = new_status
+                    entry["decider_account_id"] = decider
+                    entry["decided_at"] = datetime.now(timezone.utc).isoformat()
+                return dict(entry)
+        raise ToolDriverError(
+            "not_found", f'agent_experience entry "{entry_id}" not found.'
+        )
+
+    def confirm_experience(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        return _decide(params, context, "confirmed")
+
+    def reject_experience(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        return _decide(params, context, "rejected")
+
     return {
         "toee_agent_experience": {
             "propose_experience": propose_experience,
             "list_agent_experience": list_agent_experience,
+            "confirm_experience": confirm_experience,
+            "reject_experience": reject_experience,
         }
     }

@@ -77,13 +77,17 @@ describe("TOOL_CATALOG", () => {
     );
   });
 
-  it("exposes the L6 Agent-experience store actions (0.0.3 S22, FR-23)", () => {
+  it("exposes the L6 Agent-experience store actions (0.0.3 S22/S24, FR-23/FR-24)", () => {
     expect(TOOL_CATALOG.toee_agent_experience).toEqual([
       "propose_experience",
       "list_agent_experience",
+      "confirm_experience",
+      "reject_experience",
     ]);
     expect(isToolAction("toee_agent_experience", "propose_experience")).toBe(true);
     expect(isToolAction("toee_agent_experience", "list_agent_experience")).toBe(true);
+    expect(isToolAction("toee_agent_experience", "confirm_experience")).toBe(true);
+    expect(isToolAction("toee_agent_experience", "reject_experience")).toBe(true);
   });
 });
 

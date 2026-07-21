@@ -34,6 +34,26 @@ def _list(driver, *, profile="internal_copilot"):
     )
 
 
+def _confirm(driver, *, profile="internal_copilot", user_id=None, **params):
+    return execute_tool(
+        tool="toee_agent_experience",
+        action="confirm_experience",
+        params=params,
+        context=ToolExecutionContext(profile=profile, user_id=user_id),
+        driver=driver,
+    )
+
+
+def _reject(driver, *, profile="internal_copilot", user_id=None, **params):
+    return execute_tool(
+        tool="toee_agent_experience",
+        action="reject_experience",
+        params=params,
+        context=ToolExecutionContext(profile=profile, user_id=user_id),
+        driver=driver,
+    )
+
+
 def test_propose_experience_persists_a_proposed_row(datastore) -> None:
     driver, conn, _ = datastore
     result = _propose(
@@ -182,3 +202,138 @@ def test_list_agent_experience_returns_a_seeded_proposed_entry(datastore) -> Non
     assert entry["decider_account_id"] is None
     assert entry["decided_at"] is None
     assert entry["created_at"] is not None
+
+
+# --- confirm_experience / reject_experience: the human confirm gate (S24) ---
+
+
+def _rows_for(conn) -> list[tuple]:
+    """Anti-mock assertion (Sec 6.0.1): read the actual row back directly."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT status, decider_account_id, decided_at FROM agent_experience "
+            "ORDER BY created_at"
+        )
+        return cur.fetchall()
+
+
+def test_confirm_experience_persists_status_decider_and_decided_at(datastore) -> None:
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="Route 12 prefers mornings.")
+    entry_id = proposed.data["id"]
+
+    result = _confirm(driver, user_id="acct_admin_1", id=entry_id)
+
+    assert result.ok
+    assert result.data["status"] == "confirmed"
+    assert result.data["decider_account_id"] == "acct_admin_1"
+    assert result.data["decided_at"] is not None
+
+    rows = _rows_for(conn)
+    assert len(rows) == 1
+    status, decider, decided_at = rows[0]
+    assert status == "confirmed"
+    assert decider == "acct_admin_1"
+    assert decided_at is not None
+
+
+def test_reject_experience_persists_status_decider_and_decided_at(datastore) -> None:
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="Escalate AR disputes over $500.")
+    entry_id = proposed.data["id"]
+
+    result = _reject(driver, user_id="acct_admin_2", id=entry_id)
+
+    assert result.ok
+    assert result.data["status"] == "rejected"
+    assert result.data["decider_account_id"] == "acct_admin_2"
+
+    rows = _rows_for(conn)
+    status, decider, decided_at = rows[0]
+    assert status == "rejected"
+    assert decider == "acct_admin_2"
+    assert decided_at is not None
+
+
+def test_confirm_experience_writes_an_audit_row(datastore) -> None:
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="A clean operational note.")
+    entry_id = proposed.data["id"]
+
+    result = _confirm(driver, user_id="acct_admin_1", id=entry_id)
+    assert result.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id "
+            "FROM workbench_audit_log WHERE action = 'agent_experience_confirmed'"
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id = row
+    assert account_id == "acct_admin_1"
+    assert action == "agent_experience_confirmed"
+    assert target_type == "agent_experience"
+    assert target_id == entry_id
+
+
+def test_confirm_experience_with_no_actor_is_policy_blocked_and_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="x")
+    entry_id = proposed.data["id"]
+
+    result = _confirm(driver, user_id=None, id=entry_id)
+
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    status, decider, decided_at = _rows_for(conn)[0]
+    assert status == "proposed"
+    assert decider is None
+    assert decided_at is None
+
+
+def test_reject_experience_with_no_actor_is_policy_blocked(datastore) -> None:
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="x")
+    entry_id = proposed.data["id"]
+
+    result = _reject(driver, user_id=None, id=entry_id)
+
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+
+
+def test_confirm_experience_on_unknown_id_is_not_found(datastore) -> None:
+    driver, _, _ = datastore
+    result = _confirm(driver, user_id="acct_admin_1", id="aexp_does_not_exist")
+    assert not result.ok
+    assert result.error_class == "not_found"
+
+
+def test_confirm_experience_on_already_decided_entry_is_a_safe_no_op(datastore) -> None:
+    # Idempotency-safe against real Postgres: a second decision never
+    # re-decides or corrupts the persisted row.
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="x")
+    entry_id = proposed.data["id"]
+    first = _confirm(driver, user_id="acct_admin_1", id=entry_id)
+    assert first.ok
+
+    second = _reject(driver, user_id="acct_admin_2", id=entry_id)
+
+    assert second.ok
+    assert second.data["status"] == "confirmed"
+    assert second.data["decider_account_id"] == "acct_admin_1"
+    status, decider, decided_at = _rows_for(conn)[0]
+    assert status == "confirmed"
+    assert decider == "acct_admin_1"
+    assert decided_at.isoformat() == first.data["decided_at"]
+    # No second audit row for the no-op decision.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action IN ('agent_experience_confirmed', 'agent_experience_rejected')"
+        )
+        assert cur.fetchone()[0] == 1

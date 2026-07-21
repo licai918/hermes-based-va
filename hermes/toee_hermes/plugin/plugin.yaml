@@ -65,5 +65,7 @@ provides_tools:
   - toee_workbench_admin__authenticate
   - toee_agent_experience__propose_experience
   - toee_agent_experience__list_agent_experience
+  - toee_agent_experience__confirm_experience
+  - toee_agent_experience__reject_experience
 provides_hooks:
   - pre_llm_call

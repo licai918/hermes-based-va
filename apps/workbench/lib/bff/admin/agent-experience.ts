@@ -90,3 +90,37 @@ export async function handleListAgentExperienceViaApi(
     return hermesErrorToProblem(err);
   }
 }
+
+// 0.0.3 S24 (FR-24): the human confirm gate. WRITE, dispatchWrite (not
+// dispatch): a decision must carry the attributed actor (ADR-0141) -- the
+// Hermes-side gate (resolve_experience_decision_authorization) is fail-closed
+// on a missing actor too, this is defense-in-depth at the BFF, same posture as
+// handleUpsertPreferenceViaApi. Both confirm_experience and reject_experience
+// are in _AGENT_EXCLUDED_ACTIONS (never LLM-callable) -- reached only from
+// this deterministic admin BFF dispatch, same as list_agent_experience above.
+async function handleDecideExperienceViaApi(
+  client: HermesApiClient,
+  action: "confirm_experience" | "reject_experience",
+  id: string,
+): Promise<Response> {
+  try {
+    const data = await client.dispatchWrite("toee_agent_experience", action, { id });
+    return json({ entry: mapAgentExperienceEntry(data) });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export function handleConfirmExperienceViaApi(
+  client: HermesApiClient,
+  id: string,
+): Promise<Response> {
+  return handleDecideExperienceViaApi(client, "confirm_experience", id);
+}
+
+export function handleRejectExperienceViaApi(
+  client: HermesApiClient,
+  id: string,
+): Promise<Response> {
+  return handleDecideExperienceViaApi(client, "reject_experience", id);
+}
