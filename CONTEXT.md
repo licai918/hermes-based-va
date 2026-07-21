@@ -504,6 +504,22 @@ _Avoid_: Indefinite storage by default, ad hoc deletion
 A customer request to remove or restrict stored conversation and account-related records; in the first version this is handled through a manual cross-system process.
 _Avoid_: Automatic erasure, single-button delete
 
+**Interaction Review**:
+A **Workbench Supervisor** or **Workbench Admin** pass/fail judgment recorded from the read-only audit views against one **Auto-Handled Interaction** record or one `sales_outreach` **Follow-up Case**, with mandatory **Review Reason Tags** on fail and an optional comment. Reviews are append-only; a re-review adds a new record and the latest per reviewer is displayed.
+_Avoid_: Editing conversation data, rep-level scoring duty, AI self-review, per-turn scoring in v1
+
+**Draft Feedback**:
+The quality-signal record for one **Copilot Draft Action** draft, combining the implicit outcome captured at governed send (sent as-is or sent edited) with an optional explicit up/down rating carrying **Review Reason Tags** on down.
+_Avoid_: Customer-visible rating, autonomous agent self-rating, blocking the send flow on feedback
+
+**Review Reason Tag**:
+A fixed-enum reason attached to a failing **Interaction Review** or a down-rated **Draft Feedback**; the external and internal mechanisms use separate tag sets.
+_Avoid_: Free-form-only feedback, one shared cross-mechanism tag set
+
+**Improvement Proposal**:
+A governed change suggestion produced by aggregating failed **Interaction Reviews** and negative **Draft Feedback** — a knowledge-slot revision draft, a new **Launch Eval Scenario** suggestion, or an internal draft-persona adjustment — that becomes effective only after human approval and the applicable eval gate.
+_Avoid_: Autonomous prompt or knowledge self-modification, ungated memory writes from feedback
+
 ## Relationships
 
 - **Hermes VA** has one **Hermes Core**.
@@ -685,6 +701,12 @@ _Avoid_: Automatic erasure, single-button delete
 - **Case Resolution** in the first version is human-driven; Copilot may draft responses but not execute accounting or payment write actions.
 - Hermes applies a **Data Retention Policy** by data class for recordings, transcripts, cases, audit logs, and knowledge version history.
 - A **Customer Deletion Request** is handled manually across systems in the first version.
+- **Interaction Review** is the external scoring mechanism and **Draft Feedback** is the internal one; they use separate storage, separate **Review Reason Tag** sets, separate role gates, and separate improvement pipelines.
+- `toee_feedback` v1 actions are `submit_interaction_review`, `record_draft_outcome`, and `submit_draft_rating` on the **Internal Copilot Profile**, and `list_feedback` on the **Supervisor Admin Profile**.
+- `toee_feedback` is not registered in any **Profile Tool Allowlist**; it is reachable only through the deterministic dispatch route, and every feedback write requires a framework-resolved acting employee — an agent draft turn structurally cannot submit feedback.
+- An **Interaction Review** targets one **Auto-Handled Interaction** record or one `sales_outreach` **Follow-up Case**; the audit lists show review status, and submitting a review writes a **Workbench Audit Log** entry.
+- **Draft Feedback** records the governed-send outcome automatically for SMS drafts; email and note drafts carry explicit ratings only in the first version.
+- An **Improvement Proposal** becomes effective only after human approval and the applicable eval gate; feedback never writes directly into agent memory, prompts, or published knowledge.
 
 ## Example dialogue
 
