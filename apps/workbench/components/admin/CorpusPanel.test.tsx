@@ -56,19 +56,90 @@ describe("CorpusPanel", () => {
     expect(await screen.findByText("never")).toBeInTheDocument();
   });
 
-  it("shows the operator ingest command", async () => {
+  // --- 0.0.4 S04 (FR-11): re-ingest is a real enqueue, not a printed command ---
+
+  it("Re-ingest corpus posts the enqueue and re-reads the status", async () => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ jobId: "job_ing1", status: "queued" }));
+      }
+      return Promise.resolve(
+        jsonResponse({
+          status: {
+            docCount: 0,
+            chunkCount: 0,
+            lastIngestAt: null,
+            byType: [],
+            lastIngestJob: {
+              jobId: "job_ing1",
+              status: "queued",
+              attempts: 0,
+              lastError: null,
+              queuedAt: "2026-07-21T08:00:00+00:00",
+              updatedAt: null,
+            },
+          },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPanel();
+    await screen.findByText("never");
+
+    fireEvent.click(screen.getByRole("button", { name: /re-ingest corpus/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/last re-ingest job: queued/i)).toBeInTheDocument(),
+    );
+    const postCall = fetchMock.mock.calls.find(
+      ([, init]) => (init as RequestInit)?.method === "POST",
+    );
+    expect(postCall?.[0]).toBe("/api/admin/knowledge/reingest");
+  });
+
+  it("says so when no re-ingest has ever been queued", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
         jsonResponse({
-          status: { docCount: 0, chunkCount: 0, lastIngestAt: null, byType: [] },
+          status: {
+            docCount: 0,
+            chunkCount: 0,
+            lastIngestAt: null,
+            byType: [],
+            lastIngestJob: null,
+          },
         }),
       ),
     );
     renderPanel();
-    expect(
-      await screen.findByText("python -m hermes_runtime.knowledge.ingest <corpus.json>"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/no re-ingest queued yet/i)).toBeInTheDocument();
+  });
+
+  it("surfaces a dead re-ingest job's error instead of hiding it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          status: {
+            docCount: 0,
+            chunkCount: 0,
+            lastIngestAt: null,
+            byType: [],
+            lastIngestJob: {
+              jobId: "job_ing1",
+              status: "dead",
+              attempts: 1,
+              lastError: "RuntimeError: no corpus artifact to ingest",
+              queuedAt: "2026-07-21T08:00:00+00:00",
+              updatedAt: "2026-07-21T08:01:00+00:00",
+            },
+          },
+        }),
+      ),
+    );
+    renderPanel();
+    expect(await screen.findByText(/no corpus artifact to ingest/i)).toBeInTheDocument();
   });
 
   it("Refresh status re-fetches the status endpoint", async () => {

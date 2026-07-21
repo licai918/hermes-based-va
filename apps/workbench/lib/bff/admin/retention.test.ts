@@ -87,39 +87,31 @@ describe("handleGetRetentionStatusViaApi", () => {
   });
 });
 
+// 0.0.4 S04 (FR-11): the trigger enqueues a `retention` job instead of sweeping
+// inline, so its response is a job receipt. The counts still come from
+// get_retention_status (the sweep's own audit row) -- see the describe above.
 describe("handleTriggerRetentionSweepViaApi", () => {
-  function rawSweepResult(overrides: Record<string, unknown> = {}) {
-    return {
-      run_at: "2026-07-21T08:00:00.000000+00:00",
-      counts: { verified: 1, provisional: 2 },
-      total_deleted: 3,
-      windows_days: { verified: 730, provisional: 90 },
-      ...overrides,
-    };
+  function rawQueued(overrides: Record<string, unknown> = {}) {
+    return { job_id: "job_abc123", status: "queued", ...overrides };
   }
 
-  it("dispatchWrites trigger_retention_sweep with no params and maps the result", async () => {
+  it("dispatchWrites enqueue_retention_sweep with no params and maps the receipt", async () => {
     let captured: SentDispatch | null = null;
     const client = apiClient(async (_url, init) => {
       captured = JSON.parse(init.body as string) as SentDispatch;
-      return dispatchResponse(rawSweepResult());
+      return dispatchResponse(rawQueued());
     });
 
     const res = await handleTriggerRetentionSweepViaApi(client);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
 
-    expect(body).toEqual({
-      lastRunAt: "2026-07-21T08:00:00.000000+00:00",
-      runAt: "2026-07-21T08:00:00.000000+00:00",
-      counts: { verified: 1, provisional: 2 },
-      totalDeleted: 3,
-      windowsDays: { verified: 730, provisional: 90 },
-    });
+    expect(body).toEqual({ jobId: "job_abc123", status: "queued" });
 
     const sent = captured as SentDispatch | null;
     expect(sent?.tool).toBe("toee_retention");
-    expect(sent?.action).toBe("trigger_retention_sweep");
+    // NOT trigger_retention_sweep: the sweep runs on the background worker now.
+    expect(sent?.action).toBe("enqueue_retention_sweep");
     expect(sent?.params).toEqual({});
   });
 
@@ -127,17 +119,18 @@ describe("handleTriggerRetentionSweepViaApi", () => {
     // Empty string, not undefined -- a default TS parameter treats an explicit
     // `undefined` argument as "use the default", so this is the actual way to
     // exercise HermesApiClient's falsy actorAccountId check here.
-    const client = apiClient(async () => dispatchResponse(rawSweepResult()), "");
+    const client = apiClient(async () => dispatchResponse(rawQueued()), "");
     const res = await handleTriggerRetentionSweepViaApi(client);
     expect(res.status).toBe(403);
   });
 
-  it("a second sweep right after reports zero further deletions, not an error", async () => {
+  it("a backend with no durable queue reports a null job id, not a fabricated one", async () => {
+    // The mock twin's shape (there is no `job` table behind TOOL_BACKEND=mock).
     const client = apiClient(async () =>
-      dispatchResponse(rawSweepResult({ counts: { verified: 0, provisional: 0 }, total_deleted: 0 })),
+      dispatchResponse(rawQueued({ job_id: null, status: "unavailable" })),
     );
     const res = await handleTriggerRetentionSweepViaApi(client);
-    const body = (await res.json()) as { totalDeleted: number };
-    expect(body.totalDeleted).toBe(0);
+    const body = (await res.json()) as { jobId: string | null; status: string };
+    expect(body).toEqual({ jobId: null, status: "unavailable" });
   });
 });

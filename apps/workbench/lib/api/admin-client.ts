@@ -4,9 +4,9 @@
 // whose 400 carries a policy `errors[]` we surface inline rather than throw.
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
-import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
+import type { CorpusStatus, ProbeResult, ReingestQueued } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
-import type { RetentionStatus, RetentionSweepResult } from "@/lib/bff/admin/retention";
+import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
 import type {
@@ -58,6 +58,11 @@ export function getCorpusStatus(): Promise<CorpusStatus> {
   return getJson<{ status: CorpusStatus }>("/api/admin/knowledge/corpus-status").then(
     (b) => b.status,
   );
+}
+
+// S04 (FR-11): queue a corpus re-ingest for the background worker.
+export function triggerCorpusReingest(): Promise<ReingestQueued> {
+  return sendJson<ReingestQueued>("POST", "/api/admin/knowledge/reingest");
 }
 
 export function probeKnowledge(query: string): Promise<ProbeResult[]> {
@@ -209,6 +214,6 @@ export function getRetentionStatus(): Promise<RetentionStatus> {
   return getJson<RetentionStatus>("/api/admin/retention");
 }
 
-export function triggerRetentionSweep(): Promise<RetentionSweepResult> {
-  return sendJson<RetentionSweepResult>("POST", "/api/admin/retention/sweep");
+export function triggerRetentionSweep(): Promise<RetentionSweepQueued> {
+  return sendJson<RetentionSweepQueued>("POST", "/api/admin/retention/sweep");
 }

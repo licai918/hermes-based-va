@@ -5,6 +5,12 @@
 // (verified/provisional), plus a "Run sweep now" trigger (a governed
 // dispatchWrite -- see lib/bff/admin/retention.ts). Loads on mount: a global
 // panel, no case_id to key off (mirrors MetricsPanel/AgentExperienceConsole).
+//
+// 0.0.4 S04 (FR-11): the trigger now QUEUES the sweep for the background worker
+// rather than running it inside the request, so the button reports "queued" and
+// the counts arrive on the next status read. The sweep -- and the
+// workbench_audit_log row this panel's "last run" comes from -- is unchanged;
+// retention also runs on a daily cadence now (background_worker.SCHEDULES).
 import { useEffect, useState } from "react";
 import { getRetentionStatus, triggerRetentionSweep } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
@@ -45,6 +51,7 @@ export function RetentionPanel() {
   const [status, setStatus] = useState<RetentionStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [sweeping, setSweeping] = useState(false);
+  const [queued, setQueued] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
@@ -67,16 +74,14 @@ export function RetentionPanel() {
   async function runSweep() {
     setSweeping(true);
     setError(null);
+    setQueued(false);
     try {
-      const result = await triggerRetentionSweep();
-      setStatus({
-        lastRunAt: result.lastRunAt,
-        counts: result.counts,
-        totalDeleted: result.totalDeleted,
-        windowsDays: result.windowsDays,
-      });
+      // S04: this queues a `retention` job; the background worker runs the sweep
+      // within a poll interval. Counts land on the next status read, not here.
+      await triggerRetentionSweep();
+      setQueued(true);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Failed to run the retention sweep");
+      setError(e instanceof ApiError ? e.message : "Failed to queue the retention sweep");
     } finally {
       setSweeping(false);
     }
@@ -92,9 +97,19 @@ export function RetentionPanel() {
         </p>
       ) : null}
 
-      <button type="button" onClick={() => void runSweep()} disabled={sweeping} style={{ alignSelf: "flex-start" }}>
-        {sweeping ? "Running sweep…" : "Run sweep now"}
-      </button>
+      <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+        <button type="button" onClick={() => void runSweep()} disabled={sweeping}>
+          {sweeping ? "Queueing sweep…" : "Run sweep now"}
+        </button>
+        <button type="button" onClick={() => void load()} disabled={loading}>
+          Refresh status
+        </button>
+        {queued ? (
+          <span style={caption}>
+            Sweep queued — the background worker runs it shortly. Refresh to see the result.
+          </span>
+        ) : null}
+      </div>
 
       {status ? (
         <>

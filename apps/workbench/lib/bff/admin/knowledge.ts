@@ -171,11 +171,23 @@ export async function handleRollbackSlotViaApi(
 // isn't configured (see createAdminApiClient), so these handlers can assume a
 // real client.
 
+// 0.0.4 S04 (FR-11): the re-ingest panel's status readback. Null when no
+// re-ingest has ever been queued, or on a backend with no durable queue.
+export type IngestJobStatus = {
+  jobId: string;
+  status: string;
+  attempts: number;
+  lastError: string | null;
+  queuedAt: string | null;
+  updatedAt: string | null;
+};
+
 export type CorpusStatus = {
   docCount: number;
   chunkCount: number;
   lastIngestAt: string | null;
   byType: { pageType: string; count: number }[];
+  lastIngestJob: IngestJobStatus | null;
 };
 
 // Maps the snake_case toee_knowledge_ops.get_corpus_status payload onto the wire
@@ -198,7 +210,46 @@ export function mapCorpusStatus(raw: unknown): CorpusStatus {
         count: typeof rr.count === "number" ? rr.count : 0,
       };
     }),
+    lastIngestJob: mapIngestJob(r.last_ingest_job),
   };
+}
+
+function mapIngestJob(raw: unknown): IngestJobStatus | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.job_id !== "string" || typeof r.status !== "string") return null;
+  const orNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
+  return {
+    jobId: r.job_id,
+    status: r.status,
+    attempts: typeof r.attempts === "number" ? r.attempts : 0,
+    lastError: orNull(r.last_error),
+    queuedAt: orNull(r.queued_at),
+    updatedAt: orNull(r.updated_at),
+  };
+}
+
+export type ReingestQueued = { jobId: string | null; status: string };
+
+// S04 (FR-11): the re-ingest trigger 0.0.3 S11 shipped as a display-only stub.
+// A governed dispatchWrite -- it TRUNCATEs and reloads the whole corpus, so it is
+// fail-closed on the acting supervisor and audited on the Hermes side; the panel
+// then reads the job back through get_corpus_status.
+export async function handleTriggerReingestViaApi(
+  client: HermesApiClient,
+): Promise<Response> {
+  try {
+    const data = (await client.dispatchWrite(
+      "toee_knowledge_ops",
+      "enqueue_corpus_reingest",
+      {},
+    )) as Record<string, unknown>;
+    const jobId = typeof data?.job_id === "string" ? data.job_id : null;
+    const status = typeof data?.status === "string" ? data.status : "queued";
+    return json({ jobId, status } satisfies ReingestQueued);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
 }
 
 export async function handleGetCorpusStatusViaApi(

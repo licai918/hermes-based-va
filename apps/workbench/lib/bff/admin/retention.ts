@@ -15,9 +15,14 @@
 //
 // get_retention_status is READ, fail-open (dispatch, not dispatchWrite): a
 // supervisor can view the panel with no actor attribution needed, same
-// convention as handleGetAggregateMetricsViaApi. trigger_retention_sweep is a
-// governed WRITE (deletes customer_memory_slot rows) -- dispatchWrite,
+// convention as handleGetAggregateMetricsViaApi. The sweep trigger is a governed
+// WRITE (it ends in deleted customer_memory_slot rows) -- dispatchWrite,
 // fail-closed on a missing actor, same posture as handleDecideExperienceViaApi.
+//
+// 0.0.4 S04 (FR-11): the trigger now dispatches enqueue_retention_sweep, which
+// puts a `retention` job on the durable queue for the background worker to run,
+// instead of doing the DELETE inside this request. Only the substrate moved: the
+// same sweep, the same class windows, the same attributed audit row.
 import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
@@ -40,8 +45,14 @@ export interface RetentionStatus {
   windowsDays: RetentionWindowsDays;
 }
 
-export interface RetentionSweepResult extends RetentionStatus {
-  runAt: string;
+// 0.0.4 S04 (FR-11): the sweep is queued, not run inline, so the trigger's
+// response is a job receipt rather than counts. The counts arrive on the next
+// get_retention_status read, from the same workbench_audit_log row the sweep has
+// always written -- the panel's "last run" is unchanged, it just lands a moment
+// later. `jobId` is null on a backend with no durable queue (the mock twin).
+export interface RetentionSweepQueued {
+  jobId: string | null;
+  status: string;
 }
 
 // Fallback for an unconfigured backend (mirrors admin/metrics.ts's
@@ -98,16 +109,11 @@ export function mapRetentionStatus(raw: unknown): RetentionStatus {
   };
 }
 
-export function mapRetentionSweepResult(raw: unknown): RetentionSweepResult {
+export function mapRetentionSweepQueued(raw: unknown): RetentionSweepQueued {
   if (typeof raw !== "object" || raw === null) malformed("root");
   const r = raw as Record<string, unknown>;
-  return {
-    lastRunAt: requireNullableString(r.run_at, "run_at"),
-    runAt: requireNullableString(r.run_at, "run_at") ?? malformed("run_at"),
-    counts: requireCounts(r.counts, "counts"),
-    totalDeleted: requireNumber(r.total_deleted, "total_deleted"),
-    windowsDays: requireWindowsDays(r.windows_days, "windows_days"),
-  };
+  if (typeof r.status !== "string") malformed("status");
+  return { jobId: requireNullableString(r.job_id, "job_id"), status: r.status };
 }
 
 export async function handleGetRetentionStatusViaApi(
@@ -125,8 +131,12 @@ export async function handleTriggerRetentionSweepViaApi(
   client: HermesApiClient,
 ): Promise<Response> {
   try {
-    const data = await client.dispatchWrite("toee_retention", "trigger_retention_sweep", {});
-    return json(mapRetentionSweepResult(data));
+    // S04: enqueue_retention_sweep, not trigger_retention_sweep. Still the same
+    // governed dispatchWrite, still fail-closed on the acting supervisor -- the
+    // actor now rides into the job payload so the sweep's audit row is attributed
+    // exactly as it was when the DELETE ran inside this request.
+    const data = await client.dispatchWrite("toee_retention", "enqueue_retention_sweep", {});
+    return json(mapRetentionSweepQueued(data));
   } catch (err) {
     return hermesErrorToProblem(err);
   }

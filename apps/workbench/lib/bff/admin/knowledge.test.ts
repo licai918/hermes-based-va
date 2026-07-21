@@ -15,6 +15,7 @@ import {
   handleListSlots,
   handleListSlotsViaApi,
   handleProbeQueryViaApi,
+  handleTriggerReingestViaApi,
   handleRollbackSlot,
   handleRollbackSlotViaApi,
   handleSaveDraft,
@@ -391,6 +392,8 @@ describe("handleGetCorpusStatusViaApi", () => {
         { pageType: "faq", count: 40 },
         { pageType: "policy", count: 127 },
       ],
+      // 0.0.4 S04: null until a re-ingest has been queued.
+      lastIngestJob: null,
     });
     const s = sent as SentDispatch | null;
     expect(s?.tool).toBe("toee_knowledge_ops");
@@ -485,5 +488,76 @@ describe("handleProbeQueryViaApi", () => {
     );
     const res = await handleProbeQueryViaApi(probeReq({ query: "x" }), client);
     expect(res.status).toBe(502);
+  });
+});
+
+// --- 0.0.4 S04: real re-ingest enqueue + status readback (FR-11) --------------
+
+describe("handleTriggerReingestViaApi", () => {
+  it("dispatchWrites enqueue_corpus_reingest and returns the job receipt", async () => {
+    let sent: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      sent = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(
+        JSON.stringify({ ok: true, data: { job_id: "job_ing1", status: "queued" } }),
+        { status: 200 },
+      );
+    }, WRITE_ACTOR);
+
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jobId: "job_ing1", status: "queued" });
+    const s2 = sent as SentDispatch | null;
+    expect(s2?.tool).toBe("toee_knowledge_ops");
+    expect(s2?.action).toBe("enqueue_corpus_reingest");
+    // A corpus wipe-and-reload never lands unattributed.
+    expect(s2?.actor_account_id).toBe(WRITE_ACTOR);
+  });
+
+  it("refuses a write with no attributed actor before the network call", async () => {
+    const client = apiClient(
+      async () => new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 }),
+      "",
+    );
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("get_corpus_status's last_ingest_job readback", () => {
+  it("maps the queued job so the panel can show it", async () => {
+    const client = apiClient(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            doc_count: 0,
+            chunk_count: 0,
+            last_ingest_at: null,
+            by_type: [],
+            last_ingest_job: {
+              job_id: "job_ing1",
+              status: "dead",
+              attempts: 1,
+              last_error: "RuntimeError: fastembed OOM",
+              queued_at: "2026-07-21T08:00:00+00:00",
+              updated_at: "2026-07-21T08:01:00+00:00",
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const res = await handleGetCorpusStatusViaApi(client);
+    const body = (await res.json()) as { status: { lastIngestJob: unknown } };
+    expect(body.status.lastIngestJob).toEqual({
+      jobId: "job_ing1",
+      status: "dead",
+      attempts: 1,
+      lastError: "RuntimeError: fastembed OOM",
+      queuedAt: "2026-07-21T08:00:00+00:00",
+      updatedAt: "2026-07-21T08:01:00+00:00",
+    });
   });
 });
