@@ -41,6 +41,7 @@ def _email_payload(*, from_address="accounts@acme-fleet.example", subject="Order
 def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
     store = InMemoryGatewayStore()
     sent: list[tuple[str, str]] = []
+    mirrored: list[tuple[str, str]] = []
     # A reply longer than the SMS single-segment cap (480): an email must deliver it
     # in full (never clip_sms_reply'd). No trailing whitespace, so the delivered
     # text is byte-identical to the model's final_response.
@@ -61,6 +62,7 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
     turn_runner = make_gateway_turn_runner(
         reply_sender=lambda conv, text: sent.append((conv, text)),
         run_turn=run_turn,
+        on_reply_sent=lambda ctx, text: mirrored.append((ctx.conversation_id, text)),
     )
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
@@ -78,7 +80,11 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
         f"/webhooks/simulated-email?token={WEBHOOK_SECRET}", content=raw
     )
     assert resp.status_code == 200
-    assert sent == [("conv-email", reply_body)]
+    # Email delivery is the mirror, not the SMS provider: reply_sender is the live
+    # SimpleTexting client and strips its argument to digits, so an email turn must
+    # never reach it (RK-4 — there is no email provider; ADR-0153).
+    assert sent == []
+    assert mirrored == [("conv-email", reply_body)]
 
     # The outbound reply mirrored onto the EMAIL thread/session, not a phone-shaped key.
     context = store.load_context("evt-email")

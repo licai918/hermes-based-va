@@ -55,8 +55,11 @@ curl -X POST "https://api-app2.simpletexting.com/v2/api/messages" \
    you register: `https://<host>/webhooks/simpletexting?token=<secret>`. Compare it
    constant-time and fail closed (401). Never register a bare URL.
    **Because the token is in the URL, it lands in every access log by default** —
-   redact `token=` at the log boundary (see `hermes_runtime/access_log.py`) and
-   treat the registration URL itself as a secret.
+   redact `token=` in your app's access logger (see `hermes_runtime/access_log.py`).
+   That only covers your own log: the platform request log (Cloud Run's
+   `httpRequest.requestUrl`, LB/proxy logs) still records the full URL, so treat
+   the registration URL as a live credential and rotate it by re-registering the
+   webhook if request logs are readable more widely than the secret store.
    Compare as **bytes**: `hmac.compare_digest` raises `TypeError` on non-ASCII
    `str`, turning a forged token into a 500 (which the provider then retries).
 4. **Dedup on `values.messageId`**, not `reportId` — messageId is stable across

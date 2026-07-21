@@ -67,12 +67,21 @@ def test_filter_redacts_only_the_token_among_several_params() -> None:
 
 
 def test_install_is_idempotent_and_attaches_to_the_uvicorn_access_logger() -> None:
+    # "uvicorn.access" is process-global, so any earlier test that booted the app
+    # already installed the filter. Assert the invariant that matters — exactly one
+    # redaction filter, however many times install ran — not an absolute count,
+    # which would make this test depend on collection order.
     logger = logging.getLogger("uvicorn.access")
-    before = len(logger.filters)
+    others_before = [
+        f for f in logger.filters if not isinstance(f, RedactQueryTokenFilter)
+    ]
 
     install_access_log_redaction()
     install_access_log_redaction()
 
     added = [f for f in logger.filters if isinstance(f, RedactQueryTokenFilter)]
+    others_after = [
+        f for f in logger.filters if not isinstance(f, RedactQueryTokenFilter)
+    ]
     assert len(added) == 1
-    assert len(logger.filters) == before + 1
+    assert others_after == others_before  # install touches nothing else

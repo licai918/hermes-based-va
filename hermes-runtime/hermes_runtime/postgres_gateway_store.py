@@ -21,7 +21,7 @@ from toee_hermes.gateway.normalize import is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
 
 from .datastore.config import database_url
-from .datastore.handlers._common import new_id
+from .datastore.handlers._common import customer_thread_id, new_id
 from .datastore.pool import get_database_pool
 
 _SMS_CHANNEL = "sms"
@@ -47,8 +47,7 @@ def _channel_column(channel: str) -> str:
 
 
 def _thread_id(channel: str, from_identity: str) -> str:
-    prefix = "email" if is_email_channel(channel) else "sms"
-    return f"customer_thread:{prefix}:{from_identity}"
+    return customer_thread_id(channel, from_identity)
 
 
 def _session_id(thread_id: str, conversation_id: str) -> str:

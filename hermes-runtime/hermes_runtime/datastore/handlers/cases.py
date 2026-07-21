@@ -17,14 +17,20 @@ import os
 
 from toee_hermes.drivers.mock.sms_reply import SmsReplyMockData, _send_message
 from toee_hermes.errors import ToolDriverError
-from toee_hermes.gateway.normalize import canonicalize_email
+from toee_hermes.gateway.normalize import canonicalize_email, normalize_e164
 
 from toee_hermes.identity.summary import (
     display_name_from_match_result,
     format_identity_summary,
 )
 
-from ._common import insert_audit, new_id, read_string, serialize_row
+from ._common import (
+    customer_thread_id,
+    insert_audit,
+    new_id,
+    read_string,
+    serialize_row,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -746,10 +752,14 @@ def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     return {"case": case, "messages": messages}
 
 
-# Deterministic customer_thread key for an inbound SMS (mirrors
-# postgres_gateway_store._thread_id -- no hashing, just the literal format).
+# Deterministic customer_thread key for an inbound SMS. Delegates to the one
+# builder the gateway store also uses, so the read and write sides cannot drift.
+# The write side stores the E.164 form (gateway_app normalizes contactPhone before
+# it reaches the store), so the read side must normalize too — otherwise a caller
+# passing "4165550101" asks for a key that was written as "+14165550101" and gets a
+# silent empty read. This mirrors what the email sibling does with canonicalize_email.
 def _sms_thread_id(from_phone: str) -> str:
-    return f"customer_thread:textline:{from_phone}"
+    return customer_thread_id("sms", normalize_e164(from_phone))
 
 
 def _latest_case_id_for_thread(conn, thread_id: str) -> Optional[str]:
@@ -782,15 +792,12 @@ def _get_thread_by_phone(
     return _get_thread(conn, {"case_id": case_id}, context)
 
 
-# Deterministic customer_thread key for an inbound simulated email (S18/FR-11;
-# mirrors postgres_gateway_store._thread_id's email branch -- from_identity is
-# already canonicalize_email'd by to_inbound_email_event before it reaches
-# _thread_id, so the read side must apply the SAME canonicalize_email to the
-# raw address to reconstruct a byte-identical key. Reusing S17's exact helper
-# (not a local re-implementation) is what keeps this from silently reading
-# back empty).
+# Deterministic customer_thread key for an inbound simulated email (S18/FR-11).
+# from_identity is already canonicalize_email'd by to_inbound_email_event before
+# it reaches the store, so the read side applies the SAME canonicalize_email to
+# the raw address; the key format itself comes from the shared builder.
 def _email_thread_id(from_address: str) -> str:
-    return f"customer_thread:email:{canonicalize_email(from_address)}"
+    return customer_thread_id("email", canonicalize_email(from_address))
 
 
 def _get_thread_by_email(

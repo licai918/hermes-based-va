@@ -115,10 +115,18 @@ def make_gateway_turn_runner(
     def turn_runner(context: Any, inbound_body: str) -> None:
         turn = run_turn(context, inbound_body)
         reply = outbound_reply_text(turn)
+        is_email = is_email_channel(getattr(context, "channel", SIMPLETEXTING_SMS))
         # S17: SMS is clipped to one segment; an email reply is not 480-char-clipped.
-        if not is_email_channel(getattr(context, "channel", SIMPLETEXTING_SMS)):
+        if not is_email:
             reply = clip_sms_reply(reply)
-        reply_sender(context.conversation_id, reply)
+        # reply_sender is the SMS provider client, and it strips its argument to
+        # digits. There is no email provider (RK-4), so routing an email turn
+        # through it would POST a real SMS to whatever number the inbound payload's
+        # conversation_id happened to contain — caller-chosen, billed to us
+        # (ADR-0153). The email reply is delivered by the mirror below, which is
+        # what the simulator reads back.
+        if not is_email:
+            reply_sender(context.conversation_id, reply)
         if on_reply_sent is not None:
             on_reply_sent(context, reply)
 

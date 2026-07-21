@@ -10,6 +10,12 @@ deployed under.
 
 The credential cannot move, so it is masked at the log boundary instead. The route
 is left intact so access logs stay useful for debugging.
+
+**This covers the application log only.** Cloud Run emits its own request log with
+``httpRequest.requestUrl`` — query string included — and so does any fronting load
+balancer or proxy; none of that passes through this logger. Treat the registered
+webhook URL as a live credential wherever request logs are readable, and rotate the
+token (re-register the webhook) if that audience is ever wider than intended.
 """
 
 from __future__ import annotations

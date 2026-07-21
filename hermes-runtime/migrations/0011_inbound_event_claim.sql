@@ -7,7 +7,10 @@
 -- replay, billed to us. This table is the durable claim that makes it
 -- at-most-once across instances and restarts.
 
-CREATE TABLE inbound_event_claim (
+-- IF NOT EXISTS: this shipped briefly as 0008 (colliding with 0008_agent_experience
+-- from 0.0.3) and was renumbered, so a dev database that already applied the old
+-- version re-runs this as a no-op instead of failing the migrate.
+CREATE TABLE IF NOT EXISTS inbound_event_claim (
     event_id   TEXT PRIMARY KEY,
     claimed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
