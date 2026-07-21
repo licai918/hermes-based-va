@@ -160,6 +160,39 @@ def test_memory_block_is_framed_as_untrusted_data_not_instructions() -> None:
     assert open_tag < header < slot_line < close_tag
 
 
+def test_confirmed_experience_block_is_fenced_as_approved_guidance() -> None:
+    # S25 (FR-25): confirmed L6 entries are human-approved but model-ORIGINATED
+    # operational guidance. They must be fenced (like Customer Memory) and framed
+    # as guidance to apply, not unconditional instructions -- consistent with the
+    # hooks fencing discipline. Only the content is rendered.
+    experience = [
+        {"content": "For EasyRoutes gaps, check get_delivery_status first.", "kind": "procedure"},
+        {"content": "Confirm the ship-to ZIP before quoting freight.", "kind": "note"},
+    ]
+    out = render_injection(None, None, experience)
+
+    assert out is not None
+    assert "<confirmed_operational_learnings>" in out
+    assert "</confirmed_operational_learnings>" in out
+    assert "guidance" in out.lower()
+    assert "- For EasyRoutes gaps, check get_delivery_status first." in out
+    assert "- Confirm the ship-to ZIP before quoting freight." in out
+
+    open_tag = out.index("<confirmed_operational_learnings>")
+    first_line = out.index("- For EasyRoutes gaps")
+    close_tag = out.index("</confirmed_operational_learnings>")
+    assert open_tag < first_line < close_tag
+
+
+def test_render_injection_without_experience_is_unchanged() -> None:
+    # Eval-pin invariant: the eval path calls render_injection(snapshot, memory)
+    # with no experience arg, so its output must be byte-identical to before S25.
+    memory = [{"slot": "contact_time_preference", "value": "after 5pm"}]
+    assert render_injection(None, memory) == render_injection(None, memory, None)
+    assert render_injection(None, None, []) is None
+    assert render_injection(None, None, None) is None
+
+
 def test_pre_llm_call_returns_none_when_nothing_to_inject() -> None:
     hook = make_pre_llm_call_hook()
     out = hook(

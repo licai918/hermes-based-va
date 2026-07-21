@@ -37,6 +37,8 @@ from hermes_runtime.live import run_agent_turn
 from hermes_runtime.tool_backend import (
     _gateway_store,
     _turn_extra_drivers,
+    agent_experience_external_injection_enabled,
+    load_confirmed_experience,
     memory_enabled,
 )
 
@@ -436,7 +438,18 @@ def make_openrouter_run_turn(
         # unbound, or the store errors).
         memory = _load_turn_memory(identity, store)
         _log_turn_memory(identity, memory, merge_fired)
-        injected = render_injection(identity, memory)
+        # S25 (FR-25): the external turn READS confirmed L6 learnings (read-only,
+        # never proposing -- S23 kept propose off the external profile) behind its
+        # OWN independent flag, so it can be disabled without touching the copilot
+        # path. Default OFF -- the eval path sets neither flag, so nothing is
+        # injected there (determinism, NFR-6). Bounded + fail-closed (NFR-5); only
+        # status='confirmed' rows ever come back.
+        experience = (
+            load_confirmed_experience(store)
+            if agent_experience_external_injection_enabled()
+            else None
+        )
+        injected = render_injection(identity, memory, experience)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,

@@ -24,7 +24,7 @@ so it cannot drift out of sync with them.
 | **L3** | Operational | Follow-up Case, Workbench Audit Log, auto-handled evidence, eval records | `toee_va` Postgres | keyed / queried per workflow | ✅ shipped |
 | **L4** | Customer Memory | 4 governed preference slots per customer | `toee_va` Postgres | **exact** `WHERE binding_key = ?`, injected per turn | ✅ shipped (0.0.1 + 0.0.2) |
 | **L5** | **Knowledge** | shared, non-PII company/product corpus | **separate `toee_knowledge` DB** | **hybrid lexical FTS + dense embedding**, top-k chunks | ✅ **shipped** ([ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md)) |
-| **L6** | **Agent experience** | what the agent learns from doing the job | TBD | TBD | 🔬 **exploring** |
+| **L6** | **Agent experience** | what the agent learns from doing the job (operational, non-PII) | `toee_va` Postgres (`agent_experience`) | confirmed-only, bounded newest-first, injected per gated turn | ✅ **shipped** ([ADR-0152](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md)) |
 
 L1–L4 are the **four-layer model** of [ADR-0110](../adr/0110-native-memory-four-layer-model.md).
 L5 and L6 are additions in flight — see below.
@@ -114,11 +114,24 @@ checked-in FR-7/FR-7b quality/latency gates harness (`hermes_runtime/knowledge/g
 
 ---
 
-## L6 — Agent-experience memory *(exploring)*
+## L6 — Agent-experience memory *(shipped)*
 
 *What the agent learns from doing the job* — distinct from customer PII (L4), authored corpus
 (L5), and behaviour contract (`persona.py`). Candidate 8 of
 [the 0.0.3 exploration](../../workspace/0.0.3/EXPLORATION.md).
+
+**Shipped (0.0.3):** one governed `agent_experience` store, `kind`-tagged
+(note|procedure), gated **propose → confirm → inject**. The copilot review fork
+proposes (S23, `AGENT_EXPERIENCE_LEARNING`); an admin Accept/Reject confirms
+(S24); only `status='confirmed'` entries are injected — into the copilot draft
+turn (`AGENT_EXPERIENCE_INJECTION`) and, read-only, into the external turn
+(`AGENT_EXPERIENCE_EXTERNAL_INJECTION`), two independent flags, both default OFF.
+`proposed`/`rejected` are never injected; the read is operational-only (no
+customer binding), bounded newest-first, fenced as human-approved guidance, and
+fail-closed (a turn never fails on L6). L6 injection is pinned OFF on the
+eval/record/replay path so the determinism gate stays green. Real-traffic cap /
+ranking calibration is a deferred post-launch follow-up.
+[ADR-0152](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md).
 
 **Scope check:** ADR-0111/0140 rejected Hermes built-in memory **as the store for customer
 business records**. They say nothing about the agent accumulating its own operational
@@ -168,6 +181,12 @@ designed in up front rather than retrofitted.
 
 ## Change log
 
+- **2026-07-21 (S25)** — L6 shipped: confirmed-entry injection (copilot draft turn
+  + external read-only), two independent injection flags (both default OFF), the
+  eval-determinism pin, and the folded-in draft-turn-inert regression —
+  [ADR-0152](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md).
+  Real-traffic cap/ranking calibration deferred post-launch (FR-27). L6 status:
+  🔬 exploring → ✅ shipped.
 - **2026-07-20 (S19)** — L4 cross-channel provisional merge shipped: a verified
   turn now merges provisional slots from every linked channel identity, not
   just its own, per a documented precedence — ADR-0151 (supersedes ADR-0112's

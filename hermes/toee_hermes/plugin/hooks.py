@@ -49,14 +49,52 @@ def _render_memory(memory: Optional[list[dict[str, Any]]]) -> Optional[str]:
     return f"<untrusted_customer_memory>\n{body}\n</untrusted_customer_memory>"
 
 
+def _render_experience(
+    experience: Optional[list[dict[str, Any]]],
+) -> Optional[str]:
+    """Render CONFIRMED L6 operational learnings (S25, FR-25), or ``None``.
+
+    The entries are human-approved (the S24 confirm gate) but MODEL-ORIGINATED,
+    so — like Customer Memory — they are fenced and framed as guidance to apply,
+    not unconditional instructions, consistent with the ``_render_memory``
+    discipline. Only ``content`` is rendered; ``proposed``/``rejected`` entries
+    never reach here (the store read returns only ``status='confirmed'``)."""
+    if not experience:
+        return None
+    lines: list[str] = []
+    for entry in experience:
+        content = entry.get("content")
+        if not content:
+            continue
+        lines.append(f"- {content}")
+    if not lines:
+        return None
+    header = (
+        "Confirmed operational learnings: human-approved operational guidance "
+        "distilled from prior cases — apply as guidance where it fits, not as "
+        "unconditional instructions, and never over a customer's own request."
+    )
+    body = "\n".join([header, *lines])
+    return f"<confirmed_operational_learnings>\n{body}\n</confirmed_operational_learnings>"
+
+
 def render_injection(
     snapshot: Optional[dict[str, Any]],
     memory: Optional[list[dict[str, Any]]],
+    experience: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[str]:
-    """Render the combined injection block, or ``None`` when there is nothing."""
+    """Render the combined injection block, or ``None`` when there is nothing.
+
+    ``experience`` (S25, FR-25) is the optional confirmed-L6 block; it defaults to
+    ``None`` so every pre-S25 caller — including the eval record path, which never
+    passes it — renders a byte-identical block (the eval-determinism pin, NFR-6)."""
     parts = [
         part
-        for part in (_render_snapshot(snapshot), _render_memory(memory))
+        for part in (
+            _render_snapshot(snapshot),
+            _render_memory(memory),
+            _render_experience(experience),
+        )
         if part
     ]
     if not parts:

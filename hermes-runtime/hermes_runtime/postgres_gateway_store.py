@@ -28,6 +28,11 @@ _EMAIL_CHANNEL = "email"
 # Dev substrate: one conversation maps to one session (ADR-0115).
 _SESSION_TTL = "24 hours"
 
+# S25 (FR-25): the confirmed-L6-injection read cap. Confirmed learnings are shared
+# operational guidance prepended to every gated turn; cap the count so the prompt
+# can't grow unbounded as the store accumulates. Newest-confirmed first (ADR-0152).
+_CONFIRMED_EXPERIENCE_LIMIT = 20
+
 
 def _channel_column(channel: str) -> str:
     """Map the ingress channel to the persisted channel vocabulary (S17).
@@ -370,6 +375,33 @@ class PostgresGatewayStore:
                 )
                 rows = cur.fetchall()
         return [{"slot": name, "value": value} for name, value in rows]
+
+    def load_confirmed_experience(self) -> list[dict[str, Any]]:
+        """Bounded read of CONFIRMED ``agent_experience`` entries for injection (S25, FR-25).
+
+        Operational, NOT customer-scoped (unlike :meth:`load_customer_memory`): L6
+        learnings are shared team knowledge, so this is keyed by nothing but
+        ``status``. Returns ONLY ``status='confirmed'`` rows -- ``proposed``/
+        ``rejected`` are never injected into any turn -- newest-confirmed first,
+        capped at :data:`_CONFIRMED_EXPERIENCE_LIMIT`. Returns the
+        ``[{"content": ..., "kind": ...}, ...]`` shape ``hooks._render_experience``
+        expects.
+        # ponytail: fixed cap is fine at current volume; make it relevance-ranked
+        # only if the confirmed set ever outgrows the prompt budget (post-launch
+        # real-traffic calibration, FR-27 -- see ADR-0152)."""
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT content, kind FROM agent_experience
+                    WHERE status = 'confirmed'
+                    ORDER BY decided_at DESC NULLS LAST, created_at DESC
+                    LIMIT %s
+                    """,
+                    (_CONFIRMED_EXPERIENCE_LIMIT,),
+                )
+                rows = cur.fetchall()
+        return [{"content": content, "kind": kind} for content, kind in rows]
 
     def list_channel_identities_for_customer(
         self, shopify_customer_id: str

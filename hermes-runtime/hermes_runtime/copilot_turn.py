@@ -68,6 +68,8 @@ from hermes_runtime.tool_backend import (
     _gateway_store,
     _turn_extra_drivers,
     agent_experience_enabled,
+    agent_experience_injection_enabled,
+    load_confirmed_experience,
     memory_enabled,
 )
 
@@ -482,11 +484,21 @@ def make_copilot_run_turn(
         )
         system_message = _system_message(channel)
         base_user_message = _user_message(channel, case_id, prompt)
-        # Memory only — the case identity is not surfaced as a snapshot block (the
-        # agent gathers case detail via its governed read tools, ADR-0147 decision 2).
-        # render_injection returns None when there are no slots, so no binding / no
-        # slots / disabled injects nothing.
-        injected = render_injection(None, memory)
+        # S25 (FR-25): confirmed L6 learnings for the draft, gated on the COPILOT
+        # injection flag (its OWN axis, default OFF -- the eval record/replay path
+        # sets neither flag, so nothing is read/injected there and the gate stays
+        # deterministic, NFR-6). Read is bounded + fail-closed (returns None on any
+        # error, NFR-5); only status='confirmed' rows ever come back.
+        experience = (
+            load_confirmed_experience(store)
+            if agent_experience_injection_enabled()
+            else None
+        )
+        # Memory + confirmed learnings — the case identity is not surfaced as a
+        # snapshot block (the agent gathers case detail via its governed read tools,
+        # ADR-0147 decision 2). render_injection returns None when everything is
+        # empty, so no binding / no slots / no learnings / disabled injects nothing.
+        injected = render_injection(None, memory, experience)
         user_message = (
             f"{injected}\n\n{base_user_message}" if injected else base_user_message
         )

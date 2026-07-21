@@ -17,11 +17,14 @@ branch so a mock-first app never imports the database adapter.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.execute import ToolDriver
+
+logger = logging.getLogger(__name__)
 
 # Env var selecting the dispatch backend. Values: "mock" | "datastore".
 TOOL_BACKEND_ENV = "TOOL_BACKEND"
@@ -110,6 +113,72 @@ def agent_experience_enabled(value: object = _UNSET) -> bool:
     if value is _UNSET:
         value = os.environ.get(AGENT_EXPERIENCE_ENV)
     return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+
+
+# S25 (FR-25/26, NFR-6): confirmed-entry INJECTION flags. INJECTION is a separate
+# concern from LEARNING (AGENT_EXPERIENCE_LEARNING gates the propose path): a
+# deployment can inject confirmed learnings without running the review pass, and
+# vice versa. TWO independent axes so the external read can be disabled WITHOUT
+# touching the copilot path (audit finding 5). Both fail-closed / DEFAULT OFF, so
+# the eval record/replay path -- which sets neither -- never reads or injects a
+# confirmed entry and stays byte-identical (the eval-determinism pin).
+AGENT_EXPERIENCE_INJECTION_ENV = "AGENT_EXPERIENCE_INJECTION"  # copilot draft turn
+AGENT_EXPERIENCE_EXTERNAL_INJECTION_ENV = "AGENT_EXPERIENCE_EXTERNAL_INJECTION"  # external turn
+
+
+def agent_experience_injection_enabled(value: object = _UNSET) -> bool:
+    """Whether the COPILOT draft turn injects confirmed L6 entries (S25, FR-25).
+
+    Fail-closed by construction (mirrors :func:`agent_experience_enabled`): unset,
+    empty, or any value outside the on-set returns ``False``. Its OWN axis, default
+    off -- so the copilot eval replay gate stays deterministic."""
+    if value is _UNSET:
+        value = os.environ.get(AGENT_EXPERIENCE_INJECTION_ENV)
+    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+
+
+def agent_experience_external_injection_enabled(value: object = _UNSET) -> bool:
+    """Whether the EXTERNAL turn injects confirmed L6 entries read-only (S25, FR-25).
+
+    Fully independent of :func:`agent_experience_injection_enabled` (the copilot
+    axis) so the external read is disable-able without touching the copilot path.
+    Fail-closed / default off -- the external turn only ever READS confirmed
+    learnings and never proposes (S23 kept propose off the external profile)."""
+    if value is _UNSET:
+        value = os.environ.get(AGENT_EXPERIENCE_EXTERNAL_INJECTION_ENV)
+    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+
+
+def load_confirmed_experience(store: Optional[Any]) -> Optional[list[dict[str, Any]]]:
+    """Bounded, fail-closed read of CONFIRMED L6 entries for turn injection (S25).
+
+    Shared by both turn seams (copilot ``copilot_turn.py`` + external
+    ``openrouter.py``); each caller gates on its OWN injection flag before calling,
+    so this only does the read. Operational, NOT customer-scoped (unlike the
+    Customer Memory read): L6 learnings are shared team knowledge, so there is no
+    binding key.
+
+    Fail-closed, mirroring ``_load_turn_memory``'s philosophy: a store without the
+    method (a mock/scenario store), or ANY read error, degrades to ``None`` (no
+    learnings injected) and never raises -- L6 injection is never a hard dependency
+    of a turn (NFR-5). Only ``status='confirmed'`` rows are ever returned (the store
+    method filters); ``proposed``/``rejected`` never reach any turn."""
+    resolved_store = store if store is not None else _gateway_store()
+    reader = getattr(resolved_store, "load_confirmed_experience", None)
+    if reader is None:
+        return None
+    try:
+        return reader()
+    except Exception as exc:
+        # ponytail: swallow to None so a DB hiccup degrades to "no learnings
+        # injected", never a failed turn (NFR-5). Exception TYPE only -- never
+        # str(exc), which could echo back store-supplied content.
+        logger.warning(
+            "Agent-experience injection read failed error_type=%s; "
+            "turn continues with no confirmed learnings injected",
+            type(exc).__name__,
+        )
+        return None
 
 
 def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
