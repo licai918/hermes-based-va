@@ -135,9 +135,24 @@ Use a **compact JSON body** for signing; whitespace changes invalidate the signa
 | Rate-limited sender | **200** | Persist snapshot; **no** enqueue |
 | Transient identity lookup failure | **500** | Retryable ingress error |
 
-After a **200 enqueue**, `LocalDispatchingJobQueue` runs the agent turn on a **background
-thread** (fast-ack, ADR-0103). You do **not** need to call `/internal/jobs/agent-turn`
-manually in local mode — that route exists for Cloud Tasks parity (ADR-0106).
+After a **200 enqueue** the gateway has written one row to the durable `job` table and
+returned (fast-ack, ADR-0103/ADR-0153). **The turn does not run in the gateway process
+any more** — you must also be running the turn worker:
+
+```bash
+docker compose up -d postgres turn-worker
+# or, on the host:
+cd hermes-runtime && uv run python -m hermes_runtime.turn_worker
+```
+
+It claims `agent_turn` jobs (only that type — FR-9), runs the same bound turn the
+gateway used to run inline, and completes the job. Kill it mid-turn and the job is
+reclaimed on a later poll and re-run, which is the whole point of the cutover. You
+do **not** need to call `/internal/jobs/agent-turn` manually — that route survives
+for ADR-0106 parity only.
+
+Requires `TOOL_BACKEND=datastore`: the worker reloads the context the gateway
+persisted (ADR-0107), and two processes can only share it through Postgres.
 
 ---
 
@@ -145,7 +160,7 @@ manually in local mode — that route exists for Cloud Tasks parity (ADR-0106).
 
 When ``TOOL_BACKEND=datastore`` (recommended for Tier B + real inbound), ``build_gateway_app`` wires **`PostgresGatewayStore`** and **`PostgresDriver`** for ingress identity lookup. Accepted inbound turns write `customer_thread`, `sms_session`, `message_turn`, `session_identity_snapshot`, `agent_turn_context`, and an **open Follow-up Case** into the same Postgres database the Workbench BFF reads.
 
-When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemoryGatewayStore`** — inbound SMS does **not** appear in the Workbench queue.
+When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemoryGatewayStore`** — inbound SMS does **not** appear in the Workbench queue, **and no agent reply is produced** (0.0.4 S02: the turn runs in the separate worker process, which cannot see another process's in-memory store).
 
 **Honest limits (unchanged):**
 
@@ -157,7 +172,8 @@ When ``TOOL_BACKEND`` is unset or ``mock`` (default), the gateway uses **`InMemo
   *Unmatched Caller*. Manual seed (below) remains valid for dev overrides.
 - The async agent turn still routes **business tools** through the plugin's `INTEGRATION_DRIVER` (mock/composio), not `TOOL_BACKEND`. Case rows for inbound are opened at persist time so Workbench shows the thread immediately; agent `create_case` during the turn still uses mock unless you wire Composio + future composite driver work.
 - A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS, a working `TEXTLINE_ACCESS_TOKEN` + real `conversation_id`.
-- Cloud Tasks replace `LocalDispatchingJobQueue` in a later slice (#40).
+- With `TOOL_BACKEND` unset the gateway still acks, but nothing consumes the queue
+  and no reply is produced — the in-memory store is not visible to the worker process.
 
 ### Tier B: gateway + Workbench on the same Postgres
 

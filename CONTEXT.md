@@ -81,11 +81,11 @@ The point at which the **Channel Gateway** returns success to a provider after d
 _Avoid_: Waiting for full agent completion before provider ack, acknowledging before persistence, using provider retries to replay completed inbound events
 
 **Durable Job Queue**:
-The Postgres-backed queue in the **Toee Business Datastore** (decided 2026-07-21, 0.0.4, not built) that carries every asynchronous unit of work — inbound turn execution plus the background jobs (L6 learning fork, retention sweep, knowledge re-ingest) — consumed by two worker processes split by job type (turn vs background). A job that exhausts retries becomes a **Dead-Letter Job**: visible in a governed workbench view, replayable only as an attributed, audited action. It supersedes both the in-process `LocalDispatchingJobQueue` and ADR-0105's Cloud Tasks target.
+The Postgres-backed queue in the **Toee Business Datastore** (decided 2026-07-21, 0.0.4; queue core + **turn worker** built, background worker pending) that carries every asynchronous unit of work — inbound turn execution plus the background jobs (L6 learning fork, retention sweep, knowledge re-ingest) — consumed by two worker processes split by job type (turn vs background). A job that exhausts retries becomes a **Dead-Letter Job**: visible in a governed workbench view, replayable only as an attributed, audited action. It superseded both the in-process `LocalDispatchingJobQueue` (deleted in S02) and ADR-0105's Cloud Tasks target.
 _Avoid_: Cloud Tasks, in-process daemon thread as production queue, queue payload as source of truth (that stays **AgentTurnContext**), silent job drop, unaudited replay
 
 **Outbound Send Record**:
-The per-send record keyed by a deterministic idempotency key that the reply sender checks before any Textline POST (decided 2026-07-21, 0.0.4, not built), so a retried or replayed **Durable Job Queue** job never re-sends a message a customer already received.
+The per-send record keyed by a deterministic idempotency key that the reply sender checks before any Textline POST (decided 2026-07-21, 0.0.4; queue core + **turn worker** built, background worker pending), so a retried or replayed **Durable Job Queue** job never re-sends a message a customer already received.
 _Avoid_: Relying on provider dedupe, replay-then-apologize, idempotency key from model output
 
 **AgentTurnContext**:

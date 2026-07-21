@@ -1,14 +1,17 @@
 # Durable Postgres job queue (supersedes ADR-0105's Cloud Tasks target)
 
-> **Status: Accepted — queue core implemented** (decided during 0.0.4, 2026-07-21).
-> Ships on `feat/0.0.4-land-all`: S01 (FR-7, FR-8, FR-14; PRD Track T2), with
-> [migration 0011](../../hermes-runtime/migrations/0011_job_queue.sql) and
-> `hermes-runtime/hermes_runtime/job_queue.py`. **Supersedes ADR-0105's transport
-> decision** (Cloud Tasks). ADR-0105's *enqueue rule* and *ADR-0107 reload-by-
-> `eventId`* contract are unchanged and still hold.
+> **Status: Accepted — queue core implemented and cut over** (decided during
+> 0.0.4, 2026-07-21). Ships on `feat/0.0.4-land-all`: S01 (FR-7, FR-8, FR-14; PRD
+> Track T2), with [migration 0011](../../hermes-runtime/migrations/0011_job_queue.sql)
+> and `hermes-runtime/hermes_runtime/job_queue.py`; **S02** (FR-9 turn half, FR-10,
+> NFR-1, NFR-2) wired the gateway's fast-ack path to it, added
+> `hermes_runtime/turn_worker.py` + the `turn-worker` compose service, and deleted
+> `job_dispatch.py`. **Supersedes ADR-0105's transport decision** (Cloud Tasks).
+> ADR-0105's *enqueue rule* and *ADR-0107 reload-by-`eventId`* contract are
+> unchanged and still hold.
 >
-> Consumers land in later slices: S02 (turn worker cutover), S04 (background
-> worker + schedule tick loop), S05 (dead-letter view + governed replay).
+> Remaining consumers: S04 (background worker + schedule tick loop), S05
+> (dead-letter view + governed replay).
 
 ## Context
 
@@ -131,20 +134,40 @@ Promote to a table the day an operator must change an interval without a deploy.
 
 `claim()` is a single-row poll. Workers poll; there is no `LISTEN/NOTIFY`.
 
-- **Poll interval: 1 second** for the turn worker (S02 sets it), which puts the
-  claim-latency contribution at ≤ 1 s worst case and ~0.5 s average — inside
-  NFR-2's < 500 ms p95 budget only if the enqueue-to-claim gap is measured p95,
-  which is exactly what S02 measures. The background worker can poll far more
-  slowly (S04's call).
+- **Poll interval: 250 ms** for the turn worker (`turn_worker.POLL_SECONDS`).
+  S01 proposed 1 s; **S02 measured it, and 1 s misses NFR-2**, so S02 took step
+  (1) below. The background worker can poll far more slowly (S04's call).
+
+  **Measured (0.0.4 S02) — a one-time snapshot recorded here, NOT a CI gate.**
+  Nothing regression-fences these numbers; re-measure if the loop changes.
+  Enqueue→claim gap p95 against the docker-compose Postgres, 60 jobs per arm
+  arriving uniformly over a two-interval window so arrivals never phase-lock to
+  the poll. Baseline is the deleted daemon-thread handoff, 0.4 ms p95:
+
+  | Poll interval | enqueue→claim p95 | vs thread handoff | NFR-2 (< 500 ms) |
+  |---|---|---|---|
+  | 1.0 s | 981 ms | +981 ms | ✗ |
+  | 0.5 s | 495 ms | +495 ms | ✓, zero margin |
+  | **0.25 s** | **263 ms** | **+263 ms** | **✓** |
+
+  The gap is ~uniform(0, interval), so p95 ≈ 0.95 × interval — the table confirms
+  the arithmetic rather than discovering it. 250 ms costs 4 claims + 4 lease
+  sweeps per second per idle worker, both single-row indexed statements, so
+  NOTIFY buys nothing until the budget drops near ~100 ms.
+
+  **NFR-1, same run:** webhook ack p95 **4.6 ms → 4.3 ms** (200 signed webhooks
+  per arm through the real gateway app onto Postgres, thread handoff vs durable
+  INSERT). No regression — enqueue is one INSERT and is not measurably different
+  from starting a thread. Also a snapshot, not a gate.
 - **Why not NOTIFY now:** it adds a second mechanism (a dedicated listening
   connection per worker, plus its reconnect/missed-notification handling) to save
   at most one poll interval, and a NOTIFY-driven worker *still* needs the poll as
   its correctness floor — a missed notification must not strand a job. Building
   the poll first is the whole queue; NOTIFY is a latency optimization on top.
 - **Upgrade path, in order:** (1) shorten the poll interval — free, one constant;
-  (2) `LISTEN/NOTIFY` on enqueue with the poll retained as the floor. **S02 owns
-  the decision**: it measures NFR-2 against the current thread handoff and records
-  the number. If a 1 s poll misses the budget, take (1) first.
+  (2) `LISTEN/NOTIFY` on enqueue with the poll retained as the floor. **S02 took
+  step (1)** (1 s → 250 ms) on the measurement above; step (2) remains unbuilt and
+  unneeded.
 
 ### 6. Alignment with ADR-0142 (local-first)
 
@@ -164,11 +187,18 @@ requires a managed service.
   body — `eventId` + `conversationId`) and ADR-0107's reload-by-`eventId` contract
   are unchanged: the JSONB payload carries the same minimal identity keys, and
   memory remains the source of truth, not the payload.
-- **`LocalDispatchingJobQueue` is deleted by S02, not here.** S01 is additive:
-  nothing consumes the queue yet, production still runs the daemon thread, and the
-  existing `JobQueue` Protocol is untouched (only its docstring, which still named
-  Cloud Tasks). `PostgresJobQueue.enqueue(payload)` keeps that one-argument shape
-  deliberately, so the cutover is a wiring change rather than a rewrite.
+- **`LocalDispatchingJobQueue` is deleted by S02, not here.** S01 was additive.
+  **Done in S02:** `job_dispatch.py` and `test_job_dispatch.py` are gone, the
+  composition root wires `PostgresJobQueue`, and `hermes_runtime/turn_worker.py`
+  (docker-compose service `turn-worker`) is the consumer. `PostgresJobQueue.enqueue(payload)`
+  kept the one-argument `JobQueue` Protocol shape, so the cutover was a wiring
+  change rather than a rewrite, as intended.
+- **The durable path requires `TOOL_BACKEND=datastore`.** Two processes can only
+  share the turn context through a shared store, so the in-memory `GatewayStore`
+  no longer produces a working reply loop — it survives for tests and for a
+  gateway booted with no database at all. That is consistent with ADR-0142
+  (Postgres is the local substrate), but it is a real change to what an unset
+  `TOOL_BACKEND` does.
 - **Everything async gets one substrate.** Turn jobs, the L6 learning fork, the
   retention sweep, knowledge re-ingest, health probes and the honored-rate run all
   become a `type` string on one table, with one retry policy, one dead-letter
