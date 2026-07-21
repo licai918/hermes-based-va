@@ -24,10 +24,11 @@
 // simulated message from them would still hit the mock driver above and
 // come back unmatched. Not used here for that reason.
 //
-// Extension points (comments only, no code yet):
-// - S18 channel switcher: presets are phone-shaped today; a channel switch
-//   would need a parallel small preset table for email senders (see
-//   `email_matches` in identity.py) rather than reusing this one directly.
+// S18/FR-11 adds the email-shaped sibling below (EMAIL_PRESETS /
+// resolvePresetEmail), seeded from the same mock driver's `email_matches`
+// table -- kept as a separate preset list rather than reusing this one
+// directly, since a phone value and an email address are never
+// interchangeable identity shapes.
 
 export type IdentityPresetId = "verified" | "ambiguous" | "unknown";
 
@@ -71,4 +72,51 @@ export function resolvePresetPhone(
 ): string {
   const preset = IDENTITY_PRESETS.find((p) => p.id === presetId);
   return preset?.phone ?? generateUnknownCallerPhone(random);
+}
+
+// Email identity presets (0.0.3 S18, FR-11). Same shape as the phone presets
+// above -- curated ADDRESS values only, filling the email composer's "From
+// address" field exactly like typing it in. NFR-4: simulated addresses only,
+// never a real inbox.
+//
+// Provenance: the seeded addresses come from the SAME mock identity registry
+// as the phone presets (hermes/toee_hermes/drivers/mock/identity.py
+// `identity_baseline_data.email_matches`):
+//   accounts@acme-fleet.example      -> outcome "verified_customer" (Acme Fleet)
+//   shared-inbox@acme-fleet.example  -> outcome "ambiguous_phone_match" (two candidate ids)
+// Any other address resolves "unmatched_caller", so "unknown caller" just
+// needs an address that was never seeded -- a fresh random one every time.
+
+export interface EmailPreset {
+  id: IdentityPresetId;
+  label: string;
+  /** Fixed address for presets seeded in the mock identity driver; absent for "unknown", which generates fresh. */
+  address?: string;
+}
+
+export const EMAIL_PRESETS: readonly EmailPreset[] = [
+  { id: "verified", label: "Verified customer (seeded)", address: "accounts@acme-fleet.example" },
+  {
+    id: "ambiguous",
+    label: "Ambiguous match (seeded)",
+    address: "shared-inbox@acme-fleet.example",
+  },
+  { id: "unknown", label: "Unknown caller (fresh address)" },
+];
+
+// ponytail: a 7-digit random suffix gives a 1-in-10M collision chance per pair
+// of picks -- plenty for a manual test surface, same reasoning as
+// generateUnknownCallerPhone above. "sim.example" is a reserved (RFC 2606)
+// domain, so this address can never resolve to a real inbox.
+export function generateUnknownCallerEmail(random: () => number = Math.random): string {
+  const digits = Array.from({ length: 7 }, () => Math.floor(random() * 10)).join("");
+  return `unknown-${digits}@sim.example`;
+}
+
+export function resolvePresetEmail(
+  presetId: IdentityPresetId,
+  random?: () => number,
+): string {
+  const preset = EMAIL_PRESETS.find((p) => p.id === presetId);
+  return preset?.address ?? generateUnknownCallerEmail(random);
 }

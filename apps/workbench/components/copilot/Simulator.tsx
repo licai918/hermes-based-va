@@ -8,9 +8,14 @@
 // window (~60s) elapses. FR-12: once the gateway's webhook creates a case for
 // this phone, a link out to that case's real Case Thread Context appears.
 //
-// Channel switcher is S18 -- not implemented here. `phone` is plain component
-// state (not lifted) so that slice can wire in without reshaping this
-// component.
+// SMS/email channel switcher (0.0.3 S18, FR-11): `channel` picks which
+// identity (phone vs simulated address) and which BFF route pair
+// (messages/thread vs email/thread) the composer + read-back use. SMS keeps
+// its exact prior behavior -- the sms branch of every function below is
+// unchanged logic, just reached through the same `channel === "sms"` guard
+// the email branch is written against. The "link identity" control (S05) is
+// SMS-only here: extending it to email is S05's own territory, not this
+// slice's, and cross-channel merge is explicitly S19 -- out of scope.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ROUTES } from "@toee/shared";
 import { useErrorBanner } from "@/components/shell/error-banner";
@@ -20,16 +25,20 @@ import { formatRelativeTime } from "@/lib/format";
 import type { ThreadMessage } from "@/lib/gateway/types";
 import { hasNewOutboundReply } from "@/lib/simulator-polling";
 import {
+  EMAIL_PRESETS,
   IDENTITY_PRESETS,
   LINK_IDENTITY_TARGET,
+  resolvePresetEmail,
   resolvePresetPhone,
   type IdentityPresetId,
 } from "@/lib/simulator-identity";
 
 const DEFAULT_PHONE = "+15550001001";
+const DEFAULT_EMAIL = "unmatched@sim.example";
 const POLL_INTERVAL_MS = 2_000;
 const POLL_MAX_ATTEMPTS = 30; // ~60s at POLL_INTERVAL_MS
 
+type Channel = "sms" | "email";
 type SendState = "idle" | "pending" | "accepted" | "rejected" | "gateway-down";
 
 const AUTHOR_LABEL: Record<ThreadMessage["author"], string> = {
@@ -40,7 +49,10 @@ const AUTHOR_LABEL: Record<ThreadMessage["author"], string> = {
 
 export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   const { showError } = useErrorBanner();
+  const [channel, setChannel] = useState<Channel>("sms");
   const [phone, setPhone] = useState(DEFAULT_PHONE);
+  const [email, setEmail] = useState(DEFAULT_EMAIL);
+  const [subject, setSubject] = useState("");
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [caseId, setCaseId] = useState<string | null>(null);
@@ -56,14 +68,19 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     timer: null,
     attempts: 0,
   });
-  // Tracks the phone the user is actually looking at right now, kept in sync
-  // with every place `phone` state changes (switchPhone, the phone input's
-  // onChange). loadThread and handleSend's continuation check against this
-  // ref -- not the `phone`
-  // state or a closed-over variable -- so a slow in-flight fetch for a phone
-  // the user has since switched away from (preset pick / reset) can't repaint
-  // stale messages/caseId or restart polling for the old number (FR-13).
-  const activePhoneRef = useRef(DEFAULT_PHONE);
+  // Tracks the (channel, identity) pair the user is actually looking at right
+  // now, kept in sync with every place channel/phone/email state changes
+  // (switchIdentity, the identity inputs' onChange). loadThread and
+  // handleSend's continuation check against this ref -- not the `channel`/
+  // `phone`/`email` state or a closed-over variable -- so a slow in-flight
+  // fetch for an identity the user has since switched away from (preset pick
+  // / reset / channel toggle) can't repaint stale messages/caseId or restart
+  // polling for the old identity (FR-13, extended to the channel dimension by
+  // S18/FR-11).
+  const activeIdentityRef = useRef<{ channel: Channel; identity: string }>({
+    channel: "sms",
+    identity: DEFAULT_PHONE,
+  });
 
   const stopPolling = useCallback(() => {
     if (pollRef.current.timer !== null) {
@@ -76,14 +93,18 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   useEffect(() => stopPolling, [stopPolling]);
 
   const loadThread = useCallback(
-    async (forPhone: string): Promise<ThreadMessage[]> => {
+    async (forChannel: Channel, forIdentity: string): Promise<ThreadMessage[]> => {
       try {
-        const res = await simulator.getSimulatorThread(forPhone);
-        // Stale-response guard: if the user switched phones (preset/reset)
-        // while this fetch was in flight, forPhone no longer matches what's
-        // on screen -- drop the response instead of repainting the old
-        // thread over the new one.
-        if (forPhone === activePhoneRef.current) {
+        const res =
+          forChannel === "sms"
+            ? await simulator.getSimulatorThread(forIdentity)
+            : await simulator.getSimulatorEmailThread(forIdentity);
+        // Stale-response guard: if the user switched identity or channel
+        // (preset/reset/toggle) while this fetch was in flight, this no
+        // longer matches what's on screen -- drop the response instead of
+        // repainting the old thread over the new one.
+        const active = activeIdentityRef.current;
+        if (forChannel === active.channel && forIdentity === active.identity) {
           setMessages(res.messages);
           setCaseId(res.caseId);
         }
@@ -99,19 +120,19 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   );
 
   useEffect(() => {
-    void loadThread(DEFAULT_PHONE);
-    // Initial load only -- re-fetching on every keystroke of the phone field
-    // would flood the BFF; the field's onBlur below re-triggers a load.
+    void loadThread("sms", DEFAULT_PHONE);
+    // Initial load only -- re-fetching on every keystroke of the identity
+    // field would flood the BFF; the field's onBlur below re-triggers a load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function startPolling(before: ThreadMessage[], forPhone: string) {
+  function startPolling(before: ThreadMessage[], forChannel: Channel, forIdentity: string) {
     stopPolling();
     pollRef.current.attempts = 0;
     setPolling(true);
     pollRef.current.timer = setInterval(() => {
       pollRef.current.attempts += 1;
-      void loadThread(forPhone).then((after) => {
+      void loadThread(forChannel, forIdentity).then((after) => {
         if (hasNewOutboundReply(before, after) || pollRef.current.attempts >= POLL_MAX_ATTEMPTS) {
           stopPolling();
         }
@@ -119,26 +140,42 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     }, POLL_INTERVAL_MS);
   }
 
-  // Fresh identity / fresh phone -- shared by the preset picker and reset
-  // (FR-9/FR-13). Stops any in-flight poll for the old phone, drops the
-  // conversationId so the next send opens a new server-side conversation
-  // (new phone = new thread server-side too), and reloads the thread for
-  // the new number (empty for a never-seen number, existing history for a
-  // fixed preset number reused across runs).
-  function switchPhone(nextPhone: string) {
+  // Fresh identity (any channel) -- shared by the preset pickers, reset, and
+  // the channel toggle (FR-9/FR-13, S18/FR-11). Stops any in-flight poll for
+  // the old identity, drops the conversationId so the next send opens a new
+  // server-side conversation, and reloads the thread for the new identity
+  // (empty for a never-seen identity, existing history for a fixed preset
+  // reused across runs).
+  function switchIdentity(nextChannel: Channel, nextIdentity: string) {
     stopPolling();
-    activePhoneRef.current = nextPhone;
-    setPhone(nextPhone);
+    activeIdentityRef.current = { channel: nextChannel, identity: nextIdentity };
+    setChannel(nextChannel);
+    if (nextChannel === "sms") setPhone(nextIdentity);
+    else setEmail(nextIdentity);
     setConversationId(undefined);
     setSendState("idle");
     setSendMessage(null);
     setLinkState("idle");
     setLinkMessage(null);
-    void loadThread(nextPhone);
+    void loadThread(nextChannel, nextIdentity);
   }
 
   function handlePresetSelect(id: IdentityPresetId) {
-    switchPhone(resolvePresetPhone(id));
+    switchIdentity("sms", resolvePresetPhone(id));
+  }
+
+  function handleEmailPresetSelect(id: IdentityPresetId) {
+    switchIdentity("email", resolvePresetEmail(id));
+  }
+
+  // Channel toggle (S18/FR-11): switching SMS <-> email resets the thread
+  // view exactly like switchIdentity does for a preset pick -- a stale SMS
+  // thread must never keep showing under the email tab (or vice versa) --
+  // but keeps each channel's own current identity value rather than
+  // generating a fresh one.
+  function handleChannelChange(next: Channel) {
+    if (next === channel) return;
+    switchIdentity(next, next === "sms" ? phone : email);
   }
 
   // "Link identity" control (S05, FR-13): simulates the ingress event that
@@ -147,7 +184,8 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   // see lib/bff/copilot/simulator.ts's handleSimulatorLinkIdentity). Once
   // linked, the customer's NEXT inbound message resolves verified_customer and
   // the ADR-0112 provisional-merge trigger fires, making FR-19's cross-channel
-  // continuity observable (S19 wires the merge itself).
+  // continuity observable (S19 wires the merge itself). SMS-only: extending
+  // this control to email identities is S05's own territory, not S18's.
   async function handleLinkIdentity() {
     const forPhone = phone;
     setLinkState("pending");
@@ -160,9 +198,9 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
       });
       // Stale-response guard, same as loadThread/handleSend: don't paint a
       // "Linked" status for a phone the user has since switched away from.
-      if (forPhone === activePhoneRef.current) setLinkState("linked");
+      if (forPhone === activeIdentityRef.current.identity) setLinkState("linked");
     } catch (err) {
-      if (forPhone === activePhoneRef.current) {
+      if (forPhone === activeIdentityRef.current.identity) {
         setLinkState("error");
         setLinkMessage(
           err instanceof ApiError ? err.message : "Failed to link identity",
@@ -172,14 +210,20 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
   }
 
   // Reset / new-conversation (FR-13): clears the local thread view and picks
-  // a fresh unknown-caller number, so PAC runs are repeatable without
-  // cross-contamination. Server-side data for the old phone/case is left
-  // alone (NFR-4 territory is simulated numbers only, never real customers).
+  // a fresh unknown-caller identity for the CURRENT channel, so PAC runs are
+  // repeatable without cross-contamination. Server-side data for the old
+  // identity/case is left alone (NFR-4 territory is simulated identities
+  // only, never a real customer or inbox).
   function handleReset() {
     setMessages([]);
     setCaseId(null);
     setDraft("");
-    switchPhone(resolvePresetPhone("unknown"));
+    if (channel === "email") {
+      setSubject("");
+      switchIdentity("email", resolvePresetEmail("unknown"));
+    } else {
+      switchIdentity("sms", resolvePresetPhone("unknown"));
+    }
   }
 
   async function handleSend() {
@@ -188,18 +232,23 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     const before = messages;
     setSendState("pending");
     setSendMessage(null);
-    const forPhone = phone;
+    const forChannel = channel;
+    const forIdentity = forChannel === "sms" ? phone : email;
     try {
-      const res = await simulator.sendSimulatorMessage({ fromPhone: forPhone, body, conversationId });
+      const res =
+        forChannel === "sms"
+          ? await simulator.sendSimulatorMessage({ fromPhone: forIdentity, body, conversationId })
+          : await simulator.sendSimulatorEmail({ from: forIdentity, subject, body, conversationId });
       setDraft("");
-      // Same stale-response guard as loadThread: a Reset/preset switch during
-      // this send must not repopulate conversationId or restart polling for
-      // the phone the user has since left (FR-13).
-      const stillActive = forPhone === activePhoneRef.current;
+      // Same stale-response guard as loadThread: a Reset/preset/channel
+      // switch during this send must not repopulate conversationId or
+      // restart polling for the identity the user has since left (FR-13).
+      const active = activeIdentityRef.current;
+      const stillActive = forChannel === active.channel && forIdentity === active.identity;
       if (stillActive) setConversationId(res.conversationId);
       if (res.accepted) {
         setSendState("accepted");
-        if (stillActive) startPolling(before, forPhone);
+        if (stillActive) startPolling(before, forChannel, forIdentity);
       } else {
         setSendState("rejected");
         setSendMessage("The gateway rejected the simulated message.");
@@ -224,66 +273,140 @@ export function Simulator({ now = Date.now() }: { now?: number } = {}) {
     >
       <h1 style={{ margin: 0 }}>Conversation Simulator</h1>
       <p style={{ color: "#666", margin: 0, fontSize: "0.85rem" }}>
-        Sends a simulated customer SMS through the real gateway webhook (no bypass
-        chat) and reads the agent's reply back once it lands.
+        {channel === "sms"
+          ? "Sends a simulated customer SMS through the real gateway webhook (no bypass chat) and reads the agent's reply back once it lands."
+          : "Sends a simulated customer email through the real runtime webhook (no bypass chat) and reads the agent's reply back once it lands. Addresses are simulated only, never a real inbox (NFR-4)."}
       </p>
 
       <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-        <label htmlFor="sim-phone" style={{ fontSize: "0.8rem", color: "#666" }}>
-          From phone
+        <label htmlFor="sim-channel" style={{ fontSize: "0.8rem", color: "#666" }}>
+          Channel
         </label>
-        <input
-          id="sim-phone"
-          value={phone}
-          onChange={(e) => {
-            activePhoneRef.current = e.target.value;
-            setPhone(e.target.value);
-          }}
-          onBlur={() => void loadThread(phone)}
-        />
-
-        <label htmlFor="sim-identity-preset" style={{ fontSize: "0.8rem", color: "#666" }}>
-          Identity preset
-        </label>
-        {/* value="" is intentional: a one-shot select, not a controlled
-            "current preset" -- picking a preset fires switchPhone and the
-            control resets to the placeholder rather than tracking phone. */}
         <select
-          id="sim-identity-preset"
-          value=""
-          onChange={(e) => {
-            const id = e.target.value as IdentityPresetId;
-            if (id) handlePresetSelect(id);
-          }}
+          id="sim-channel"
+          value={channel}
+          onChange={(e) => handleChannelChange(e.target.value as Channel)}
         >
-          <option value="" disabled>
-            Choose a preset…
-          </option>
-          {IDENTITY_PRESETS.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.label}
-            </option>
-          ))}
+          <option value="sms">SMS</option>
+          <option value="email">Email</option>
         </select>
-
-        <button type="button" onClick={handleReset}>
-          Reset / new conversation
-        </button>
-
-        <button
-          type="button"
-          onClick={() => void handleLinkIdentity()}
-          disabled={linkState === "pending"}
-        >
-          Link identity to {LINK_IDENTITY_TARGET.companyName} (verified)
-        </button>
-
-        {caseId ? (
-          <a href={`${ROUTES.copilot}?case=${encodeURIComponent(caseId)}`}>
-            Open case in copilot
-          </a>
-        ) : null}
       </div>
+
+      {channel === "sms" ? (
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+          <label htmlFor="sim-phone" style={{ fontSize: "0.8rem", color: "#666" }}>
+            From phone
+          </label>
+          <input
+            id="sim-phone"
+            value={phone}
+            onChange={(e) => {
+              activeIdentityRef.current = { channel: "sms", identity: e.target.value };
+              setPhone(e.target.value);
+            }}
+            onBlur={() => void loadThread("sms", phone)}
+          />
+
+          <label htmlFor="sim-identity-preset" style={{ fontSize: "0.8rem", color: "#666" }}>
+            Identity preset
+          </label>
+          {/* value="" is intentional: a one-shot select, not a controlled
+              "current preset" -- picking a preset fires switchIdentity and
+              the control resets to the placeholder rather than tracking
+              phone. */}
+          <select
+            id="sim-identity-preset"
+            value=""
+            onChange={(e) => {
+              const id = e.target.value as IdentityPresetId;
+              if (id) handlePresetSelect(id);
+            }}
+          >
+            <option value="" disabled>
+              Choose a preset…
+            </option>
+            {IDENTITY_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+
+          <button type="button" onClick={handleReset}>
+            Reset / new conversation
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleLinkIdentity()}
+            disabled={linkState === "pending"}
+          >
+            Link identity to {LINK_IDENTITY_TARGET.companyName} (verified)
+          </button>
+
+          {caseId ? (
+            <a href={`${ROUTES.copilot}?case=${encodeURIComponent(caseId)}`}>
+              Open case in copilot
+            </a>
+          ) : null}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+          <label htmlFor="sim-email" style={{ fontSize: "0.8rem", color: "#666" }}>
+            From address
+          </label>
+          <input
+            id="sim-email"
+            value={email}
+            onChange={(e) => {
+              activeIdentityRef.current = { channel: "email", identity: e.target.value };
+              setEmail(e.target.value);
+            }}
+            onBlur={() => void loadThread("email", email)}
+          />
+
+          <label htmlFor="sim-subject" style={{ fontSize: "0.8rem", color: "#666" }}>
+            Subject
+          </label>
+          <input
+            id="sim-subject"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+          />
+
+          <label htmlFor="sim-email-identity-preset" style={{ fontSize: "0.8rem", color: "#666" }}>
+            Identity preset
+          </label>
+          {/* Same one-shot-select shape as the SMS preset picker above. */}
+          <select
+            id="sim-email-identity-preset"
+            value=""
+            onChange={(e) => {
+              const id = e.target.value as IdentityPresetId;
+              if (id) handleEmailPresetSelect(id);
+            }}
+          >
+            <option value="" disabled>
+              Choose a preset…
+            </option>
+            {EMAIL_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+          </select>
+
+          <button type="button" onClick={handleReset}>
+            Reset / new conversation
+          </button>
+
+          {caseId ? (
+            <a href={`${ROUTES.copilot}?case=${encodeURIComponent(caseId)}`}>
+              Open case in copilot
+            </a>
+          ) : null}
+        </div>
+      )}
 
       <ol
         aria-label="Simulated thread"

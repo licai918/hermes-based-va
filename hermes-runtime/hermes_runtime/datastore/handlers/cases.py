@@ -17,6 +17,7 @@ import os
 
 from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
 from toee_hermes.errors import ToolDriverError
+from toee_hermes.gateway.normalize import canonicalize_email
 
 from toee_hermes.identity.summary import (
     display_name_from_match_result,
@@ -781,6 +782,35 @@ def _get_thread_by_phone(
     return _get_thread(conn, {"case_id": case_id}, context)
 
 
+# Deterministic customer_thread key for an inbound simulated email (S18/FR-11;
+# mirrors postgres_gateway_store._thread_id's email branch -- from_identity is
+# already canonicalize_email'd by to_inbound_email_event before it reaches
+# _thread_id, so the read side must apply the SAME canonicalize_email to the
+# raw address to reconstruct a byte-identical key. Reusing S17's exact helper
+# (not a local re-implementation) is what keeps this from silently reading
+# back empty).
+def _email_thread_id(from_address: str) -> str:
+    return f"customer_thread:email:{canonicalize_email(from_address)}"
+
+
+def _get_thread_by_email(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Simulator email read-back (S18/FR-11): the email sibling of
+    ``_get_thread_by_phone`` -- same "BFF only knows the identity it posted,
+    not a case_id" shape, resolved via the email customer_thread key S17's
+    gateway store writes.
+    """
+    from_address = read_string(params, "from_address", "fromAddress")
+    if not from_address:
+        raise ToolDriverError("unexpected_error", "from_address is required.")
+    thread_id = _email_thread_id(from_address)
+    case_id = _latest_case_id_for_thread(conn, thread_id)
+    if case_id is None:
+        return {"case": None, "messages": []}
+    return _get_thread(conn, {"case_id": case_id}, context)
+
+
 # Mirrors store.ts DEFAULT_STATUSES: resolved cases are hidden by default.
 _DEFAULT_STATUSES = ("open", "in_progress")
 
@@ -876,6 +906,7 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "get_audit_log": _get_audit_log,
             "get_thread": _get_thread,
             "get_thread_by_phone": _get_thread_by_phone,
+            "get_thread_by_email": _get_thread_by_email,
             "list_auto_handled": _list_auto_handled,
             "get_auto_handled": _get_auto_handled,
             "list_sales_outreach": _list_sales_outreach,

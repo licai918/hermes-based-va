@@ -19,6 +19,8 @@ vi.mock("@/lib/api/simulator-client", () => ({
   sendSimulatorMessage: vi.fn(),
   getSimulatorThread: vi.fn(),
   linkSimulatorIdentity: vi.fn(),
+  sendSimulatorEmail: vi.fn(),
+  getSimulatorEmailThread: vi.fn(),
 }));
 
 const NOW = 1_000_000_000_000;
@@ -445,5 +447,172 @@ describe("Simulator", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reset / new conversation" }));
     expect(screen.queryByText(/Linked to Acme Fleet/)).toBeNull();
     await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
+  });
+
+  // --- SMS/email channel switcher (0.0.3 S18, FR-11) ------------------------
+
+  it("defaults to SMS mode and never touches the email ingress or read-back", async () => {
+    vi.mocked(simulator.sendSimulatorMessage).mockResolvedValue({
+      conversationId: "conv-1",
+      eventId: "evt-1",
+      accepted: true,
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "hi" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(simulator.sendSimulatorMessage).toHaveBeenCalledTimes(1));
+    expect(simulator.sendSimulatorEmail).not.toHaveBeenCalled();
+    expect(simulator.getSimulatorEmailThread).not.toHaveBeenCalled();
+  });
+
+  it("switching to email mode swaps the identity field for a From-address + Subject composer", async () => {
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText("From phone")).toBeInTheDocument();
+    expect(screen.queryByLabelText("From address")).toBeNull();
+
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+
+    expect(screen.queryByLabelText("From phone")).toBeNull();
+    expect(screen.getByLabelText("From address")).toBeInTheDocument();
+    expect(screen.getByLabelText("Subject")).toBeInTheDocument();
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
+  });
+
+  it("in email mode, submitting the composer posts {from, subject, body} to the email ingress", async () => {
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    vi.mocked(simulator.sendSimulatorEmail).mockResolvedValue({
+      conversationId: "conv-em-1",
+      eventId: "evt-em-1",
+      accepted: true,
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("From address"), {
+      target: { value: "accounts@acme-fleet.example" },
+    });
+    fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Order 10444" } });
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "Where is my order?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(simulator.sendSimulatorEmail).toHaveBeenCalledWith({
+        from: "accounts@acme-fleet.example",
+        subject: "Order 10444",
+        body: "Where is my order?",
+        conversationId: undefined,
+      }),
+    );
+    expect(simulator.sendSimulatorMessage).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Accepted/)).toBeInTheDocument();
+  });
+
+  it("switching from SMS to email resets the thread view instead of showing the stale SMS thread", async () => {
+    vi.mocked(simulator.getSimulatorThread).mockResolvedValue({
+      caseId: "case_sms",
+      messages: [turn({ messageId: "1", author: "customer", body: "sms hello" })],
+    });
+    renderSimulator();
+    expect(await screen.findByText("sms hello")).toBeInTheDocument();
+
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("sms hello")).toBeNull();
+  });
+
+  it("selecting the verified email preset fills the From address field with the seeded address", async () => {
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Identity preset"), {
+      target: { value: "verified" },
+    });
+
+    expect(screen.getByLabelText("From address")).toHaveValue("accounts@acme-fleet.example");
+    await waitFor(() =>
+      expect(simulator.getSimulatorEmailThread).toHaveBeenLastCalledWith(
+        "accounts@acme-fleet.example",
+      ),
+    );
+  });
+
+  it("reset in email mode clears the thread and generates a fresh simulated address", async () => {
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({
+      caseId: "case_email",
+      messages: [turn({ messageId: "1", author: "customer", body: "hi there" })],
+    });
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+    expect(await screen.findByText("hi there")).toBeInTheDocument();
+
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.click(screen.getByRole("button", { name: "Reset / new conversation" }));
+
+    expect(screen.queryByText("hi there")).toBeNull();
+    const addressValue = (screen.getByLabelText("From address") as HTMLInputElement).value;
+    expect(addressValue).toMatch(/^unknown-\d{7}@sim\.example$/);
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(2));
+  });
+
+  it("hides the SMS-only link-identity control in email mode (S05's link control is out of scope here)", async () => {
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+    expect(
+      screen.getByRole("button", { name: /Link identity to Acme Fleet/ }),
+    ).toBeInTheDocument();
+
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
+
+    expect(screen.queryByRole("button", { name: /Link identity to Acme Fleet/ })).toBeNull();
+  });
+
+  it("switching back to SMS from email restores the SMS composer and posts through the SMS route again", async () => {
+    vi.mocked(simulator.sendSimulatorMessage).mockResolvedValue({
+      conversationId: "conv-1",
+      eventId: "evt-1",
+      accepted: true,
+    });
+    renderSimulator();
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(1));
+
+    vi.mocked(simulator.getSimulatorEmailThread).mockResolvedValue({ caseId: null, messages: [] });
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
+    await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "sms" } });
+    await waitFor(() => expect(simulator.getSimulatorThread).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(screen.getByLabelText("Simulated customer message"), {
+      target: { value: "back on sms" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(simulator.sendSimulatorMessage).toHaveBeenCalledWith({
+        fromPhone: "+15550001001",
+        body: "back on sms",
+        conversationId: undefined,
+      }),
+    );
   });
 });

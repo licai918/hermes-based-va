@@ -66,6 +66,10 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 "case": None,
                 "messages": [],
             },
+            "get_thread_by_email": lambda params, context: {
+                "case": None,
+                "messages": [],
+            },
             "list_auto_handled": lambda params, context: {"records": []},
             "get_auto_handled": lambda params, context: {"record": None},
             "list_sales_outreach": lambda params, context: {"cases": []},

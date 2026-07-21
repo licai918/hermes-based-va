@@ -3,6 +3,7 @@ import { HermesApiClient } from "../../gateway/hermes-api-client";
 import {
   buildSimulatedInboundEmail,
   buildSimulatedInboundEvent,
+  handleGetSimulatorEmailThread,
   handleGetSimulatorThread,
   handleSimulatorEmailIngress,
   handleSimulatorIngress,
@@ -539,6 +540,96 @@ describe("handleGetSimulatorThread", () => {
         ),
     );
     const res = await handleGetSimulatorThread(client, "+14165550101");
+    expect(res.status).toBe(504);
+  });
+});
+
+describe("handleGetSimulatorEmailThread", () => {
+  function apiClient(
+    fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
+  ): HermesApiClient {
+    return new HermesApiClient({ baseUrl: "http://copilot.internal", token: "tok", fetchImpl });
+  }
+
+  it("dispatches get_thread_by_email and maps the returned messages", async () => {
+    type SentDispatch = { tool: string; action: string; params: Record<string, unknown> };
+    let captured: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      captured = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            case: { case_id: "case_email_1" },
+            messages: [
+              {
+                id: "mt_1",
+                customer_thread_id: "thr_1",
+                author: "customer",
+                channel: "email",
+                body: "Subject: Order 10444\n\nWhere is my order?",
+                created_at: "2026-07-20T14:00:00.000Z",
+                auto_handled: false,
+                active_case_segment: true,
+              },
+              {
+                id: "mt_2",
+                customer_thread_id: "thr_1",
+                author: "hermes",
+                channel: "email",
+                body: "Your order ships tomorrow.",
+                created_at: "2026-07-20T14:00:05.000Z",
+                auto_handled: false,
+                active_case_segment: true,
+              },
+            ],
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const res = await handleGetSimulatorEmailThread(client, "accounts@acme-fleet.example");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      caseId: string | null;
+      messages: Array<{ body: string | null; author: string }>;
+    };
+    expect(body.caseId).toBe("case_email_1");
+    expect(body.messages.map((m) => m.body)).toEqual([
+      "Subject: Order 10444\n\nWhere is my order?",
+      "Your order ships tomorrow.",
+    ]);
+    const sent = captured as SentDispatch | null;
+    expect(sent?.tool).toBe("toee_workbench_read");
+    expect(sent?.action).toBe("get_thread_by_email");
+    expect(sent?.params).toEqual({ from_address: "accounts@acme-fleet.example" });
+  });
+
+  it("returns an empty thread for an address with no case yet", async () => {
+    const client = apiClient(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: { case: null, messages: [] } }), {
+          status: 200,
+        }),
+    );
+    const res = await handleGetSimulatorEmailThread(client, "nobody@nowhere.example");
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { caseId: string | null; messages: unknown[] }).toEqual({
+      caseId: null,
+      messages: [],
+    });
+  });
+
+  it("maps a governed denial to its per-class status (ADR-0104)", async () => {
+    const client = apiClient(
+      async () =>
+        new Response(
+          JSON.stringify({ ok: false, error: { class: "vendor_timeout", message: "no" } }),
+          { status: 200 },
+        ),
+    );
+    const res = await handleGetSimulatorEmailThread(client, "accounts@acme-fleet.example");
     expect(res.status).toBe(504);
   });
 });

@@ -31,6 +31,22 @@ export function getSimulatorThread(fromPhone: string): Promise<SimulatorThreadRe
   return getJson(`${BASE}/thread?fromPhone=${encodeURIComponent(fromPhone)}`);
 }
 
+// S18/FR-11: the email sibling of sendSimulatorMessage/getSimulatorThread --
+// composes {from, subject, body} to the email ingress route (item 1) and
+// reads the reply back keyed by fromAddress (get_thread_by_email, S18).
+export function sendSimulatorEmail(input: {
+  from: string;
+  subject: string;
+  body: string;
+  conversationId?: string;
+}): Promise<SimulatorSendResponse> {
+  return sendJson("POST", `${BASE}/email`, input);
+}
+
+export function getSimulatorEmailThread(fromAddress: string): Promise<SimulatorThreadResponse> {
+  return getJson(`${BASE}/thread?fromAddress=${encodeURIComponent(fromAddress)}`);
+}
+
 export type SimulatorLinkIdentityResponse = {
   linked: boolean;
   channel: string;

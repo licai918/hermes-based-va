@@ -247,3 +247,26 @@ export async function handleGetSimulatorThread(
     return hermesErrorToProblem(err);
   }
 }
+
+// GET /api/copilot/simulator/thread?fromAddress=...: the email sibling of
+// handleGetSimulatorThread above (S18/FR-11) -- same Case Thread Context read
+// (ADR-0143), keyed by get_thread_by_email (S18) instead of get_thread_by_phone,
+// since the simulator only ever knows the from-address it posted through
+// handleSimulatorEmailIngress, not the case_id the gateway's async webhook
+// creates.
+export async function handleGetSimulatorEmailThread(
+  client: HermesApiClient,
+  fromAddress: string,
+): Promise<Response> {
+  try {
+    const data = (await client.dispatch("toee_workbench_read", "get_thread_by_email", {
+      from_address: fromAddress,
+    })) as { case?: { case_id?: unknown } | null; messages?: unknown };
+    const rows = Array.isArray(data?.messages) ? data.messages : [];
+    const caseId =
+      typeof data?.case?.case_id === "string" ? data.case.case_id : null;
+    return json({ caseId, messages: rows.map(mapThreadMessage) });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}

@@ -378,6 +378,73 @@ def test_get_thread_by_phone_unknown_number_is_empty_read(datastore) -> None:
     assert result == {"case": None, "messages": []}
 
 
+def test_get_thread_by_email_resolves_a_thread_s17_store_actually_wrote(datastore) -> None:
+    """S18 (FR-11) CRITICAL key-match proof: get_thread_by_email must resolve
+    the SAME customer_thread key S17's PostgresGatewayStore derives for a real
+    inbound email (customer_thread:email:{canonicalize_email(addr)}).
+
+    Rather than hand-seeding a row under the "expected" key (which would only
+    prove the test author's guess, not the real write path), this writes
+    through the actual gateway store -- the same one hermes-runtime's
+    /webhooks/simulated-email route uses -- via persist_accepted_inbound, then
+    reads it back through the datastore handler. A mixed-case From address
+    proves canonicalize_email is applied identically on both sides: a
+    different (even correct-looking) canonicalization on the read side would
+    silently return an empty read instead of failing loudly.
+    """
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+    from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+    from toee_hermes.gateway.normalize import to_inbound_email_event
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    driver, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+
+    event = to_inbound_email_event(
+        event_id="evt-email-readback",
+        conversation_id="conv-email-readback",
+        from_address="Accounts@Acme-Fleet.EXAMPLE",
+        subject="Order 10444",
+        body="Where is my order?",
+        received_at="2026-01-01T00:00:00Z",
+    )
+    snapshot = SessionIdentitySnapshot(
+        outcome="unmatched_caller", resolved_at="2026-01-01T00:00:00Z"
+    )
+    decision = InboundDecision(
+        status=200, action="enqueue", stage="accept", event=event, snapshot=snapshot
+    )
+    context, created = store.persist_accepted_inbound(decision)
+    assert created is True
+    store.persist_agent_outbound(context, "Your order ships tomorrow.")
+
+    result = _run(
+        driver,
+        "toee_workbench_read",
+        "get_thread_by_email",
+        {"from_address": "accounts@acme-fleet.example"},
+    ).data
+
+    assert result["case"] is not None
+    assert [m["body"] for m in result["messages"]] == [
+        "Subject: Order 10444\n\nWhere is my order?",
+        "Your order ships tomorrow.",
+    ]
+
+
+def test_get_thread_by_email_unknown_address_is_empty_read(datastore) -> None:
+    driver, _, _ = datastore
+    # An address that never sent an inbound email has no customer_thread/case
+    # row (ADR-0020 empty read), same contract as get_thread_by_phone's.
+    result = _run(
+        driver,
+        "toee_workbench_read",
+        "get_thread_by_email",
+        {"from_address": "nobody@nowhere.example"},
+    ).data
+    assert result == {"case": None, "messages": []}
+
+
 def test_get_audit_log_includes_actor_username(datastore) -> None:
     driver, conn, _ = datastore
     with conn.cursor() as cur:
