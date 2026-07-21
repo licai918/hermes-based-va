@@ -86,8 +86,47 @@ def test_simulated_mode_disabled_when_unset_or_empty() -> None:
     assert simulated_mode_enabled("") is False
 
 
-def test_simulated_mode_disabled_for_the_real_textline_sender() -> None:
-    assert simulated_mode_enabled("textline") is False
+# Every REPLY_SENDER value worth asking about, including ones neither module
+# accepts. The test derives which are "real" from the resolver rather than
+# assuming — a hardcoded list is what let the old assertion look like a
+# relationship check while still only testing what its author already believed.
+_REPLY_SENDER_CANDIDATES = ("", "simpletexting", "simulated", "SIMULATED", "bogus")
+
+
+@pytest.mark.parametrize("value", _REPLY_SENDER_CANDIDATES)
+def test_dev_only_gate_is_open_exactly_when_the_resolver_picks_the_simulated_sender(
+    value: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pin the two modules' readings of REPLY_SENDER to each other.
+
+    ``resolve_reply_sender`` (gateway_composition) chooses the outbound sender;
+    ``simulated_mode_enabled`` (here) opens the dev-only mutation surface. They
+    parse the same env var in different modules, so the hazard is drift: a value
+    that boots the REAL sender while the gate reads it as simulated would expose
+    ``toee_identity_lookup.link_identity`` in production.
+
+    Asserting a fixed list cannot see that. This asks the resolver which sender a
+    value produces and requires the gate to agree, for every candidate — so adding
+    a sender on one side without the other fails here.
+    """
+    from hermes_runtime import gateway_composition
+
+    monkeypatch.setenv("SIMPLETEXTING_API_TOKEN", "tok-123")
+    monkeypatch.setenv(gateway_composition.REPLY_SENDER_ENV, value)
+
+    try:
+        resolved = gateway_composition.resolve_reply_sender()
+    except ValueError:
+        # Rejected at boot: the gateway never runs, so the gate must be shut too.
+        assert simulated_mode_enabled(value) is False
+        return
+
+    resolver_says_simulated = resolved is gateway_composition._simulated_reply_sender
+    assert simulated_mode_enabled(value) is resolver_says_simulated, (
+        f"REPLY_SENDER={value!r}: resolver picks the "
+        f"{'simulated' if resolver_says_simulated else 'real'} sender but the "
+        f"dev-only gate says simulated={simulated_mode_enabled(value)}"
+    )
 
 
 def test_simulated_mode_enabled_for_simulated_case_insensitive() -> None:

@@ -1,4 +1,4 @@
-"""SimpleTexting webhook authenticity check (ADR-0021).
+"""SimpleTexting webhook authenticity check (ADR-0021 requirement, ADR-0153 mechanism).
 
 SimpleTexting does not sign webhook payloads (no HMAC, no signature header). The
 authenticity control is a shared secret token embedded in the webhook URL we

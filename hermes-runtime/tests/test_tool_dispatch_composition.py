@@ -106,9 +106,10 @@ def test_link_identity_is_denied_when_reply_sender_is_unset(monkeypatch) -> None
     assert body["error"]["class"] == "policy_blocked"
 
 
-def test_link_identity_is_denied_when_reply_sender_is_textline(monkeypatch) -> None:
+def test_link_identity_is_denied_when_reply_sender_is_simpletexting(monkeypatch) -> None:
+    # The real sender is configured, so the dev-only mutation surface stays denied.
     _configure(monkeypatch, profile="internal_copilot")
-    monkeypatch.setenv("REPLY_SENDER", "textline")
+    monkeypatch.setenv("REPLY_SENDER", "simpletexting")
     client = TestClient(build_tool_dispatch_app())
     response = client.post(
         "/v1/tools:dispatch",

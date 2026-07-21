@@ -12,6 +12,11 @@
 > "tool-gate enforcement live in `packages/domain-adapters`" below as the Python
 > `toee_hermes` plugin reached over HTTP.
 
+> **Route names retired (2026-07-21).** The namespace table below lists
+> `POST /api/copilot/messages/textline/send`; that route is now
+> `/api/copilot/messages/sms/send`. The resource-oriented namespace decision stands.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `apps/workbench` exposes resource-oriented BFF routes under `app/api/`. Browser clients do not call `services/hermes-gateway` directly and do not send raw `{ tool, action }` envelopes in v1.
 
 BFF handlers validate the HttpOnly session, derive `activeProfile` from the route prefix per ADR-0093, enforce role checks, and call `packages/domain-adapters` using the v1 tool catalog from ADR-0070.

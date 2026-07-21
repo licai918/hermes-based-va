@@ -88,7 +88,7 @@ def process_inbound(
     branch on the channel.
     """
     # Verify: reject traffic without the shared webhook-URL token before any
-    # processing (ADR-0021; SimpleTexting does not sign payloads, ADR-0153).
+    # processing (ADR-0021 requires it; SimpleTexting does not sign, ADR-0153).
     if not verify_webhook_token(token=token, secret=secret):
         return InboundDecision(status=401, action="reject", stage="verify")
 

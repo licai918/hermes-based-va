@@ -95,7 +95,7 @@ jobs:
         working-directory: hermes-runtime
         run: uv run --frozen python -m hermes_runtime.datastore.migrate
       # Installs the pinned upstream hermes-agent (git rev) and exercises the
-      # embedded AIAgent turn + FastAPI Textline gateway routes.
+      # embedded AIAgent turn + FastAPI gateway webhook routes.
       #
       # NFR-7 gate: -rs prints one summary line per skip. The datastore/knowledge
       # live-Postgres suites (hermes-runtime/tests/test_datastore_*.py,

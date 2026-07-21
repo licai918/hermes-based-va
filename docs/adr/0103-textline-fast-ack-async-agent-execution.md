@@ -6,6 +6,10 @@
 > Memory**, which is conversation-only.
 > Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
 
+> **Provider retired (2026-07-21).** The route is `/webhooks/simpletexting` and outbound
+> SMS uses `toee_sms_reply`; the fast-ack/async split itself stands.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `POST /webhooks/textline` separates webhook acknowledgment from external agent execution so Textline retries do not duplicate customer turns or stall on long model and tool work.
 
 ## Synchronous pre-ack pipeline

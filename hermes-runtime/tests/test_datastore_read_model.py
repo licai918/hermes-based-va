@@ -483,7 +483,7 @@ def test_get_thread_by_phone_resolves_a_thread_the_gateway_store_actually_wrote(
     The pre-existing get_thread_by_phone test hand-seeds a row under the key the
     handler computes, so it asserts the author's guess rather than the write
     path — and stayed green when the provider rename moved the gateway store's
-    prefix from ``textline`` to ``sms`` while the handler kept the old literal,
+    prefix to ``sms`` while the handler kept the old provider-named literal,
     leaving every simulator SMS read-back permanently empty (ADR-0153).
 
     This writes through the real PostgresGatewayStore — the same one the

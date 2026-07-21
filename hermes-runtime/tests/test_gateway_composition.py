@@ -218,13 +218,13 @@ def test_resolve_reply_sender_unrecognized_value_fails_closed(
     monkeypatch.setenv(REPLY_SENDER_ENV, "bogus")
     monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
 
-    # The error must name the misconfiguration, not the (irrelevant, unset) Textline
-    # token -- proof this never silently falls through to the real sender.
+    # The error must name the misconfiguration, not the (irrelevant, unset)
+    # SimpleTexting token -- proof this never silently falls through to the real sender.
     with pytest.raises(ValueError, match="REPLY_SENDER"):
         resolve_reply_sender()
 
 
-def test_build_gateway_app_wires_simulated_reply_sender_without_textline_token(
+def test_build_gateway_app_wires_simulated_reply_sender_without_simpletexting_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     for key in _OPTIONAL_ENV:

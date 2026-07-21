@@ -196,7 +196,7 @@ def test_boot_profile_survives_a_later_lazy_sdk_plugin_discovery(monkeypatch, tm
     ``tools.registry`` is last-write-wins per tool name, so if that lazy trigger
     lands AFTER an overlay boot (``openrouter.py``'s ``extra_drivers=
     _turn_extra_drivers()``), it silently clobbers every handler back onto mock.
-    A live gateway run (3 signed Textline webhooks against a real KNOWLEDGE_BACKEND=
+    A live gateway run (3 inbound SMS webhooks against a real KNOWLEDGE_BACKEND=
     retriever + OpenRouter turn) caught this directly: the overlay boot registered
     a real ``KnowledgeDriver``, and ~2s later the SDK's lazy ``discover_plugins()``
     reset ``toee_knowledge_search`` to mock mid-turn (stack trace confirmed the

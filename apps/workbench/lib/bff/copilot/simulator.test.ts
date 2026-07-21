@@ -89,8 +89,10 @@ describe("handleSimulatorIngress", () => {
     );
     const init = capturedInit as unknown as RequestInit;
     expect(init.method).toBe("POST");
+    // Exact match, not a per-key check: the token is the whole auth story, so no
+    // signature header of any kind may be sent. A re-introduced one fails here.
     const headers = init.headers as Record<string, string>;
-    expect(headers["content-type"]).toBe("application/json");
+    expect(headers).toEqual({ "content-type": "application/json" });
     const sentBody = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(sentBody).toEqual({
       reportId: expect.stringMatching(/^rep-sim-/),
@@ -105,7 +107,6 @@ describe("handleSimulatorIngress", () => {
         category: "SMS",
       },
     });
-    expect(headers["X-Textline-Signature"]).toBeUndefined();
 
     expect(res.status).toBe(200);
     const payload = (await res.json()) as {
@@ -238,7 +239,9 @@ describe("handleSimulatorEmailIngress", () => {
       "http://127.0.0.1:8080/webhooks/simulated-email?token=whsec-dev",
     );
     const init = capturedInit as unknown as RequestInit;
+    // Same invariant as the SMS ingress above: token only, never a signature header.
     const headers = init.headers as Record<string, string>;
+    expect(headers).toEqual({ "content-type": "application/json" });
     const sentBody = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(sentBody).toEqual({
       id: expect.stringMatching(/^sim-/),
@@ -249,7 +252,6 @@ describe("handleSimulatorEmailIngress", () => {
       received_at: expect.any(String),
       type: "email.received",
     });
-    expect(headers["X-Textline-Signature"]).toBeUndefined();
     expect(res.status).toBe(200);
     const payload = (await res.json()) as { accepted: boolean; conversationId: string };
     expect(payload.accepted).toBe(true);

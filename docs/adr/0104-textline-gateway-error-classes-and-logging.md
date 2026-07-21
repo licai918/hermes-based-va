@@ -7,6 +7,10 @@
 > gateway is the Python FastAPI `hermes-runtime/`.
 > Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
 
+> **Provider retired (2026-07-21).** Textline was cancelled for SimpleTexting; the error
+> classes below apply to the `/webhooks/simpletexting` pipeline.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `services/hermes-gateway` classifies Textline webhook failures by pipeline stage and separates provider retry behavior from **Follow-up Case** creation.
 
 ## Pre-acknowledgment stages

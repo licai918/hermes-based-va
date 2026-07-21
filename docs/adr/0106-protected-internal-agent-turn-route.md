@@ -1,5 +1,10 @@
 # Protected internal agent-turn job route for Cloud Tasks
 
+> **Route names retired (2026-07-21).** The public-ingress example below still says
+> `POST /webhooks/textline`; that route is now `/webhooks/simpletexting`. The boundary
+> this ADR draws — `/internal/*` is never public ingress — is unchanged.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `POST /internal/jobs/agent-turn` is an internal gateway route used by async Textline agent execution per ADR-0105. It must not be exposed as a public customer or employee ingress surface.
 
 ## Production authentication
