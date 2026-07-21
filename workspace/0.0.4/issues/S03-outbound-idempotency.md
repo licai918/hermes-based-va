@@ -19,8 +19,12 @@ the same message twice.
 - Migration: outbound-send record keyed by a deterministic idempotency key
   derived from job id + turn/reply identity (never model output).
 - Sender wrap: write-ahead intent → check existing key → skip-and-record if
-  already sent → POST → mark sent. The `REPLY_SENDER=simulated` gate (0.0.3
-  S01) goes through the same wrap so the drill is provable in the simulator.
+  already sent → POST → mark sent. **Every outbound/mirror action goes
+  through the same wrap (gap-review fix T2): the Textline POST, the email
+  reply mirror (0.0.3 S17 pipeline — a replayed email turn must not write a
+  duplicate reply row into `message_turn`), and the `REPLY_SENDER=simulated`
+  gate (0.0.3 S01)** — so the drill is provable in the simulator on both
+  channels.
 - Crash-window coverage: crash between POST and commit → on re-run the intent
   row exists → treated as sent (at-most-once toward the customer; the skip is
   recorded for audit).
@@ -29,7 +33,7 @@ the same message twice.
 
 - **① Technical:** unit + DB tests — same key never POSTs twice; skip is
   recorded; crash-window simulation (kill between intent and mark) re-runs
-  without re-send.
+  without re-send; **email-channel replay test — no duplicate mirror row**.
 - **② E2E (browser):** simulator: force a retry of a sent turn; thread shows
   exactly one reply; screenshot.
 - **③ Product (PAC):** PAC-2 — owner kills the worker mid-turn, restarts,

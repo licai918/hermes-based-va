@@ -23,6 +23,8 @@ is answered from real data.
   already routes per-tool; no new driver axis.
 - Driver-side deadline → governed `found=false` (knowledge-driver pattern,
   NFR-8); API failure fails closed (FR-21), never falls back to mock in prod.
+- Secret-scan gate: reuses S12's repo-wide CI job (no second
+  implementation).
 - Contract parity: map to the mock's result shape; keep the mock for
   tests/dev (`INTEGRATION_DRIVER=mock` path unchanged).
 

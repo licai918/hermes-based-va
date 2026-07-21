@@ -25,12 +25,17 @@ T4 integ:  S12 Composio pin+cutover ─▶ S13 get_ar_summary real
            S14 EasyRoutes direct driver   [parallel to S12]
 T5 ops:    S12 + S14 + S09 ─▶ S15 integrations status page ─▶ S17 reconnect (+integrations ADR)
            S04 + S15 ─▶ S16 scheduled health probes
-T6 eval:   S02 ─▶ S18 live harness ─▶ S19 email suite in CI
+T6 eval:   S10 ─▶ S25 CI harness topology (gap-review add)
+           S02 + S25 ─▶ S18 live harness ─▶ S19 email suite in CI (also needs S25)
            S18 ─▶ S20 judge advisory wiring (+live-eval ADR)
 T7 meas:   S21 event counters   [independent]
            S04 + S20 ─▶ S22 honored-rate job      S20 ─▶ S23 quality-gates live
-Final:     S24 product UAT + PAC sign-off (after ALL)
+Final:     S24 product UAT + PAC sign-off (after ALL incl. S25)
 ```
+
+Recurring-schedule note (gap-review fix T1): no cron exists anywhere — S01
+delivers the periodic-enqueue mechanism (`(type, window)` dedupe ticks), S04
+runs the tick loop, and S16/S22 plus the retention cadence consume it.
 
 Execution order (grilled decision 19): **S01–S11 (substrate) → T4 → T5 →
 T6 → T7 → S24.** Within the substrate: S01→S05 (queue) ‖ S06/S07/S08 first,
@@ -63,7 +68,8 @@ then S09 → S10/S11. S12/S14/S21 are parallel-safe anytime after their deps.
 | [S21](S21-event-counters.md) | Instrument `selfServiceUsage` + `l6ConfirmedEntries` | S | FR-30 |
 | [S22](S22-honored-rate-job.md) | Honored-rate from a scheduled judge job | M | FR-31 |
 | [S23](S23-quality-gates-live.md) | QualityGatesPanel reads live report artifacts | S | FR-32 |
-| [S24](S24-product-uat-signoff.md) | Product UAT: owner runs PAC-1…9; sign-off | M | §7 product gate |
+| [S24](S24-product-uat-signoff.md) | Product UAT: owner runs PAC-1…9; sign-off (runs after S25 too) | M | §7 product gate |
+| [S25](S25-ci-harness-topology.md) | CI harness topology: full stack in CI (gap-review add; out-of-order number) | M | NFR-9 |
 
 ## Traceability — coverage check (no gaps)
 
@@ -74,9 +80,9 @@ FR-18→S12 · FR-19→S13 · FR-20→S14 · FR-21→S12+S14 · FR-22→S17 · F
 FR-24→S16 · FR-25→S17 · FR-26→S18 · FR-27→S19 · FR-28→S20 · FR-29→S20 ·
 FR-30→S21 · FR-31→S22 · FR-32→S23.
 
-**NFR → enforcement:** NFR-1/2→S02 · NFR-3→S02+S03 · NFR-4→S09 · NFR-5→S10 ·
-NFR-6→S12+S14 (secret-scan gate) · NFR-7→S20 · NFR-8→S12+S14 (deadline
-discipline).
+**NFR → enforcement:** NFR-1/2→S02 (one-time snapshot, labeled) ·
+NFR-3→S02+S03 · NFR-4→S09 · NFR-5→S10 · NFR-6→S12 (repo-wide gate; S14
+references) · NFR-7→S20 · NFR-8→S12+S14 (deadline discipline) · NFR-9→S25.
 
 **PAC → slice(s):** PAC-1→S08+S09+S10 · PAC-2→S02+S03 · PAC-3→S05 ·
 PAC-4→S04 · PAC-5→S06+S10+S11 · PAC-6→S12+S13+S14 · PAC-7→S15+S16+S17 ·
@@ -90,6 +96,12 @@ US19→S20 · US20→S19 · US21→S21+S22 · US22→S23. **All 22 covered.**
 **ADRs:** queue ADR rides S01 · API-only ADR rides S11 · integrations ADR
 rides S17 · live-eval ADR rides S20.
 
-**Coverage check result:** FR-1…FR-32 ✓ · NFR-1…NFR-8 ✓ · PAC-1…PAC-9 ✓ ·
+**Coverage check result:** FR-1…FR-32 ✓ · NFR-1…NFR-9 ✓ · PAC-1…PAC-9 ✓ ·
 US 1–22 ✓ · 4 ADRs assigned ✓. **No requirement is unslotted; no slice
-delivers nothing.**
+delivers nothing.** Gap-review (2026-07-21) fixes folded in: T1 scheduler
+(S01/S04), T2 email-mirror idempotency (S03), T3 tool registration
+(S15/S17), T4 cutover checklist (S12), T5 replay-safety table (S05), P1
+Textline/OpenRouter probes (S15/S16, owner-approved), P2 test-customer data
+(S12), P3 reconnect wording (S17), P4 role rationale (S15), Q1 CI topology
+(S25), Q2 latency-snapshot labeling (S02), Q3 secret-scan single owner
+(S12).

@@ -3,7 +3,8 @@
 - **Milestone:** 0.0.4 — land all seven
 - **Track:** T6 Eval completion
 - **Size:** M
-- **Depends on:** S02 (turn path on the durable queue)
+- **Depends on:** S02 (turn path on the durable queue), S25 (CI topology —
+  for the CI leg; local development of the harness needs only S02 + S10)
 - **Delivers:** FR-26
 - **Surface:** `hermes/eval_runner/harness.py` + runner CLI; no UI
 
@@ -27,7 +28,8 @@ pipeline, not just replay plumbing.
 ## Acceptance — three-layer gate
 
 - **① Technical:** scripted-mode harness run over `text_first_launch`
-  passes deterministically twice in a row; live-mode smoke on 2 scenarios.
+  passes deterministically twice in a row **in CI on the S25 topology**;
+  live-mode smoke on 2 scenarios locally.
 - **② E2E (browser):** n/a (CLI) — CI artifact as evidence.
 - **③ Product (PAC):** feeds PAC-8.
 

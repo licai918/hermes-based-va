@@ -21,7 +21,10 @@ US3: a message that arrives while the service crashes runs when it returns.
 - Turn worker: a new entrypoint claiming `type=turn` jobs only, executing the
   existing bound-turn job body unchanged. docker-compose service added.
 - Webhook ack budget: enqueue is one INSERT (NFR-1 — measure ack p95
-  before/after in the simulator, no regression).
+  before/after in the simulator, no regression). **Honesty note (gap-review
+  Q2): NFR-1/NFR-2 numbers are a one-time snapshot recorded in the PR, not a
+  standing CI gate — label them as such so nobody mistakes them for a
+  regression fence.**
 - Claim latency: poll interval tuned so queue claim adds < 500 ms p95 over
   the thread handoff (NFR-2); if polling can't meet it, LISTEN/NOTIFY is the
   named upgrade (append to S01's ADR).

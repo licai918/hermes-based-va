@@ -10,13 +10,18 @@
 ## Goal
 
 FR-24: a scheduled `integration_probe` job (background worker) runs a cheap
-read per integration; failure surfaces as a page badge + structured log
-alert — closing ADR-0136's "lazy discovery only" gap.
+read per integration — **Composio toolkits, EasyRoutes, Textline token,
+OpenRouter key** (owner decision, gap-review P1); failure surfaces as a page
+badge + structured log alert — closing ADR-0136's "lazy discovery only" gap
+for every credential that can break service.
 
 ## Approach
 
-- Typed job on the T2 queue, scheduled (same mechanism as the retention
-  sweep's trigger); one cheap authenticated read per integration.
+- Typed job on the **S01 recurring-schedule mechanism** (`(type, window)`
+  dedupe-key ticks — no external cron exists); one cheap authenticated read
+  per integration: Composio connected-account check, EasyRoutes status
+  read, Textline token validation call, OpenRouter key check (models
+  endpoint — no completion cost).
 - Probe result rows retained under the existing retention classes; page
   reads the latest per integration (S15 seam).
 - Failure → badge on `/admin/integrations` + structured WARN/ERROR log line

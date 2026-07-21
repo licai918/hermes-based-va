@@ -304,6 +304,10 @@ numbers; `CorpusPanel.tsx` re-ingest is display-only (made real by S04).
   read-only delivery status. Defaults (not grilled): EasyRoutes driver as a
   per-tool overlay beside the Composio driver; Composio outage = fail-closed
   per tool (never mock-in-prod); "prod" = the owner's live deployment env.
+- 2026-07-21 — slice gap review (technical/product/test axes) found 12 gaps;
+  owner decision: **Textline + OpenRouter health probes INCLUDED** (P1). All
+  fixes folded into PRD (FR-8/12/23/24, NFR-9, PAC-7) and slices; S25 (CI
+  harness topology) added. Ledger in issues/README.md §coverage.
 - 2026-07-21 — grilling closed; scope graduated to [PRD.md](PRD.md).
   PRD-level defaults (not grilled, overridable at review): retry = 3 attempts
   exponential backoff; replay permission = supervisor/admin, audited;

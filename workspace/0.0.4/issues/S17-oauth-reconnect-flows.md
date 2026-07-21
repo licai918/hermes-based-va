@@ -20,9 +20,14 @@ integrations ADR (ADR-0133 follow-up) ships here.
   link (Composio SDK), browser redirects to the provider, callback route
   lands back on `/admin/integrations` and re-probes; acting admin recorded
   in the audit log.
-- EasyRoutes (static m2m token — no OAuth): guided flow showing where the
-  env var lives + a "re-probe now" action; no token value ever displayed or
-  stored outside env.
+- EasyRoutes / Textline / OpenRouter (static tokens — no OAuth): the
+  "reconnect" here is **instructions + re-probe, not self-service token
+  replacement** (gap-review fix P3 — the workbench cannot edit deployment
+  env vars): a guided panel names the env var and where it lives, the
+  operator rotates it in the deployment env, then hits "re-probe now". No
+  token value ever displayed or stored outside env.
+- Tool registration for the reconnect/probe actions rides the S15 checklist
+  (catalog + schemas + allowlist + persona conventions).
 - Callback security: state parameter bound to the admin session; callback
   route does nothing but verify + redirect (no token handling in workbench —
   Composio holds the credentials).

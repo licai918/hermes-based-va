@@ -18,7 +18,9 @@ delay a customer turn.
 ## Approach
 
 - Background worker entrypoint claiming `type in (l6_review, retention,
-  ingest)`; docker-compose service.
+  ingest)`; docker-compose service. **Runs the S01 schedule tick loop**
+  (recurring enqueue with `(type, window)` dedupe) — retention moves from
+  manual-only (`trigger_retention_sweep` button) to button + cadence.
 - Trigger migration only — behavior and audit semantics unchanged:
   - L6 post-copilot-turn fork → enqueue `l6_review`.
   - Retention sweep schedule/admin action → enqueue `retention`.

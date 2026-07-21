@@ -23,6 +23,13 @@ Workbench Audit Log. US5/US6.
 - Replay attribution: acting account from session context (ADR-0148
   discipline — never from request params); audit row written.
 - No bulk replay (PRD default).
+- **Per-job-type replay-safety table (gap-review fix T5), verified by test:**
+  `turn` — safe (S03 outbound idempotency suppresses re-sends);
+  `ingest` — safe (truncate-and-reload idempotent);
+  `retention` — safe (sweep is idempotent over already-aged rows);
+  `l6_review` — verify proposal dedupe before enabling replay; if a re-run
+  can duplicate proposals, replay for this type is blocked with a clear
+  message until dedupe exists.
 
 ## Acceptance — three-layer gate
 

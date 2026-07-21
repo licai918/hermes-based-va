@@ -162,7 +162,13 @@ stance until a future promotion ADR).
 - **FR-8** Queue operations via `FOR UPDATE SKIP LOCKED` claim; retry with
   exponential backoff (default max 3 attempts — PRD default, tunable per job
   type); exhausted jobs move to `dead`, never silently dropped. A crashed
-  worker's `running` jobs are reclaimed after a lease timeout.
+  worker's `running` jobs are reclaimed after a lease timeout. **Recurring
+  schedules are part of the queue core** (gap-review fix T1): a ticker in the
+  background worker enqueues periodic job types on their interval using a
+  deterministic `(type, window)` dedupe key — a duplicate tick is a no-op.
+  No external cron exists or is assumed; the health probes (FR-24), the
+  honored-rate run (FR-31), and the retention cadence all ride this
+  mechanism.
 - **FR-9** Two worker processes (docker-compose services): a **turn worker**
   (inbound turn jobs only) and a **background worker** (L6 learning fork,
   retention sweep, knowledge re-ingest). A slow background job can never
@@ -178,11 +184,13 @@ stance until a future promotion ADR).
   becomes a real enqueue + status readback.
 - **FR-12** **Outbound idempotency (grilled decision 8):** an outbound-send
   record keyed by a deterministic idempotency key (derived from job id +
-  turn/reply identity) is written around every Textline POST; the sender
-  checks it before POSTing. A replayed or retried job whose send already
-  happened skips the POST and records the skip. This closes the
-  crash-between-send-and-commit double-text window for retries and replays
-  alike.
+  turn/reply identity) is written around **every outbound/mirror action** —
+  the Textline POST, the email reply mirror, and the simulated sender all go
+  through the same wrap (gap-review fix T2). A replayed or retried job whose
+  send already happened skips the action and records the skip: no duplicate
+  text to a customer, no duplicate reply row in `message_turn`. This closes
+  the crash-between-send-and-commit double-send window for retries and
+  replays alike.
 - **FR-13** Dead-letter workbench view (supervisor/admin roles, ADR-0093
   route-gating): list dead jobs with type, payload summary, attempts,
   last_error, timestamps; a **Replay** action re-enqueues (attempts reset,
@@ -231,13 +239,21 @@ stance until a future promotion ADR).
   recording cutover, pins, EasyRoutes direct driver, fail-closed semantics.
 
 ### T5 — Integrations ops surface (grilled decision 15)
-- **FR-23** `/admin/integrations` page (admin role, ADR-0093 gating): per
-  integration — Composio toolkits (Shopify/QBO/Square) and EasyRoutes —
-  connection status, pinned version, last successful call, last probe result.
-  Served by a governed admin read (workbench stays API-only per T1).
-- **FR-24** Scheduled health probes as a typed background job on the T2 queue
-  (cheap read per integration); failure surfaces as a page badge + structured
-  log alert; probe history retained per the retention classes.
+- **FR-23** `/admin/integrations` page (admin role, ADR-0093 gating — the
+  page is deliberately admin-only while the dead-letter view is
+  supervisor+admin: integrations touch credentials, dead letters touch
+  operations): per integration — Composio toolkits (Shopify/QBO/Square),
+  EasyRoutes, **Textline, and OpenRouter** (owner decision, gap-review P1) —
+  connection status, pinned version where applicable, last successful call,
+  last probe result. Served by a governed admin read (workbench stays
+  API-only per T1). New governed tool(s) registered end-to-end: tool
+  catalog + plugin schemas + `supervisor_admin` allowlist + persona
+  param conventions.
+- **FR-24** Scheduled health probes as a typed background job on the T2
+  queue's recurring-schedule mechanism (FR-8): one cheap authenticated read
+  per integration — Composio toolkits, EasyRoutes, **Textline token check,
+  OpenRouter key check**; failure surfaces as a page badge + structured log
+  alert; probe history retained per the retention classes.
 - **FR-25** In-app reconnect: for Composio-managed connections, an OAuth
   redirect flow (connected-account re-auth link generation → provider → callback
   landing back on the page), attributed to the acting admin and audited; for
@@ -297,6 +313,11 @@ stance until a future promotion ADR).
 - **NFR-8** T4 tools honor the existing per-tool deadline discipline: a hung
   external backend degrades to the governed unavailable result within the
   driver deadline, never blocks a turn.
+- **NFR-9** CI provisions the full harness topology (gap-review fix Q1):
+  the scripted-mode live-eval suites run in CI against gateway + both
+  dispatch servers + turn worker + Postgres, reusing the FR-5 orchestration
+  — an explicitly owned CI-infra deliverable, not a side effect of an eval
+  slice.
 
 ## 6. Out of scope
 - Cloud Tasks or any cloud queue service (superseded by the queue ADR).
@@ -335,10 +356,11 @@ Technical CI + browser E2E + owner PAC in the simulator:
   **delivery question** — answers come from live Shopify/QBO/EasyRoutes data
   (cross-checked against the source systems); with one backend deliberately
   broken, the agent fails closed instead of inventing.
-- **PAC-7 (T5):** the integrations page shows all four connections healthy;
-  the owner breaks one (revoke/expire), the scheduled probe badges it within
-  one probe cycle, and the in-app reconnect flow restores it (audit row shows
-  the acting admin).
+- **PAC-7 (T5):** the integrations page shows all connections healthy
+  (Composio Shopify/QBO/Square, EasyRoutes, Textline, OpenRouter); the owner
+  breaks one (revoke/expire), the scheduled probe badges it within one probe
+  cycle, and the in-app reconnect flow restores it (audit row shows the
+  acting admin).
 - **PAC-8 (T6):** a PR shows the required scripted replay gate green
   (including the email suite) plus the non-blocking real-model live-eval +
   judge advisory report attached; the owner reads one report end-to-end.

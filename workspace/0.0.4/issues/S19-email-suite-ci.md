@@ -3,7 +3,7 @@
 - **Milestone:** 0.0.4 — land all seven
 - **Track:** T6 Eval completion
 - **Size:** S
-- **Depends on:** S18
+- **Depends on:** S18, S25 (CI topology)
 - **Delivers:** FR-27
 - **Surface:** `eval/transcripts/email_go_live/` + CI matrix; no product code
 

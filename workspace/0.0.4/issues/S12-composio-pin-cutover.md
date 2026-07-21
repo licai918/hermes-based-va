@@ -22,9 +22,19 @@ pinned against live toolkit versions, prod credentials env-injected,
 - Smoke suite per tool: happy path + fail-closed path (backend down →
   governed unavailable result within the driver deadline, NFR-8; never mock
   in prod).
+- **Cutover applies to every process that executes tools (gap-review fix
+  T4): the gateway AND both dispatch servers (the copilot draft turn calls
+  external reads too) — deployment checklist in the PR.**
 - Delete the `rest` driver shell (`KNOWN_DRIVERS` entry + the
   `NotImplementedError` arm in `plugin/__init__.py`) — FR-21.
-- Credentials env-only; CI secret-scan grep gate (NFR-6).
+- Credentials env-only; **this slice owns the repo-wide CI secret-scan gate
+  (NFR-6, gap-review fix Q3) — one CI job; S14 references it, doesn't
+  re-implement.**
+- **PAC-6 test-data precondition (gap-review fix P2): create a dedicated
+  test customer in the live Shopify store (plus a test order/invoice and an
+  EasyRoutes delivery once S14 lands) and wire its phone number into the
+  simulator's verified-customer preset — owner PAC runs against test-entity
+  data, not a real customer's.**
 
 ## Acceptance — three-layer gate
 

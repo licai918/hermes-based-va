@@ -3,7 +3,7 @@
 - **Milestone:** 0.0.4 — land all seven
 - **Track:** Final gate
 - **Size:** M
-- **Depends on:** ALL (S01–S23)
+- **Depends on:** ALL (S01–S23, S25)
 - **Delivers:** PRD §7 product gate
 - **Surface:** simulator + workbench + live deployment; sign-off doc
 

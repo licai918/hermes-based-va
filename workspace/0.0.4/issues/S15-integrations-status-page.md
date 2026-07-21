@@ -10,18 +10,26 @@
 ## Goal
 
 FR-23: an admin-only page showing, per integration (Composio
-Shopify/QBO/Square toolkits + EasyRoutes), connection status, pinned
-version, last successful call, and last probe result — health visible
+Shopify/QBO/Square toolkits, EasyRoutes, **Textline, OpenRouter** — owner
+decision, gap-review P1), connection status, pinned version where
+applicable, last successful call, and last probe result — health visible
 before a customer feels it.
 
 ## Approach
 
 - Governed admin read (dispatch path, supervisor_admin profile) aggregating:
   Composio connected-account status via the SDK, EasyRoutes token check,
-  last-successful-call timestamps (recorded by the drivers), last probe
-  row (S16 fills this; renders "never probed" until then).
+  **Textline token check and OpenRouter key check**, last-successful-call
+  timestamps (recorded by the drivers/senders), last probe row (S16 fills
+  this; renders "never probed" until then).
+- **New governed tool registered end-to-end (gap-review fix T3): tool
+  catalog + plugin schemas + `supervisor_admin` allowlist + persona param
+  conventions — the 0.0.3 S31 lesson (undocumented tool conventions cause
+  rework) applies.**
 - Workbench page under the admin route group (ADR-0093 gating), API-only
-  (T1 pattern).
+  (T1 pattern). **Role note (gap-review P4, deliberate): integrations are
+  admin-only (credential surface); the dead-letter view is supervisor+admin
+  (operations surface) — recorded here so the asymmetry reads as intent.**
 
 ## Acceptance — three-layer gate
 

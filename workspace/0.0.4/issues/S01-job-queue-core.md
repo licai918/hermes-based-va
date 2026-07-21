@@ -23,6 +23,12 @@ death. FR-14: the ADR superseding ADR-0105's Cloud Tasks target.
   (`gateway_store.py`): enqueue (INSERT, dedupe-key no-op on conflict), claim
   via `FOR UPDATE SKIP LOCKED`, complete/fail, exponential backoff on retry,
   `dead` on exhaustion, lease reclaim of stale `running` jobs.
+- **Recurring schedules (gap-review fix T1 — no cron exists anywhere in the
+  repo):** a schedule table/config (job type + interval) and a tick routine
+  that enqueues due periodic jobs with a deterministic `(type, window)`
+  dedupe key — duplicate ticks no-op on the unique index. The tick loop runs
+  inside the background worker (S04); this slice delivers the mechanism +
+  tests. Consumers: S16 probes, S22 honored-rate, S04 retention cadence.
 - No consumer cutover here — S02/S04 wire the workers. `LocalDispatchingJobQueue`
   still runs production until S02.
 - **Queue ADR** ships in this slice: Postgres queue chosen; ADR-0105 Cloud
