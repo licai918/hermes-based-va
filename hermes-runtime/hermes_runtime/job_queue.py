@@ -49,21 +49,45 @@ _LEASE_EXPIRED_ERROR = "lease expired"
 # Claimable statuses: never ran, or failed and waiting out its backoff.
 _CLAIMABLE_SQL = "('queued', 'failed')"
 
+# Lease fencing for complete()/fail(): the row must still be running AND still
+# carry the exact ``locked_at`` the caller was handed at claim time. Without it a
+# slow-but-alive worker whose lease was reclaimed can finish a job another worker
+# is mid-flight on, or resurrect a `dead` row to `succeeded` (FR-8).
+#
+# ``locked_at`` *is* the lease credential -- no extra column needed. Every claim
+# writes a fresh ``now()``, and a row can only be re-claimed after a reclaim has
+# pushed it through the backoff (>= 2s), so two live leases on one row can never
+# share a timestamp.
+_FENCE_SQL = "id = %s AND status = 'running' AND locked_at = %s"
+
 # The default job type, so ``enqueue(payload)`` stays call-compatible with the
 # existing one-argument ``JobQueue`` Protocol. A string, not an import: the
 # queue still knows nothing about turns.
 AGENT_TURN_JOB_TYPE = "agent_turn"
 
 
+class LeaseLost(RuntimeError):
+    """Raised when :meth:`PostgresJobQueue.complete`/:meth:`~PostgresJobQueue.fail`
+    is called on a job the caller no longer holds."""
+
+
 @dataclass(frozen=True)
 class Job:
-    """A claimed unit of work. ``attempts`` includes the current attempt."""
+    """A claimed unit of work. ``attempts`` includes the current attempt.
+
+    ``lease`` is the fencing credential for this claim (the row's ``locked_at``).
+    Treat it as opaque and pass the whole ``Job`` back to
+    :meth:`PostgresJobQueue.complete` / :meth:`PostgresJobQueue.fail`; that is
+    what stops a worker whose lease already expired from finishing a job another
+    worker has since claimed.
+    """
 
     id: str
     type: str
     payload: dict[str, Any]
     attempts: int
     max_attempts: int
+    lease: datetime
 
 
 @dataclass(frozen=True)
@@ -148,7 +172,14 @@ class PostgresJobQueue:
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ) -> str:
         """Insert one job; return its id. A duplicate ``dedupe_key`` is a no-op
-        and returns the id of the job already queued (FR-7)."""
+        and returns the id of the job already queued (FR-7).
+
+        ponytail: ``job_type`` defaults to ``agent_turn`` only so ``enqueue(payload)``
+        stays call-compatible with the one-argument ``JobQueue`` Protocol, which is
+        what makes S02's cutover a wiring change. Ceiling: a call site that forgets
+        ``job_type=`` silently creates a *turn* job and the turn worker will execute
+        it. Drop the default once S02 has landed and every call site names its type.
+        """
         return self._insert(
             payload,
             job_type=job_type,
@@ -207,11 +238,18 @@ class PostgresJobQueue:
         just ``locked_at``; its timeout is the reclaimer's policy
         (:meth:`reclaim_expired_leases`), not a per-row column.
 
+        ``types=None`` means any type; ``types=()`` means no type (claims
+        nothing). The returned :class:`Job` carries the lease credential, so hand
+        the whole object back to :meth:`complete`/:meth:`fail` -- do not stash
+        the id and reconstruct one.
+
         ponytail: one row per call, polled by the worker loop -- no
         LISTEN/NOTIFY. See ADR-0153: the poll interval is the latency knob and
         NOTIFY is the named upgrade path if S02's NFR-2 measurement demands it.
         """
-        type_filter = list(types) if types else None
+        # `if types else None` would turn an empty allowlist into "any type" --
+        # the exact inverse of FR-9 isolation. Only `None` means unfiltered.
+        type_filter = None if types is None else list(types)
         with self._unit_of_work() as cur:
             cur.execute(
                 f"""
@@ -230,39 +268,65 @@ class PostgresJobQueue:
                     LIMIT 1
                     FOR UPDATE SKIP LOCKED
                 )
-                RETURNING id, type, payload, attempts, max_attempts
+                RETURNING id, type, payload, attempts, max_attempts, locked_at
                 """,
                 (worker, type_filter, type_filter),
             )
             row = cur.fetchone()
         if row is None:
             return None
-        return Job(id=row[0], type=row[1], payload=row[2], attempts=row[3], max_attempts=row[4])
+        return Job(
+            id=row[0],
+            type=row[1],
+            payload=row[2],
+            attempts=row[3],
+            max_attempts=row[4],
+            lease=row[5],
+        )
 
-    def complete(self, job_id: str) -> None:
-        """Mark a claimed job succeeded and release its lease."""
+    def complete(self, job: Job) -> None:
+        """Mark a claimed job succeeded and release its lease.
+
+        Fenced (see :data:`_FENCE_SQL`): raises :class:`LeaseLost` if the job is
+        no longer ``running`` under this exact lease -- the caller's work was
+        already reclaimed and someone else owns the row.
+        """
         with self._unit_of_work() as cur:
             cur.execute(
-                """
+                f"""
                 UPDATE job SET
                     status = 'succeeded',
                     locked_at = NULL,
                     locked_by = NULL,
                     last_error = NULL,
                     updated_at = now()
-                WHERE id = %s
+                WHERE {_FENCE_SQL}
+                RETURNING id
                 """,
-                (job_id,),
+                (job.id, job.lease),
             )
+            held = cur.fetchone() is not None
+        if not held:
+            raise LeaseLost(f"complete({job.id}): lease {job.lease} is no longer held")
 
-    def fail(self, job_id: str, error: str) -> None:
+    def fail(self, job: Job, error: str) -> None:
         """Record a failed attempt: retry after backoff, or dead-letter.
 
         A job whose attempts are exhausted moves to ``dead`` and stays there --
         never silently dropped, never silently retried (FR-8). S05 surfaces dead
         rows for governed replay.
+
+        Fenced like :meth:`complete`, and raises :class:`LeaseLost` for the same
+        reason. A worker loop should log it and move on -- the job is not yours
+        any more, and whoever holds it now is responsible for its outcome. It is
+        never a reason to retry the work: doing so is the double-execution the
+        fence exists to stop.
         """
-        self._release(job_id_clause="id = %s", params=(error, job_id))
+        released = self._release(
+            job_id_clause=_FENCE_SQL, params=(error, job.id, job.lease)
+        )
+        if not released:
+            raise LeaseLost(f"fail({job.id}): lease {job.lease} is no longer held")
 
     def reclaim_expired_leases(
         self, *, lease_seconds: int = DEFAULT_LEASE_SECONDS

@@ -18,7 +18,7 @@ import pytest
 from toee_hermes.gateway.agent_turn import AgentJobPayload
 
 from hermes_runtime.datastore.config import database_url
-from hermes_runtime.job_queue import PostgresJobQueue, Schedule
+from hermes_runtime.job_queue import LeaseLost, PostgresJobQueue, Schedule
 
 try:  # psycopg lives in the hermes-runtime venv (ADR-0142); guard for safety.
     import psycopg
@@ -164,6 +164,16 @@ def test_claim_filters_by_job_type(queue):
     assert queue.claim(worker="bg-worker", types=("retention_sweep",)) is not None
 
 
+def test_an_empty_type_filter_claims_nothing(queue):
+    """``types=()`` means "no type is allowed", not "any type" -- a falsy-check
+    here would silently widen FR-9 isolation and let a background worker steal
+    customer turn jobs."""
+    queue.enqueue({"n": 1}, job_type="retention_sweep")
+
+    assert queue.claim(worker="bg-worker", types=()) is None
+    assert queue.claim(worker="bg-worker", types=None) is not None
+
+
 def test_concurrent_workers_never_double_claim(queue, migrated):
     """FOR UPDATE SKIP LOCKED: every job claimed exactly once under contention."""
     if psycopg is None:  # pragma: no cover - the fixture already skipped
@@ -222,7 +232,7 @@ def test_complete_marks_the_job_succeeded_and_releases_the_lease(queue, migrated
     queue.enqueue({"event_id": "evt_1"})
     job = queue.claim(worker="worker-a")
 
-    queue.complete(job.id)
+    queue.complete(job)
 
     status, locked_by, locked_at = _row(conn, job.id, "status", "locked_by", "locked_at")
     assert status == "succeeded"
@@ -236,7 +246,7 @@ def test_fail_retries_with_exponential_backoff(queue, migrated):
     queue.enqueue({"event_id": "evt_1"})
 
     job = queue.claim(worker="worker-a")
-    queue.fail(job.id, "boom")
+    queue.fail(job, "boom")
     status, last_error = _row(conn, job.id, "status", "last_error")
     assert status == "failed"
     assert last_error == "boom"
@@ -259,7 +269,7 @@ def test_fail_retries_with_exponential_backoff(queue, migrated):
     assert retried is not None and retried.attempts == 2
 
     # attempt 2 -> 4s: strictly longer than attempt 1's backoff.
-    queue.fail(retried.id, "boom again")
+    queue.fail(retried, "boom again")
     with conn.cursor() as cur:
         cur.execute(
             "SELECT run_at > now() + interval '3 seconds' FROM job WHERE id = %s",
@@ -276,7 +286,7 @@ def test_fail_dead_letters_when_attempts_are_exhausted(queue, migrated):
     for attempt in (1, 2):
         job = queue.claim(worker="worker-a")
         assert job is not None and job.attempts == attempt
-        queue.fail(job.id, f"boom {attempt}")
+        queue.fail(job, f"boom {attempt}")
         with conn.cursor() as cur:
             cur.execute("UPDATE job SET run_at = now() WHERE id = %s", (job_id,))
         conn.commit()
@@ -287,6 +297,58 @@ def test_fail_dead_letters_when_attempts_are_exhausted(queue, migrated):
     assert last_error == "boom 2"
     # Dead is terminal: never silently retried.
     assert queue.claim(worker="worker-a") is None
+
+
+# --------------------------------------------------------------------------
+# lease fencing
+# --------------------------------------------------------------------------
+
+
+def test_a_stale_lease_holder_cannot_finish_a_job_another_worker_now_owns(
+    queue, migrated
+):
+    """The whole point of a lease: worker A is slow, not dead. Its lease expires,
+    the sweep releases the job, worker B claims it and is mid-flight. A -- still
+    alive -- must not be able to flip B's row to succeeded, nor knock it back to
+    failed so a third worker can claim it too."""
+    conn, _ = migrated
+    queue.enqueue({"event_id": "evt_1"})
+    stale = queue.claim(worker="worker-a")
+
+    assert queue.reclaim_expired_leases(lease_seconds=0) == [stale.id]
+    with conn.cursor() as cur:  # serve the reclaim backoff
+        cur.execute("UPDATE job SET run_at = now() WHERE id = %s", (stale.id,))
+    conn.commit()
+    fresh = queue.claim(worker="worker-b")
+    assert fresh is not None and fresh.id == stale.id and fresh.lease != stale.lease
+
+    with pytest.raises(LeaseLost):
+        queue.complete(stale)
+    with pytest.raises(LeaseLost):
+        queue.fail(stale, "boom")
+
+    status, locked_by, attempts = _row(
+        conn, stale.id, "status", "locked_by", "attempts"
+    )
+    assert (status, locked_by, attempts) == ("running", "worker-b", 2)
+
+    # B still holds a valid lease and can finish its own job.
+    queue.complete(fresh)
+    assert _row(conn, stale.id, "status")[0] == "succeeded"
+
+
+def test_complete_cannot_resurrect_a_dead_job(queue, migrated):
+    """FR-8: dead is terminal. A late ``complete()`` from the worker that
+    dead-lettered it must not erase the S05 dead-letter row."""
+    conn, _ = migrated
+    job_id = queue.enqueue({"event_id": "evt_1"}, max_attempts=1)
+    job = queue.claim(worker="worker-a")
+    queue.fail(job, "boom")
+    assert _row(conn, job_id, "status")[0] == "dead"
+
+    with pytest.raises(LeaseLost):
+        queue.complete(job)
+    assert _row(conn, job_id, "status")[0] == "dead"
 
 
 # --------------------------------------------------------------------------
