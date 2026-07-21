@@ -19,6 +19,7 @@ describe("navItemsForRole (ADR-0084)", () => {
       "Knowledge",
       "Eval",
       "Accounts",
+      "Memory Audit",
     ]);
   });
 

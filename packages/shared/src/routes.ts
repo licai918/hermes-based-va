@@ -9,6 +9,7 @@ export const ROUTES = {
   adminKnowledge: "/admin/knowledge",
   adminEval: "/admin/eval",
   adminAccounts: "/admin/accounts",
+  adminMemoryAudit: "/admin/memory-audit",
 } as const;
 
 export function profileForApiPrefix(

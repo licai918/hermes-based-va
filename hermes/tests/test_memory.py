@@ -205,8 +205,11 @@ def test_get_preferences_returns_independent_copy() -> None:
 
 
 def test_clear_acknowledges_removal() -> None:
+    # 0.0.3 S20 (FR-20): a clear is a governed employee/supervisor action, same
+    # attributed-actor requirement as dismiss_proposal -- attributed internal
+    # context, mirroring the Postgres twin's success path.
     driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
-    ctx = _verified_ctx()
+    ctx = _internal_ctx(user_id="acct_rep_1")
 
     cleared = _call(driver, "clear_preference", {"key": "channel_preference"}, ctx)
     assert cleared.ok is True
@@ -219,7 +222,10 @@ def test_clear_acknowledges_removal() -> None:
 
 def test_clear_missing_slot_is_idempotent() -> None:
     cleared = _call(
-        _driver(), "clear_preference", {"key": "channel_preference"}, _verified_ctx()
+        _driver(),
+        "clear_preference",
+        {"key": "channel_preference"},
+        _internal_ctx(user_id="acct_rep_1"),
     )
 
     assert cleared.ok is True
@@ -227,12 +233,44 @@ def test_clear_missing_slot_is_idempotent() -> None:
 
 
 def test_clear_rejects_open_ended_key() -> None:
+    # Slot validation runs before the actor check, so an open-ended key is
+    # still a governed rejection even with no attributed actor.
     result = _call(
         _driver(), "clear_preference", {"key": "favorite_color"}, _verified_ctx()
     )
 
     assert result.ok is False
     assert result.error_class == "unexpected_error"
+
+
+def test_clear_on_external_profile_is_policy_blocked() -> None:
+    # FR-20: on the EXTERNAL customer profile a clear must be policy_blocked
+    # (employee/supervisor-only write), same as every other write on
+    # toee_customer_memory -- a clear is always a rep/supervisor at the
+    # keyboard, never the customer.
+    driver = _driver(MemoryMockData(preferences={"channel_preference": "sms"}))
+    result = _call(driver, "clear_preference", {"key": "channel_preference"}, _verified_ctx())
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+    # Fail-closed, not fail-open: the slot survives an unattributed clear.
+    read = _call(driver, "get_preferences", {}, _internal_ctx(user_id="acct_rep_1"))
+    assert read.data["preferences"]["channel_preference"] == "sms"
+
+
+def test_clear_on_internal_profile_without_user_id_is_policy_blocked() -> None:
+    # The unbound AI draft-turn path never sets context.user_id -- no rep
+    # attributed the clear, so it is policy_blocked, not a silent success.
+    result = _call(
+        _driver(MemoryMockData(preferences={"channel_preference": "sms"})),
+        "clear_preference",
+        {"key": "channel_preference"},
+        _internal_ctx(),  # no user_id: unbound draft turn
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
 
 
 # --- dismiss_proposal (0.0.3 S15, FR-16/FR-17) ------------------------------
@@ -322,7 +360,10 @@ def test_round_trip_upsert_get_clear_get() -> None:
     after_upsert = _call(driver, "get_preferences", {}, ctx)
     assert after_upsert.data["preferences"]["delivery_habit_note"] == "leave at side door"
 
-    cleared = _call(driver, "clear_preference", {"key": "delivery_habit_note"}, ctx)
+    # Clear is an attributed employee/supervisor action (FR-20): same identity
+    # binding, an internal profile context with an acting rep.
+    clear_ctx = _internal_ctx(user_id="acct_rep_1")
+    cleared = _call(driver, "clear_preference", {"key": "delivery_habit_note"}, clear_ctx)
     assert cleared.ok is True
     assert cleared.data["cleared"] is True
 

@@ -315,8 +315,22 @@ def create_memory_mock_handlers(
     def clear_preference(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
-        # Clears one preference slot and acknowledges the removal.
+        # Clears one preference slot and acknowledges the removal. 0.0.3 S20
+        # (FR-20): requires an attributed actor, same gate as dismiss_proposal
+        # below and the Postgres twin's _clear_preference -- a clear is always a
+        # rep/supervisor at the keyboard, never the customer and never the
+        # unbound AI draft turn, so on the EXTERNAL profile (no context.user_id)
+        # this is policy_blocked, same as every other governed write on
+        # toee_customer_memory. The Postgres handler additionally writes a
+        # preference_cleared audit row; this mock driver has no audit sink (same
+        # no-op-in-mock-mode convention as dismiss_proposal), so it stays a plain
+        # governed acknowledgment once the actor check passes.
         slot = _require_slot(params)
+        if not context.user_id:
+            raise ToolDriverError(
+                "policy_blocked",
+                "A governed preference clear requires an attributed actor.",
+            )
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key).pop(slot, None)
         return {"binding_key": binding_key, "slot": slot, "cleared": True}
@@ -355,11 +369,35 @@ def create_memory_mock_handlers(
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         return {"binding_key": binding_key, "slot": slot, "dismissed": True}
 
+    def get_memory_audit(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.3 S20 (FR-20): the Supervisor Memory Audit View read. Shape-compatible
+        # with the Postgres handler (same keys) so a caller can't drift between
+        # backends, but the mock has no per-write source/actor/timestamp store and
+        # no audit sink (same convention as dismiss_proposal/clear_preference above)
+        # -- source/actor/timestamps come back null and audit is always empty.
+        binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
+        slots = [
+            {
+                "slot_name": slot,
+                "slot_value": value,
+                "source": None,
+                "actor_account_id": None,
+                "evidence": evidence.get(binding_key, {}).get(slot),
+                "created_at": None,
+                "updated_at": None,
+            }
+            for slot, value in slots_for(binding_key).items()
+        ]
+        return {"binding_key": binding_key, "slots": slots, "audit": []}
+
     return {
         "toee_customer_memory": {
             "upsert_preference": upsert_preference,
             "clear_preference": clear_preference,
             "get_preferences": get_preferences,
             "dismiss_proposal": dismiss_proposal,
+            "get_memory_audit": get_memory_audit,
         }
     }

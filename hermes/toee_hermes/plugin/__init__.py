@@ -48,8 +48,20 @@ DriverSelector = Callable[[str], ToolDriver]
 # dispatch surface's catalog validation accepts it) and in plugin.yaml's
 # provides_tools (the manifest declares the full catalog surface); this only
 # stops it reaching a live agent's tool-calling loop.
+#
+# toee_customer_memory.get_memory_audit (0.0.3 S20, FR-20) is excluded for the
+# same reason, with a sharper stake: both EXTERNAL and INTERNAL allowlist
+# toee_customer_memory, so without this exclusion the customer-facing model
+# itself would gain a callable tool to read another customer's full write
+# history, including employee actor_account_id -- exactly the admin-gated
+# supervisor-only surface FR-20 exists to restrict. Reached only from the admin
+# BFF's deterministic tools:dispatch call (over the internal_copilot profile's
+# per-profile API, the only profile whose allowlist carries this tool).
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
-    {("toee_identity_lookup", "link_identity")}
+    {
+        ("toee_identity_lookup", "link_identity"),
+        ("toee_customer_memory", "get_memory_audit"),
+    }
 )
 
 

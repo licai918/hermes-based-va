@@ -124,3 +124,42 @@ export interface CaseListFilter {
 export const PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = MEMORY_PREFERENCE_SLOTS;
 
 export type CustomerPreferences = Partial<Record<MemoryPreferenceSlot, string>>;
+
+// Supervisor Memory Audit View (0.0.3 S20, FR-20): a customer's 4 slots with
+// full write attribution -- source/actor/timestamps -- plus the append-only
+// workbench_audit_log trail for the same binding (dismissed proposals,
+// attributed clears). `binding_key` never crosses this boundary, same rule as
+// CustomerPreferences/mapPreferences above -- it is the customer's raw
+// identity key.
+export type MemoryWriteSource =
+  | "customer_explicit"
+  | "employee_confirmed"
+  | "copilot_agent"
+  | "merged_provisional";
+
+export interface MemorySlotAttribution {
+  slot: MemoryPreferenceSlot;
+  value: string;
+  source: MemoryWriteSource | null;
+  actorAccountId: string | null;
+  evidence: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Not a closed enum: S16 joins accepted-proposal audit rows into this same
+// history later (out of scope for this slice), so an unrecognized action
+// string is passed through rather than rejected.
+export interface MemoryAuditEntry {
+  entryId: string;
+  at: number;
+  actorAccountId: string | null;
+  action: string;
+  slot: string | null;
+  detail?: string;
+}
+
+export interface MemoryAuditView {
+  slots: MemorySlotAttribution[];
+  history: MemoryAuditEntry[];
+}

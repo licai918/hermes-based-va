@@ -7,6 +7,7 @@ import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
+import type { MemoryAuditView, MemoryPreferenceSlot } from "@/lib/gateway/types";
 import { getJson, sendJson } from "./http";
 
 // --- Knowledge (Required Operational Policy Slots) ---------------------------
@@ -145,4 +146,23 @@ export function disableAccount(accountId: string): Promise<PublicAccount> {
     "POST",
     `/api/admin/accounts/${accountId}/disable`,
   ).then((b) => b.account);
+}
+
+// --- Supervisor Memory Audit View (0.0.3 S20, FR-20) --------------------------
+
+export function getMemoryAudit(caseId: string): Promise<MemoryAuditView> {
+  return getJson<MemoryAuditView>(
+    `/api/admin/memory-audit?case_id=${encodeURIComponent(caseId)}`,
+  );
+}
+
+export function clearMemorySlot(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+): Promise<{ slot: string; cleared: boolean }> {
+  return sendJson<{ slot: string; cleared: boolean }>(
+    "POST",
+    `/api/admin/memory-audit/clear?case_id=${encodeURIComponent(caseId)}`,
+    { slot },
+  );
 }

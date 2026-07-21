@@ -36,6 +36,11 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         # persists no slot, only a Workbench Audit Log row (see the datastore
         # handler in hermes-runtime/hermes_runtime/datastore/handlers/memory.py).
         "dismiss_proposal",
+        # 0.0.3 S20 (FR-20): Supervisor Memory Audit View read -- current slots +
+        # full workbench_audit_log write history for a binding. Read-only; listed
+        # in _AGENT_EXCLUDED_ACTIONS so it never reaches a live agent's tool loop,
+        # only the admin BFF's deterministic tools:dispatch call.
+        "get_memory_audit",
     ),
     "toee_case_manage": (
         "claim_case",

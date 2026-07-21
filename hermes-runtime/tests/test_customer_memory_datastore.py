@@ -28,6 +28,7 @@ from toee_hermes.tool_gate import ToolExecutionContext
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 
 EXTERNAL = "customer_service_external"
+INTERNAL = "internal_copilot"
 
 # Customer A: verified (binds to the Shopify customer id).
 _CUSTOMER_A = {
@@ -148,11 +149,17 @@ def test_clear_preference_for_one_customer_does_not_touch_the_others_row(datasto
         driver, identity=_CUSTOMER_B, key="delivery_habit_note", value="ring bell"
     )
 
+    # 0.0.3 S20 (FR-20): clear is an attributed employee/supervisor action, so
+    # this isolation probe runs as an internal rep, not the EXTERNAL customer
+    # profile (which is now policy_blocked for clear, same as every other
+    # governed write on this tool).
     result = execute_tool(
         tool="toee_customer_memory",
         action="clear_preference",
         params={"key": "delivery_habit_note"},
-        context=ToolExecutionContext(profile=EXTERNAL, identity=_CUSTOMER_A),
+        context=ToolExecutionContext(
+            profile=INTERNAL, identity=_CUSTOMER_A, user_id="acct_rep_isolation"
+        ),
         driver=driver,
     )
     assert result.ok and result.data["cleared"] is True

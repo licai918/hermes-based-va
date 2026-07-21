@@ -1,7 +1,9 @@
 import {
+  clearMemorySlot,
   createAccount,
   disableAccount,
   getCorpusStatus,
+  getMemoryAudit,
   getRun,
   listAccounts,
   listRuns,
@@ -236,5 +238,34 @@ describe("admin-client accounts", () => {
       headers: { "content-type": "application/json" },
       body: undefined,
     });
+  });
+});
+
+describe("admin-client memory audit (0.0.3 S20, FR-20)", () => {
+  it("getMemoryAudit GETs the memory-audit endpoint with case_id and returns the view", async () => {
+    const view = { slots: [], history: [] };
+    const fetchMock = stubFetch(view);
+
+    await expect(getMemoryAudit("case_1")).resolves.toEqual(view);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/memory-audit?case_id=case_1", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("clearMemorySlot POSTs the clear endpoint with the slot body", async () => {
+    const fetchMock = stubFetch({ slot: "channel_preference", cleared: true });
+
+    await expect(clearMemorySlot("case_1", "channel_preference")).resolves.toEqual({
+      slot: "channel_preference",
+      cleared: true,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/memory-audit/clear?case_id=case_1",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ slot: "channel_preference" }),
+      },
+    );
   });
 });

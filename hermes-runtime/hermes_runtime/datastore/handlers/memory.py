@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from psycopg.rows import dict_row
+
 from toee_hermes.drivers.mock.memory import (
     MEMORY_PREFERENCE_SLOTS,
     _read_evidence,
@@ -32,7 +34,7 @@ from toee_hermes.drivers.mock.memory import (
 )
 from toee_hermes.errors import ToolDriverError
 
-from ._common import insert_audit, new_id
+from ._common import insert_audit, new_id, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -96,13 +98,39 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
 
 
 def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Clears one preference slot and records an attributed audit row.
+
+    0.0.3 S20 (FR-20): closes the 0.0.2 PAC-1 caveat -- a clear used to leave
+    zero trace (a hard DELETE, no audit row). Requires an attributed actor
+    exactly like ``_dismiss_proposal`` (a clear is always a rep/supervisor at
+    the keyboard, never the AI draft turn): no ``context.user_id`` ->
+    ``policy_blocked`` *before* the DELETE runs, so the EXTERNAL customer-facing
+    profile -- which never carries a user_id -- can never clear a slot itself,
+    same as every other write on this tool. Still the SAME governed
+    ``clear_preference`` dispatch action; no new write path, no schema change.
+    """
     slot = _require_slot(params)
+    account_id = context.user_id
+    if not account_id:
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed preference clear requires an attributed actor.",
+        )
     binding_key, _ = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
         cur.execute(
             "DELETE FROM customer_memory_slot WHERE binding_key = %s AND slot_name = %s",
             (binding_key, slot),
         )
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=account_id,
+        action="preference_cleared",
+        target_type="customer_memory_slot",
+        target_id=slot,
+        details={"slot": slot, "binding_key": binding_key},
+    )
     return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
 
@@ -152,6 +180,52 @@ def _dismiss_proposal(conn, params: dict[str, Any], context: "ToolExecutionConte
     return {"binding_key": binding_key, "slot": slot, "dismissed": True}
 
 
+def _get_memory_audit(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Supervisor Memory Audit View read (0.0.3 S20, FR-20).
+
+    "Full write history" is the UNION of two sources, no schema change: (1) the
+    current ``customer_memory_slot`` rows -- who wrote what's live now, with
+    source/actor/evidence/timestamps; (2) the append-only ``workbench_audit_log``
+    trail for this binding (``proposal_dismissed`` from S15, ``preference_cleared``
+    from this slice, and any future merge-audit row that carries the same
+    ``binding_key`` in its ``details`` -- S16 joins accepted proposals into the
+    same view later, so this deliberately does not filter any action out).
+    Read-only: no write, no schema change. Never registered as an LLM-callable
+    tool (see ``_AGENT_EXCLUDED_ACTIONS``) -- reached only from the admin BFF's
+    deterministic ``tools:dispatch`` call.
+    """
+    binding_key, _ = resolve_customer_memory_binding(context, params)
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT slot_name, slot_value, source, actor_account_id, evidence,
+                   created_at, updated_at
+            FROM customer_memory_slot
+            WHERE binding_key = %s
+            ORDER BY slot_name
+            """,
+            (binding_key,),
+        )
+        slots = cur.fetchall()
+        cur.execute(
+            """
+            SELECT a.*, acct.username AS actor_username
+            FROM workbench_audit_log a
+            LEFT JOIN workbench_account acct ON acct.id = a.account_id
+            WHERE a.target_type = 'customer_memory_slot'
+              AND a.details ->> 'binding_key' = %s
+            ORDER BY a.created_at DESC
+            """,
+            (binding_key,),
+        )
+        audit_rows = cur.fetchall()
+    return {
+        "binding_key": binding_key,
+        "slots": [serialize_row(r) for r in slots],
+        "audit": [serialize_row(r) for r in audit_rows],
+    }
+
+
 def memory_handlers() -> dict[str, dict[str, Any]]:
     """Registry fragment for the Customer Memory datastore tool."""
     return {
@@ -160,5 +234,6 @@ def memory_handlers() -> dict[str, dict[str, Any]]:
             "clear_preference": _clear_preference,
             "get_preferences": _get_preferences,
             "dismiss_proposal": _dismiss_proposal,
+            "get_memory_audit": _get_memory_audit,
         }
     }
