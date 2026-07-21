@@ -106,16 +106,18 @@ jobs:
       # "fastembed not installed" (fastembed is not a project dependency, so
       # this always skips in CI -- no 100MB+ model download).
       #
-      # test_job_queue.py (0.0.4 S01) and test_turn_worker.py (S02) are in the
-      # pattern because those tests are the ENTIRE evidence for the durable-queue
-      # and crash-recovery acceptance gates -- a silent skip there is a green
-      # build proving nothing.
+      # test_job_queue.py (0.0.4 S01), test_turn_worker.py (S02) and
+      # test_outbound_send.py (S03) are in the pattern because those tests are the
+      # ENTIRE evidence for the durable-queue, crash-recovery and
+      # outbound-idempotency acceptance gates -- a silent skip there is a green
+      # build proving nothing. S03's is the one that proves a replayed turn does
+      # not text a customer twice; skipping it silently is the worst of the three.
       - name: Runtime + gateway tests
         working-directory: hermes-runtime
         run: |
           set -o pipefail
           uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
-          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker)' /tmp/pytest-runtime.log \
+          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send)' /tmp/pytest-runtime.log \
               | grep -v 'fastembed not installed'; then
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1

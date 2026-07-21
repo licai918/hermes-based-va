@@ -85,8 +85,8 @@ The Postgres-backed queue in the **Toee Business Datastore** (decided 2026-07-21
 _Avoid_: Cloud Tasks, in-process daemon thread as production queue, queue payload as source of truth (that stays **AgentTurnContext**), silent job drop, unaudited replay
 
 **Outbound Send Record**:
-The per-send record keyed by a deterministic idempotency key that the reply sender checks before any Textline POST (decided 2026-07-21, 0.0.4; queue core + **turn worker** built, background worker pending), so a retried or replayed **Durable Job Queue** job never re-sends a message a customer already received.
-_Avoid_: Relying on provider dedupe, replay-then-apologize, idempotency key from model output
+The per-send record keyed by a deterministic idempotency key that the reply sender checks before any Textline POST (decided 2026-07-21, 0.0.4; **built in S03** as the `outbound_send` table), so a retried or replayed **Durable Job Queue** job never re-sends a message a customer already received. The key is derived from job id + inbound `eventId`, and one wrap covers every outbound/mirror action of a turn — the Textline POST, the simulated sender, and the `message_turn` reply mirror. Semantics are at-most-once toward the customer: an intent row written before the send is treated as sent on re-run, because a crash before the POST and a crash after it are indistinguishable from outside. A suppressed re-send is counted on the record, never silent.
+_Avoid_: Relying on provider dedupe, replay-then-apologize, idempotency key from model output, a per-sender guard instead of the one wrap
 
 **AgentTurnContext**:
 The persisted inbound-turn record that binds an accepted Textline message to `eventId`, `conversationId`, `smsSessionId`, **Customer Thread**, sender phone, and **Session Identity Snapshot** for async agent execution and governed outbound replies.
