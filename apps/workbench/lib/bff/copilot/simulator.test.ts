@@ -31,7 +31,6 @@ describe("buildSimulatedInboundEvent", () => {
     const event = buildSimulatedInboundEvent({
       fromPhone: "+14165550101",
       body: "Do you have 225/65R17 in stock?",
-      conversationId: "conv-sim-1",
       eventId: "evt-sim-1",
       nowIso: "2026-07-20T14:00:00.000Z",
     });
@@ -54,7 +53,6 @@ describe("buildSimulatedInboundEvent", () => {
     const event = buildSimulatedInboundEvent({
       fromPhone: "+14165550101",
       body: "hi",
-      conversationId: "conv-sim-2",
     });
     expect(event.values.messageId).toMatch(/^sim-/);
     const ts = event.values.timestamp;
@@ -120,7 +118,7 @@ describe("handleSimulatorIngress", () => {
     expect(payload.accepted).toBe(true);
   });
 
-  it("generates a conversationId when none is supplied", async () => {
+  it("reports the contact phone as the conversation id", async () => {
     const res = await handleSimulatorIngress(
       jsonReq({ fromPhone: "+14165550101", body: "hi" }),
       {
@@ -133,7 +131,7 @@ describe("handleSimulatorIngress", () => {
     expect(payload.conversationId).toBe("+14165550101");
   });
 
-  it("reports accepted:false when the gateway rejects the signature (401)", async () => {
+  it("reports accepted:false when the gateway rejects the token (401)", async () => {
     const res = await handleSimulatorIngress(
       jsonReq({ fromPhone: "+14165550101", body: "hi", conversationId: "conv-x" }),
       {

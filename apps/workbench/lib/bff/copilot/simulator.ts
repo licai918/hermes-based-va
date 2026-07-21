@@ -50,7 +50,6 @@ export interface SimulatedInboundEvent {
 export function buildSimulatedInboundEvent(input: {
   fromPhone: string;
   body: string;
-  conversationId: string;
   eventId?: string;
   nowIso?: string;
 }): SimulatedInboundEvent {
@@ -64,7 +63,7 @@ export function buildSimulatedInboundEvent(input: {
       text: input.body,
       accountPhone: "simulator",
       // SimpleTexting has no conversation resource: the contact phone IS the
-      // conversation, so the caller's conversationId is not sent separately.
+      // conversation, so there is no conversationId to carry.
       contactPhone: input.fromPhone,
       timestamp: input.nowIso ?? new Date().toISOString(),
       category: "SMS",
@@ -93,9 +92,9 @@ export async function handleSimulatorIngress(
   if (!fromPhone) return problem(400, "fromPhone is required");
   const text = readNonEmptyString(raw, "body");
   if (!text) return problem(400, "body is required");
-  const conversationId = readNonEmptyString(raw, "conversationId") ?? `sim-${randomUUID()}`;
-
-  const event = buildSimulatedInboundEvent({ fromPhone, body: text, conversationId });
+  // A caller-supplied conversationId is accepted for wire compatibility with the
+  // Simulator UI but has no effect: the SMS conversation is keyed by contact phone.
+  const event = buildSimulatedInboundEvent({ fromPhone, body: text });
   const rawBody = JSON.stringify(event);
   const fetchImpl = config.fetchImpl ?? fetch;
   const gatewayUrl = config.gatewayUrl.replace(/\/+$/, "");
