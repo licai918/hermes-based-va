@@ -56,6 +56,7 @@ from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import INTERNAL
 
 from hermes_runtime.boot import boot_profile
+from hermes_runtime.job_queue import L6_REVIEW_JOB_TYPE, PostgresJobQueue
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
 from hermes_runtime.openrouter import (
     OpenRouterConfig,
@@ -355,10 +356,50 @@ def _review_user_message(case_id: str, draft_result: Mapping[str, Any]) -> str:
     )
 
 
+def l6_review_payload(case_id: str, draft_result: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``l6_review`` job payload (0.0.4 S04, FR-11).
+
+    The review prompt is built HERE, at the end of the copilot turn, from exactly
+    the data the inline fork used to read (``case_id`` + the draft + the tool names
+    in the transcript) -- so the fork sees a byte-identical prompt whether it runs
+    inline or on the queue. Nothing else from the turn crosses: the full governed
+    transcript stays out of the ``job`` table.
+    """
+    return {
+        "case_id": case_id,
+        "review_prompt": _review_user_message(case_id, draft_result),
+    }
+
+
+def run_l6_review_job(
+    payload: Mapping[str, Any],
+    *,
+    review_scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
+    config: Optional[OpenRouterConfig] = None,
+    openai_factory: Any = None,
+    is_retryable: Callable[[BaseException], bool] = default_is_retryable,
+    max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+) -> list[dict[str, Any]]:
+    """The ``l6_review`` job body: run the fork for a payload the queue handed back.
+
+    Same fork, same prompt, same governed toolset as the inline S23 pass -- only
+    the caller moved (S04). ``review_scripted_completions`` is the deterministic
+    test/eval seam the copilot turn used to own; the background worker never
+    passes it.
+    """
+    return _run_review_pass(
+        user_message=payload["review_prompt"],
+        review_scripted_completions=review_scripted_completions,
+        config=config,
+        openai_factory=openai_factory,
+        is_retryable=is_retryable,
+        max_iterations=max_iterations,
+    )
+
+
 def _run_review_pass(
     *,
-    case_id: str,
-    draft_result: Mapping[str, Any],
+    user_message: str,
     review_scripted_completions: Optional[Sequence[Mapping[str, Any]]],
     config: Optional[OpenRouterConfig],
     openai_factory: Any,
@@ -380,7 +421,6 @@ def _run_review_pass(
     booted = boot_profile(INTERNAL, extra_drivers=_agent_experience_extra_drivers())
     # Restricted toolset: only the L6 propose tool, never the reply/read tools.
     tool_names = [n for n in booted.tool_names if n.startswith("toee_agent_experience__")]
-    user_message = _review_user_message(case_id, draft_result)
 
     if review_scripted_completions is not None:
         turn = run_scripted_agent(
@@ -430,12 +470,12 @@ def _run_review_pass(
 def make_copilot_run_turn(
     *,
     scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
-    review_scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
     config: Optional[OpenRouterConfig] = None,
     openai_factory: Any = None,
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     store: Optional[Any] = None,
+    queue: Optional[Any] = None,
 ) -> Callable[..., dict[str, Any]]:
     """Build the copilot draft ``run_turn``: an unbound ``internal_copilot`` turn.
 
@@ -448,11 +488,13 @@ def make_copilot_run_turn(
     transcript` parses -- and ``proposals`` is the structured, framework-derived
     Customer Memory proposal list extracted from it (S14, FR-15).
 
-    ``review_scripted_completions`` (S23, FR-22): scripts the bounded post-turn
-    learning-loop review fork so tests are deterministic; when set (or when the
-    ``AGENT_EXPERIENCE_LEARNING`` L6 flag is on) the fork runs after the draft and
-    surfaces ``experience_proposals`` on the result. DEFAULT OFF -- the eval
-    record/replay path passes neither, so the review pass never runs there.
+    The bounded post-turn learning-loop review fork (S23, FR-22) no longer runs on
+    this thread: with the ``AGENT_EXPERIENCE_LEARNING`` L6 flag on, ``run_turn``
+    ENQUEUES an ``l6_review`` job and the background worker runs it (0.0.4 S04,
+    FR-11). The flag is still DEFAULT OFF, so the eval record/replay path enqueues
+    nothing and the result is byte-identical to the draft-only shape. ``queue``
+    injects the :class:`~hermes_runtime.job_queue.PostgresJobQueue` (tests); the
+    default constructs one lazily, only when the flag is on.
 
     Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
     OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
@@ -590,30 +632,34 @@ def make_copilot_run_turn(
             result["subject"] = subject
             result["draft"] = body
 
-        # S23 (FR-22): the bounded post-turn review fork. The rep's draft is
-        # ALREADY produced (result above); the review pass runs AFTER it and can
-        # never delay or fail it. Gated behind the L6 flag (DEFAULT OFF, so the
-        # eval record/replay path never runs it -- determinism), OR forced on in
-        # tests by scripting the fork. Any exception is caught, logged, and
-        # swallowed (turn resilience RK): a review-pass failure leaves result
-        # intact. Proposals are captured framework-derived, as proposed (inert).
-        if agent_experience_enabled() or review_scripted_completions is not None:
+        # S23 (FR-22) / 0.0.4 S04 (FR-11): the bounded post-turn review fork. The
+        # rep's draft is ALREADY produced (result above); the fork runs AFTER it
+        # and can never delay or fail it -- which S04 makes STRUCTURAL rather than
+        # a comment, by enqueuing an `l6_review` job instead of running the fork on
+        # this thread. The background worker runs it (run_l6_review_job).
+        # Gate unchanged: the L6 flag, DEFAULT OFF, so the eval record/replay path
+        # still enqueues nothing and stays byte-identical (determinism).
+        # Any exception is caught, logged, and swallowed (turn resilience RK).
+        if agent_experience_enabled():
             try:
-                result["experience_proposals"] = _run_review_pass(
-                    case_id=case_id,
-                    draft_result=result,
-                    review_scripted_completions=review_scripted_completions,
-                    config=config,
-                    openai_factory=openai_factory,
-                    is_retryable=is_retryable,
-                    max_iterations=max_iterations,
+                resolved_queue = queue if queue is not None else PostgresJobQueue()
+                resolved_queue.enqueue(
+                    l6_review_payload(case_id, result),
+                    job_type=L6_REVIEW_JOB_TYPE,
+                    # ponytail: ONE attempt, matching the pre-S04 semantics exactly
+                    # -- an inline fork that raised was swallowed and never retried.
+                    # The fork WRITES (propose_experience), so a retry could land a
+                    # second proposed row for one turn; a failure dead-letters
+                    # instead, which S05 surfaces. Raise it the day the fork is
+                    # made idempotent.
+                    max_attempts=1,
                 )
             except Exception as exc:
                 # ponytail: swallow so the learning loop can never fail the copilot
                 # turn (RK). case_id is an internal id (not PII); log the exception
                 # TYPE only, never str(exc), which could echo store-supplied content.
                 logger.warning(
-                    "Agent-experience review pass failed case_id=%s error_type=%s; "
+                    "Agent-experience review enqueue failed case_id=%s error_type=%s; "
                     "the copilot turn is unaffected",
                     case_id,
                     type(exc).__name__,

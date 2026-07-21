@@ -53,6 +53,13 @@ _CONFIG = OpenRouterConfig(
 )
 
 
+class _NoopQueue:
+    """Swallows the S04 ``l6_review`` enqueue so no fork runs (DB-free)."""
+
+    def enqueue(self, payload, *, job_type, **_kwargs) -> str:
+        return "job_noop"
+
+
 class _FakeStore:
     """A gateway store stub whose confirmed-read is controllable per test.
 
@@ -297,8 +304,10 @@ def test_draft_turn_propose_experience_persists_nothing(datastore, monkeypatch) 
             },
             {"content": "A draft for the rep."},
         ],
-        # Review fork runs (flag on) but proposes nothing, isolating the draft path.
-        review_scripted_completions=[{"content": "Nothing worth recording."}],
+        # S04: the review fork is a queued job now, so with a recording queue in
+        # place nothing forks here at all -- which isolates the draft path even
+        # more tightly than scripting an empty fork did.
+        queue=_NoopQueue(),
     )
 
     run_turn(channel="sms", case_id="case_draft_inert")
