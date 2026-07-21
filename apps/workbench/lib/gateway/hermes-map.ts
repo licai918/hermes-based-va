@@ -208,10 +208,10 @@ export function mapMemorySlotAttribution(raw: unknown): MemorySlotAttribution {
   };
 }
 
-// Not a closed enum (unlike mapAuditEntry's case AuditAction): S16 joins
-// accepted-proposal rows into this history later, so an action this mapper
-// doesn't yet know about is passed through rather than rejected -- the S16
-// boundary this slice must not enforce.
+// Not a closed enum (unlike mapAuditEntry's case AuditAction): the audit trail
+// carries whatever governed actions land in workbench_audit_log
+// (proposal_dismissed, preference_cleared, future kinds), so an action this
+// mapper doesn't yet know about is passed through rather than rejected.
 export function mapMemoryAuditEntry(raw: unknown): MemoryAuditEntry {
   const r = asObject(raw, "memory audit entry");
   const details = r.details;

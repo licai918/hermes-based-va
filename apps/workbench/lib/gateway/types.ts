@@ -147,9 +147,12 @@ export interface MemorySlotAttribution {
   updatedAt: number;
 }
 
-// Not a closed enum: S16 joins accepted-proposal audit rows into this same
-// history later (out of scope for this slice), so an unrecognized action
-// string is passed through rather than rejected.
+// Not a closed enum: the audit trail carries whatever governed actions land in
+// workbench_audit_log (proposal_dismissed, preference_cleared, future kinds), so
+// an unrecognized action string is passed through rather than rejected. (S16
+// surfaces *accepted* proposals from employee_confirmed slots, not by joining
+// rows into this history — but keeping the field open still avoids brittle
+// rejection of any action this mapper doesn't yet know about.)
 export interface MemoryAuditEntry {
   entryId: string;
   at: number;
