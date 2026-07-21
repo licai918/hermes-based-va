@@ -190,6 +190,34 @@ def test_a_redelivered_stop_sends_exactly_one_confirmation() -> None:
     assert sent == [("conv-optout", SMS_OPT_OUT_CONFIRMATION)]
 
 
+def test_a_burned_opt_out_confirmation_acks_200_and_does_not_retry_the_send() -> None:
+    # Fix wave 2 finding 1. The FIRST send raising burns the outbound_send row
+    # (status='failed') -- that first request's own 500 is the real failure and
+    # is unchanged. Every REDELIVERY of that same STOP after the burn must not
+    # 500 forever (ADR-0104 assigns opt-out 200; ADR-0103 rejects non-200 for a
+    # post-decision outbound failure) and must never call reply_sender again --
+    # process_inbound already short-circuits at opt_out on every delivery, so the
+    # customer is opted out either way; only the confirmation text is lost.
+    calls: list[str] = []
+
+    def failing_reply_sender(conversation_id: str, text: str) -> None:
+        calls.append(conversation_id)
+        raise RuntimeError("textline outage")
+
+    app = create_app(webhook_secret=WEBHOOK_SECRET, reply_sender=failing_reply_sender)
+    client = TestClient(app, raise_server_exceptions=False)
+    raw = _inbound_payload(
+        body="STOP", event_id="evt-stop-burned", conversation_id="conv-optout"
+    )
+
+    first = _post_signed(client, raw)
+    redelivery = _post_signed(client, raw)
+
+    assert first.status_code == 500  # the genuine first-send failure, unchanged
+    assert redelivery.status_code == 200  # burned key must not 500 forever
+    assert calls == ["conv-optout"]  # exactly one send attempt, never retried
+
+
 def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
     # A non-opt-out inbound is acked (ADR-0103 fast-ack); the gateway sends no
     # compliance reply itself — the agent turn (enqueued) owns any response.

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import time
 from datetime import datetime, timezone
@@ -43,8 +44,11 @@ from hermes_runtime.gateway_store import GatewayStore, InMemoryGatewayStore
 from hermes_runtime.outbound_send import (
     OPT_OUT_SLOT,
     InMemoryOutboundSendLog,
+    OutboundSendBurned,
     deliver_once,
 )
+
+logger = logging.getLogger(__name__)
 
 # Provider signature headers (ADR-0021). Live Textline (TGP) uses X-Tgp-*; local
 # simulate script uses the legacy X-Textline-Signature flat JSON shape.
@@ -292,15 +296,33 @@ def create_app(
             and decision.reply is not None
         ):
             event, confirmation = decision.event, decision.reply
-            deliver_once(
-                log=outbound_log,
-                job_id=None,
-                event_id=event.event_id,
-                conversation_id=event.conversation_id,
-                channel=event.channel,
-                slot=OPT_OUT_SLOT,
-                deliver=lambda: reply_sender(event.conversation_id, confirmation),
-            )
+            try:
+                deliver_once(
+                    log=outbound_log,
+                    job_id=None,
+                    event_id=event.event_id,
+                    conversation_id=event.conversation_id,
+                    channel=event.channel,
+                    slot=OPT_OUT_SLOT,
+                    deliver=lambda: reply_sender(event.conversation_id, confirmation),
+                )
+            except OutboundSendBurned:
+                # Fix wave 2 finding 1: a burned key is non-retryable by
+                # definition. process_inbound short-circuits at the opt_out
+                # stage on every redelivery of this STOP -- the customer IS
+                # opted out and no turn is ever enqueued -- so 500ing forever
+                # only risks the provider backing off or disabling this
+                # endpoint for every OTHER customer's inbound webhook (ADR-0103
+                # rejects non-200 for a post-decision outbound failure;
+                # ADR-0104 assigns opt-out 200). The failed row is the durable
+                # record an operator reads (S05's dead-letter/audit view).
+                logger.error(
+                    "Customer %s (event %s) is opted out but never received "
+                    "the ADR-0016 confirmation text -- the send failed and "
+                    "the outbound_send key is now permanently spent",
+                    event.conversation_id,
+                    event.event_id,
+                )
         if decision.action == "enqueue":
             store.persist_accepted_inbound(decision)
         return Response(status_code=decision.status)
