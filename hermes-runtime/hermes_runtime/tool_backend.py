@@ -300,8 +300,11 @@ def _gateway_store() -> Any:
     construction, only ever overridden by an explicit ``store=`` param in tests
     (Standards fix #1). Deferred import keeps ``psycopg`` out of a mock
     deployment's import path (same reasoning as ``select_tool_driver``'s
-    ``PostgresDriver`` branch above); every call site only reaches this under
-    :func:`memory_enabled`, so a mock/unset deployment never constructs it.
+    ``PostgresDriver`` branch above). Most call sites reach this only under
+    :func:`memory_enabled`; the S25 L6 confirmed-experience read reaches it on
+    its OWN injection-flag axis instead, but its fail-closed wrapper
+    (:func:`load_confirmed_experience`) swallows any resulting connection failure
+    (NFR-5), so a mock/unset deployment still never fails a turn on it.
     DSN-based, matching how ``select_tool_driver`` obtains its datastore driver.
     """
     from hermes_runtime.postgres_gateway_store import PostgresGatewayStore

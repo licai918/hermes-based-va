@@ -137,14 +137,22 @@ ranking calibration is a deferred post-launch follow-up.
 business records**. They say nothing about the agent accumulating its own operational
 experience — L6 is that gap, a new layer, not a re-litigation.
 
-**Direction under exploration:** copy Hermes's *learning loop* (the background self-improvement
-review fork), not its *store* — routing proposed learnings through our governed
-tool → Postgres → audit, gated **propose → confirm**, starting on the internal copilot where reps
-already review every draft.
+**Design realized:** copies Hermes's *learning loop* (the background self-improvement
+review fork), not its *store* — proposed learnings route through our governed
+tool → Postgres → audit, gated **propose → confirm**, on the internal copilot where reps
+already review every draft. Hermes native memory stays off (`skip_memory=True`); this is a
+net-new governed retention surface, not the built-in store.
 
-**Live risks** carried in the candidate: model-authored PII, unbounded transcript retention,
-**cross-profile recall crossing the EXTERNAL/INTERNAL/SUPERVISOR security boundary**,
-poisoned-memory blast radius, and eval determinism.
+**Risks and how they were handled:** model-authored PII → the S22 write-side scan +
+the S23 review prompt's operational-only rule + the S24 human confirm gate (three lines of
+defense); unbounded transcript retention → bounded newest-first read, retention sweep (S28);
+**cross-profile recall crossing the EXTERNAL/INTERNAL/SUPERVISOR boundary** → the external
+turn is read-only over confirmed entries behind its own flag, never proposing, and
+`toee_agent_experience` is INTERNAL-allowlisted only; poisoned-memory blast radius → nothing
+injects until a human confirms, and only `status='confirmed'` is ever read; eval determinism →
+injection pinned OFF on the record/replay path (both flags default off; the eval store can't
+surface L6 even with flags forced on). Remaining: real-traffic quality/ranking calibration,
+deferred post-launch (ADR-0152).
 
 ---
 
