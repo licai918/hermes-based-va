@@ -41,6 +41,11 @@ DEFAULT_MAX_ATTEMPTS = 3
 # How long a claim is valid before another worker may reclaim the job. Long
 # enough to cover a slow model turn, short enough that a killed worker's job is
 # picked up within a minute (NFR-3).
+#
+# Coupled to docker-compose.yml's turn-worker `stop_grace_period` (310s), which
+# must stay ABOVE this value -- it is the graceful-stop budget SIGTERM gives an
+# in-flight turn before Docker SIGKILLs, and that budget only makes sense sized
+# against the longest turn this lease is sized for. Change one, change the other.
 DEFAULT_LEASE_SECONDS = 300
 
 # Retry backoff: run_at = now() + BASE ** attempts seconds (2s, 4s, 8s ...).

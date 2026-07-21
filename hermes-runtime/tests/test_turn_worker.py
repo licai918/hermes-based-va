@@ -502,3 +502,28 @@ def test_the_error_backoff_is_bounded():
     """A long outage must not stretch the retry interval without limit."""
     assert _error_backoff_seconds(1) == 0.5
     assert _error_backoff_seconds(100) == MAX_ERROR_BACKOFF_SECONDS
+
+
+# --------------------------------------------------------------------------
+# fail-closed boot guard (fix wave 2): the worker is the destructive half
+# --------------------------------------------------------------------------
+
+
+def test_main_refuses_to_start_on_a_non_datastore_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``build_gateway_app`` already fails closed off a non-datastore backend
+    (``test_gateway_composition``); the worker is the more destructive half of
+    that same misconfiguration left unguarded -- with ``TOOL_BACKEND`` unset
+    (the default) it would still open the real Postgres queue, claim real
+    customer-turn jobs, look them up in its own empty per-process
+    ``InMemoryGatewayStore``, and dead-letter every one of them after 3
+    attempts, instead of merely failing to start. Pin that ``main()`` refuses
+    before it builds anything (no DB connection needed for this to raise).
+    """
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+
+    from hermes_runtime.turn_worker import main
+
+    with pytest.raises(ValueError, match="TOOL_BACKEND"):
+        main()
