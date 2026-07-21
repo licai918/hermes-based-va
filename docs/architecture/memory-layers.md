@@ -11,7 +11,7 @@ so it cannot drift out of sync with them.
 > **Maintenance rule.** When an ADR lands that changes a layer, update that layer's row **in the
 > same PR**. No separate doc-maintenance ritual — the ADR is the trigger.
 
-*Last updated: 2026-07-20 (0.0.3 knowledge spike + Hermes-memory research).*
+*Last updated: 2026-07-20 (0.0.3 S12 — L5 knowledge ADR + gates harness).*
 
 ---
 
@@ -23,7 +23,7 @@ so it cannot drift out of sync with them.
 | **L2** | Conversation | Customer Thread, Email Thread, SMS Session windows, MessageTurn, AgentTurnContext | `toee_va` Postgres | keyed by thread / session id | ✅ shipped |
 | **L3** | Operational | Follow-up Case, Workbench Audit Log, auto-handled evidence, eval records | `toee_va` Postgres | keyed / queried per workflow | ✅ shipped |
 | **L4** | Customer Memory | 4 governed preference slots per customer | `toee_va` Postgres | **exact** `WHERE binding_key = ?`, injected per turn | ✅ shipped (0.0.1 + 0.0.2) |
-| **L5** | **Knowledge** | shared, non-PII company/product corpus | **separate `toee_knowledge` DB** | **hybrid lexical FTS + dense embedding**, top-k chunks | 🔨 **decided, not built** |
+| **L5** | **Knowledge** | shared, non-PII company/product corpus | **separate `toee_knowledge` DB** | **hybrid lexical FTS + dense embedding**, top-k chunks | ✅ **shipped** ([ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md)) |
 | **L6** | **Agent experience** | what the agent learns from doing the job | TBD | TBD | 🔬 **exploring** |
 
 L1–L4 are the **four-layer model** of [ADR-0110](../adr/0110-native-memory-four-layer-model.md).
@@ -56,12 +56,14 @@ ADR-0110's original substrate (Hermes Native Memory) is superseded; the layer mo
 
 ---
 
-## L5 — Knowledge layer *(decided, not yet built)*
+## L5 — Knowledge layer *(shipped — [ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md))*
 
 **Decision: Path Y-embed, hybrid** — an in-house retriever fusing **lexical FTS + dense
 embeddings**, indexed in a **separate database** that carries no PII, injected through the same
 `extra_drivers` driver seam L4 uses. **gbrain (Path X) was evaluated and rejected** as
-over-engineering for a curated FAQ-sized corpus.
+over-engineering for a curated FAQ-sized corpus. Formal decision record, isolation rationale,
+deadline requirement, and the FR-2 authoring/review-gate open question:
+[ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md).
 
 Grounded in the 0.0.3 spike — see [`workspace/0.0.3/knowledge-spike/`](../../workspace/0.0.3/knowledge-spike/)
 and Candidate 1 of [the 0.0.3 exploration](../../workspace/0.0.3/EXPLORATION.md):
@@ -69,8 +71,9 @@ and Candidate 1 of [the 0.0.3 exploration](../../workspace/0.0.3/EXPLORATION.md)
 | Gate | Result |
 | --- | --- |
 | **Isolation** | ✅ separate `toee_knowledge` DB + `knowledge_chunk`; business DB untouched |
-| **Latency** | ✅ FTS p95 **1.4 ms** @1500 chunks; forced 2 s query → governed `found=false` in 201 ms via a **driver-side deadline** (required, since no tool-call timeout exists in-repo) |
-| **Quality** | 🟡 synthetic set: lexical FTS **50%** (rejected — vocabulary mismatch is uncrossable lexically), embedding **73%** raw / ~76–83% fair. **Real customer questions still pending** = the final gate |
+| **Latency (spike, FTS-only rung — since corrected)** | FTS p95 **1.4 ms** @1500 chunks; forced 2 s query → governed `found=false` in 201 ms. Audit finding 1: this measured the **rejected** lexical-only rung, not the shipped hybrid one. |
+| **Latency (S12 gate, shipped hybrid rung, `gates.py latency`)** | ✅ p95 **48.4 ms** @167 chunks (embedding inference included) — PASS vs. the 800ms bar; forced-slow path → governed `found=false` in 815 ms via the **driver-side deadline** (required, since no tool-call timeout exists in-repo). See [ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md). |
+| **Quality (S12 gate, `gates.py recall`, 30 synthetic questions)** | 🟡 recall@3 **73%** (22/30) — below the 80% bar; interim dev-time gate. **The real ~30 owner-question gate is S32.** |
 
 **Boundary:** knowledge is a shared, non-PII corpus — never live facts (Shopify/QBO tool reads),
 never the governed policy-slot copy, never customer PII.
@@ -82,12 +85,15 @@ whole corpus from there. Gaps are closed by editing Shopify, not by crawling —
 
 **Still open:** the ongoing *refresh + authoring* flow and **where the review gate lives** — a
 Shopify sync has no PR review, whereas a `brain/` git-PR flow does; a hybrid (Shopify for
-existing pages, `brain/` for net-new authored knowledge) is possible. Also open: embedding model,
-and short-doc handling (200-char Contact and thin brand pages under-retrieve).
+existing pages, `brain/` for net-new authored knowledge) is possible. Recorded as an explicit open
+question in [ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md) (FR-2), not
+silently decided. Also open: embedding model, and short-doc handling (200-char Contact and thin
+brand pages under-retrieve) — both S32 territory.
 
 **Supersedes in practice:** the never-built weekly RAG / crawl / sync mechanisms of ADR-0001,
-ADR-0002, ADR-0030 and ADR-0031 (their live-facts rules still hold). A formal superseding ADR
-ships with the build.
+ADR-0002, ADR-0030 and ADR-0031 (their live-facts rules still hold). Formally recorded in
+[ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md), which also ships the
+checked-in FR-7/FR-7b quality/latency gates harness (`hermes_runtime/knowledge/gates.py`).
 
 ---
 
@@ -145,6 +151,11 @@ designed in up front rather than retrofitted.
 
 ## Change log
 
+- **2026-07-20 (S12)** — L5 shipped: formal decision record + isolation/deadline rationale +
+  FR-2 open question in [ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md);
+  productionized FR-7/FR-7b gates harness re-measures the shipped hybrid rung (p95 48.4ms @167
+  chunks, recall@3 73% synthetic-interim) — corrects audit finding 1 (the spike's S-LAT only ever
+  measured the rejected FTS-only rung).
 - **2026-07-20** — L5 decided (Path Y-embed hybrid, gbrain rejected) on spike evidence; L6 opened
   (agent-experience memory) after researching Hermes's own memory subsystem; this map created.
 - **2026-07-16** — 0.0.2 shipped L4 write attribution (`copilot_agent` source + `actor_account_id`,

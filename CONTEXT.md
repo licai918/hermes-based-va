@@ -221,7 +221,7 @@ The evaluation step required before new or rolled-back **Operational Policy Know
 _Avoid_: Optional QA, publish without validation, gating **Public Site Knowledge** (L5) retrieval content
 
 **Public Site Knowledge**:
-The shared, non-PII company and product corpus (**L5 Knowledge**) that Hermes retrieves to answer policy and FAQ-style questions. Ingested from the **Shopify connector** (pages, articles, shop policies), chunked into the separate `toee_knowledge` database, and retrieved by the **Knowledge Retriever**. Decided 2026-07-20, not yet built.
+The shared, non-PII company and product corpus (**L5 Knowledge**) that Hermes retrieves to answer policy and FAQ-style questions. Ingested from the **Shopify connector** (pages, articles, shop policies), chunked into the separate `toee_knowledge` database, and retrieved by the **Knowledge Retriever**. Shipped 2026-07-20 — see ADR-0149.
 _Avoid_: Internal SOP, tool output, live website fetch at answer time, live price/stock/order/AR facts, governed operational-policy copy, customer PII, storage in the Toee Business Datastore
 
 **Knowledge Ingestion**:

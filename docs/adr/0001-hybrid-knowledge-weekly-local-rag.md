@@ -8,6 +8,7 @@
 > **Still holds:** the two-layer split (Public Site Knowledge vs governed Operational
 > Policy Knowledge), "account-specific facts come from live tools, not RAG", and keeping public
 > copy on the website rather than a second hand-authored corpus.
+> Formal superseding decision → [ADR-0149](0149-hybrid-lexical-embedding-knowledge-retriever.md).
 > Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md) (L5).
 
 Toee Tire will use a two-layer knowledge model for Hermes: **Public Site Knowledge** crawled from `toeetire.com`, plus a small set of internally governed **Operational Policy Knowledge** for verification, payment-link, and after-hours rules that the public site does not encode. Public FAQ and policy copy are maintained only on the website; Hermes does not maintain a second public FAQ corpus.
