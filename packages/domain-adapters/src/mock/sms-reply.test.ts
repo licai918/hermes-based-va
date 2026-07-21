@@ -4,21 +4,21 @@ import { createMockDriver } from "./mock-driver";
 import { executeTool } from "../execute-tool";
 import type { ToolExecutionContext } from "../tool-gate";
 import {
-  textlineMockHandlers,
-  createTextlineMockHandlers,
-  createTextlineMockData,
-} from "./textline";
+  smsReplyMockHandlers,
+  createSmsReplyMockHandlers,
+  createSmsReplyMockData,
+} from "./sms-reply";
 
 const context: ToolExecutionContext = {
   profile: HERMES_PROFILES.externalCustomerService,
 };
 
-describe("toee_textline_reply mock — send_message", () => {
+describe("toee_sms_reply mock — send_message", () => {
   it("returns a captured outbound message", async () => {
-    const driver = createMockDriver({ ...textlineMockHandlers });
+    const driver = createMockDriver({ ...smsReplyMockHandlers });
 
     const result = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params: { conversationId: "conv_1", body: "Thanks, your order ships today." },
       context,
@@ -36,11 +36,11 @@ describe("toee_textline_reply mock — send_message", () => {
   });
 
   it("captures the outbound SMS in the injected outbox", async () => {
-    const data = createTextlineMockData();
-    const driver = createMockDriver({ ...createTextlineMockHandlers(data) });
+    const data = createSmsReplyMockData();
+    const driver = createMockDriver({ ...createSmsReplyMockHandlers(data) });
 
     await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params: { conversationId: "conv_7", body: "On its way!" },
       context,
@@ -55,11 +55,11 @@ describe("toee_textline_reply mock — send_message", () => {
   });
 
   it("echoes media_url for a Product Media Reply", async () => {
-    const data = createTextlineMockData();
-    const driver = createMockDriver({ ...createTextlineMockHandlers(data) });
+    const data = createSmsReplyMockData();
+    const driver = createMockDriver({ ...createSmsReplyMockHandlers(data) });
 
     const result = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params: {
         conversationId: "conv_9",
@@ -81,23 +81,23 @@ describe("toee_textline_reply mock — send_message", () => {
   });
 
   it("is deterministic for identical input", async () => {
-    const firstData = createTextlineMockData();
-    const secondData = createTextlineMockData();
+    const firstData = createSmsReplyMockData();
+    const secondData = createSmsReplyMockData();
     const params = { conversationId: "conv_5", body: "Same message" };
 
     const first = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params,
       context,
-      driver: createMockDriver({ ...createTextlineMockHandlers(firstData) }),
+      driver: createMockDriver({ ...createSmsReplyMockHandlers(firstData) }),
     });
     const second = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params,
       context,
-      driver: createMockDriver({ ...createTextlineMockHandlers(secondData) }),
+      driver: createMockDriver({ ...createSmsReplyMockHandlers(secondData) }),
     });
 
     expect(first.ok && second.ok).toBe(true);
@@ -109,11 +109,11 @@ describe("toee_textline_reply mock — send_message", () => {
   it("does not call any external/network API", async () => {
     const hasFetch = typeof globalThis.fetch === "function";
     const fetchSpy = hasFetch ? vi.spyOn(globalThis, "fetch") : undefined;
-    const data = createTextlineMockData();
-    const driver = createMockDriver({ ...createTextlineMockHandlers(data) });
+    const data = createSmsReplyMockData();
+    const driver = createMockDriver({ ...createSmsReplyMockHandlers(data) });
 
     const result = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params: { conversationId: "conv_2", body: "No network here." },
       context,

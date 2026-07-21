@@ -15,8 +15,8 @@
 
 > **ADR-0098 supersession (read this first).** ADR-0098 predates ADR-0139 and names a
 > `services/hermes-gateway/Dockerfile` for an old **TypeScript Fastify** gateway. That
-> path is **stale**. The gateway is now the **Python FastAPI** runtime in
-> `hermes-runtime/`, and its Dockerfile lives at **`hermes-runtime/Dockerfile`**. ADR-0098's
+> service has been **deleted** (ADR-0153). The gateway is the **Python FastAPI** runtime
+> in `hermes-runtime/`, and its Dockerfile lives at **`hermes-runtime/Dockerfile`**. ADR-0098's
 > env-layering and "separate image per service" decisions still hold; only the gateway
 > source/path changed (ADR-0139). ADR-0098 now carries an amendment banner pointing here;
 > its body is retained as the historical record.
@@ -50,11 +50,15 @@ missing.
 
 | Env var | Source | Required? | Notes |
 |---------|--------|-----------|-------|
-| `TEXTLINE_WEBHOOK_SECRET` | Secret Manager | yes | Inbound webhook HMAC verify (ADR-0021) |
+| `SIMPLETEXTING_WEBHOOK_TOKEN` | Secret Manager | yes | Shared token in the registered webhook URL (ADR-0021 — SimpleTexting does not sign payloads) |
 | `INTERNAL_JOB_SECRET` | Secret Manager | yes | Guards `/internal/jobs/agent-turn` (ADR-0106) |
-| `TEXTLINE_ACCESS_TOKEN` | Secret Manager | yes | Outbound Textline replies (ADR-0083) |
+| `SIMPLETEXTING_API_TOKEN` | Secret Manager | yes | Outbound SimpleTexting sends (ADR-0083) |
 | `OPENROUTER_API_KEY` | Secret Manager | yes | Async agent turn (ADR-0009) |
-| `TEXTLINE_API_BASE_URL` | plain env | no | Defaults to `https://application.textline.com/` |
+| `DEPLOY_ENVIRONMENT` | plain env | yes on deployed revisions | `production`/`staging`. Makes the boot refuse the per-process in-memory store, which would leave webhooks replayable across instances (ADR-0153) |
+| `TOOL_BACKEND` | plain env | yes in deployed envs | Must be `datastore`: messageId dedup is the only replay protection SimpleTexting allows |
+| `DATABASE_URL` | Secret Manager | with `TOOL_BACKEND=datastore` | Cloud SQL DSN for the gateway store |
+| `SIMPLETEXTING_ACCOUNT_PHONE` | plain env | no | Sending number; account primary when unset |
+| `SIMPLETEXTING_API_BASE_URL` | plain env | no | Defaults to `https://api-app2.simpletexting.com/v2/` |
 | `OPENROUTER_BASE_URL` / `OPENROUTER_MODEL` / `OPENROUTER_FALLBACK_MODEL` | plain env | no | Defaults pinned in code (ADR-0009) |
 | `INTEGRATION_DRIVER` | plain env | no | `mock` (default) until the integration phase |
 | `COMPOSIO_API_KEY` | Secret Manager | **optional until integration phase (#33)** | Only when `INTEGRATION_DRIVER=composio` |
@@ -81,6 +85,18 @@ export REPO=us-central1-docker.pkg.dev/$PROJECT/hermes   # Artifact Registry rep
 
 ### Gateway
 
+**Apply migrations before deploying a revision.** The gateway runs with
+`TOOL_BACKEND=datastore` and hard-depends on its tables — `inbound_event_claim`
+(migration 0011) is read on the opt-out path, so a revision deployed against an
+un-migrated database answers 500 to every `STOP` and, because the provider retries
+5xx, keeps retrying. Point `DATABASE_URL` at the Cloud SQL instance and run:
+
+```bash
+# From hermes-runtime/. Idempotent: already-applied versions are skipped.
+DATABASE_URL='<cloud sql dsn>' uv run python -m hermes_runtime.datastore.migrate
+# -> "applied migrations: ..." (or nothing to do)
+```
+
 ```bash
 # Build with the REPO ROOT as context (note the trailing dot), gateway Dockerfile.
 docker build -f hermes-runtime/Dockerfile -t "$REPO/toee-hermes-gateway:latest" .
@@ -89,8 +105,9 @@ docker push "$REPO/toee-hermes-gateway:latest"
 gcloud run deploy toee-hermes-gateway \
   --image "$REPO/toee-hermes-gateway:latest" \
   --region "$REGION" \
-  --no-allow-unauthenticated \
-  --set-secrets="TEXTLINE_WEBHOOK_SECRET=textline-webhook-secret:latest,INTERNAL_JOB_SECRET=internal-job-secret:latest,TEXTLINE_ACCESS_TOKEN=textline-access-token:latest,OPENROUTER_API_KEY=openrouter-api-key:latest"
+  --allow-unauthenticated \
+  --set-env-vars="DEPLOY_ENVIRONMENT=production,TOOL_BACKEND=datastore" \
+  --set-secrets="SIMPLETEXTING_WEBHOOK_TOKEN=simpletexting-webhook-token:latest,INTERNAL_JOB_SECRET=internal-job-secret:latest,SIMPLETEXTING_API_TOKEN=simpletexting-api-token:latest,OPENROUTER_API_KEY=openrouter-api-key:latest,DATABASE_URL=gateway-database-url:latest"
   # Add when wiring Composio (issue #33 / ADR-0129):
   #   --set-secrets=...,COMPOSIO_API_KEY=composio-api-key:latest
   #   --set-env-vars=INTEGRATION_DRIVER=composio,COMPOSIO_USER_ID=toee-staging,COMPOSIO_SHOPIFY_CONNECTED_ACCOUNT_ID=ca_...,COMPOSIO_QBO_CONNECTED_ACCOUNT_ID=ca_...,COMPOSIO_SQUARE_CONNECTED_ACCOUNT_ID=ca_...
@@ -133,28 +150,54 @@ This is the cheap, dependency-free liveness route added in #33 (`GET /healthz` i
 `hermes_runtime/gateway_app.py`). A 200 proves the container booted and the ASGI factory
 resolved all required secrets (a missing secret fails the boot, not this probe).
 
-### (b) One SMS path — signed inbound webhook 200
+### (b) One SMS path — tokened inbound webhook 200
 
-Post a correctly **HMAC-SHA256-signed** body to `/webhooks/textline` (signature header
-`X-Textline-Signature`, keyed by `TEXTLINE_WEBHOOK_SECRET`, ADR-0021). A normal inbound
-fast-acks 200 (ADR-0103); a bad/missing signature returns 401.
+SimpleTexting does not sign webhook payloads, so authenticity is the shared token
+in the registered URL (ADR-0021/0149). Post a SimpleTexting-shaped report to
+`/webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>`. A normal inbound
+fast-acks 200 (ADR-0103); a wrong or missing token returns 401.
 
 ```bash
-SECRET='<the TEXTLINE_WEBHOOK_SECRET value>'
-BODY='{"id":"smoke-1","conversation_id":"conv-smoke","from":"+14165550101","body":"Do you have 225/65R17 in stock?","received_at":"2026-01-01T00:00:00Z","type":"message.created"}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')
+TOKEN='<the SIMPLETEXTING_WEBHOOK_TOKEN value>'
+BODY='{"reportId":"rep-smoke-1","webhookId":"wh-smoke","type":"INCOMING_MESSAGE","values":{"messageId":"smoke-1","text":"Do you have 225/65R17 in stock?","accountPhone":"9053378266","contactPhone":"+14165550101","timestamp":"2026-01-01T00:00:00.000Z","category":"SMS"}}'
 
-curl -fsS -X POST "$GATEWAY_URL/webhooks/textline" \
+curl -fsS -X POST "$GATEWAY_URL/webhooks/simpletexting?token=$TOKEN" \
   -H "Content-Type: application/json" \
-  -H "X-Textline-Signature: $SIG" \
   --data "$BODY" -o /dev/null -w '%{http_code}\n'
 # expect: 200
 ```
 
-> Use a disposable `conversation_id` in staging. An accepted inbound enqueues a real
-> agent turn (which may attempt an outbound reply), so prefer a vendor sandbox / test
-> conversation. An opt-out keyword (`STOP`) also returns 200 but sends the fixed
-> compliance confirmation instead of starting a turn (ADR-0108).
+> Use a test `contactPhone` in staging. An accepted inbound enqueues a real agent
+> turn, which may send an outbound SMS to that number. An opt-out keyword (`STOP`)
+> also returns 200 but sends the fixed compliance confirmation instead of starting
+> a turn (ADR-0108) — exactly once per `messageId`, even if the request is replayed
+> (ADR-0016).
+
+### (b2) Register the SimpleTexting webhook
+
+Webhooks are managed through the SimpleTexting API (or the dashboard under
+Integrations → Webhooks). `requestPerSecLimit` is documented as optional but the
+API rejects a create without it (409), so always send it:
+
+```bash
+curl -fsS -X POST "https://api-app2.simpletexting.com/v2/api/webhooks" \
+  -H "Authorization: Bearer $SIMPLETEXTING_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"url\": \"$GATEWAY_URL/webhooks/simpletexting?token=$TOKEN\",
+       \"triggers\": [\"INCOMING_MESSAGE\"],
+       \"requestPerSecLimit\": 10}"
+# -> 201 {"id":"..."}   GET the same path to list; DELETE /api/webhooks/{id} to remove.
+```
+
+> **The URL is a credential.** It carries the webhook token, so treat the
+> registration URL, and anything that echoes it, as secret. The gateway masks the
+> token in its own access logs (`hermes_runtime/access_log.py`); do not paste the
+> full URL into tickets, screenshots, or shell history you keep.
+
+> **Ingress must be public.** SimpleTexting cannot mint a Cloud Run OIDC token, so
+> the service has to be deployed `--allow-unauthenticated` for webhooks to arrive;
+> the URL token is then the only inbound control. Decide this explicitly before
+> cutover rather than discovering it as a delivery failure.
 
 ### (c) Eval quality gate — go-live blocker
 

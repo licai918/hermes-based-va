@@ -1,7 +1,7 @@
 scenario_id: "01"
 title: "Verified customer order delivery and AR reads"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "Can you check order 1042, delivery status, and whether invoice INV-9001 is open?"

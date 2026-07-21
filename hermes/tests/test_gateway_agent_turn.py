@@ -26,8 +26,8 @@ RESOLVED_AT = "2026-06-19T12:00:00.000Z"
 
 def _event() -> InboundChannelEvent:
     return InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt_1",
         conversation_id="conv_9",
         from_phone="+14165550101",

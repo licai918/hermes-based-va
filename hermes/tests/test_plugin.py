@@ -306,7 +306,7 @@ def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     register(ctx)
     toolsets = ctx.registered_toolsets()
     assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"])
-    assert "toee_textline_reply" not in toolsets
+    assert "toee_sms_reply" not in toolsets
     assert "toee_square_payment_link" not in toolsets
 
 

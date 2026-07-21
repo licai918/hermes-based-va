@@ -50,7 +50,7 @@ def test_reads_identity_presets_from_base_yaml() -> None:
 
 def test_parses_sms_scenario_with_tool_assertions() -> None:
     fixture = parse_scenario_content(
-        'scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: verified_customer_a\nturns:\n  - inbound: hi\n"
         "mock_overrides: {}\nassertions:\n  tool:\n    expect_calls:\n"
         "      - tool: toee_shopify_read\n        action: get_order\n"
@@ -79,7 +79,7 @@ def test_parses_email_object_form_turn() -> None:
 def test_rejects_missing_scenario_id() -> None:
     with pytest.raises(ValueError, match=r"bad\.yaml.*scenario_id"):
         parse_scenario_content(
-            "title: t\nsuite: text_first_launch\nchannel: textline\n"
+            "title: t\nsuite: text_first_launch\nchannel: simpletexting\n"
             "identity_preset: x\nturns: []\nmock_overrides: {}\nassertions:\n"
             "  max_severity: medium\n",
             "bad.yaml",
@@ -89,7 +89,7 @@ def test_rejects_missing_scenario_id() -> None:
 def test_rejects_scenario_id_filename_prefix_mismatch() -> None:
     with pytest.raises(ValueError, match=r"99-mismatch\.yaml.*05"):
         parse_scenario_content(
-            'scenario_id: "05"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+            'scenario_id: "05"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
             "identity_preset: verified_customer_a\nturns:\n  - inbound: hi\n"
             "mock_overrides: {}\nassertions:\n  max_severity: medium\n",
             "99-mismatch.yaml",
@@ -99,7 +99,7 @@ def test_rejects_scenario_id_filename_prefix_mismatch() -> None:
 def test_rejects_missing_max_severity() -> None:
     with pytest.raises(ValueError, match=r"max_severity"):
         parse_scenario_content(
-            'scenario_id: "07"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+            'scenario_id: "07"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
             "identity_preset: verified_customer_a\nturns:\n  - inbound: hi\n"
             'mock_overrides: {}\nassertions:\n  text:\n    must_contain: ["x"]\n',
             "07-x.yaml",
@@ -115,7 +115,7 @@ def _resolve(content: str, label: str):
 
 def test_resolves_verified_customer_with_snapshot_and_linked_accounting() -> None:
     merged = _resolve(
-        'scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: verified_customer_a\nturns:\n  - inbound: hi\n"
         "mock_overrides: {}\nassertions:\n  behavioral:\n    case_created: false\n"
         "  max_severity: medium\n",
@@ -133,7 +133,7 @@ def test_resolves_verified_customer_with_snapshot_and_linked_accounting() -> Non
 
 def test_resolves_unmatched_caller() -> None:
     merged = _resolve(
-        'scenario_id: "02"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "02"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: unmatched_phone\nturns:\n  - inbound: hi\n"
         "mock_overrides: {}\nassertions:\n  disclosure:\n    no_account_disclosure: true\n"
         "  max_severity: high\n",
@@ -144,7 +144,7 @@ def test_resolves_unmatched_caller() -> None:
 
 def test_resolves_ambiguous_phone_match_with_both_ids() -> None:
     merged = _resolve(
-        'scenario_id: "03"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "03"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: ambiguous_phone\nturns:\n  - inbound: hi\n"
         'mock_overrides: {}\nassertions:\n  text:\n    must_contain: ["order number"]\n'
         "  max_severity: medium\n",
@@ -156,7 +156,7 @@ def test_resolves_ambiguous_phone_match_with_both_ids() -> None:
 
 def test_applies_email_link_failure_override() -> None:
     merged = _resolve(
-        'scenario_id: "04"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "04"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: verified_customer_a\nturns:\n  - inbound: hi\n"
         "mock_overrides:\n  qbo:\n    email_links:\n      verified_customer_a: failed\n"
         "assertions:\n  behavioral:\n    case_created: true\n  max_severity: high\n",
@@ -169,7 +169,7 @@ def test_applies_email_link_failure_override() -> None:
 
 def test_carries_domain_error_override() -> None:
     merged = _resolve(
-        'scenario_id: "13"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "13"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: unmatched_phone\nturns:\n  - inbound: hi\n"
         "mock_overrides:\n  shopify:\n    error: unavailable\nassertions:\n"
         "  behavioral:\n    case_created: true\n  max_severity: medium\n",
@@ -180,7 +180,7 @@ def test_carries_domain_error_override() -> None:
 
 def test_injects_memory_preset_into_memory_mock_data() -> None:
     merged = _resolve(
-        'scenario_id: "25"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+        'scenario_id: "25"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
         "identity_preset: verified_customer_a\nmemory_preset:\n"
         '  contact_time_preference: "after 2pm Eastern"\nturns:\n  - inbound: hi\n'
         "mock_overrides: {}\nassertions:\n  memory_assertions:\n"
@@ -197,7 +197,7 @@ def test_injects_memory_preset_into_memory_mock_data() -> None:
 def test_throws_for_unknown_identity_preset() -> None:
     with pytest.raises(ValueError, match=r"nope_preset"):
         _resolve(
-            'scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: textline\n'
+            'scenario_id: "01"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
             "identity_preset: nope_preset\nturns:\n  - inbound: hi\n"
             "mock_overrides: {}\nassertions:\n  max_severity: medium\n",
             "01-x.yaml",

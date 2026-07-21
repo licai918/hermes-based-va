@@ -122,7 +122,7 @@ def _reset_tool_registry():
     profile's own tool names with the agent's own DEFAULT ``valid_tool_names``,
     which is resolved from whatever toolsets are CURRENTLY registered -- so a
     tool an earlier test registered for a DIFFERENT profile (e.g. the External
-    profile's ``toee_textline_reply__send_message``, registered globally by
+    profile's ``toee_sms_reply__send_message``, registered globally by
     test_entrypoint_discovery.py's in-process ``discover_plugins(force=True)``)
     can silently satisfy the "is this tool allowed" check in a LATER test that
     boots a profile without it -- defeating the very rejection the later test

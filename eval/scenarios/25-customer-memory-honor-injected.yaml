@@ -1,7 +1,7 @@
 scenario_id: "25"
 title: "Customer Memory injected preference honored"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 memory_preset:
   contact_time_preference: "after 2pm Eastern"

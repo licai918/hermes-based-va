@@ -55,10 +55,10 @@ from .square import (
     create_square_mock_handlers,
     square_baseline_data,
 )
-from .textline import (
-    TextlineMockData,
-    create_textline_mock_handlers,
-    textline_baseline_data,
+from .sms_reply import (
+    SmsReplyMockData,
+    create_sms_reply_mock_handlers,
+    sms_reply_baseline_data,
 )
 
 
@@ -72,7 +72,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_knowledge_mock_handlers(),
         create_case_mock_handlers(),
         create_memory_mock_handlers(),
-        create_textline_mock_handlers(),
+        create_sms_reply_mock_handlers(),
         create_square_mock_handlers(),
         create_admin_stub_mock_handlers(),
         create_agent_experience_mock_handlers(),
@@ -108,9 +108,9 @@ __all__ = [
     "MemoryMockData",
     "create_memory_mock_handlers",
     "memory_baseline_data",
-    "TextlineMockData",
-    "create_textline_mock_handlers",
-    "textline_baseline_data",
+    "SmsReplyMockData",
+    "create_sms_reply_mock_handlers",
+    "sms_reply_baseline_data",
     "SquareMockData",
     "create_square_mock_handlers",
     "square_baseline_data",

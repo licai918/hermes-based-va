@@ -152,7 +152,7 @@ Demo cases seeded for the copilot queue:
 
 | Case ID | Notes |
 | --- | --- |
-| `case_ar_urgent` | Urgent SMS, active session â€?good for queue + Textline send after claim |
+| `case_ar_urgent` | Urgent SMS, active session â€?good for queue + SMS send after claim |
 | `case_toolfail` | Urgent billing, `tool_failure` flag |
 
 Thread previews and identity summaries follow `apps/workbench/lib/gateway/seed.ts`.
@@ -192,7 +192,7 @@ curl http://127.0.0.1:8082/healthz   # -> {"status":"ok"}
 
 1. Open `case_ar_urgent`.
 2. Claim the case.
-3. Use **Draft SMS** â€?should succeed (mock Textline path; no live Textline token required).
+3. Use **Draft SMS** â€?should succeed (mock SMS path; no live SimpleTexting token required).
 
 ### 6. Audit row
 
@@ -238,9 +238,9 @@ These are deferred or optional for local Tier B:
 | Topic | Notes |
 | --- | --- |
 | **#45 lockout** | API-path login does not yet enforce in-memory brute-force lockout (ADR-0144 M-2). Repeated bad passwords are not throttled when the admin API is configured. |
-| **OpenRouter** | Agent-turn / LLM drafts against live models need `OPENROUTER_API_KEY` on the gateway path â€?not required for queue, login, or mock Textline send. |
-| **Live Textline** | Outbound SMS uses the mock Textline capture in local dev; `TEXTLINE_ACCESS_TOKEN` is for production/live integration. |
-| **Gateway** | Inbound Textline webhook + async agent turn — see [`local-gateway.md`](local-gateway.md) (`pnpm dev:gateway` is a stub; use uvicorn). |
+| **OpenRouter** | Agent-turn / LLM drafts against live models need `OPENROUTER_API_KEY` on the gateway path â€?not required for queue, login, or mock SMS send. |
+| **Live SimpleTexting** | Outbound SMS uses the mock capture in local dev; `SIMPLETEXTING_API_TOKEN` is for production/live integration. |
+| **Gateway** | Inbound SimpleTexting webhook + async agent turn — see [`local-gateway.md`](local-gateway.md) (`pnpm dev:gateway` is a stub; use uvicorn). |
 
 Cloud SQL, Cloud Run, and Secret Manager wiring remain Slice 37 (#40).
 

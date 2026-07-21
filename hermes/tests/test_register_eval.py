@@ -107,7 +107,7 @@ def test_register_eval_registers_only_the_external_allowlist() -> None:
     register_eval(ctx, driver=RecordingDriver(), gate=allow_all_gate, identity={})
 
     toolsets = {tool["toolset"] for tool in ctx.tools}
-    assert "toee_textline_reply" in toolsets
+    assert "toee_sms_reply" in toolsets
     assert "toee_shopify_read" in toolsets
     # Copilot/admin-only toolsets are outside the External allowlist (default-deny).
     assert "toee_copilot_draft" not in toolsets

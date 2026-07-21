@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ChatResponse } from "@/lib/api/copilot-client";
 import type { WorkbenchCase } from "@/lib/gateway/types";
 import { ErrorBannerProvider } from "@/components/shell/error-banner";
-import { CopilotGateway, canSendViaTextline } from "./CopilotGateway";
+import { CopilotGateway, canSendViaSms } from "./CopilotGateway";
 
 function makeCase(overrides: Partial<WorkbenchCase> = {}): WorkbenchCase {
   return {
@@ -51,15 +51,15 @@ function renderGateway(props: Partial<Parameters<typeof CopilotGateway>[0]> = {}
   return { chat, draft, onSent };
 }
 
-describe("canSendViaTextline", () => {
+describe("canSendViaSms", () => {
   it("is true only for an active SMS session on a case assigned to the operator", () => {
-    expect(canSendViaTextline(makeCase(), "acct-1")).toBe(true);
+    expect(canSendViaSms(makeCase(), "acct-1")).toBe(true);
   });
   it("is false for non-SMS, inactive session, or another assignee", () => {
-    expect(canSendViaTextline(makeCase({ channel: "email" }), "acct-1")).toBe(false);
-    expect(canSendViaTextline(makeCase({ smsSessionActive: false }), "acct-1")).toBe(false);
-    expect(canSendViaTextline(makeCase({ assigneeAccountId: "acct-2" }), "acct-1")).toBe(false);
-    expect(canSendViaTextline(null, "acct-1")).toBe(false);
+    expect(canSendViaSms(makeCase({ channel: "email" }), "acct-1")).toBe(false);
+    expect(canSendViaSms(makeCase({ smsSessionActive: false }), "acct-1")).toBe(false);
+    expect(canSendViaSms(makeCase({ assigneeAccountId: "acct-2" }), "acct-1")).toBe(false);
+    expect(canSendViaSms(null, "acct-1")).toBe(false);
   });
 });
 
@@ -83,7 +83,7 @@ describe("CopilotGateway active state", () => {
     expect(await screen.findByText("Reviewing this case.")).toBeInTheDocument();
   });
 
-  it("renders a draft card from a chat draftCard and shows Textline for eligible cases", async () => {
+  it("renders a draft card from a chat draftCard and shows SMS send for eligible cases", async () => {
     const chat = vi.fn(
       async (_message: string): Promise<ChatResponse> => ({
         state: "ready",
@@ -99,7 +99,7 @@ describe("CopilotGateway active state", () => {
     const draftField = await screen.findByLabelText(/draft/i);
     expect(draftField).toHaveValue("Your tires are ready.");
     expect(
-      screen.getByRole("button", { name: /send via textline/i }),
+      screen.getByRole("button", { name: /send via sms/i }),
     ).toBeInTheDocument();
   });
 
@@ -111,12 +111,12 @@ describe("CopilotGateway active state", () => {
     expect(await screen.findByLabelText(/draft/i)).toHaveValue("Generated SMS body");
   });
 
-  it("hides the Textline button when the case is not send-eligible", async () => {
+  it("hides the SMS send button when the case is not send-eligible", async () => {
     const draft = vi.fn().mockResolvedValue("Email draft");
     renderGateway({ case: makeCase({ channel: "email", smsSessionActive: false }), draft });
     fireEvent.click(screen.getByRole("button", { name: /draft email/i }));
     expect(await screen.findByLabelText(/draft/i)).toHaveValue("Email draft");
-    expect(screen.queryByRole("button", { name: /send via textline/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /send via sms/i })).toBeNull();
   });
 
   it("opens the governed send modal from the draft card", async () => {
@@ -124,7 +124,7 @@ describe("CopilotGateway active state", () => {
     renderGateway({ draft });
     fireEvent.click(screen.getByRole("button", { name: /draft sms/i }));
     await screen.findByLabelText(/draft/i);
-    fireEvent.click(screen.getByRole("button", { name: /send via textline/i }));
+    fireEvent.click(screen.getByRole("button", { name: /send via sms/i }));
     expect(screen.getByRole("dialog")).toHaveTextContent("Ready to send");
   });
 });

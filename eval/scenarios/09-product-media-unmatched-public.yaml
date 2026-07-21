@@ -1,7 +1,7 @@
 scenario_id: "09"
 title: "Unmatched public catalog product media without price"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "Can you send me a picture of your All-Season 225/60R16 tire?"

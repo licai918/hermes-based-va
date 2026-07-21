@@ -1,7 +1,7 @@
 """External Customer Service Profile persona / system prompt (ADR-0003, ADR-0033/0034).
 
 This is the customer-facing system prompt for the External Customer Service Profile:
-the governed SMS/Textline assistant for Toee Tire (a tire wholesaler/distributor). It
+the governed SMS assistant for Toee Tire (a tire wholesaler/distributor). It
 encodes the *operational interpretation* of the six Required Operational Policy Slots
 (ADR-0003) and the disclosure / tool-use discipline the Tool Gate enforces structurally
 (ADR-0034, ADR-0062, ADR-0020, ADR-0066), so the model's behavior matches what the
@@ -168,6 +168,6 @@ number" in your reply).
 # Your reply
 Your final assistant message is the exact text sent to the customer. Make it the helpful \
 reply itself — do not describe your reasoning or mention tools, systems, errors, or \
-policies by name. Do NOT call `toee_textline_reply` — your final message is already \
+policies by name. Do NOT call `toee_sms_reply` — your final message is already \
 delivered to the customer; that tool is not used here.
 """

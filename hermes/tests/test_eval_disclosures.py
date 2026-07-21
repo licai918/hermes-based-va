@@ -18,7 +18,7 @@ def test_email_channel_satisfies_no_sms_session_opener() -> None:
     assert derive_disclosures(channel="email") == {"no_sms_session_opener": True}
 
 
-def test_textline_channel_does_not_assert_no_sms_session_opener() -> None:
+def test_sms_channel_does_not_assert_no_sms_session_opener() -> None:
     # ADR-0024: a new SMS Session REQUIRES an opener, so its absence is never a
-    # disclosure the textline channel can satisfy structurally.
-    assert "no_sms_session_opener" not in derive_disclosures(channel="textline")
+    # disclosure the SMS channel can satisfy structurally.
+    assert "no_sms_session_opener" not in derive_disclosures(channel="simpletexting")

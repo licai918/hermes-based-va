@@ -24,8 +24,6 @@ model was handed (RK-8). Skip-if-no-DB via the shared ``datastore`` fixture.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 from types import SimpleNamespace
@@ -52,8 +50,7 @@ from hermes_runtime.openrouter import (
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from hermes_runtime.turn_runner import make_gateway_turn_runner
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
-SIGNATURE_HEADER = "X-Textline-Signature"
+WEBHOOK_SECRET = "test-simpletexting-url-token"
 
 _CONFIG = OpenRouterConfig(
     base_url="https://openrouter.ai/api/v1",
@@ -74,21 +71,23 @@ _PROVISIONAL_SLOT = "delivery_habit_note"
 
 
 # --------------------------------------------------------------------------- #
-# Webhook helpers (legacy flat-JSON shape, HMAC body signature — ADR-0021).
+# Webhook helpers (SimpleTexting report shape, URL-token auth — ADR-0021).
 # --------------------------------------------------------------------------- #
-def _sign(raw_body: bytes) -> str:
-    return hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-
-
 def _inbound(*, body: str, from_phone: str, event_id: str, conversation_id: str) -> bytes:
+    del conversation_id  # SimpleTexting keys the conversation by contact phone
     return json.dumps(
         {
-            "id": event_id,
-            "conversation_id": conversation_id,
-            "from": from_phone,
-            "body": body,
-            "received_at": "2026-01-01T00:00:00Z",
-            "type": "message.created",
+            "reportId": f"rep-{event_id}",
+            "webhookId": "wh-1",
+            "type": "INCOMING_MESSAGE",
+            "values": {
+                "messageId": event_id,
+                "text": body,
+                "accountPhone": "9053378266",
+                "contactPhone": from_phone,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "category": "SMS",
+            },
         }
     ).encode("utf-8")
 
@@ -107,7 +106,7 @@ def _upsert_call(*, slot: str, value: str) -> dict:
 
 def _post(client: TestClient, raw: bytes):
     return client.post(
-        "/webhooks/textline", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
+        f"/webhooks/simpletexting?token={WEBHOOK_SECRET}", content=raw
     )
 
 

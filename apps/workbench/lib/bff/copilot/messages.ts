@@ -1,7 +1,7 @@
-// Governed Textline send (ADR-0083). Phase-1 customer-facing write: an employee
+// Governed SMS send (ADR-0083). Phase-1 customer-facing write: an employee
 // sends an SMS reply inside an active SMS Session on a case they hold. Strict
 // precondition order — 400 empty body, 404 missing case, 403 ineligible — then a
-// governed toee_textline_reply.send_message. The captured outbound message is
+// governed toee_sms_reply.send_message. The captured outbound message is
 // mirrored into the Case Thread Context and the Workbench Audit Log; on tool
 // failure nothing is fabricated.
 import { executeTool } from "@toee/domain-adapters";
@@ -18,18 +18,18 @@ import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { mapWorkbenchCase } from "../../gateway/hermes-map";
 
-interface SentTextlineMessage {
+interface SentSmsMessage {
   messageId: string;
   conversationId: string;
   body: string;
   mediaUrl?: string;
 }
 
-function mapSentTextlineMessage(
+function mapSentSmsMessage(
   raw: Record<string, unknown>,
   fallbackBody: string,
-): SentTextlineMessage {
-  const message: SentTextlineMessage = {
+): SentSmsMessage {
+  const message: SentSmsMessage = {
     messageId: String(raw.message_id ?? raw.messageId ?? ""),
     conversationId: String(raw.conversation_id ?? raw.conversationId ?? ""),
     body: typeof raw.body === "string" ? raw.body : fallbackBody,
@@ -41,7 +41,7 @@ function mapSentTextlineMessage(
   return message;
 }
 
-export async function handleTextlineSend(
+export async function handleSmsSend(
   req: Request,
   deps: CopilotDeps,
 ): Promise<Response> {
@@ -57,11 +57,11 @@ export async function handleTextlineSend(
     found.channel === "sms" &&
     found.smsSessionActive === true &&
     found.assigneeAccountId === deps.session.accountId;
-  if (!eligible) return problem(403, "case not eligible for Textline send");
+  if (!eligible) return problem(403, "case not eligible for SMS send");
 
   const mediaUrl = readNonEmptyString(raw, "mediaUrl") ?? undefined;
   const result = await executeTool({
-    tool: "toee_textline_reply",
+    tool: "toee_sms_reply",
     action: "send_message",
     params: { conversationId: found.threadId, body: text, mediaUrl },
     context: copilotContext(deps),
@@ -69,7 +69,7 @@ export async function handleTextlineSend(
   });
   if (!result.ok) return problem(502, result.message);
 
-  const sent = result.data as SentTextlineMessage;
+  const sent = result.data as SentSmsMessage;
   deps.store.appendThreadMessage(caseId, {
     messageId: sent.messageId,
     threadId: found.threadId,
@@ -80,18 +80,18 @@ export async function handleTextlineSend(
     autoHandled: false,
     activeCaseSegment: true,
   });
-  appendAudit(deps, "textline_send", { caseId, detail: text });
+  appendAudit(deps, "sms_send", { caseId, detail: text });
   return json({ message: result.data });
 }
 
 // Per-profile API variant (ADR-0141 / #42): the governed send runs as
-// `toee_case_manage.send_textline_message` over tools:dispatch so the vendor
-// capture, message_turn mirror, and textline_send audit land server-side in one
-// transaction. ADR-0035 keeps `tooe_textline_reply` off the copilot allowlist
+// `toee_case_manage.send_sms_message` over tools:dispatch so the vendor
+// capture, message_turn mirror, and sms_send audit land server-side in one
+// transaction. ADR-0035 keeps `toee_sms_reply` off the copilot allowlist
 // (agent no-send); this composite action is the employee-confirmed write seam.
 // Pre-read get_case for 404/403 parity with the store path; no in-memory thread
 // or audit double-write when the API is configured.
-export async function handleTextlineSendViaApi(
+export async function handleSmsSendViaApi(
   req: Request,
   client: HermesApiClient,
   deps: CopilotDeps,
@@ -111,12 +111,12 @@ export async function handleTextlineSendViaApi(
       mapped.channel === "sms" &&
       mapped.smsSessionActive === true &&
       mapped.assigneeAccountId === deps.session.accountId;
-    if (!eligible) return problem(403, "case not eligible for Textline send");
+    if (!eligible) return problem(403, "case not eligible for SMS send");
 
     const mediaUrl = readNonEmptyString(raw, "mediaUrl") ?? undefined;
     const result = (await client.dispatchWrite(
       "toee_case_manage",
-      "send_textline_message",
+      "send_sms_message",
       {
         case_id: caseId,
         body: text,
@@ -124,7 +124,7 @@ export async function handleTextlineSendViaApi(
       },
     )) as { message?: Record<string, unknown> };
     const msg = result?.message ?? {};
-    return json({ message: mapSentTextlineMessage(msg, text) });
+    return json({ message: mapSentSmsMessage(msg, text) });
   } catch (err) {
     return hermesErrorToProblem(err);
   }

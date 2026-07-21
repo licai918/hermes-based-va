@@ -4,12 +4,12 @@ The internal agent-turn job (ADR-0106/0107) reloads the inbound turn's context,
 verifies the binding, then runs the customer-facing agent. :func:`run_gateway_turn`
 is that run: it boots the External profile *bound* to the turn's ``conversation_id``
 (:func:`hermes_runtime.boot.boot_profile`) so every governed dispatch carries the
-binding and the turn-binding gate constrains ``toee_textline_reply.send_message`` to
+binding and the turn-binding gate constrains ``toee_sms_reply.send_message`` to
 that conversation alone (ADR-0066). A scripted provider seam keeps the run
 deterministic for tests; the agent loop, governed dispatch, and capture are real.
 
 The reply is delivered from the captured turn by the gateway (the agent's governed
-Textline send, else its ``final_response``), so this returns the captured turn —
+SMS send, else its ``final_response``), so this returns the captured turn —
 ``{final_response, messages}`` — the same shape the recorder/replay layer consumes.
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from eval_runner.transcript import turn_result_from_transcript
-from toee_hermes.gateway.normalize import TEXTLINE_SMS, is_email_channel
+from toee_hermes.gateway.normalize import SIMPLETEXTING_SMS, is_email_channel
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -42,7 +42,7 @@ _SMS_MAX_CHARS = 480
 
 
 def clip_sms_reply(body: str, *, max_chars: int = _SMS_MAX_CHARS) -> str:
-    """Trim an agent reply to SMS-friendly length before Textline delivery."""
+    """Trim an agent reply to SMS-friendly length before SMS delivery."""
     text = body.strip()
     if len(text) <= max_chars:
         return text
@@ -86,7 +86,7 @@ def run_gateway_turn(
 def outbound_reply_text(turn: Mapping[str, Any]) -> str:
     """Derive the one customer-facing reply from a captured turn (ADR-0083).
 
-    The reply is the governed Textline send body when the agent sent one, else the
+    The reply is the governed SMS send body when the agent sent one, else the
     agent's ``final_response``. A send the turn-binding gate blocked is a governed
     failure (``error_class``), so its body is not customer-facing text — the reply
     falls back rather than delivering the rejected content.
@@ -115,10 +115,18 @@ def make_gateway_turn_runner(
     def turn_runner(context: Any, inbound_body: str) -> None:
         turn = run_turn(context, inbound_body)
         reply = outbound_reply_text(turn)
+        is_email = is_email_channel(getattr(context, "channel", SIMPLETEXTING_SMS))
         # S17: SMS is clipped to one segment; an email reply is not 480-char-clipped.
-        if not is_email_channel(getattr(context, "channel", TEXTLINE_SMS)):
+        if not is_email:
             reply = clip_sms_reply(reply)
-        reply_sender(context.conversation_id, reply)
+        # reply_sender is the SMS provider client, and it strips its argument to
+        # digits. There is no email provider (RK-4), so routing an email turn
+        # through it would POST a real SMS to whatever number the inbound payload's
+        # conversation_id happened to contain — caller-chosen, billed to us
+        # (ADR-0153). The email reply is delivered by the mirror below, which is
+        # what the simulator reads back.
+        if not is_email:
+            reply_sender(context.conversation_id, reply)
         if on_reply_sent is not None:
             on_reply_sent(context, reply)
 

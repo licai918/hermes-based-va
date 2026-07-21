@@ -2,7 +2,7 @@
 
 The async job runs a bound governed turn (ADR-0107) and must deliver exactly one
 customer-facing reply. :func:`outbound_reply_text` derives that reply from the
-captured turn: the governed Textline send body when the agent sent one, else the
+captured turn: the governed SMS send body when the agent sent one, else the
 agent's ``final_response`` (ADR-0083). A send the turn-binding gate blocked is a
 governed failure, so its (leaked) body is never delivered — the reply falls back.
 
@@ -30,7 +30,7 @@ def _send_turn(*, conversation_id: str, body: str, final_response: str) -> dict:
                     {
                         "id": "c1",
                         "function": {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": json.dumps(
                                 {"conversation_id": conversation_id, "body": body}
                             ),
@@ -59,7 +59,7 @@ def _blocked_turn(*, leaked_body: str, final_response: str) -> dict:
                     {
                         "id": "c1",
                         "function": {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": json.dumps(
                                 {"conversation_id": "conv-OTHER", "body": leaked_body}
                             ),
@@ -81,7 +81,7 @@ def _blocked_turn(*, leaked_body: str, final_response: str) -> dict:
 # --- G6a: outbound_reply_text ---------------------------------------------
 
 
-def test_outbound_reply_text_uses_the_governed_textline_body() -> None:
+def test_outbound_reply_text_uses_the_governed_sms_body() -> None:
     turn = _send_turn(
         conversation_id="conv-A", body="Out for delivery.", final_response="done"
     )
@@ -148,3 +148,40 @@ def test_gateway_turn_runner_invokes_on_reply_sent_after_delivery() -> None:
     runner(ctx, "Where is my order?")
 
     assert mirrored == [(ctx, "Shipped!")]
+
+
+def test_email_turn_mirrors_its_reply_without_a_provider_send() -> None:
+    """An email reply must never leave through the SMS provider (RK-4, ADR-0153).
+
+    There is no real email provider: the simulated-email channel exists so a turn
+    can run end to end, and its reply is read back from ``message_turn``. In
+    production ``reply_sender`` is the live SimpleTexting client, which strips its
+    first argument to digits — so delivering an email turn through it POSTs a real
+    SMS to whatever number the inbound payload's conversation_id happens to
+    contain, billed to the account and chosen by the caller.
+
+    ``on_reply_sent`` must still run, exactly as it does after a real SMS send, or
+    the simulator's read-back goes blank.
+    """
+    sent: list[tuple[str, str]] = []
+    mirrored: list[tuple[str, str]] = []
+    runner = make_gateway_turn_runner(
+        reply_sender=lambda conv, text: sent.append((conv, text)),
+        run_turn=lambda context, body: _send_turn(
+            conversation_id=context.conversation_id,
+            body="Your order ships tomorrow.",
+            final_response="x",
+        ),
+        on_reply_sent=lambda ctx, text: mirrored.append((ctx.conversation_id, text)),
+    )
+
+    context = SimpleNamespace(
+        # An email payload can carry a phone-shaped conversation_id; the SMS
+        # sender would happily dial it.
+        conversation_id="+15551234567",
+        channel="simulated_email",
+    )
+    runner(context, "Where is my order?")
+
+    assert sent == [], f"email reply escaped through the SMS provider: {sent}"
+    assert mirrored == [("+15551234567", "Your order ships tomorrow.")]

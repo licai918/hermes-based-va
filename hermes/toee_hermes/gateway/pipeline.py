@@ -1,4 +1,4 @@
-"""Inbound Textline pipeline orchestrator (ADR-0104, ADR-0108, ADR-0109, ADR-0043).
+"""Inbound SMS/email pipeline orchestrator (ADR-0104, ADR-0108, ADR-0109, ADR-0043).
 
 Composes the stable gateway primitives into a single, deterministic decision the
 route/embedding layer acts on. This is the "Hermes embedding" seam: it resolves
@@ -24,7 +24,7 @@ Session Identity Snapshot for audit and Copilot context.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, Union
+from typing import Callable, Optional
 
 from toee_hermes.errors import ToolErrorClass
 from toee_hermes.execute import ToolDriver
@@ -35,13 +35,13 @@ from toee_hermes.gateway.ingress import (
 )
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
-    TextlineInboundFields,
+    SmsInboundFields,
     is_email_channel,
     to_inbound_channel_event,
 )
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION, is_opt_out_keyword
 from toee_hermes.gateway.rate_limit import InboundRateLimiter
-from toee_hermes.gateway.verify import verify_textline_signature
+from toee_hermes.gateway.verify import verify_webhook_token
 
 # eventId -> already processed? (route layer consults the datastore). Default
 # never-duplicate keeps the orchestrator pure for callers without idempotency yet.
@@ -69,18 +69,15 @@ class InboundDecision:
 
 def process_inbound(
     *,
-    raw_body: Union[str, bytes],
-    signature: Optional[str],
+    token: Optional[str],
     secret: str,
-    fields: Optional[TextlineInboundFields] = None,
+    fields: Optional[SmsInboundFields] = None,
     event: Optional[InboundChannelEvent] = None,
     driver: ToolDriver,
     rate_limiter: InboundRateLimiter,
     resolved_at: str,
     is_duplicate: DuplicateCheck = lambda event_id: False,
     at_ms: Optional[float] = None,
-    event_time: Optional[str] = None,
-    event_type: Optional[str] = None,
 ) -> InboundDecision:
     """Decide an inbound turn for SMS (``fields``) or email (``event``, S17/FR-18).
 
@@ -90,14 +87,9 @@ def process_inbound(
     accept — is shared; only identity match and the SMS-only opt-out short-circuit
     branch on the channel.
     """
-    # Verify: reject unsigned/forged traffic before any processing (ADR-0021).
-    if not verify_textline_signature(
-        raw_body=raw_body,
-        signature=signature,
-        secret=secret,
-        event_time=event_time,
-        event_type=event_type,
-    ):
+    # Verify: reject traffic without the shared webhook-URL token before any
+    # processing (ADR-0021; SimpleTexting does not sign payloads, ADR-0153).
+    if not verify_webhook_token(token=token, secret=secret):
         return InboundDecision(status=401, action="reject", stage="verify")
 
     if event is None:

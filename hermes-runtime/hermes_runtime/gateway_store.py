@@ -10,7 +10,7 @@ runnable and testable without a database.
 The in-memory store mirrors the ADR-0115 entity hierarchy:
 
     CustomerThread (one per channel identity / phone)
-      -> SmsSession (one per 24h window; dev maps one Textline conversation = one)
+      -> SmsSession (one per 24h window; dev maps one provider conversation = one)
         -> MessageTurn (one per inbound/outbound/Hermes message event)
     AgentTurnContext (one per accepted inbound eventId; refs thread/session/turn)
 """
@@ -27,6 +27,10 @@ from toee_hermes.gateway.agent_turn import (
 from toee_hermes.gateway.normalize import InboundChannelEvent, is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
 
+from hermes_runtime.datastore.handlers._common import (
+    customer_thread_id as build_customer_thread_id,
+)
+
 
 class GatewayStore(Protocol):
     """Durable store for accepted inbound turns (ADR-0107 source of truth)."""
@@ -38,6 +42,8 @@ class GatewayStore(Protocol):
     def load_context(self, event_id: str) -> Optional[AgentTurnContext]: ...
 
     def load_inbound_body(self, inbound_body_ref: str) -> Optional[str]: ...
+
+    def claim_event(self, event_id: str) -> bool: ...
 
     def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None: ...
 
@@ -56,13 +62,16 @@ class InMemoryGatewayStore:
         # MessageTurn bodies keyed by ref. ADR-0105 keeps PII out of the task
         # payload, so the inbound body lives here and the context carries the ref.
         self._message_turns: dict[str, str] = {}
+        # Events handled on a branch that persists no context (opt-out). Without
+        # this, is_duplicate could never see them and a replayed STOP re-sent the
+        # confirmation every time (ADR-0016 wants exactly one).
+        self._claimed_events: set[str] = set()
 
     def _thread_id(self, channel: str, from_identity: str) -> str:
         # CustomerThread: one per stable channel identity. S17: email keys on the
         # From address, SMS on the phone — a phone-shaped key is never written for
         # an email event ((channel, channel_identity) uniqueness, ADR-0115).
-        prefix = "email" if is_email_channel(channel) else "textline"
-        return f"customer_thread:{prefix}:{from_identity}"
+        return build_customer_thread_id(channel, from_identity)
 
     def _session_id(self, thread_id: str, conversation_id: str) -> str:
         # Session bounded by the 24h window (ADR-0019). The dev store maps one
@@ -112,8 +121,15 @@ class InMemoryGatewayStore:
         ref = f"message_turn:{context.sms_session_id}:{context.event_id}:out"
         self._message_turns[ref] = body
 
+    def claim_event(self, event_id: str) -> bool:
+        """Atomically claim an event that persists no context; True if first claim."""
+        if event_id in self._claimed_events or event_id in self._contexts:
+            return False
+        self._claimed_events.add(event_id)
+        return True
+
     def is_duplicate(self, event_id: str) -> bool:
-        return event_id in self._contexts
+        return event_id in self._contexts or event_id in self._claimed_events
 
 
 class InMemoryJobQueue:

@@ -2,9 +2,9 @@
 
 Everything below the gateway is a seam (reply sender, run_turn, store, queue) so the
 HTTP app stays testable with fakes. :func:`build_gateway_app` is the one place those
-seams are resolved from the environment into the *real* production app: the Textline
-webhook signing secret (ADR-0021), the internal-job shared secret (ADR-0106), the
-real Textline ReplySender (ADR-0083), and the OpenRouter-backed governed turn runner
+seams are resolved from the environment into the *real* production app: the SimpleTexting
+webhook URL token (ADR-0021), the internal-job shared secret (ADR-0106), the
+real SimpleTexting ReplySender (ADR-0083), and the OpenRouter-backed governed turn runner
 (ADR-0009/0107).
 
 The root fails closed: a missing secret raises at boot, never a silent
@@ -34,12 +34,12 @@ from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 REQUIRED_ENV = {
     WEBHOOK_SECRET_ENV: "whsec-123",
     INTERNAL_JOB_SECRET_ENV: "job-secret-123",
-    "TEXTLINE_ACCESS_TOKEN": "tok-123",
+    "SIMPLETEXTING_API_TOKEN": "tok-123",
     "OPENROUTER_API_KEY": "or-key-123",
 }
 
 # Optional env that would otherwise leak from the developer's shell.
-_OPTIONAL_ENV = ("TEXTLINE_API_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL")
+_OPTIONAL_ENV = ("SIMPLETEXTING_API_BASE_URL", "OPENROUTER_BASE_URL", "OPENROUTER_MODEL")
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def test_build_gateway_app_returns_a_real_app_with_both_routes(
 
     assert isinstance(app, FastAPI)
     paths = {route.path for route in app.routes}
-    assert "/webhooks/textline" in paths
+    assert "/webhooks/simpletexting" in paths
     assert "/internal/jobs/agent-turn" in paths
 
 
@@ -78,7 +78,7 @@ def test_build_gateway_app_wires_resolved_secrets_and_collaborators(
 
     assert captured["webhook_secret"] == "whsec-123"
     assert captured["internal_job_secret"] == "job-secret-123"
-    # The real Textline sender and the OpenRouter-backed turn runner are both wired.
+    # The real SimpleTexting sender and the OpenRouter-backed turn runner are both wired.
     assert callable(captured["reply_sender"])
     assert callable(captured["turn_runner"])
 
@@ -164,32 +164,32 @@ def test_build_gateway_app_fails_closed_when_a_required_secret_is_absent(
 # --- S01: REPLY_SENDER composition gate (FR-10, NFR-4) ---------------------
 
 
-def test_resolve_reply_sender_defaults_to_real_textline_sender_and_requires_token(
+def test_resolve_reply_sender_defaults_to_the_real_sender_and_requires_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv(REPLY_SENDER_ENV, raising=False)
-    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
 
-    with pytest.raises(ValueError, match="TEXTLINE_ACCESS_TOKEN"):
+    with pytest.raises(ValueError, match="SIMPLETEXTING_API_TOKEN"):
         resolve_reply_sender()
 
 
-def test_resolve_reply_sender_textline_value_behaves_like_unset(
+def test_resolve_reply_sender_simpletexting_value_behaves_like_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(REPLY_SENDER_ENV, "textline")
-    monkeypatch.setenv("TEXTLINE_ACCESS_TOKEN", "tok-123")
+    monkeypatch.setenv(REPLY_SENDER_ENV, "simpletexting")
+    monkeypatch.setenv("SIMPLETEXTING_API_TOKEN", "tok-123")
 
     sender = resolve_reply_sender()
 
     assert callable(sender)
 
 
-def test_resolve_reply_sender_simulated_does_not_require_a_textline_token(
+def test_resolve_reply_sender_simulated_does_not_require_a_provider_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
-    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
 
     sender = resolve_reply_sender()
 
@@ -200,12 +200,12 @@ def test_resolve_reply_sender_simulated_makes_no_network_call_and_returns_none(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
-    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
 
     def _boom(*args: object, **kwargs: object) -> int:
         raise AssertionError("simulated sender must never open a network connection")
 
-    monkeypatch.setattr("hermes_runtime.textline_reply._urllib_post", _boom)
+    monkeypatch.setattr("hermes_runtime.simpletexting_reply._urllib_post", _boom)
 
     sender = resolve_reply_sender()
 
@@ -216,7 +216,7 @@ def test_resolve_reply_sender_unrecognized_value_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(REPLY_SENDER_ENV, "bogus")
-    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
 
     # The error must name the misconfiguration, not the (irrelevant, unset) Textline
     # token -- proof this never silently falls through to the real sender.
@@ -232,7 +232,7 @@ def test_build_gateway_app_wires_simulated_reply_sender_without_textline_token(
     monkeypatch.setenv(WEBHOOK_SECRET_ENV, "whsec-123")
     monkeypatch.setenv(INTERNAL_JOB_SECRET_ENV, "job-secret-123")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-123")
-    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
     monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
 
     app = build_gateway_app()
@@ -258,7 +258,7 @@ def test_simulated_reply_sender_still_mirrors_via_on_reply_sent(
     from hermes_runtime.turn_runner import make_gateway_turn_runner
 
     monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
-    monkeypatch.delenv("TEXTLINE_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
     sender = resolve_reply_sender()
 
     mirrored: list[tuple[object, str]] = []
@@ -275,3 +275,40 @@ def test_simulated_reply_sender_still_mirrors_via_on_reply_sent(
     runner(ctx, "Where is my order?")
 
     assert mirrored == [(ctx, "Shipped!")]
+
+
+def test_build_gateway_app_refuses_in_memory_dedup_in_a_deployed_environment(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-0153: SimpleTexting does not sign webhooks, so messageId idempotency is
+    # the only replay protection. The in-memory store dedups inside one process, so
+    # a Cloud Run replay lands on another instance (or after a scale-to-zero) and is
+    # accepted again. Booting that way in production is a misconfiguration, not a
+    # degraded mode.
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    monkeypatch.setenv("DEPLOY_ENVIRONMENT", "production")
+
+    with pytest.raises(ValueError, match="TOOL_BACKEND=datastore"):
+        build_gateway_app()
+
+
+def test_build_gateway_app_allows_the_in_memory_store_for_local_development(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    monkeypatch.delenv("DEPLOY_ENVIRONMENT", raising=False)
+
+    assert isinstance(build_gateway_app(), FastAPI)
+
+
+def test_build_gateway_app_installs_access_log_redaction(_full_env: None) -> None:
+    # The webhook token cannot leave the URL (SimpleTexting has no header option),
+    # so the boot path must mask it before uvicorn logs the query string.
+    import logging
+
+    from hermes_runtime.access_log import RedactQueryTokenFilter
+
+    build_gateway_app()
+
+    filters = logging.getLogger("uvicorn.access").filters
+    assert any(isinstance(f, RedactQueryTokenFilter) for f in filters)

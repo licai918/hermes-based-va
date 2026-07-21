@@ -66,26 +66,26 @@ _Avoid_: Separate Hermes, separate bot
 
 **External Customer Service Profile**:
 The Hermes Profile used for customer-facing phone, SMS, email, and web chat conversations.
-_Avoid_: Internal assistant, supervisor agent, Textline as a separate profile
+_Avoid_: Internal assistant, supervisor agent, the SMS provider as a separate profile
 
 **Channel Gateway**:
-The thin ingress layer that receives channel webhooks such as Textline or Twilio, verifies authenticity, and routes normalized events into the correct **Hermes Profile**.
+The thin ingress layer that receives channel webhooks such as SimpleTexting or Twilio, verifies authenticity, and routes normalized events into the correct **Hermes Profile**.
 _Avoid_: Channel-specific agent brain, business logic in webhook handler
 
 **InboundChannelEvent**:
-The canonical normalized payload for an accepted inbound customer message after **Channel Gateway** provider-specific mapping. Textline SMS uses channel `textline_sms` and includes ids, sender phone, body, optional media, and receipt time for idempotent ingress.
+The canonical normalized payload for an accepted inbound customer message after **Channel Gateway** provider-specific mapping. SimpleTexting SMS uses channel `simpletexting_sms` and includes ids, sender phone, body, optional media, and receipt time for idempotent ingress.
 _Avoid_: Raw provider webhook JSON in agent prompts, processing delivery receipts as customer turns
 
 **Webhook Acknowledgment**:
-The point at which the **Channel Gateway** returns success to a provider after durable inbound preprocessing. For Textline SMS, Hermes returns `200` after verification, normalization, ingress matching, and inbound persistence, then runs the external agent asynchronously.
+The point at which the **Channel Gateway** returns success to a provider after durable inbound preprocessing. For SimpleTexting SMS, Hermes returns `200` after verification, normalization, ingress matching, and inbound persistence, then runs the external agent asynchronously.
 _Avoid_: Waiting for full agent completion before provider ack, acknowledging before persistence, using provider retries to replay completed inbound events
 
 **AgentTurnContext**:
-The persisted inbound-turn record that binds an accepted Textline message to `eventId`, `conversationId`, `smsSessionId`, **Customer Thread**, sender phone, and **Session Identity Snapshot** for async agent execution and governed outbound replies.
+The persisted inbound-turn record that binds an accepted inbound SMS to `eventId`, `conversationId`, `smsSessionId`, **Customer Thread**, sender phone, and **Session Identity Snapshot** for async agent execution and governed outbound replies.
 _Avoid_: Queue payload as source of truth, reply targeting from model-supplied alternate phone numbers, session re-resolution without ingress snapshot
 
 **Customer Thread**:
-The long-lived customer conversation record in the **Toee Business Datastore** (L2 Conversation) for a channel identity such as a Textline phone number, spanning multiple **SMS Session** windows and many **MessageTurn** records.
+The long-lived customer conversation record in the **Toee Business Datastore** (L2 Conversation) for a channel identity such as an SMS phone number, spanning multiple **SMS Session** windows and many **MessageTurn** records.
 _Avoid_: One-message memory, channel-only log outside Hermes, case-owned thread container
 
 **MessageTurn**:
@@ -125,7 +125,7 @@ The per-action accountability record in the **Toee Business Datastore** (L3 Oper
 _Avoid_: Untracked employee actions, external-only audit spreadsheet
 
 **Text-First Launch**:
-The first-version go-live strategy that exposes the **External Customer Service Profile** on Textline SMS before adding the voice layer.
+The first-version go-live strategy that exposes the **External Customer Service Profile** on SimpleTexting SMS before adding the voice layer.
 _Avoid_: Phone-first go-live, parallel multi-channel launch
 
 **Voice Layer**:
@@ -141,7 +141,7 @@ A v1 **Internal Copilot Profile** capability that generates SMS, email, or inter
 _Avoid_: Autonomous customer send, accounting write, payment link creation
 
 **Copilot Governed Write**:
-A phased capability in which employees trigger approved write actions through **Copilot Gateway** only after explicit confirmation, role checks, and **Tool Gate** enforcement. Phase 1 is employee-confirmed Textline send from an editable **Copilot Draft Action** card and confirmation modal within a claimed **Human Intervention Case**.
+A phased capability in which employees trigger approved write actions through **Copilot Gateway** only after explicit confirmation, role checks, and **Tool Gate** enforcement. Phase 1 is employee-confirmed SMS send from an editable **Copilot Draft Action** card and confirmation modal within a claimed **Human Intervention Case**.
 _Avoid_: Autonomous AI write, unconfirmed one-click send, bypass of source-system controls, send outside an active human-intervention case
 
 **Copilot Workbench**:
@@ -149,12 +149,12 @@ The internal workspace combining the **Copilot Gateway** and **Operations Dashbo
 _Avoid_: Customer portal, passive ticket UI only, merged supervisor governance console
 
 **Conversation Simulator**:
-The workbench testing surface (0.0.3) where an operator role-plays a customer talking to the external Hermes agent and an employee talking to the copilot. It uses **real pipeline + simulated ingress**: the customer side injects simulated Textline webhook events into the gateway under a simulated phone number, so identity matching, memory injection, knowledge retrieval, and the live model all execute the production turn path; the employee side is the real **Copilot Workbench**. Carries a channel switcher (SMS / email). It is the product-acceptance surface for iteration PACs and the traffic source for validating the **Agent-Experience Memory (L6)** mechanism before real operational traffic exists.
-_Avoid_: A bypass chat that calls the agent directly (skipping gateway/identity), production Textline traffic, a separate agent build for testing, treating simulator transcripts as real customer data
+The workbench testing surface (0.0.3) where an operator role-plays a customer talking to the external Hermes agent and an employee talking to the copilot. It uses **real pipeline + simulated ingress**: the customer side injects simulated SMS webhook events into the gateway under a simulated phone number, so identity matching, memory injection, knowledge retrieval, and the live model all execute the production turn path; the employee side is the real **Copilot Workbench**. Carries a channel switcher (SMS / email). It is the product-acceptance surface for iteration PACs and the traffic source for validating the **Agent-Experience Memory (L6)** mechanism before real operational traffic exists.
+_Avoid_: A bypass chat that calls the agent directly (skipping gateway/identity), production SMS traffic, a separate agent build for testing, treating simulator transcripts as real customer data
 
 **Admin Governance Console**:
 The internal workspace entry that uses the **Supervisor Admin Profile** for **KnowledgeOps**, eval review, and workbench administration. v1 uses three routes: `/admin/knowledge`, `/admin/eval`, and `/admin/accounts`.
-_Avoid_: Customer case drafting, Textline send, live external customer-service reads, single-tabbed admin hub
+_Avoid_: Customer case drafting, SMS send, live external customer-service reads, single-tabbed admin hub
 
 **Customer Service Rep**:
 An employee role authorized to use the **Copilot Workbench** to review cases, read summaries and transcripts, draft replies, and mark **Case Resolution**.
@@ -240,7 +240,7 @@ _Avoid_: Unbounded retrieval wait, partial-result fabrication, silent empty answ
 *Retired 2026-07-20.* Shopify remains the corpus source — the 0.0.3 spike pulled its entire corpus from the Shopify connector — but there is no weekly sync job. See **Knowledge Ingestion**.
 
 **Product Media Reply**:
-A Textline SMS reply that sends one public-catalog product image or approved product page link resolved through a live Shopify Tool read in the **current SMS Session**. A **Verified Customer** may receive live price and inventory in the same reply when requested.
+An SMS reply that sends one public-catalog product image or approved product page link resolved through a live Shopify Tool read in the **current SMS Session**. A **Verified Customer** may receive live price and inventory in the same reply when requested.
 _Avoid_: RAG-cached image URL, stale corpus media, payment link, account-scoped pricing or inventory for unmatched callers
 
 **Prior Order Product Reference**:
@@ -264,7 +264,7 @@ A proactive question flow in which Hermes asks authorized **Supervisor Admin Pro
 _Avoid_: Customer interview, automatic policy generation, website crawl
 
 **Business Integration Tool**:
-A governed **Domain Adapter Tool** that reads or triggers approved actions in Shopify, QBO, Square, EasyRoutes, Textline, or Twilio under profile allowlists and audit rules.
+A governed **Domain Adapter Tool** that reads or triggers approved actions in Shopify, QBO, Square, EasyRoutes, SimpleTexting, or Twilio under profile allowlists and audit rules.
 _Avoid_: Third-party MCP wrapper, direct LLM-side API call, separate tool runtime outside Hermes
 
 **Domain Adapter Tool Action**:
@@ -280,15 +280,15 @@ Procedural instructions in Hermes Skills that tell the agent how to perform a ta
 _Avoid_: Treating Skills as compliance control, assuming the model always loads a Skill
 
 **Verified Customer**:
-A customer whose inbound phone number on voice or Textline SMS matches a phone number stored on a Shopify Customer record.
+A customer whose inbound phone number on voice or SimpleTexting SMS matches a phone number stored on a Shopify Customer record.
 _Avoid_: Caller, phone number owner, manually verified customer
 
 **Phone Match Verification**:
-The first-version identity check that matches the inbound sender phone number against Shopify Customer **Registered Phone** records on Textline SMS and voice. For SMS, **Ingress Phone Match** runs synchronously in the **Channel Gateway** before **Hermes Core** processes the message, so verification is complete at message receipt without a customer-facing verification ceremony.
+The first-version identity check that matches the inbound sender phone number against Shopify Customer **Registered Phone** records on SimpleTexting SMS and voice. For SMS, **Ingress Phone Match** runs synchronously in the **Channel Gateway** before **Hermes Core** processes the message, so verification is complete at message receipt without a customer-facing verification ceremony.
 _Avoid_: Multi-factor verification, knowledge-based authentication, channel-specific SMS rules, pre-answer "verify your identity" prompts
 
 **Ingress Phone Match**:
-The synchronous phone-number lookup the **Channel Gateway** performs on every inbound Textline SMS before agent invocation, producing the current **Session Identity Snapshot**.
+The synchronous phone-number lookup the **Channel Gateway** performs on every inbound SimpleTexting SMS before agent invocation, producing the current **Session Identity Snapshot**.
 _Avoid_: Mid-conversation verification ritual, deferred identity lookup, customer-entered verification codes
 
 **Session Identity Snapshot**:
@@ -363,8 +363,8 @@ _Avoid_: Routine order lookup, every unmatched caller, promised response deadlin
 The external customer-service behavior when a live business tool fails: state temporary unavailability in brief English, create a **Follow-up Case**, and do not fabricate order, accounting, delivery, or payment facts.
 _Avoid_: RAG guess, cached answer as live status, silent failure
 
-**Textline Webhook Verification**:
-The required authenticity check for inbound Textline webhook requests before Hermes processes an SMS event.
+**SMS Webhook Verification**:
+The required authenticity check for inbound SMS provider webhook requests before Hermes processes an SMS event. SimpleTexting does not sign payloads, so v1 authenticates on a shared token carried in the registered webhook URL and relies on `messageId` idempotency for replay protection (ADR-0153).
 _Avoid_: Unsigned webhook acceptance, client-side API secrets
 
 **After-Hours Service**:
@@ -372,7 +372,7 @@ Customer-service coverage provided by the **External Customer Service Profile** 
 _Avoid_: 24/7 live support, always-on human queue, Hermes-defined schedule
 
 **Always-On SMS Service**:
-The first-version Textline SMS mode in which Hermes auto-replies 24/7 through the **External Customer Service Profile**, independent of Net2phone routing schedules.
+The first-version SimpleTexting SMS mode in which Hermes auto-replies 24/7 through the **External Customer Service Profile**, independent of Net2phone routing schedules.
 _Avoid_: Business-hours SMS silence, live-staff SMS preemption in MVP
 
 **SMS Opt-Out**:
@@ -384,11 +384,11 @@ The single brief English reply Hermes sends after processing an **SMS Opt-Out Ke
 _Avoid_: Long explanation, repeated confirmations, support blackout
 
 **SMS Opt-Out Keyword**:
-An inbound Textline message containing **STOP**, **UNSUBSCRIBE**, or **ARRET** that triggers **SMS Opt-Out** handling and consent updates in the **Identity Graph**.
+An inbound SMS message containing **STOP**, **UNSUBSCRIBE**, or **ARRET** that triggers **SMS Opt-Out** handling and consent updates in the **Identity Graph**.
 _Avoid_: Marketing footer, implied opt-out without keyword
 
 **SMS Session**:
-A Textline conversation window for one phone number that stays open for 24 hours after the latest inbound or outbound message and then closes.
+A provider conversation window for one phone number that stays open for 24 hours after the latest inbound or outbound message and then closes.
 _Avoid_: Permanent session, one-message session, voice call session
 
 **SMS Session Timeout**:
@@ -421,7 +421,7 @@ The first-version limit that the **External Customer Service Profile** handles p
 _Avoid_: Bilingual phone AI, French phone knowledge path, automatic French transfer in MVP
 
 **English-Only External Service**:
-The first-version language limit for customer-facing Hermes channels, including **Text-First Launch** on Textline SMS and the later **Voice Layer**.
+The first-version language limit for customer-facing Hermes channels, including **Text-First Launch** on SimpleTexting SMS and the later **Voice Layer**.
 _Avoid_: Bilingual customer AI, French knowledge path in MVP
 
 **Non-English Caller**:
@@ -457,7 +457,7 @@ A secure Square-hosted link sent to a customer so they can pay without sharing c
 _Avoid_: Card collection, phone payment
 
 **SMS Payment Link Reply**:
-A **Payment Link** sent only as a reply in the current verified Textline conversation thread to the customer's Shopify **Registered Phone**.
+A **Payment Link** sent only as a reply in the current verified SMS conversation thread to the customer's Shopify **Registered Phone**.
 _Avoid_: New SMS thread, alternate contact from message body, email fallback from SMS request in MVP
 
 **Registered Contact**:
@@ -513,7 +513,7 @@ _Avoid_: Automatic erasure, single-button delete
 - `apps/workbench` uses the Next.js App Router with `(public)` and `(authenticated)` route groups mapping directly to `/login`, `/copilot`, `/copilot/audit/*`, and `/admin/*`.
 - `apps/workbench` authenticates with an HttpOnly session cookie, protects authenticated pages and BFF routes through middleware, and derives `internal_copilot` versus `supervisor_admin` profile context from `/copilot` and `/admin` route prefixes.
 - `apps/workbench` exposes resource-oriented BFF routes under `/api/auth`, `/api/copilot`, and `/api/admin` that map internally to v1 **Domain Adapter Tools** without exposing raw tool envelopes to the browser. Per ADR-0141 those handlers reach the backend over HTTP — deterministic `POST /v1/tools:dispatch` for resource reads/writes and the agent-turn API for chat/drafts — not an in-process TypeScript executor.
-- The **Channel Gateway** is the Python FastAPI Cloud Run service in `hermes-runtime/` with `POST /webhooks/textline` and a server-side pipeline for verification, normalization, ingress phone match, and **External Customer Service Profile** execution that embeds Hermes via the Python library (ADR-0139). The legacy Node Fastify `services/hermes-gateway` is superseded and retained only as historical scaffolding.
+- The **Channel Gateway** is the Python FastAPI Cloud Run service in `hermes-runtime/` with `POST /webhooks/simpletexting` and a server-side pipeline for verification, normalization, ingress phone match, and **External Customer Service Profile** execution that embeds Hermes via the Python library (ADR-0139). SimpleTexting does not sign webhooks, so the route authenticates on a shared token carried in the registered URL and dedups on `messageId` (ADR-0153). The legacy Node Fastify `services/hermes-gateway` was superseded by ADR-0139 and has been deleted.
 - There is no TypeScript in-process Hermes SDK (ADR-0139): Hermes is the upstream Python `hermes-agent`, embedded only by the Python integration layer. `apps/workbench` never imports Hermes; it reaches the **Internal Copilot Profile** and **Supervisor Admin Profile** through the per-profile Hermes HTTP API (ADR-0141: deterministic `POST /v1/tools:dispatch` running `execute_tool` for resources, plus the OpenAI-compatible agent-turn API for chat/drafts; bearer auth per profile).
 - The Python Hermes packages (`hermes/`, `hermes-runtime/`) build with `uv` against the upstream `hermes-agent` pinned by git rev (the ADR-0101 pin-and-eval-gate workflow, now against the rev). `apps/workbench` and its supporting `packages/*` TypeScript libraries use a pnpm workspace.
 - Local development runs the workbench with pnpm and the Python gateway with `uv` (no Docker by default); production deploys separate Cloud Run services from `apps/workbench/Dockerfile` and `hermes-runtime/Dockerfile` (ADR-0098 env layering still applies; the gateway image path is updated per ADR-0139). See `docs/ops/deploy-cloud-run.md`.
@@ -524,7 +524,7 @@ _Avoid_: Automatic erasure, single-button delete
 - The **External Customer Service Profile** uses a default-deny **Profile Tool Allowlist** of Toee Tire **Business Integration Tool** reads plus restricted **Hermes Built-in Tools** such as `web_search`.
 - The **External Customer Service Profile** does not register terminal, browser, write, Copilot, or campaign tools in the first version.
 - The **Internal Copilot Profile** may use broader read and case tools than the external profile, but does not register business-system write tools in the first version.
-- **Copilot Draft Action** is in scope for v1; other **Copilot Governed Write** phases beyond employee-confirmed Textline send remain future ADR decisions.
+- **Copilot Draft Action** is in scope for v1; other **Copilot Governed Write** phases beyond employee-confirmed SMS send remain future ADR decisions.
 - **Auto-Handled Interaction** threads are audit-recorded but do not enter the default Copilot work queue.
 - Only **Human Intervention Case** items use **Copilot Gateway** for employee drafting in v1.
 - The default **Operations Dashboard** queue for **Customer Service Rep** users shows **Human Intervention Case** items only, excluding **Contact Reason** `sales_outreach` cases.
@@ -535,7 +535,7 @@ _Avoid_: Automatic erasure, single-button delete
 - When handling a **Human Intervention Case**, employees see read-only **Case Thread Context** for the active channel thread only in v1, including prior **Auto-Handled Interaction** turns on that channel.
 - The **Identity Graph** may record cross-channel identity links, but the default **Copilot Workbench** does not merge SMS, email, and voice history into one timeline in the first version.
 - Opening or refreshing **Case Thread Context** writes a **Workbench Audit Log** entry.
-- The first **Copilot Governed Write** phase is employee-confirmed Textline send from an editable draft card and confirmation modal inside a claimed **Human Intervention Case** on an active **SMS Session**.
+- The first **Copilot Governed Write** phase is employee-confirmed SMS send from an editable draft card and confirmation modal inside a claimed **Human Intervention Case** on an active **SMS Session**.
 - The **Supervisor Admin Profile** governs knowledge, eval review, and workbench administration, but does not register customer-facing send or business write tools in the first version.
 - **Workbench Supervisor** and **Workbench Admin** users use two separate entry points: **Copilot Workbench** on the **Internal Copilot Profile** and the **Admin Governance Console** on the **Supervisor Admin Profile**.
 - The **Admin Governance Console** uses three routes in v1: `/admin/knowledge`, `/admin/eval`, and `/admin/accounts`.
@@ -555,7 +555,7 @@ _Avoid_: Automatic erasure, single-button delete
 - `toee_easyroutes_read` v1 actions are `get_delivery_status` and `get_route_details`.
 - `toee_easyroutes_read` actions require a **Verified Customer** and a matched customer order reference.
 - `toee_case` v1 actions are `create_case` and `update_case` for external **Follow-up Case** creation and limited urgency or **Contact Reason** updates.
-- `toee_textline_reply` v1 action is `send_message` for the current **SMS Session**, with optional `media_url` for **Product Media Reply**.
+- `toee_sms_reply` v1 action is `send_message` for the current **SMS Session**, with optional `media_url` for **Product Media Reply**.
 - `toee_square_payment_link` v1 action is `send_payment_link` for a verified current-thread **Payment Link** only.
 - `toee_knowledge_search` v1 actions are `search_public_site` and `search_operational_policy`.
 - `search_operational_policy` returns only **Published Operational Policy** content for external and Copilot use.
@@ -569,12 +569,12 @@ _Avoid_: Automatic erasure, single-button delete
 - `toee_workbench_admin` v1 actions are `list_accounts`, `create_account`, `update_account_role`, and `disable_account` on the **Supervisor Admin Profile**.
 - `match_phone` and `match_email_sender` run at channel ingress before external agent processing; `get_email_link_status` supports accounting-read gating.
 - Tooe Tire **Domain Adapter Tools** expose v1 behavior through fixed per-tool **Domain Adapter Tool Action** enums selected by a required `action` parameter.
-- Shopify, QBO, Square, EasyRoutes, Textline, and Twilio connect through **Business Integration Tool** layers in the first version, not third-party or self-hosted MCP wrappers.
+- Shopify, QBO, Square, EasyRoutes, SimpleTexting, and Twilio connect through **Business Integration Tool** layers in the first version, not third-party or self-hosted MCP wrappers.
 - **Public Site Knowledge** (L5) is retrieved by an in-house hybrid lexical FTS + dense-embedding retriever over the separate `toee_knowledge` database, injected through the `extra_drivers` seam; a driver-side deadline returns a governed `found=false` rather than blocking a turn.
 - Toee Tire business rules are implemented as thin **Domain Adapter** layers on top of **Hermes Core**, not by porting the Gemini VA application core.
-- Textline is a **channel** into the **External Customer Service Profile**, not a separate **Hermes Profile**.
-- Hermes stores a long-lived **Customer Thread** per Textline phone number and one or more bounded **SMS Session** windows inside it.
-- The **Channel Gateway** verifies Textline webhooks and routes normalized events into **Hermes Core** under the external profile.
+- SimpleTexting is a **channel** into the **External Customer Service Profile**, not a separate **Hermes Profile**.
+- Hermes stores a long-lived **Customer Thread** per SMS phone number and one or more bounded **SMS Session** windows inside it.
+- The **Channel Gateway** verifies SMS provider webhooks and routes normalized events into **Hermes Core** under the external profile.
 - Employees use the **Internal Copilot Profile** through the **Copilot Gateway** inside the **Copilot Workbench**.
 - The **Operations Dashboard** reads case and conversation state from the **Toee Business Datastore**.
 - The first-version **Copilot Workbench** uses a split layout: **Operations Dashboard** on the left and **Copilot Gateway** on the right.
@@ -593,24 +593,24 @@ _Avoid_: Automatic erasure, single-button delete
 - Each human employee signs in with their own **Workbench Account**; case handling is attributed through **Case Assignee** and **Workbench Audit Log** entries.
 - **Workbench Supervisor** users may use the **Agent Workload View** to see case ownership and resolution activity across the team.
 - **Hermes Core** serves one or more **Hermes Profiles**.
-- **Text-First Launch** goes live on Textline SMS before the **Voice Layer** is added.
-- Textline SMS operates as **Always-On SMS Service**; Hermes auto-replies 24/7 in the first version.
+- **Text-First Launch** goes live on SimpleTexting SMS before the **Voice Layer** is added.
+- SimpleTexting SMS operates as **Always-On SMS Service**; Hermes auto-replies 24/7 in the first version.
 - An **SMS Opt-Out Keyword** records **SMS Opt-Out** in the **Identity Graph** and blocks marketing or proactive outbound texts to that number.
 - Hermes sends one **SMS Opt-Out Confirmation** after an **SMS Opt-Out Keyword** and does not add proactive STOP marketing disclaimer text to normal customer-service SMS replies.
-- Textline SMS uses a **24-hour SMS Session** window per phone number.
+- SimpleTexting SMS uses a **24-hour SMS Session** window per phone number.
 - After **SMS Session Timeout**, the next inbound text starts a new **SMS Session** and the **Channel Gateway** runs **Ingress Phone Match** again before agent processing.
 - **Ingress Phone Match** completes **Phone Match Verification** at message receipt; customers do not receive a separate verification ceremony.
 - Each **SMS Session** stores a **Session Identity Snapshot** in the **Identity Graph** for tool authorization and audit.
 - A new **SMS Session** begins with an **SMS Session Opener** in the first reply; later replies in the same session do not repeat the full opener.
 - When a live business tool fails, Hermes uses a **Tool Unavailable Response** instead of fabricating account or order facts.
-- Inbound Textline webhooks must pass **Textline Webhook Verification** before Hermes handles an SMS event.
-- **After-Hours Service** applies to Net2phone-routed voice calls, not to the Textline SMS auto-reply schedule.
+- Inbound SMS provider webhooks must pass **SMS Webhook Verification** before Hermes handles an SMS event.
+- **After-Hours Service** applies to Net2phone-routed voice calls, not to the SimpleTexting SMS auto-reply schedule.
 - The **Voice Layer** reuses the same **Hermes Core** validated during **Text-First Launch**; it does not fork a separate customer-service brain.
 - **External Customer Service Profile**, **Internal Copilot Profile**, and **Supervisor Admin Profile** are **Hermes Profiles**.
 - **Voice Gateway** provides audio input and output for the **External Customer Service Profile**.
 - **Voice Gateway** may deliver a **Personalized Opening Greeting** before Hermes begins the conversation.
 - **Opening Greeting** uses one script framework for all Net2phone transfers; it does not vary by after-hours versus no-answer routing.
-- The first-version external channels operate under **English-Only External Service**, including **Text-First Launch** on Textline SMS.
+- The first-version external channels operate under **English-Only External Service**, including **Text-First Launch** on SimpleTexting SMS.
 - A **Non-English Caller** on phone receives a brief English explanation, basic intake, and a **Follow-up Case** rather than full AI service in another language.
 - **Launch Eval Gate** scenarios 1–18 execute from repository YAML fixtures through the **Launch Eval Runner** with mock **Domain Adapter** responses for Text-First go-live.
 - Each **Launch Eval Scenario** includes at minimum one behavioral or tool assertion, one disclosure or text assertion, and a `max_severity` value.
@@ -628,7 +628,7 @@ _Avoid_: Automatic erasure, single-button delete
 - A request to continue verified email service on a different address supplied in **Reply-To** or message body creates a **Follow-up Case**.
 - An **Ambiguous Email Match** requires customer disambiguation before Hermes treats the sender as a **Verified Customer** for account-scoped requests on the email channel.
 - Email channel go-live reruns non-customer scenarios on email fixtures and adds email customer-identity scenarios for verified, unmatched, and non-customer traffic.
-- **Text-First Launch** on Textline SMS must pass the **Launch Eval Gate** before go-live; the **Voice Layer** and later email channel each require a subsequent eval pass.
+- **Text-First Launch** on SimpleTexting SMS must pass the **Launch Eval Gate** before go-live; the **Voice Layer** and later email channel each require a subsequent eval pass.
 - A **Personalized Opening Greeting** may include company or contact name and account recognition, but must follow the **Greeting Personalization Boundary**.
 - **KnowledgeOps** controls what approved knowledge the **Hermes Core** can use.
 - **Public Site Knowledge** is ingested from the **Shopify connector** (pages, articles, shop policies) into the separate `toee_knowledge` database. Refresh cadence is a build-time decision, not a standing weekly job.
@@ -640,8 +640,8 @@ _Avoid_: Automatic erasure, single-button delete
 - Failed publish attempts remain **Pending Eval Knowledge** while the prior **Published Operational Policy** version stays active externally.
 - The **Knowledge Publish Eval Gate** applies to **Operational Policy Knowledge** only, not to **Public Site Knowledge** (L5) corpus updates.
 - Hermes answers policy and FAQ-style questions from **Public Site Knowledge**, but answers account-specific facts from tools and governed operational rules.
-- A **Verified Customer** is identified through **Phone Match Verification** against a Shopify Customer **Registered Phone** on voice and Textline SMS.
-- **Phone Match Verification**, unmatched handling, ambiguous match handling, and **Payment Link** rules are shared across Textline SMS and voice.
+- A **Verified Customer** is identified through **Phone Match Verification** against a Shopify Customer **Registered Phone** on voice and SimpleTexting SMS.
+- **Phone Match Verification**, unmatched handling, ambiguous match handling, and **Payment Link** rules are shared across SimpleTexting SMS and voice.
 - Hermes merges customer context by phone number in the **Identity Graph** across SMS and voice sessions.
 - A **Verified Customer** may receive all **External Customer Service Profile** read access and **Low-Risk Customer Service Actions** for the matched Shopify Customer.
 - An **Unmatched Caller** receives no account information disclosure and may receive public-catalog help such as **Product Media Reply** without account-scoped facts.
@@ -670,7 +670,7 @@ _Avoid_: Automatic erasure, single-button delete
 - An **Unmatched Caller** may not use a **Prior Order Product Reference**.
 - A **Product Media Reply** sends at most one product per reply; ambiguous product requests require disambiguation before sending.
 - A **Product Media Reply** falls back to a public product page link when MMS delivery is unavailable or fails.
-- On Textline SMS, a **Payment Link** is sent only as an **SMS Payment Link Reply** in the current verified thread.
+- On SimpleTexting SMS, a **Payment Link** is sent only as an **SMS Payment Link Reply** in the current verified thread.
 - A verbal or text request to send a **Payment Link** to a new phone number or email creates a **Follow-up Case**.
 - During **After-Hours Service**, Hermes does not perform a **Live Handoff** and instead creates a **Follow-up Case** for the next business day.
 - The first version of **After-Hours Service** supports only approved **After-Hours MVP Scenarios**.
@@ -794,13 +794,13 @@ _Avoid_: Automatic erasure, single-button delete
 > **Domain expert:** "No. Only **Customer Service Rep**, **Workbench Supervisor**, and **Workbench Admin** have default access. Other roles do not see **Follow-up Cases** unless explicitly granted later."
 
 > **Dev:** "Should we launch phone before SMS?"
-> **Domain expert:** "No. **Text-First Launch** on Textline SMS comes first so identity, tools, knowledge, and policy issues surface on text. The **Voice Layer** is added after that path is stable."
+> **Domain expert:** "No. **Text-First Launch** on SimpleTexting SMS comes first so identity, tools, knowledge, and policy issues surface on text. The **Voice Layer** is added after that path is stable."
 
 > **Dev:** "Does SMS use different identity rules than phone?"
-> **Domain expert:** "No. **Phone Match Verification** is shared. The Textline sender number and the inbound call number both match against Shopify **Registered Phone** with the same verified, unmatched, and ambiguous outcomes."
+> **Domain expert:** "No. **Phone Match Verification** is shared. The SimpleTexting sender number and the inbound call number both match against Shopify **Registered Phone** with the same verified, unmatched, and ambiguous outcomes."
 
 > **Dev:** "Is Hermes only on SMS after business hours?"
-> **Domain expert:** "No. Textline uses **Always-On SMS Service** in the first version. Hermes auto-replies 24/7. **After-Hours Service** applies to Net2phone-routed voice, not SMS hours."
+> **Domain expert:** "No. SMS uses **Always-On SMS Service** in the first version. Hermes auto-replies 24/7. **After-Hours Service** applies to Net2phone-routed voice, not SMS hours."
 
 > **Dev:** "Should every Hermes SMS include a STOP disclaimer?"
 > **Domain expert:** "No. Hermes handles **SMS Opt-Out** only when the customer sends an **SMS Opt-Out Keyword** such as STOP, UNSUBSCRIBE, or ARRET. Normal service replies do not include proactive marketing opt-out footer text."
@@ -820,11 +820,11 @@ _Avoid_: Automatic erasure, single-button delete
 > **Dev:** "What if Shopify is down during an SMS order lookup?"
 > **Domain expert:** "Hermes uses a **Tool Unavailable Response**: say the system is temporarily unavailable, create a **Follow-up Case**, and never fabricate order or accounting facts from RAG."
 
-> **Dev:** "Can we skip Textline webhook verification in MVP?"
-> **Domain expert:** "No. Every inbound Textline webhook must pass **Textline Webhook Verification** before Hermes processes the SMS event."
+> **Dev:** "Can we skip SMS webhook verification in MVP?"
+> **Domain expert:** "No. Every inbound SMS provider webhook must pass **SMS Webhook Verification** before Hermes processes the SMS event."
 
 > **Dev:** "Can Hermes text a payment link to a different number if the customer asks in SMS?"
-> **Domain expert:** "No. On Textline, a **Payment Link** must be an **SMS Payment Link Reply** in the current verified thread to the **Registered Phone**. A new contact request creates a **Follow-up Case**."
+> **Domain expert:** "No. On SMS, a **Payment Link** must be an **SMS Payment Link Reply** in the current verified thread to the **Registered Phone**. A new contact request creates a **Follow-up Case**."
 
 > **Dev:** "When should an SMS case be marked urgent?"
 > **Domain expert:** "When it becomes an **Urgent Follow-up Case**: billing dispute, emotional escalation, safety sensitivity, or repeated tool failure with continued pressure. Routine lookups stay normal priority."
@@ -872,7 +872,7 @@ _Avoid_: Automatic erasure, single-button delete
 > **Domain expert:** "They are **Domain Adapter Tools** registered on the same Hermes tool surface as **Hermes Built-in Tools**. The **External Customer Service Profile** exposes only its **Profile Tool Allowlist**."
 
 > **Dev:** "Can Copilot send payment links or edit QBO in v1?"
-> **Domain expert:** "No for payment links, QBO writes, or other business-system writes. v1 **Internal Copilot Profile** supports **Copilot Draft Action**, case workflow, and phase 1 **Copilot Governed Write** for employee-confirmed Textline send inside a claimed **Human Intervention Case** only."
+> **Domain expert:** "No for payment links, QBO writes, or other business-system writes. v1 **Internal Copilot Profile** supports **Copilot Draft Action**, case workflow, and phase 1 **Copilot Governed Write** for employee-confirmed SMS send inside a claimed **Human Intervention Case** only."
 
 > **Dev:** "Does every SMS conversation need Copilot review?"
 > **Domain expert:** "No. **Auto-Handled Interaction** turns stay audit-only. Only **Human Intervention Case** items enter the Copilot queue for drafting or later confirmed send."
@@ -910,7 +910,7 @@ _Avoid_: Automatic erasure, single-button delete
 > **Dev:** "If a customer texts yesterday and emails today, does Copilot show one merged timeline?"
 > **Domain expert:** "Not in v1. **Case Thread Context** stays channel-specific. The **Identity Graph** may link the identities in the background, but reps do not get one combined timeline across channels yet."
 
-> **Dev:** "Can Supervisor Admin send Textline replies to customers?"
+> **Dev:** "Can Supervisor Admin send SMS replies to customers?"
 > **Domain expert:** "No in v1. The **Supervisor Admin Profile** manages **KnowledgeOps**, eval review, and workbench administration. Customer replies stay in the **External Customer Service Profile** or **Human Intervention Case** Copilot workflows."
 
 > **Dev:** "Does a supervisor use one Hermes profile for everything?"

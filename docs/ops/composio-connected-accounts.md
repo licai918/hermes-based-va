@@ -307,7 +307,7 @@ For adapter development only. See ADR-0137.
 1. Keep default `INTEGRATION_DRIVER=mock` in `.env.local`.
 2. Create `COMPOSIO_USER_ID=toee-local-<your-name>`.
 3. Link Shopify/QBO/Square with [section 1.3](#13-link-connected-accounts-cli) using your local user id.
-4. Set `INTEGRATION_DRIVER=composio` and connected account ids in `services/hermes-gateway/.env.local` and/or workbench `.env.local` as needed.
+4. Set `INTEGRATION_DRIVER=composio` and connected account ids in `hermes-runtime/.env` and/or workbench `.env.local` as needed.
 5. Prefer read-only Layer 1 actions unless you have an explicit vendor sandbox.
 6. Never reuse `toee-staging`, `toee-production`, or another developer's connected account ids.
 

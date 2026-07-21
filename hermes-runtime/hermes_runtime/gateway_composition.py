@@ -1,19 +1,19 @@
-"""Production composition root for the Textline gateway (ADR-0095/0106/0107).
+"""Production composition root for the SMS/email gateway (ADR-0095/0106/0107).
 
 :func:`build_gateway_app` is the one place the gateway's seams are resolved from the
 environment into the real production app. ``create_app`` and every factory below
 stay seam-injectable for tests; this module is where the live collaborators are
 assembled:
 
-* the Textline webhook signing secret (ADR-0021) and the internal-job shared secret
-  (ADR-0106), read from the environment;
-* the real Textline outbound ``ReplySender`` (ADR-0083) — used for both the opt-out
-  confirmation and the agent reply;
+* the SimpleTexting webhook URL token (ADR-0021/0153) and the internal-job shared
+  secret (ADR-0106), read from the environment;
+* the real SimpleTexting outbound ``ReplySender`` (ADR-0083) — used for both the
+  opt-out confirmation and the agent reply;
 * the OpenRouter-backed governed, conversation-bound turn runner (ADR-0009/0107).
 
 It fails closed: a missing secret raises at boot rather than allowing an
 unauthenticated webhook, an unauthed model call, or a silently dropped reply. The
-Textline and OpenRouter connections are resolved once here (fail-fast), so rotating
+SimpleTexting and OpenRouter connections are resolved once here (fail-fast), so rotating
 a credential requires a restart. The store uses Postgres when ``TOOL_BACKEND=datastore``
 (same DB as Workbench Tier B); otherwise the in-memory defaults apply until Cloud
 Tasks is wired (ADR-0105/0140).
@@ -32,31 +32,38 @@ from fastapi import FastAPI
 
 from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
 
+from hermes_runtime.access_log import install_access_log_redaction
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
 from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.openrouter import make_openrouter_run_turn, resolve_openrouter_config
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
-from hermes_runtime.textline_reply import (
-    make_textline_reply_sender,
-    resolve_textline_config,
+from hermes_runtime.simpletexting_reply import (
+    make_simpletexting_reply_sender,
+    resolve_simpletexting_config,
 )
 from hermes_runtime.tool_backend import resolve_tool_backend, select_tool_driver
 from hermes_runtime.turn_runner import make_gateway_turn_runner
 
-# Textline webhook signing secret (ADR-0021); consistent with TEXTLINE_ACCESS_TOKEN.
-WEBHOOK_SECRET_ENV = "TEXTLINE_WEBHOOK_SECRET"
+# SimpleTexting webhook URL token (ADR-0021/0153): SimpleTexting does not sign
+# payloads, so the registered webhook URL carries ?token=<this secret>.
+WEBHOOK_SECRET_ENV = "SIMPLETEXTING_WEBHOOK_TOKEN"
 
 # Shared secret for the protected internal agent-turn route (ADR-0106); pairs with
 # gateway_app.INTERNAL_JOB_SECRET_HEADER.
 INTERNAL_JOB_SECRET_ENV = "INTERNAL_JOB_SECRET"
 
-# Reply-sender gate (FR-10, NFR-4): unset/"textline" -> real Textline sender (token
-# required); "simulated" -> no Textline POST, mirror still runs; anything else fails
-# closed rather than falling through to the real sender.
+# Reply-sender gate (FR-10, NFR-4): unset/"simpletexting" -> real SimpleTexting
+# sender (token required); "simulated" -> no provider POST, mirror still runs;
+# anything else fails closed rather than falling through to the real sender.
 REPLY_SENDER_ENV = "REPLY_SENDER"
-_REPLY_SENDER_TEXTLINE = "textline"
+_REPLY_SENDER_SIMPLETEXTING = "simpletexting"
 _REPLY_SENDER_SIMULATED = "simulated"
+
+# Where this process runs. Unset = local development (in-memory substrate is fine).
+# Set it on every deployed revision so the replay-protection guard below applies.
+DEPLOY_ENV = "DEPLOY_ENVIRONMENT"
+_PRODUCTION_ENVIRONMENTS = frozenset({"production", "prod", "staging"})
 
 # Canonical External profile home (ADR-0139): restricts Hermes built-ins to the
 # customer-service tool surface configured in hermes/profiles/customer_service_external.
@@ -75,7 +82,7 @@ def _require_env(name: str) -> str:
     value = (os.environ.get(name) or "").strip()
     if not value:
         raise ValueError(
-            f"{name} is required to boot the Textline gateway; set it in the "
+            f"{name} is required to boot the SMS gateway; set it in the "
             "environment."
         )
     return value
@@ -84,7 +91,7 @@ def _require_env(name: str) -> str:
 def _simulated_reply_sender(conversation_id: str, body: str) -> None:
     """No-op ``ReplySender`` for ``REPLY_SENDER=simulated`` (NFR-4).
 
-    Makes no Textline call and never raises, so the caller (:func:`make_gateway_turn_runner`
+    Makes no provider call and never raises, so the caller (:func:`make_gateway_turn_runner`
     in ``turn_runner.py``) proceeds to invoke ``on_reply_sent`` exactly as it would after a
     real send -- the reply still mirrors into ``message_turn`` for the simulator to read.
     """
@@ -94,28 +101,57 @@ def _simulated_reply_sender(conversation_id: str, body: str) -> None:
 def resolve_reply_sender():
     """Select the gateway's ``ReplySender`` from ``REPLY_SENDER`` (fail-closed, NFR-4).
 
-    Unset or ``"textline"`` resolves the real Textline sender (``TEXTLINE_ACCESS_TOKEN``
+    Unset or ``"simpletexting"`` resolves the real sender (``SIMPLETEXTING_API_TOKEN``
     required). ``"simulated"`` returns a no-op sender -- the token is not required, and
-    simulated traffic never reaches real Textline. Any other value raises immediately
-    rather than silently falling through to the real sender.
+    simulated traffic never reaches the real provider. Any other value raises
+    immediately rather than silently falling through to the real sender.
     """
     value = (os.environ.get(REPLY_SENDER_ENV) or "").strip().lower()
-    if value in ("", _REPLY_SENDER_TEXTLINE):
-        return make_textline_reply_sender(config=resolve_textline_config())
+    if value in ("", _REPLY_SENDER_SIMPLETEXTING):
+        return make_simpletexting_reply_sender(config=resolve_simpletexting_config())
     if value == _REPLY_SENDER_SIMULATED:
         return _simulated_reply_sender
     raise ValueError(
-        f"{REPLY_SENDER_ENV}={value!r} is not recognized; expected 'textline' "
+        f"{REPLY_SENDER_ENV}={value!r} is not recognized; expected 'simpletexting' "
         "(or unset) for the real sender, or 'simulated' for the no-op sender."
     )
+
+
+def _deploy_environment() -> str:
+    """Resolve where the gateway is running; unset means local development."""
+    return (os.environ.get(DEPLOY_ENV) or "").strip().lower()
+
+
+def _require_in_memory_store_is_allowed() -> None:
+    """Refuse to serve real traffic on a per-process dedup store (ADR-0153).
+
+    SimpleTexting does not sign webhooks, so replay protection rests entirely on
+    messageId idempotency. With the in-memory store that dedup is a dict inside one
+    process: Cloud Run autoscaling sends a replay to a different instance, and
+    scale-to-zero wipes it, so every captured request stays replayable forever.
+    Fail at boot rather than serve production traffic with no replay protection.
+    """
+    environment = _deploy_environment()
+    if environment in _PRODUCTION_ENVIRONMENTS:
+        raise ValueError(
+            f"{DEPLOY_ENV}={environment} requires TOOL_BACKEND=datastore: the "
+            "in-memory store dedups per process, which leaves inbound webhooks "
+            "replayable across instances and restarts (ADR-0153)."
+        )
 
 
 def build_gateway_app() -> FastAPI:
     """Assemble the production gateway app from the environment (fail-closed).
 
-    Raises ``ValueError`` when any required secret is absent (webhook secret,
-    internal-job secret, Textline access token, OpenRouter API key).
+    Raises ``ValueError`` when any required secret is absent (webhook token,
+    internal-job secret, SimpleTexting API token, OpenRouter API key), or when a
+    deployed environment is configured with the in-memory (per-process) store.
     """
+    # Before anything can serve a request: the webhook token rides in the URL
+    # (SimpleTexting offers no header/signature option), and uvicorn's access log
+    # would otherwise write it verbatim into Cloud Logging (ADR-0153).
+    install_access_log_redaction()
+
     webhook_secret = _require_env(WEBHOOK_SECRET_ENV)
     internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
     _apply_external_profile_env()
@@ -141,6 +177,7 @@ def build_gateway_app() -> FastAPI:
         store = PostgresGatewayStore()
         driver = select_tool_driver("datastore")
     else:
+        _require_in_memory_store_is_allowed()
         store = InMemoryGatewayStore()
         driver = None
 

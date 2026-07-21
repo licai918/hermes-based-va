@@ -1,7 +1,7 @@
 scenario_id: "18"
 title: "Non-customer general governed intake fallback"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "Hello, I represent a local warehouse collective and need to discuss something with your operations team."

@@ -1,15 +1,16 @@
 // Conversation Simulator ingress + reply read-back (FR-9, 0.0.3 S02, PRD §7 seam
 // 1: "no bypass chat"). Unlike every other BFF route, ingress does NOT call
-// tools:dispatch -- it composes the flat-JSON Textline webhook body Textline's
-// legacy shape uses (id/conversation_id/from/body/received_at/type), signs it
-// with the legacy HMAC-SHA256 (hermes/toee_hermes/gateway/verify.py's non-TGP
-// branch), and POSTs it to the REAL gateway webhook, so identity match, memory,
-// knowledge, and the live model all run the production path. The read-back
+// tools:dispatch -- it composes the SimpleTexting INCOMING_MESSAGE report body the
+// gateway's parse_simpletexting_fields consumes and POSTs it to the REAL gateway
+// webhook with the shared URL token (SimpleTexting does not sign payloads and its
+// webhook registration accepts no header, so ?token= is the auth channel --
+// ADR-0153), so identity match, memory, knowledge, and the live model all run the
+// production path. The read-back
 // route reuses the existing Case Thread Context read
 // (toee_workbench_read.get_thread) via a new get_thread_by_phone action (S02):
 // the simulator only ever knows the from-phone it posted, not the case_id the
 // gateway's async webhook creates.
-import { createHmac, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { json, problem } from "../respond";
 import { readJsonBody, readNonEmptyString } from "./deps";
 import type { FetchLike } from "../../gateway/hermes-api-client";
@@ -17,47 +18,57 @@ import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { mapThreadMessage } from "../../gateway/hermes-map";
 
-const WEBHOOK_PATH = "/webhooks/textline";
+const WEBHOOK_PATH = "/webhooks/simpletexting";
 // Simulated email ingress route on the runtime gateway (0.0.3 S17/FR-18).
 const EMAIL_WEBHOOK_PATH = "/webhooks/simulated-email";
-// Matches scripts/simulate-textline-webhook.ps1, the proven-shape reference.
-const SIMULATED_EVENT_TYPE = "message.created";
+// Matches scripts/simulate-simpletexting-webhook.ps1, the proven-shape reference.
+const SIMULATED_EVENT_TYPE = "INCOMING_MESSAGE";
 const SIMULATED_EMAIL_EVENT_TYPE = "email.received";
-const LEGACY_SIGNATURE_HEADER = "X-Textline-Signature";
 
-export interface SimulatedInboundEvent {
-  id: string;
-  conversation_id: string;
-  from: string;
-  body: string;
-  received_at: string;
-  type: string;
+// The gateway authenticates both ingress routes on this query param.
+function webhookUrl(gatewayUrl: string, path: string, token: string): string {
+  return `${gatewayUrl}${path}?token=${encodeURIComponent(token)}`;
 }
 
-// Builds the legacy flat-JSON Textline webhook body (gateway_app.py
-// parse_textline_fields' non-TGP branch). `eventId`/`nowIso` are injectable so
-// tests get deterministic output; real callers omit them.
-export function buildSimulatedInboundEvent(input: {
-  fromPhone: string;
-  body: string;
-  conversationId: string;
-  eventId?: string;
-  nowIso?: string;
-}): SimulatedInboundEvent {
-  return {
-    id: input.eventId ?? `sim-${randomUUID()}`,
-    conversation_id: input.conversationId,
-    from: input.fromPhone,
-    body: input.body,
-    received_at: input.nowIso ?? new Date().toISOString(),
-    type: SIMULATED_EVENT_TYPE,
+export interface SimulatedInboundEvent {
+  reportId: string;
+  webhookId: string;
+  type: string;
+  values: {
+    messageId: string;
+    text: string;
+    accountPhone: string;
+    contactPhone: string;
+    timestamp: string;
+    category: string;
   };
 }
 
-// HMAC-SHA256 hex over the exact raw body (verify.py's legacy branch -- no
-// event_type/event_time, so the TGP algorithm branch never triggers).
-export function signLegacyTextlinePayload(rawBody: string, secret: string): string {
-  return createHmac("sha256", secret).update(rawBody, "utf8").digest("hex");
+// Builds the SimpleTexting INCOMING_MESSAGE report body (gateway_app.py
+// parse_simpletexting_fields). `eventId`/`nowIso` are injectable so tests get
+// deterministic output; real callers omit them.
+export function buildSimulatedInboundEvent(input: {
+  fromPhone: string;
+  body: string;
+  eventId?: string;
+  nowIso?: string;
+}): SimulatedInboundEvent {
+  const messageId = input.eventId ?? `sim-${randomUUID()}`;
+  return {
+    reportId: `rep-${messageId}`,
+    webhookId: "wh-simulator",
+    type: SIMULATED_EVENT_TYPE,
+    values: {
+      messageId,
+      text: input.body,
+      accountPhone: "simulator",
+      // SimpleTexting has no conversation resource: the contact phone IS the
+      // conversation, so there is no conversationId to carry.
+      contactPhone: input.fromPhone,
+      timestamp: input.nowIso ?? new Date().toISOString(),
+      category: "SMS",
+    },
+  };
 }
 
 export interface SimulatorIngressConfig {
@@ -81,27 +92,23 @@ export async function handleSimulatorIngress(
   if (!fromPhone) return problem(400, "fromPhone is required");
   const text = readNonEmptyString(raw, "body");
   if (!text) return problem(400, "body is required");
-  const conversationId = readNonEmptyString(raw, "conversationId") ?? `sim-${randomUUID()}`;
-
-  const event = buildSimulatedInboundEvent({ fromPhone, body: text, conversationId });
+  // A caller-supplied conversationId is accepted for wire compatibility with the
+  // Simulator UI but has no effect: the SMS conversation is keyed by contact phone.
+  const event = buildSimulatedInboundEvent({ fromPhone, body: text });
   const rawBody = JSON.stringify(event);
-  const signature = signLegacyTextlinePayload(rawBody, config.webhookSecret);
   const fetchImpl = config.fetchImpl ?? fetch;
   const gatewayUrl = config.gatewayUrl.replace(/\/+$/, "");
 
   try {
-    const res = await fetchImpl(`${gatewayUrl}${WEBHOOK_PATH}`, {
+    const res = await fetchImpl(webhookUrl(gatewayUrl, WEBHOOK_PATH, config.webhookSecret), {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [LEGACY_SIGNATURE_HEADER]: signature,
-      },
+      headers: { "content-type": "application/json" },
       body: rawBody,
     });
 
     return json({
-      conversationId: event.conversation_id,
-      eventId: event.id,
+      conversationId: event.values.contactPhone,
+      eventId: event.values.messageId,
       accepted: res.ok,
     });
   } catch (err) {
@@ -144,7 +151,7 @@ export function buildSimulatedInboundEmail(input: {
   };
 }
 
-// POST /api/copilot/simulator/email: composes + signs a simulated inbound email
+// POST /api/copilot/simulator/email: composes a simulated inbound email
 // and posts it to the runtime's simulated-email webhook (no bypass chat — the same
 // production pipeline the SMS route exercises, now Email Sender Match + email turn,
 // S17/FR-18). Same fast-ack contract: the gateway returns 200/401/500 with no body;
@@ -164,19 +171,18 @@ export async function handleSimulatorEmailIngress(
 
   const event = buildSimulatedInboundEmail({ fromAddress, subject, body: text, conversationId });
   const rawBody = JSON.stringify(event);
-  const signature = signLegacyTextlinePayload(rawBody, config.webhookSecret);
   const fetchImpl = config.fetchImpl ?? fetch;
   const gatewayUrl = config.gatewayUrl.replace(/\/+$/, "");
 
   try {
-    const res = await fetchImpl(`${gatewayUrl}${EMAIL_WEBHOOK_PATH}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [LEGACY_SIGNATURE_HEADER]: signature,
+    const res = await fetchImpl(
+      webhookUrl(gatewayUrl, EMAIL_WEBHOOK_PATH, config.webhookSecret),
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: rawBody,
       },
-      body: rawBody,
-    });
+    );
 
     return json({
       conversationId: event.conversation_id,

@@ -73,3 +73,26 @@ def insert_audit(
             ),
         )
     return audit_id
+
+
+# --- Deterministic entity keys -------------------------------------------------
+# The gateway store writes these keys and the Workbench read handlers reconstruct
+# them from the identity the caller supplies. Any drift between the two sides is
+# invisible — the read just returns empty — so both sides MUST call this one
+# function rather than re-spelling the format. (A provider rename moved the SMS
+# prefix in the store while a handler kept the old literal, and every simulator
+# SMS read-back silently went blank; ADR-0153.)
+
+_EMAIL_CHANNELS = frozenset({"email", "simulated_email"})
+
+
+def customer_thread_id(channel: str, from_identity: str) -> str:
+    """CustomerThread key: one per stable channel identity (ADR-0115).
+
+    ``channel`` accepts either vocabulary — the ingress literals
+    (``simpletexting_sms``/``simulated_email``) or the persisted ones
+    (``sms``/``email``). ``from_identity`` must already be canonical: E.164 for
+    SMS, ``canonicalize_email``'d for email.
+    """
+    prefix = "email" if channel in _EMAIL_CHANNELS else "sms"
+    return f"customer_thread:{prefix}:{from_identity}"

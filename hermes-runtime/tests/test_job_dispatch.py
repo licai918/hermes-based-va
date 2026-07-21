@@ -77,13 +77,13 @@ def test_enqueue_runs_nothing_when_the_binding_does_not_match() -> None:
 
 def test_a_failing_turn_is_reported_to_on_error_not_swallowed_silently() -> None:
     # ADR-0104: a turn that raises out-of-band (e.g. both models down, or the
-    # Textline send fails) must surface, not vanish in a dead background thread. The
+    # SMS send fails) must surface, not vanish in a dead background thread. The
     # dispatcher routes it to on_error (default: log) instead of propagating.
     errors: list[tuple[str, str]] = []
     store = _FakeStore(context=_context(), body="hi")
 
     def boom(ctx: object, body: str) -> None:
-        raise RuntimeError("textline unreachable")
+        raise RuntimeError("simpletexting unreachable")
 
     queue = LocalDispatchingJobQueue(
         store=store,

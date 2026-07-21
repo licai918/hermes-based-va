@@ -1,7 +1,7 @@
 scenario_id: "10"
 title: "Verified product media with live price and inventory"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "Send me the picture, price, and stock for All-Season 225/60R16."

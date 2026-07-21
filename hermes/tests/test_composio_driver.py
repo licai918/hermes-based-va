@@ -24,7 +24,7 @@ from toee_hermes.execute import ToolRequest
 from toee_hermes.tool_gate import ToolExecutionContext
 
 VERIFIED_CUSTOMER_ID = "gid://shopify/Customer/1001"
-CONVERSATION_ID = "textline:conv_abc123"
+CONVERSATION_ID = "sms:conv_abc123"
 USER_ID = "toee-staging"
 CONNECTED_ACCOUNTS = {"shopify": "ca_shopify", "qbo": "ca_qbo", "square": "ca_square"}
 

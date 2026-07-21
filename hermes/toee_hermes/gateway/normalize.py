@@ -1,9 +1,9 @@
-"""Canonical inbound normalization for the Textline pipeline (ADR-0102).
+"""Canonical inbound normalization for the SMS/email pipeline (ADR-0102).
 
 The provider-specific JSON shape and accepted/ignored event classification are
-extracted by the route layer once the Textline webhook schema is confirmed; this
-module owns the schema-independent canonical pieces: E.164 phone normalization
-and building the InboundChannelEvent the rest of the system consumes.
+extracted by the route layer; this module owns the schema-independent canonical
+pieces: E.164 phone normalization, email canonicalization, and building the
+InboundChannelEvent the rest of the system consumes.
 """
 
 from __future__ import annotations
@@ -14,11 +14,12 @@ from typing import Literal, Optional
 
 _NON_DIGITS = re.compile(r"\D")
 
-# Ingress channel literals (ADR-0102, 0.0.3 S17/FR-18). ``textline_sms`` is the v1
-# SMS channel; ``simulated_email`` is the simulator-driven email channel (RK-4: no
-# real email provider). Both are plain strings in the DB channel columns (TEXT NOT
-# NULL, no enum CHECK), so the value widens without a migration.
-TEXTLINE_SMS = "textline_sms"
+# Ingress channel literals (ADR-0102, 0.0.3 S17/FR-18, ADR-0153). ``simpletexting_sms``
+# is the SMS channel; ``simulated_email`` is the simulator-driven email channel (RK-4:
+# no real email provider). Both are plain strings in the DB channel columns (TEXT NOT
+# NULL, no enum CHECK) — and the persisted vocabulary is ``sms``|``email`` anyway — so
+# the provider rename needed no migration.
+SIMPLETEXTING_SMS = "simpletexting_sms"
 SIMULATED_EMAIL = "simulated_email"
 
 
@@ -34,8 +35,8 @@ def is_email_channel(channel: str) -> bool:
 
 
 @dataclass(frozen=True)
-class TextlineInboundFields:
-    """Extracted Textline inbound fields, provider key names already resolved."""
+class SmsInboundFields:
+    """Extracted inbound SMS fields, provider key names already resolved."""
 
     event_id: str
     conversation_id: str
@@ -51,13 +52,13 @@ class InboundChannelEvent:
     """Canonical inbound channel event consumed by the rest of the system.
 
     ``from_phone`` carries the channel identity: an E.164 phone for
-    ``textline_sms``, the authenticated From address for ``simulated_email``
+    ``simpletexting_sms``, the authenticated From address for ``simulated_email``
     (ADR-0054 — never Reply-To or a body-supplied address). The name is retained
     (rather than renamed to ``from_identity``) to reuse the SMS shape end to end.
     """
 
-    channel: Literal["textline_sms", "simulated_email"]
-    provider: Literal["textline", "simulated_email"]
+    channel: Literal["simpletexting_sms", "simulated_email"]
+    provider: Literal["simpletexting", "simulated_email"]
     event_id: str
     conversation_id: str
     from_phone: str
@@ -98,13 +99,13 @@ def canonicalize_email(input: str) -> str:
     return input.strip().lower()
 
 
-def to_inbound_channel_event(fields: TextlineInboundFields) -> InboundChannelEvent:
+def to_inbound_channel_event(fields: SmsInboundFields) -> InboundChannelEvent:
     media_urls = (
         fields.media_urls if fields.media_urls else None
     )
     return InboundChannelEvent(
-        channel=TEXTLINE_SMS,
-        provider="textline",
+        channel=SIMPLETEXTING_SMS,
+        provider="simpletexting",
         event_id=fields.event_id,
         conversation_id=fields.conversation_id,
         from_phone=normalize_e164(fields.from_phone),

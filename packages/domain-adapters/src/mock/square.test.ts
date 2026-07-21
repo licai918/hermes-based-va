@@ -7,7 +7,7 @@ import { squareMockHandlers } from "./square";
 
 const VERIFIED_CUSTOMER_ID = "gid://shopify/Customer/1001";
 const OTHER_CUSTOMER_ID = "gid://shopify/Customer/9999";
-const CONVERSATION_ID = "textline:conv_abc123";
+const CONVERSATION_ID = "sms:conv_abc123";
 
 const verified: ToolExecutionContext = {
   profile: HERMES_PROFILES.externalCustomerService,

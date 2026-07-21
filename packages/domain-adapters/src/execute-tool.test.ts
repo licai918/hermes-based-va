@@ -93,7 +93,7 @@ describe("executeTool dispatch", () => {
     const records: ToolAuditRecord[] = [];
 
     const result = await executeTool({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       params: { body: "hi" },
       context,
@@ -106,11 +106,11 @@ describe("executeTool dispatch", () => {
       expect(result.data).toEqual({ messageId: "m_1" });
     }
     expect(driver.calls).toEqual([
-      { tool: "toee_textline_reply", action: "send_message" },
+      { tool: "toee_sms_reply", action: "send_message" },
     ]);
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
-      tool: "toee_textline_reply",
+      tool: "toee_sms_reply",
       action: "send_message",
       driver: "mock",
       outcome: "ok",

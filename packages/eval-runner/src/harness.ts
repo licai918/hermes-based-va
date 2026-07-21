@@ -10,7 +10,7 @@ import {
   createQboMockHandlers,
   createShopifyMockHandlers,
   createSquareMockHandlers,
-  createTextlineMockHandlers,
+  createSmsReplyMockHandlers,
   type MockHandlerRegistry,
   type MockToolHandlers,
   type ToolDriver,
@@ -88,7 +88,7 @@ export function buildScenarioRegistry(
     ...createKnowledgeMockHandlers(ctx.knowledge),
     ...createMemoryMockHandlers(ctx.memory),
     ...createCaseMockHandlers(),
-    ...createTextlineMockHandlers(),
+    ...createSmsReplyMockHandlers(),
     ...adminStubMockHandlers,
   };
 

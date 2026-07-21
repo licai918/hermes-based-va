@@ -93,18 +93,6 @@ importers:
 
   packages/shared: {}
 
-  services/hermes-gateway:
-    dependencies:
-      '@toee/domain-adapters':
-        specifier: workspace:*
-        version: link:../../packages/domain-adapters
-      '@toee/hermes-runtime':
-        specifier: workspace:*
-        version: link:../../packages/hermes-runtime
-      '@toee/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
-
 packages:
 
   '@adobe/css-tools@4.5.0':

@@ -15,16 +15,22 @@ from psycopg.rows import dict_row
 
 import os
 
-from toee_hermes.drivers.mock.textline import TextlineMockData, _send_message
+from toee_hermes.drivers.mock.sms_reply import SmsReplyMockData, _send_message
 from toee_hermes.errors import ToolDriverError
-from toee_hermes.gateway.normalize import canonicalize_email
+from toee_hermes.gateway.normalize import canonicalize_email, normalize_e164
 
 from toee_hermes.identity.summary import (
     display_name_from_match_result,
     format_identity_summary,
 )
 
-from ._common import insert_audit, new_id, read_string, serialize_row
+from ._common import (
+    customer_thread_id,
+    insert_audit,
+    new_id,
+    read_string,
+    serialize_row,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -385,29 +391,29 @@ def _update_contact_reason(
     }
 
 
-def _capture_textline_send(
+def _capture_sms_send(
     conversation_id: str,
     body: str,
     media_url: Optional[str],
 ) -> dict[str, Any]:
-    """Outbound Textline capture: live REST when ``TEXTLINE_ACCESS_TOKEN`` is set, else mock."""
-    token = (os.environ.get("TEXTLINE_ACCESS_TOKEN") or "").strip()
+    """Outbound SMS capture: live SimpleTexting when ``SIMPLETEXTING_API_TOKEN`` is set, else mock."""
+    token = (os.environ.get("SIMPLETEXTING_API_TOKEN") or "").strip()
     if token:
-        from hermes_runtime.textline_reply import (
-            TextlineSendError,
-            make_textline_reply_sender,
-            resolve_textline_config,
+        from hermes_runtime.simpletexting_reply import (
+            SimpleTextingSendError,
+            make_simpletexting_reply_sender,
+            resolve_simpletexting_config,
         )
 
         try:
-            send = make_textline_reply_sender(config=resolve_textline_config())
+            send = make_simpletexting_reply_sender(config=resolve_simpletexting_config())
             send(conversation_id, body)
         except ValueError as exc:
             raise ToolDriverError("configuration_missing", str(exc)) from exc
-        except TextlineSendError as exc:
+        except SimpleTextingSendError as exc:
             raise ToolDriverError("vendor_timeout", str(exc)) from exc
     return _send_message(
-        TextlineMockData(),
+        SmsReplyMockData(),
         {
             "conversation_id": conversation_id,
             "body": body,
@@ -588,10 +594,10 @@ def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:
     return row[0] if row else None
 
 
-def _textline_conversation_id(sms_session_id: str) -> str:
-    """Textline conversation UUID suffix on the gateway session key (ADR-0115).
+def _sms_conversation_id(sms_session_id: str) -> str:
+    """Conversation suffix (contact phone) on the gateway session key (ADR-0115).
 
-    ``sms_session:{thread_id}:{textline_uuid}`` — same peel as
+    ``sms_session:{thread_id}:{conversation_id}`` — same peel as
     :meth:`PostgresGatewayStore.load_context`.
     """
     return sms_session_id.rsplit(":", 1)[-1]
@@ -612,14 +618,14 @@ def _resolve_sms_session_id(
     return _active_sms_session_id(conn, thread_id)
 
 
-def _send_textline_message(
+def _send_sms_message(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
-    """Governed employee-confirmed Textline send (ADR-0083/0035 composite seam).
+    """Governed employee-confirmed SMS send (ADR-0083/0035 composite seam).
 
-    Validates SMS-session + assignee gating, sends via Textline when
-    ``TEXTLINE_ACCESS_TOKEN`` is set (else mock capture), mirrors a
-    ``message_turn``, and appends a ``textline_send`` audit row atomically.
+    Validates SMS-session + assignee gating, sends via SimpleTexting when
+    ``SIMPLETEXTING_API_TOKEN`` is set (else mock capture), mirrors a
+    ``message_turn``, and appends a ``sms_send`` audit row atomically.
     """
     case_id = _require_case_id(params)
     actor = _require_actor(context)
@@ -643,7 +649,7 @@ def _send_textline_message(
         or not _thread_sms_active(conn, thread_id)
     ):
         raise ToolDriverError(
-            "policy_blocked", "case not eligible for Textline send"
+            "policy_blocked", "case not eligible for SMS send"
         )
 
     session_id = _resolve_sms_session_id(
@@ -653,11 +659,11 @@ def _send_textline_message(
     )
     if session_id is None:
         raise ToolDriverError(
-            "policy_blocked", "case not eligible for Textline send"
+            "policy_blocked", "case not eligible for SMS send"
         )
 
-    conversation_id = _textline_conversation_id(session_id)
-    sent = _capture_textline_send(conversation_id, body, media_url)
+    conversation_id = _sms_conversation_id(session_id)
+    sent = _capture_sms_send(conversation_id, body, media_url)
 
     turn_id = new_id("mt")
     with conn.cursor() as cur:
@@ -678,7 +684,7 @@ def _send_textline_message(
         conn,
         profile=context.profile,
         account_id=actor,
-        action="textline_send",
+        action="sms_send",
         target_type="case",
         target_id=case_id,
         details={"detail": body},
@@ -746,10 +752,14 @@ def _get_thread(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     return {"case": case, "messages": messages}
 
 
-# Deterministic customer_thread key for an inbound SMS (mirrors
-# postgres_gateway_store._thread_id -- no hashing, just the literal format).
+# Deterministic customer_thread key for an inbound SMS. Delegates to the one
+# builder the gateway store also uses, so the read and write sides cannot drift.
+# The write side stores the E.164 form (gateway_app normalizes contactPhone before
+# it reaches the store), so the read side must normalize too — otherwise a caller
+# passing "4165550101" asks for a key that was written as "+14165550101" and gets a
+# silent empty read. This mirrors what the email sibling does with canonicalize_email.
 def _sms_thread_id(from_phone: str) -> str:
-    return f"customer_thread:textline:{from_phone}"
+    return customer_thread_id("sms", normalize_e164(from_phone))
 
 
 def _latest_case_id_for_thread(conn, thread_id: str) -> Optional[str]:
@@ -782,15 +792,12 @@ def _get_thread_by_phone(
     return _get_thread(conn, {"case_id": case_id}, context)
 
 
-# Deterministic customer_thread key for an inbound simulated email (S18/FR-11;
-# mirrors postgres_gateway_store._thread_id's email branch -- from_identity is
-# already canonicalize_email'd by to_inbound_email_event before it reaches
-# _thread_id, so the read side must apply the SAME canonicalize_email to the
-# raw address to reconstruct a byte-identical key. Reusing S17's exact helper
-# (not a local re-implementation) is what keeps this from silently reading
-# back empty).
+# Deterministic customer_thread key for an inbound simulated email (S18/FR-11).
+# from_identity is already canonicalize_email'd by to_inbound_email_event before
+# it reaches the store, so the read side applies the SAME canonicalize_email to
+# the raw address; the key format itself comes from the shared builder.
 def _email_thread_id(from_address: str) -> str:
-    return f"customer_thread:email:{canonicalize_email(from_address)}"
+    return customer_thread_id("email", canonicalize_email(from_address))
 
 
 def _get_thread_by_email(
@@ -898,7 +905,7 @@ def case_handlers() -> dict[str, dict[str, Any]]:
             "update_priority": _update_priority,
             "update_contact_reason": _update_contact_reason,
             "resolve_case": _resolve_case,
-            "send_textline_message": _send_textline_message,
+            "send_sms_message": _send_sms_message,
         },
         "toee_workbench_read": {
             "get_case": _get_case,

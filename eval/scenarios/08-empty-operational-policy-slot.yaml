@@ -1,7 +1,7 @@
 scenario_id: "08"
 title: "Empty operational policy slot no improvised answer"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "What is your returns policy for mounted tires?"
