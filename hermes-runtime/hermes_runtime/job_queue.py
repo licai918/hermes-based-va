@@ -69,10 +69,21 @@ _CLAIMABLE_SQL = "('queued', 'failed')"
 # share a timestamp.
 _FENCE_SQL = "id = %s AND status = 'running' AND locked_at = %s"
 
-# The default job type, so ``enqueue(payload)`` stays call-compatible with the
-# existing one-argument ``JobQueue`` Protocol. A string, not an import: the
-# queue still knows nothing about turns.
+# The job types this repo runs. Strings, not imports: the queue still knows
+# nothing about turns, forks, sweeps or corpora -- these are here so the two
+# workers' claim allowlists and every enqueue site name the SAME literal, and so
+# FR-9 isolation is one grep rather than four scattered string constants.
+#
+# S04 removed ``enqueue``/``insert_job``'s ``job_type`` DEFAULT (it used to be
+# ``AGENT_TURN_JOB_TYPE``): with background enqueue sites in the tree, a call
+# site that forgot the argument would silently create a *customer turn* job.
 AGENT_TURN_JOB_TYPE = "agent_turn"
+
+# Background types (S04, FR-11) -- claimed by ``hermes_runtime.background_worker``
+# and NEVER by the turn worker.
+L6_REVIEW_JOB_TYPE = "l6_review"
+RETENTION_JOB_TYPE = "retention"
+INGEST_JOB_TYPE = "ingest"
 
 
 class LeaseLost(RuntimeError):
@@ -119,7 +130,7 @@ def insert_job(
     cur: psycopg.Cursor,
     payload: Any,
     *,
-    job_type: str = AGENT_TURN_JOB_TYPE,
+    job_type: str,
     dedupe_key: Optional[str] = None,
     run_at: Optional[datetime] = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -136,6 +147,10 @@ def insert_job(
 
     ``created`` is False on a dedupe no-op, in which case the returned id is the
     job already holding the key (FR-7).
+
+    ``job_type`` is REQUIRED (S04). It used to default to ``AGENT_TURN_JOB_TYPE``;
+    now that background writers also insert here, a forgotten argument would have
+    silently created a customer-turn job for the turn worker to run.
     """
     job_id = new_id("job")
     cur.execute(
@@ -215,7 +230,7 @@ class PostgresJobQueue:
         self,
         payload: Any,
         *,
-        job_type: str = AGENT_TURN_JOB_TYPE,
+        job_type: str,
         dedupe_key: Optional[str] = None,
         run_at: Optional[datetime] = None,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -223,16 +238,13 @@ class PostgresJobQueue:
         """Insert one job; return its id. A duplicate ``dedupe_key`` is a no-op
         and returns the id of the job already queued (FR-7).
 
-        ponytail: ``job_type`` defaults to ``agent_turn`` only so ``enqueue(payload)``
-        stays call-compatible with the one-argument ``JobQueue`` Protocol. Ceiling: a
-        call site that forgets ``job_type=`` silently creates a *turn* job and the
-        turn worker will execute it. S01 assigned the default's removal to S02; S02
-        **kept it** deliberately -- after the cutover the only production enqueue is
-        the in-memory ``JobQueue`` seam (``gateway_store.py``), whose Protocol has no
-        ``job_type``, so removing the default would break the one thing it exists
-        for. **Owner: S04**, which grows the Protocol a ``job_type`` and adds the
-        first background enqueue sites; drop the default there, once every call site
-        names its type.
+        ``job_type`` is REQUIRED. S01 named the default's removal as a ceiling and
+        S02 kept it (its one call site went through the one-argument ``JobQueue``
+        Protocol, so removing it then would have broken the thing it existed for);
+        **S04 removed it**, because the background enqueue sites this slice adds
+        make a forgotten ``job_type=`` a silent *customer turn* -- the turn worker
+        would claim and run it. The in-memory ``JobQueue`` Protocol
+        (``gateway_store.py``) is a different type entirely and is unaffected.
         """
         return self._insert(
             payload,

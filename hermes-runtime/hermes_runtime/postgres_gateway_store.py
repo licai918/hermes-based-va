@@ -27,7 +27,7 @@ from toee_hermes.gateway.pipeline import InboundDecision
 from .datastore.config import database_url
 from .datastore.handlers._common import new_id
 from .datastore.pool import get_database_pool
-from .job_queue import insert_job
+from .job_queue import AGENT_TURN_JOB_TYPE, insert_job
 
 _SMS_CHANNEL = "sms"
 _EMAIL_CHANNEL = "email"
@@ -263,6 +263,7 @@ class PostgresGatewayStore:
                                 event_id=event.event_id,
                                 conversation_id=event.conversation_id,
                             ),
+                            job_type=AGENT_TURN_JOB_TYPE,
                         )
 
                     _ensure_open_case(

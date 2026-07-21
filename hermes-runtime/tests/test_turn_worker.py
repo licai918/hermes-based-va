@@ -230,7 +230,8 @@ def test_a_turn_whose_context_is_missing_is_failed_not_silently_completed(wired)
     ``succeeded``."""
     _driver, conn, store, queue = wired
     job_id = queue.enqueue(
-        AgentJobPayload(event_id="evt-never-persisted", conversation_id="conv-x")
+        AgentJobPayload(event_id="evt-never-persisted", conversation_id="conv-x"),
+        job_type=AGENT_TURN_JOB_TYPE,
     )
 
     run_once(

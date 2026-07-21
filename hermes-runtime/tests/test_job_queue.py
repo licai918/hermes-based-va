@@ -18,7 +18,12 @@ import pytest
 from toee_hermes.gateway.agent_turn import AgentJobPayload
 
 from hermes_runtime.datastore.config import database_url
-from hermes_runtime.job_queue import LeaseLost, PostgresJobQueue, Schedule
+from hermes_runtime.job_queue import (
+    AGENT_TURN_JOB_TYPE,
+    LeaseLost,
+    PostgresJobQueue,
+    Schedule,
+)
 
 try:  # psycopg lives in the hermes-runtime venv (ADR-0142); guard for safety.
     import psycopg
@@ -59,6 +64,17 @@ def _count(conn) -> int:
 # --------------------------------------------------------------------------
 
 
+def test_enqueue_requires_an_explicit_job_type(queue):
+    """0.0.4 S04 removed the ``job_type`` default (S01 named it, S02 deferred it).
+
+    With background enqueue sites in the tree, a forgotten ``job_type=`` used to
+    mean "silently create a CUSTOMER TURN job" -- the turn worker would claim and
+    execute it. Now it is a TypeError at the call site.
+    """
+    with pytest.raises(TypeError, match="job_type"):
+        queue.enqueue({"event_id": "evt_1"})  # type: ignore[call-arg]
+
+
 def test_enqueue_inserts_a_queued_job(queue, migrated):
     conn, _ = migrated
     job_id = queue.enqueue({"event_id": "evt_1"}, job_type="agent_turn")
@@ -77,7 +93,10 @@ def test_enqueue_accepts_the_existing_agent_job_payload_shape(queue, migrated):
     """S02's cutover must be wiring, not a rewrite: ``enqueue(payload)`` still
     takes the one-argument ``AgentJobPayload`` the ``JobQueue`` Protocol uses."""
     conn, _ = migrated
-    job_id = queue.enqueue(AgentJobPayload(event_id="evt_9", conversation_id="conv_9"))
+    job_id = queue.enqueue(
+        AgentJobPayload(event_id="evt_9", conversation_id="conv_9"),
+        job_type=AGENT_TURN_JOB_TYPE,
+    )
 
     assert _row(conn, job_id, "payload")[0] == {
         "event_id": "evt_9",
@@ -96,8 +115,12 @@ def test_heterogeneous_payloads_roundtrip_as_jsonb(queue, migrated):
 
 def test_duplicate_dedupe_key_is_a_no_op(queue, migrated):
     conn, _ = migrated
-    first = queue.enqueue({"event_id": "evt_1"}, dedupe_key="evt_1")
-    second = queue.enqueue({"event_id": "evt_1"}, dedupe_key="evt_1")
+    first = queue.enqueue(
+        {"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE, dedupe_key="evt_1"
+    )
+    second = queue.enqueue(
+        {"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE, dedupe_key="evt_1"
+    )
 
     assert second == first
     assert _count(conn) == 1
@@ -105,8 +128,8 @@ def test_duplicate_dedupe_key_is_a_no_op(queue, migrated):
 
 def test_jobs_without_a_dedupe_key_are_never_deduped(queue, migrated):
     conn, _ = migrated
-    queue.enqueue({"n": 1})
-    queue.enqueue({"n": 2})
+    queue.enqueue({"n": 1}, job_type=AGENT_TURN_JOB_TYPE)
+    queue.enqueue({"n": 2}, job_type=AGENT_TURN_JOB_TYPE)
 
     assert _count(conn) == 2
 
@@ -138,7 +161,7 @@ def test_claim_returns_none_when_the_queue_is_empty(queue):
 
 
 def test_a_claimed_job_is_not_claimed_again(queue):
-    queue.enqueue({"event_id": "evt_1"})
+    queue.enqueue({"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE)
 
     assert queue.claim(worker="worker-a") is not None
     assert queue.claim(worker="worker-b") is None
@@ -146,7 +169,7 @@ def test_a_claimed_job_is_not_claimed_again(queue):
 
 def test_claim_skips_jobs_scheduled_for_the_future(queue, migrated):
     conn, _ = migrated
-    job_id = queue.enqueue({"event_id": "evt_later"})
+    job_id = queue.enqueue({"event_id": "evt_later"}, job_type=AGENT_TURN_JOB_TYPE)
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE job SET run_at = now() + interval '1 hour' WHERE id = %s", (job_id,)
@@ -183,7 +206,7 @@ def test_concurrent_workers_never_double_claim(queue, migrated):
     _conn, schema = migrated
     total, workers = 24, 6
     for n in range(total):
-        queue.enqueue({"n": n})
+        queue.enqueue({"n": n}, job_type=AGENT_TURN_JOB_TYPE)
 
     claimed: list[str] = []
     lock = threading.Lock()
@@ -229,7 +252,7 @@ def test_concurrent_workers_never_double_claim(queue, migrated):
 
 def test_complete_marks_the_job_succeeded_and_releases_the_lease(queue, migrated):
     conn, _ = migrated
-    queue.enqueue({"event_id": "evt_1"})
+    queue.enqueue({"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE)
     job = queue.claim(worker="worker-a")
 
     queue.complete(job)
@@ -243,7 +266,7 @@ def test_complete_marks_the_job_succeeded_and_releases_the_lease(queue, migrated
 
 def test_fail_retries_with_exponential_backoff(queue, migrated):
     conn, _ = migrated
-    queue.enqueue({"event_id": "evt_1"})
+    queue.enqueue({"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE)
 
     job = queue.claim(worker="worker-a")
     queue.fail(job, "boom")
@@ -281,7 +304,9 @@ def test_fail_retries_with_exponential_backoff(queue, migrated):
 
 def test_fail_dead_letters_when_attempts_are_exhausted(queue, migrated):
     conn, _ = migrated
-    job_id = queue.enqueue({"event_id": "evt_1"}, max_attempts=2)
+    job_id = queue.enqueue(
+        {"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE, max_attempts=2
+    )
 
     for attempt in (1, 2):
         job = queue.claim(worker="worker-a")
@@ -312,7 +337,7 @@ def test_a_stale_lease_holder_cannot_finish_a_job_another_worker_now_owns(
     alive -- must not be able to flip B's row to succeeded, nor knock it back to
     failed so a third worker can claim it too."""
     conn, _ = migrated
-    queue.enqueue({"event_id": "evt_1"})
+    queue.enqueue({"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE)
     stale = queue.claim(worker="worker-a")
 
     assert queue.reclaim_expired_leases(lease_seconds=0) == [stale.id]
@@ -341,7 +366,9 @@ def test_complete_cannot_resurrect_a_dead_job(queue, migrated):
     """FR-8: dead is terminal. A late ``complete()`` from the worker that
     dead-lettered it must not erase the S05 dead-letter row."""
     conn, _ = migrated
-    job_id = queue.enqueue({"event_id": "evt_1"}, max_attempts=1)
+    job_id = queue.enqueue(
+        {"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE, max_attempts=1
+    )
     job = queue.claim(worker="worker-a")
     queue.fail(job, "boom")
     assert _row(conn, job_id, "status")[0] == "dead"
@@ -359,7 +386,7 @@ def test_complete_cannot_resurrect_a_dead_job(queue, migrated):
 def test_expired_lease_is_reclaimed_and_becomes_claimable(queue, migrated):
     """FR-8/NFR-3: a crashed worker's running job is never stranded."""
     conn, _ = migrated
-    queue.enqueue({"event_id": "evt_1"})
+    queue.enqueue({"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE)
     job = queue.claim(worker="dead-worker")
 
     assert queue.reclaim_expired_leases(lease_seconds=3600) == []
@@ -384,7 +411,9 @@ def test_expired_lease_is_reclaimed_and_becomes_claimable(queue, migrated):
 
 def test_expired_lease_dead_letters_when_attempts_are_exhausted(queue, migrated):
     conn, _ = migrated
-    job_id = queue.enqueue({"event_id": "evt_1"}, max_attempts=1)
+    job_id = queue.enqueue(
+        {"event_id": "evt_1"}, job_type=AGENT_TURN_JOB_TYPE, max_attempts=1
+    )
     queue.claim(worker="dead-worker")
 
     assert queue.reclaim_expired_leases(lease_seconds=0) == [job_id]
