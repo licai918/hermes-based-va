@@ -18,8 +18,11 @@ import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { mapThreadMessage } from "../../gateway/hermes-map";
 
 const WEBHOOK_PATH = "/webhooks/textline";
+// Simulated email ingress route on the runtime gateway (0.0.3 S17/FR-18).
+const EMAIL_WEBHOOK_PATH = "/webhooks/simulated-email";
 // Matches scripts/simulate-textline-webhook.ps1, the proven-shape reference.
 const SIMULATED_EVENT_TYPE = "message.created";
+const SIMULATED_EMAIL_EVENT_TYPE = "email.received";
 const LEGACY_SIGNATURE_HEADER = "X-Textline-Signature";
 
 export interface SimulatedInboundEvent {
@@ -105,6 +108,82 @@ export async function handleSimulatorIngress(
     // fetchImpl rejects (e.g. ECONNREFUSED when the gateway is down) rather than
     // resolving with a non-OK Response -- same convention as handleGetSimulatorThread
     // below: never let a network failure reach withSession as an unstructured 500.
+    return hermesErrorToProblem(err);
+  }
+}
+
+export interface SimulatedInboundEmail {
+  id: string;
+  conversation_id: string;
+  from: string;
+  subject: string;
+  body: string;
+  received_at: string;
+  type: string;
+}
+
+// Builds the simulated email webhook body the runtime's parse_simulated_email_event
+// consumes (`{from, subject, body, conversation_id, id, received_at, type}`).
+// `eventId`/`nowIso` are injectable for deterministic tests.
+export function buildSimulatedInboundEmail(input: {
+  fromAddress: string;
+  subject: string;
+  body: string;
+  conversationId: string;
+  eventId?: string;
+  nowIso?: string;
+}): SimulatedInboundEmail {
+  return {
+    id: input.eventId ?? `sim-${randomUUID()}`,
+    conversation_id: input.conversationId,
+    from: input.fromAddress,
+    subject: input.subject,
+    body: input.body,
+    received_at: input.nowIso ?? new Date().toISOString(),
+    type: SIMULATED_EMAIL_EVENT_TYPE,
+  };
+}
+
+// POST /api/copilot/simulator/email: composes + signs a simulated inbound email
+// and posts it to the runtime's simulated-email webhook (no bypass chat — the same
+// production pipeline the SMS route exercises, now Email Sender Match + email turn,
+// S17/FR-18). Same fast-ack contract: the gateway returns 200/401/500 with no body;
+// the reply lands asynchronously and is read back via the case view (S18 adds the
+// simulator channel switcher).
+export async function handleSimulatorEmailIngress(
+  req: Request,
+  config: SimulatorIngressConfig,
+): Promise<Response> {
+  const raw = await readJsonBody(req);
+  const fromAddress = readNonEmptyString(raw, "from");
+  if (!fromAddress) return problem(400, "from is required");
+  const text = readNonEmptyString(raw, "body");
+  if (!text) return problem(400, "body is required");
+  const subject = readNonEmptyString(raw, "subject") ?? "";
+  const conversationId = readNonEmptyString(raw, "conversationId") ?? `sim-${randomUUID()}`;
+
+  const event = buildSimulatedInboundEmail({ fromAddress, subject, body: text, conversationId });
+  const rawBody = JSON.stringify(event);
+  const signature = signLegacyTextlinePayload(rawBody, config.webhookSecret);
+  const fetchImpl = config.fetchImpl ?? fetch;
+  const gatewayUrl = config.gatewayUrl.replace(/\/+$/, "");
+
+  try {
+    const res = await fetchImpl(`${gatewayUrl}${EMAIL_WEBHOOK_PATH}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        [LEGACY_SIGNATURE_HEADER]: signature,
+      },
+      body: rawBody,
+    });
+
+    return json({
+      conversationId: event.conversation_id,
+      eventId: event.id,
+      accepted: res.ok,
+    });
+  } catch (err) {
     return hermesErrorToProblem(err);
   }
 }

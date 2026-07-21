@@ -18,13 +18,17 @@ from toee_hermes.gateway.agent_turn import (
 from toee_hermes.gateway.ingress import (
     IngressMatchResult,
     SessionIdentitySnapshot,
+    match_ingress_email,
     match_ingress_phone,
 )
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
     TextlineInboundFields,
+    canonicalize_email,
+    is_email_channel,
     normalize_e164,
     to_inbound_channel_event,
+    to_inbound_email_event,
 )
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION, is_opt_out_keyword
 from toee_hermes.gateway.pipeline import InboundDecision, process_inbound
@@ -39,7 +43,10 @@ __all__ = [
     "InboundChannelEvent",
     "TextlineInboundFields",
     "normalize_e164",
+    "canonicalize_email",
+    "is_email_channel",
     "to_inbound_channel_event",
+    "to_inbound_email_event",
     "SMS_OPT_OUT_CONFIRMATION",
     "is_opt_out_keyword",
     "InboundRateLimiter",
@@ -49,6 +56,7 @@ __all__ = [
     "IngressMatchResult",
     "SessionIdentitySnapshot",
     "match_ingress_phone",
+    "match_ingress_email",
     "InboundDecision",
     "process_inbound",
     "AgentJobPayload",

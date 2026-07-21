@@ -30,7 +30,11 @@ from toee_hermes.gateway.agent_turn import (
     AgentTurnContext,
     to_job_payload,
 )
-from toee_hermes.gateway.normalize import TextlineInboundFields
+from toee_hermes.gateway.normalize import (
+    InboundChannelEvent,
+    TextlineInboundFields,
+    to_inbound_email_event,
+)
 from toee_hermes.gateway.pipeline import DuplicateCheck, process_inbound
 from toee_hermes.gateway.verify import verify_textline_signature
 from toee_hermes.gateway.rate_limit import (
@@ -152,6 +156,26 @@ def parse_textline_fields(payload: dict[str, Any]) -> TextlineInboundFields:
     )
 
 
+def parse_simulated_email_event(payload: dict[str, Any]) -> InboundChannelEvent:
+    """Map a simulated inbound email JSON body onto the canonical event (S17/FR-18).
+
+    Shape: ``{from, subject, body, conversation_id?, id?, received_at?}``. ADR-0054:
+    only the authenticated envelope ``from`` is used for identity — never a body- or
+    header-supplied Reply-To. Subject is folded into the turn body by
+    ``to_inbound_email_event`` so the governed turn sees it.
+    """
+    conversation_id = str(payload.get("conversation_id") or payload.get("id") or "")
+    return to_inbound_email_event(
+        event_id=str(payload.get("id", "")),
+        conversation_id=conversation_id,
+        from_address=str(payload.get("from", "")),
+        subject=str(payload.get("subject", "")),
+        body=str(payload.get("body", "")),
+        received_at=str(payload.get("received_at", "")),
+        raw_event_type=str(payload.get("type", "email.received")),
+    )
+
+
 def _webhook_signature_context(
     request: Request,
 ) -> tuple[Optional[str], Optional[str], Optional[str]]:
@@ -231,6 +255,25 @@ def create_app(
 
     app = FastAPI()
 
+    def _dispatch_decision(decision) -> Response:
+        # Shared tail for both ingress routes (SMS + simulated email): send the one
+        # fixed opt-out confirmation when required, then persist + enqueue an accepted
+        # turn before acking (memory is the source of truth, ADR-0105/0107). Only
+        # opt-out and enqueue decisions act here; duplicate/rate-limited/retry/reject
+        # just map their status.
+        if (
+            decision.action == "opt_out"
+            and reply_sender is not None
+            and decision.event is not None
+            and decision.reply is not None
+        ):
+            reply_sender(decision.event.conversation_id, decision.reply)
+        if decision.action == "enqueue":
+            context, created = store.persist_accepted_inbound(decision)
+            if created:
+                queue.enqueue(to_job_payload(context))
+        return Response(status_code=decision.status)
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         # Cheap liveness probe for the Cloud Run health check (ADR-0098, issue #33):
@@ -280,26 +323,46 @@ def create_app(
             event_time=event_time,
             event_type=event_type,
         )
+        return _dispatch_decision(decision)
 
-        # Opt-out is the only reply the gateway sends itself (compliance
-        # short-circuit, no agent turn). All other replies come from the turn.
-        if (
-            decision.action == "opt_out"
-            and reply_sender is not None
-            and decision.event is not None
-            and decision.reply is not None
+    @app.post("/webhooks/simulated-email")
+    async def simulated_email_webhook(request: Request) -> Response:
+        # Simulated email ingress (S17/FR-18, RK-4: no real provider). Same fast-ack
+        # shape as the SMS webhook — HMAC-verify the raw body, run the SAME
+        # process_inbound (Email Sender Match + governed turn + reply mirror), map the
+        # status. Signed with the legacy HMAC (no TGP event_time/type headers).
+        raw = await request.body()
+        raw_text = raw.decode("utf-8")
+        signature, event_time, event_type = _webhook_signature_context(request)
+        try:
+            payload = json.loads(raw_text) if raw_text else {}
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        if not verify_textline_signature(
+            raw_body=raw,
+            signature=signature,
+            secret=webhook_secret,
+            event_time=event_time,
+            event_type=event_type,
         ):
-            reply_sender(decision.event.conversation_id, decision.reply)
+            return Response(status_code=401)
 
-        # Accepted turn: persist before acking (memory is the source of truth) and
-        # enqueue the minimal async job (ADR-0105/0107). Only enqueue decisions get
-        # here; opt-out/duplicate/rate-limited/retry never start a turn.
-        if decision.action == "enqueue":
-            context, created = store.persist_accepted_inbound(decision)
-            if created:
-                queue.enqueue(to_job_payload(context))
-
-        return Response(status_code=decision.status)
+        decision = process_inbound(
+            raw_body=raw,
+            signature=signature,
+            secret=webhook_secret,
+            event=parse_simulated_email_event(payload),
+            driver=driver,
+            rate_limiter=rate_limiter,
+            resolved_at=clock(),
+            is_duplicate=is_duplicate,
+            event_time=event_time,
+            event_type=event_type,
+        )
+        return _dispatch_decision(decision)
 
     @app.post("/internal/jobs/agent-turn")
     async def agent_turn(request: Request) -> Response:

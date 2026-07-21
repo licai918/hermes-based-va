@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from eval_runner.transcript import turn_result_from_transcript
+from toee_hermes.gateway.normalize import TEXTLINE_SMS, is_email_channel
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -113,7 +114,10 @@ def make_gateway_turn_runner(
 
     def turn_runner(context: Any, inbound_body: str) -> None:
         turn = run_turn(context, inbound_body)
-        reply = clip_sms_reply(outbound_reply_text(turn))
+        reply = outbound_reply_text(turn)
+        # S17: SMS is clipped to one segment; an email reply is not 480-char-clipped.
+        if not is_email_channel(getattr(context, "channel", TEXTLINE_SMS)):
+            reply = clip_sms_reply(reply)
         reply_sender(context.conversation_id, reply)
         if on_reply_sent is not None:
             on_reply_sent(context, reply)

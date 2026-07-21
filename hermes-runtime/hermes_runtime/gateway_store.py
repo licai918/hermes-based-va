@@ -24,7 +24,7 @@ from toee_hermes.gateway.agent_turn import (
     AgentTurnContext,
     build_agent_turn_context,
 )
-from toee_hermes.gateway.normalize import InboundChannelEvent
+from toee_hermes.gateway.normalize import InboundChannelEvent, is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
 
 
@@ -57,13 +57,18 @@ class InMemoryGatewayStore:
         # payload, so the inbound body lives here and the context carries the ref.
         self._message_turns: dict[str, str] = {}
 
-    def _thread_id(self, from_phone: str) -> str:
-        # CustomerThread: one per stable channel identity (the phone number).
-        return f"customer_thread:textline:{from_phone}"
+    def _thread_id(self, channel: str, from_identity: str) -> str:
+        # CustomerThread: one per stable channel identity. S17: email keys on the
+        # From address, SMS on the phone — a phone-shaped key is never written for
+        # an email event ((channel, channel_identity) uniqueness, ADR-0115).
+        prefix = "email" if is_email_channel(channel) else "textline"
+        return f"customer_thread:{prefix}:{from_identity}"
 
     def _session_id(self, thread_id: str, conversation_id: str) -> str:
-        # SmsSession: bounded by the 24h window (ADR-0019). The dev store maps one
-        # Textline conversation to one session; the real store applies the window.
+        # Session bounded by the 24h window (ADR-0019). The dev store maps one
+        # conversation to one session; the real store applies the window. The
+        # thread_id prefix already carries the channel, so this key is email-shaped
+        # for an email thread without a separate table.
         return f"sms_session:{thread_id}:{conversation_id}"
 
     def _persist_inbound_turn(
@@ -84,7 +89,7 @@ class InMemoryGatewayStore:
                 f"got action={decision.action!r}."
             )
         created = event.event_id not in self._contexts
-        thread_id = self._thread_id(event.from_phone)
+        thread_id = self._thread_id(event.channel, event.from_phone)
         session_id = self._session_id(thread_id, event.conversation_id)
         body_ref = self._persist_inbound_turn(session_id, event)
         context = build_agent_turn_context(

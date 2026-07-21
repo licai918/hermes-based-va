@@ -164,7 +164,7 @@ def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     # init (which ``toee_hermes.plugin`` imports in turn), so importing ``gateway``
     # at module scope here would re-enter that partially-initialized package during
     # a cold import and raise ImportError.
-    from ...gateway.normalize import normalize_e164
+    from ...gateway.normalize import canonicalize_email, is_email_channel, normalize_e164
 
     if not isinstance(identity, dict):
         return None
@@ -177,9 +177,17 @@ def binding_key_from_identity(identity: Any) -> tuple[str, str] | None:
     channel = identity.get("channel")
     channel_identity = identity.get("channel_identity")
     if isinstance(channel, str) and channel and isinstance(channel_identity, str):
-        normalized = normalize_e164(channel_identity)
-        if normalized != "+":
-            return f"provisional:{channel}:{normalized}", "provisional"
+        # S17: email channel identities are addresses, not phones — canonicalize
+        # them (never E.164, which strips an address to a bare "+"). SMS keeps the
+        # E.164 normalization so the provisional key round-trips byte-for-byte.
+        if is_email_channel(channel):
+            normalized = canonicalize_email(channel_identity)
+            if normalized:
+                return f"provisional:{channel}:{normalized}", "provisional"
+        else:
+            normalized = normalize_e164(channel_identity)
+            if normalized != "+":
+                return f"provisional:{channel}:{normalized}", "provisional"
 
     return None
 

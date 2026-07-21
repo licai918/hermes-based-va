@@ -22,7 +22,12 @@ from typing import Any, Callable, Mapping, Optional
 
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
 from toee_hermes.gateway.ingress import snapshot_as_identity_dict
-from toee_hermes.gateway.normalize import normalize_e164
+from toee_hermes.gateway.normalize import (
+    TEXTLINE_SMS,
+    canonicalize_email,
+    is_email_channel,
+    normalize_e164,
+)
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
 from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
@@ -73,19 +78,29 @@ _RETRYABLE_ERROR_NAMES = frozenset(
 
 
 def _with_channel_identity(
-    identity: Optional[dict[str, Any]], from_phone: str
+    identity: Optional[dict[str, Any]], from_identity: str, channel: str = TEXTLINE_SMS
 ) -> dict[str, Any]:
-    """Merge the SMS channel identity (E.164) into the turn's identity dict (S01).
+    """Merge the ingress channel identity into the turn's identity dict (S01/S17).
 
     Runs at the turn boundary rather than in ``snapshot_as_identity_dict``: the
-    phone lives on ``AgentTurnContext``, not the Session Identity Snapshot. Always
-    returns a dict — even for an unmatched caller with no snapshot — so Customer
-    Memory binding (S02) has ingress-controlled channel identity to key off,
-    never a model-supplied tool param (RK-3).
+    channel identity lives on ``AgentTurnContext``, not the Session Identity
+    Snapshot. Always returns a dict — even for an unmatched caller with no snapshot —
+    so Customer Memory binding (S02) has ingress-controlled channel identity to key
+    off, never a model-supplied tool param (RK-3).
+
+    S17 (⚠️ binding correctness): the channel MUST reflect the real ingress channel.
+    An email turn binds ``channel="email"`` with the canonicalized From address; an
+    SMS turn binds ``channel="sms"`` with the E.164 phone. Hardcoding ``"sms"`` here
+    would compute the WRONG binding key for an email turn and silently read/write
+    another binding's memory — a governance/privacy bug.
     """
     merged = dict(identity) if identity else {}
-    merged["channel"] = "sms"
-    merged["channel_identity"] = normalize_e164(from_phone)
+    if is_email_channel(channel):
+        merged["channel"] = "email"
+        merged["channel_identity"] = canonicalize_email(from_identity)
+    else:
+        merged["channel"] = "sms"
+        merged["channel_identity"] = normalize_e164(from_identity)
     return merged
 
 
@@ -358,9 +373,14 @@ def make_openrouter_run_turn(
         base_identity = (
             snapshot_as_identity_dict(snapshot) if snapshot is not None else None
         )
-        # S01: enrich with the caller's channel identity (E.164) here, where
-        # AgentTurnContext.from_phone is in scope — the snapshot alone never has it.
-        identity = _with_channel_identity(base_identity, context.from_phone)
+        # S01/S17: enrich with the caller's channel identity here, where
+        # AgentTurnContext.from_phone (+ .channel) is in scope — the snapshot alone
+        # never has it. The channel drives email-vs-SMS binding (RK-4 correctness).
+        identity = _with_channel_identity(
+            base_identity,
+            context.from_phone,
+            getattr(context, "channel", TEXTLINE_SMS),
+        )
         # S10/FR-4: on a verified ingress, merge the caller's pre-verification
         # provisional slots onto the verified record BEFORE the read below, so the
         # just-merged preferences are injected on this same turn (PAC-3). No-op /

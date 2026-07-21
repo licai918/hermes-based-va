@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
 import {
+  buildSimulatedInboundEmail,
   buildSimulatedInboundEvent,
   handleGetSimulatorThread,
+  handleSimulatorEmailIngress,
   handleSimulatorIngress,
   handleSimulatorLinkIdentity,
   signLegacyTextlinePayload,
@@ -10,6 +12,14 @@ import {
 
 function jsonReq(body: unknown): Request {
   return new Request("http://localhost/api/copilot/simulator/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function emailReq(body: unknown): Request {
+  return new Request("http://localhost/api/copilot/simulator/email", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -189,6 +199,103 @@ describe("handleSimulatorIngress", () => {
     });
     expect(res.status).toBe(400);
     expect(dispatched).toBe(false);
+  });
+});
+
+describe("buildSimulatedInboundEmail", () => {
+  it("builds the simulated email shape (id/conversation_id/from/subject/body/received_at/type)", () => {
+    const event = buildSimulatedInboundEmail({
+      fromAddress: "accounts@acme-fleet.example",
+      subject: "Order 10444",
+      body: "Where is my order?",
+      conversationId: "conv-em-1",
+      eventId: "evt-em-1",
+      nowIso: "2026-07-20T14:00:00.000Z",
+    });
+    expect(event).toEqual({
+      id: "evt-em-1",
+      conversation_id: "conv-em-1",
+      from: "accounts@acme-fleet.example",
+      subject: "Order 10444",
+      body: "Where is my order?",
+      received_at: "2026-07-20T14:00:00.000Z",
+      type: "email.received",
+    });
+  });
+});
+
+describe("handleSimulatorEmailIngress", () => {
+  it("POSTs the signed email event to the simulated-email webhook and returns accepted:true", async () => {
+    let capturedUrl = "";
+    let capturedInit: RequestInit | null = null;
+    const res = await handleSimulatorEmailIngress(
+      emailReq({
+        from: "accounts@acme-fleet.example",
+        subject: "Order 10444",
+        body: "Where is my order?",
+        conversationId: "conv-em-1",
+      }),
+      {
+        gatewayUrl: "http://127.0.0.1:8080",
+        webhookSecret: "whsec-dev",
+        fetchImpl: async (url, init) => {
+          capturedUrl = url;
+          capturedInit = init;
+          return new Response(null, { status: 200 });
+        },
+      },
+    );
+
+    expect(capturedUrl).toBe("http://127.0.0.1:8080/webhooks/simulated-email");
+    const init = capturedInit as unknown as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    const sentBody = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(sentBody).toEqual({
+      id: expect.stringMatching(/^sim-/),
+      conversation_id: "conv-em-1",
+      from: "accounts@acme-fleet.example",
+      subject: "Order 10444",
+      body: "Where is my order?",
+      received_at: expect.any(String),
+      type: "email.received",
+    });
+    expect(headers["X-Textline-Signature"]).toBe(
+      signLegacyTextlinePayload(init.body as string, "whsec-dev"),
+    );
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as { accepted: boolean; conversationId: string };
+    expect(payload.accepted).toBe(true);
+    expect(payload.conversationId).toBe("conv-em-1");
+  });
+
+  it("400s a missing from before any fetch", async () => {
+    let dispatched = false;
+    const res = await handleSimulatorEmailIngress(
+      emailReq({ subject: "hi", body: "hi" }),
+      {
+        gatewayUrl: "http://127.0.0.1:8080",
+        webhookSecret: "whsec-dev",
+        fetchImpl: async () => {
+          dispatched = true;
+          return new Response(null, { status: 200 });
+        },
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("allows an empty subject and generates a conversationId", async () => {
+    const res = await handleSimulatorEmailIngress(
+      emailReq({ from: "a@b.com", body: "hi" }),
+      {
+        gatewayUrl: "http://127.0.0.1:8080",
+        webhookSecret: "whsec-dev",
+        fetchImpl: async () => new Response(null, { status: 200 }),
+      },
+    );
+    const payload = (await res.json()) as { conversationId: string };
+    expect(payload.conversationId).toMatch(/^sim-/);
   });
 });
 

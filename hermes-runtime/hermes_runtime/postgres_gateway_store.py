@@ -17,18 +17,32 @@ from psycopg.types.json import Jsonb
 from toee_hermes.drivers.mock.memory import MEMORY_SOURCE_MERGED_PROVISIONAL
 from toee_hermes.gateway.agent_turn import AgentTurnContext, build_agent_turn_context
 from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+from toee_hermes.gateway.normalize import is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
 
 from .datastore.config import database_url
 from .datastore.handlers._common import new_id
 
 _SMS_CHANNEL = "sms"
-# Dev substrate: one Textline conversation maps to one SMS session (ADR-0115).
+_EMAIL_CHANNEL = "email"
+# Dev substrate: one conversation maps to one session (ADR-0115).
 _SESSION_TTL = "24 hours"
 
 
-def _thread_id(from_phone: str) -> str:
-    return f"customer_thread:textline:{from_phone}"
+def _channel_column(channel: str) -> str:
+    """Map the ingress channel to the persisted channel vocabulary (S17).
+
+    ``customer_thread`` / ``session_identity_snapshot`` / ``cases`` / ``identity_link``
+    all use ``sms`` | ``email`` (CaseChannel), not the ingress ``textline_sms`` |
+    ``simulated_email``. Keeping the column value ``email`` is what makes the copilot
+    case view label an email ingress correctly and an Email Sender Match resolve.
+    """
+    return _EMAIL_CHANNEL if is_email_channel(channel) else _SMS_CHANNEL
+
+
+def _thread_id(channel: str, from_identity: str) -> str:
+    prefix = "email" if is_email_channel(channel) else "textline"
+    return f"customer_thread:{prefix}:{from_identity}"
 
 
 def _session_id(thread_id: str, conversation_id: str) -> str:
@@ -125,7 +139,8 @@ class PostgresGatewayStore:
                 f"got action={decision.action!r}."
             )
 
-        thread_id = _thread_id(event.from_phone)
+        channel_col = _channel_column(event.channel)
+        thread_id = _thread_id(event.channel, event.from_phone)
         session_id = _session_id(thread_id, event.conversation_id)
         turn_id = _turn_id(session_id, event.event_id)
         body_ref = turn_id
@@ -156,7 +171,7 @@ class PostgresGatewayStore:
                             updated_at = now()
                         RETURNING id
                         """,
-                        (thread_id, _SMS_CHANNEL, event.from_phone, thread_shopify_id),
+                        (thread_id, channel_col, event.from_phone, thread_shopify_id),
                     )
                     thread_id = cur.fetchone()[0]
 
@@ -196,7 +211,7 @@ class PostgresGatewayStore:
                             (
                                 snapshot_id,
                                 event.event_id,
-                                _SMS_CHANNEL,
+                                channel_col,
                                 event.from_phone,
                                 Jsonb(_snapshot_to_json(snapshot)),
                             ),
@@ -220,6 +235,7 @@ class PostgresGatewayStore:
                         thread_id=thread_id,
                         session_id=session_id,
                         preview=event.body,
+                        channel=channel_col,
                     )
 
                 conn.commit()
@@ -251,7 +267,7 @@ class PostgresGatewayStore:
                 cur.execute(
                     """
                     SELECT c.event_id, c.customer_thread_id, c.sms_session_id,
-                           c.inbound_message_turn_id, t.channel_identity,
+                           c.inbound_message_turn_id, t.channel_identity, t.channel,
                            s.match_result, s.captured_at
                     FROM agent_turn_context c
                     JOIN customer_thread t ON t.id = c.customer_thread_id
@@ -270,6 +286,7 @@ class PostgresGatewayStore:
                     session_id,
                     turn_id,
                     from_phone,
+                    channel,
                     match_result,
                     captured_at,
                 ) = row
@@ -290,6 +307,9 @@ class PostgresGatewayStore:
             from_phone=from_phone,
             session_identity_snapshot=snapshot,
             inbound_body_ref=turn_id,
+            # S17: the persisted channel vocabulary ("email"|"sms") — is_email_channel
+            # recognizes it, so the reloaded email turn binds on the email identity.
+            channel=channel,
         )
 
     def load_inbound_body(self, inbound_body_ref: str) -> Optional[str]:
@@ -483,6 +503,7 @@ def _ensure_open_case(
     thread_id: str,
     session_id: str,
     preview: str,
+    channel: str = _SMS_CHANNEL,
 ) -> None:
     """Open a Follow-up Case when none exists so Tier B Workbench shows the thread."""
     cur.execute(
@@ -503,7 +524,7 @@ def _ensure_open_case(
         """
         INSERT INTO cases
             (id, channel, customer_thread_id, sms_session_id, status, summary, urgency)
-        VALUES (%s, 'sms', %s, %s, 'open', %s, 'normal')
+        VALUES (%s, %s, %s, %s, 'open', %s, 'normal')
         """,
-        (case_id, thread_id, session_id, summary),
+        (case_id, channel, thread_id, session_id, summary),
     )

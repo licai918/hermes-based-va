@@ -15,7 +15,7 @@ from typing import Any
 from toee_hermes.drivers.mock import MockDriver, create_identity_mock_handlers
 from toee_hermes.errors import ToolDriverError
 from toee_hermes.execute import ToolRequest
-from toee_hermes.gateway.normalize import TextlineInboundFields
+from toee_hermes.gateway.normalize import TextlineInboundFields, to_inbound_email_event
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION
 from toee_hermes.gateway.pipeline import process_inbound
 from toee_hermes.gateway.rate_limit import create_inbound_rate_limiter
@@ -106,6 +106,65 @@ def test_unmatched_message_still_enqueued() -> None:
     assert decision.action == "enqueue"
     assert decision.snapshot is not None
     assert decision.snapshot.outcome == "unmatched_caller"
+
+
+# --- S17: simulated email flows through the SAME pipeline (FR-18) -------------
+
+
+def _email_event(*, from_address="accounts@acme-fleet.example", subject="Order 10444", body="Where is it?"):
+    return to_inbound_email_event(
+        event_id="evt_email_1",
+        conversation_id="conv_email_1",
+        from_address=from_address,
+        subject=subject,
+        body=body,
+        received_at=RESOLVED_AT,
+    )
+
+
+def _process_email(**overrides):
+    kwargs = dict(
+        raw_body=RAW_BODY,
+        signature=_sig(),
+        secret=SECRET,
+        event=_email_event(),
+        driver=_identity_driver(),
+        rate_limiter=create_inbound_rate_limiter(),
+        resolved_at=RESOLVED_AT,
+        at_ms=0,
+    )
+    kwargs.update(overrides)
+    return process_inbound(**kwargs)
+
+
+def test_verified_email_sender_accepted_and_enqueued() -> None:
+    decision = _process_email()
+    assert decision.status == 200
+    assert decision.action == "enqueue"
+    assert decision.event is not None
+    assert decision.event.channel == "simulated_email"
+    assert decision.snapshot is not None
+    assert decision.snapshot.outcome == "verified_customer"
+    assert decision.snapshot.shopify_customer_id == "gid://shopify/Customer/1001"
+
+
+def test_unmatched_email_sender_still_enqueued() -> None:
+    decision = _process_email(event=_email_event(from_address="stranger@example.com"))
+    assert decision.action == "enqueue"
+    assert decision.snapshot.outcome == "unmatched_caller"
+
+
+def test_email_body_with_stop_is_not_opt_out_gated() -> None:
+    # RK-4: an email is not STOP-gated like SMS — "STOP" in an email body is prose.
+    decision = _process_email(event=_email_event(subject="STOP calling me", body="Please STOP."))
+    assert decision.action == "enqueue"
+    assert decision.stage == "accept"
+
+
+def test_invalid_signature_rejects_email_before_processing() -> None:
+    decision = _process_email(signature="deadbeef")
+    assert decision.status == 401
+    assert decision.action == "reject"
 
 
 def test_rate_limited_persists_but_skips_enqueue() -> None:
