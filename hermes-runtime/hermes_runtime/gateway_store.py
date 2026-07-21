@@ -43,7 +43,14 @@ class GatewayStore(Protocol):
 
 
 class JobQueue(Protocol):
-    """Async agent-turn dispatch seam (Cloud Tasks in production, ADR-0105)."""
+    """Async agent-turn dispatch seam.
+
+    The production implementation is the durable Postgres queue
+    (:class:`hermes_runtime.job_queue.PostgresJobQueue`, ADR-0153, which
+    supersedes ADR-0105's Cloud Tasks target). This one-argument ``enqueue`` is
+    the shape both it and :class:`InMemoryJobQueue` satisfy; S02 cuts the
+    composition root over.
+    """
 
     def enqueue(self, payload: AgentJobPayload) -> None: ...
 

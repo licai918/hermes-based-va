@@ -1,5 +1,15 @@
 # Cloud Tasks handoff for async Textline agent execution
 
+> **Transport superseded by ADR-0153.** Cloud Tasks was never built and
+> contradicts the local-first posture of ADR-0142; the async handoff is a durable
+> **Postgres job queue** in the Toee Business Datastore
+> ([migration 0011](../../hermes-runtime/migrations/0011_job_queue.sql)), claimed
+> by worker processes with `FOR UPDATE SKIP LOCKED`. The **enqueue rule below
+> still holds** — identity keys only (`eventId` + `conversationId`), no PII body —
+> as does reload-by-`eventId` (ADR-0107). What changes is the transport and the
+> handler seam: a turn worker claims from the table instead of Cloud Tasks POSTing
+> `/internal/jobs/agent-turn`.
+
 After a Textline webhook returns `200`, **External Customer Service Profile** execution runs asynchronously through Google Cloud Tasks rather than inside the webhook request lifecycle.
 
 Cloud Tasks is the first queue-style Google Cloud service activated for **Hermes VA** because fast webhook acknowledgment in ADR-0103 requires durable post-ack work handoff on Cloud Run.
