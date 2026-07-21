@@ -1,10 +1,13 @@
 """S17: the simulated-email webhook drives the same governed turn + reply (FR-18).
 
-Mirrors ``test_gateway_app``'s ``test_webhook_alone_drives_the_reply_through_the_
-local_dispatcher`` in the email flavor: a single signed POST to
-``/webhooks/simulated-email`` fast-acks and the in-process dispatcher runs the bound
-External turn, deriving + delivering the reply through the S01 reply-sender gate.
-The email reply is NOT SMS-clipped (RK-4 / constraint d).
+A single signed POST to ``/webhooks/simulated-email`` fast-acks and enqueues via
+``store.queue``. In production that is the durable Postgres queue the separate
+turn-worker process claims (0.0.4 S02, ADR-0153); here a test-only
+``_InlineTurnQueue`` runs the same shared ``execute_agent_turn_job`` inline instead,
+so the test stays DB-free and synchronous while covering the S17 email-channel
+binding (subject folded into the turn body, reply mirrored onto the email thread
+key), not the queue substrate. The email reply is NOT SMS-clipped (RK-4 /
+constraint d).
 """
 
 from __future__ import annotations
