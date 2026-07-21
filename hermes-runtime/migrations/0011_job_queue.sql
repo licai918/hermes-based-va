@@ -38,6 +38,12 @@ CREATE TABLE job (
 CREATE UNIQUE INDEX idx_job_dedupe_key ON job (dedupe_key) WHERE dedupe_key IS NOT NULL;
 
 -- The claim path: due, claimable rows in run order.
+-- ponytail: leading on (run_at, created_at) without `type`, so a type-filtered
+-- claim (FR-9) walks rows in run order and discards the non-matching ones. Fine
+-- while the whole table is a handful of types at SMS volume. Ceiling: a large
+-- backlog of one type makes every other worker's claim scan past it. Upgrade
+-- path: recreate as (type, run_at, created_at) -- same partial WHERE, index-only
+-- seek per type; a plain CREATE/DROP INDEX migration, no table rewrite.
 CREATE INDEX idx_job_claim ON job (run_at, created_at)
     WHERE status IN ('queued', 'failed');
 

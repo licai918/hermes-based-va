@@ -97,6 +97,15 @@ queued ──claim──> running ──complete──> succeeded
   `enqueue` is `ON CONFLICT DO NOTHING` and returns the existing job's id. This
   preserves the gateway's existing inbound-event dedupe semantics (FR-7) and is
   the mechanism the schedule tick rides.
+- **Lease fencing.** `complete()` and `fail()` take the `Job` handed back by
+  `claim()`, and only touch a row that is still `running` under that job's exact
+  lease (`locked_at`); otherwise they raise `LeaseLost`. Without the fence a
+  worker that is *slow, not dead* — its lease reclaimed, the job re-claimed by
+  someone else — could mark another worker's in-flight job `succeeded`, knock it
+  back to `failed` so a third worker claims it too, or resurrect a `dead` row.
+  `locked_at` is sufficient as the credential: every claim writes a fresh
+  `now()`, and a row is only re-claimable after a reclaim has pushed it through
+  the retry backoff, so two live leases on one row can never share a timestamp.
 
 ### 4. Recurring schedules are part of the queue core (no cron)
 
@@ -170,6 +179,19 @@ requires a managed service.
   volume that is fine; if worker polling ever contends with turn traffic, the
   first move is a separate pool (the pool is already keyed per DSN), not a
   separate queue product.
+- **Constraint — `job` retention is coupled to inbound dedupe (FR-7).** The
+  `dedupe_key` unique index is not merely an optimisation: it is the *only*
+  guarantee behind inbound-event dedupe. A duplicate webhook is rejected because
+  a row with that `dedupe_key` still exists — so the dedupe window is exactly the
+  retention window of the `job` table, and `job` has no cleanup story today
+  (deliberately: the table is small and `dead` rows are S05's evidence).
+  **Therefore: a future retention slice must not delete `job` rows without first
+  replacing this guarantee** — either keep terminal rows with a `dedupe_key`
+  beyond the provider's replay window, or move dedupe to its own
+  `processed_event` table that retention does not touch. Deleting on age alone
+  would silently re-open double-processing of inbound events, with no failing
+  test to catch it (nothing asserts a dedupe key survives a sweep that does not
+  yet exist).
 
 ## Considered options
 
@@ -199,7 +221,7 @@ requires a managed service.
 
 ## Verification
 
-`hermes-runtime/tests/test_job_queue.py` — 20 live-Postgres tests (skip-if-no-DB
+`hermes-runtime/tests/test_job_queue.py` — 23 live-Postgres tests (skip-if-no-DB
 via the shared `datastore` fixture, throwaway schema per test):
 
 - **enqueue:** queued row with the right defaults; the one-argument
@@ -208,7 +230,13 @@ via the shared `datastore` fixture, throwaway schema per test):
   a dedupe key are never deduped.
 - **claim:** marks `running` with `locked_by`/`locked_at` and `attempts = 1`;
   empty queue returns `None`; a claimed job is not claimed again; future `run_at`
-  is skipped; `types=` filtering keeps a turn worker off background jobs.
+  is skipped; `types=` filtering keeps a turn worker off background jobs, and an
+  empty `types=()` allowlist claims *nothing* rather than widening to any type.
+- **lease fencing:** the full stale-worker scenario — claim, lease expiry,
+  reclaim, re-claim by a second worker — then the stale holder's `complete()`
+  and `fail()` both raise `LeaseLost` and leave the row `running` under its new
+  owner, who can still complete it; and `complete()` cannot resurrect a `dead`
+  row. Both fail against an unfenced `WHERE id = %s`.
 - **contention:** `test_concurrent_workers_never_double_claim` — 6 threads on 6
   connections drain 24 jobs behind a barrier; every job claimed exactly once.
   Mutation-checked: deleting `FOR UPDATE SKIP LOCKED` from the claim makes it fail
