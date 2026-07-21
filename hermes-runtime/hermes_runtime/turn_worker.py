@@ -245,14 +245,33 @@ def poll_forever(
 
 def main() -> int:  # pragma: no cover - the process shell; run_once is the tested unit
     """Poll the queue until SIGTERM/Ctrl-C, which exits between jobs."""
+    from .gateway_composition import _require_datastore_backend, resolve_turn_collaborators
+
+    # Fail closed before building anything (fix wave 2). The gateway already
+    # refuses to boot off a non-datastore backend (build_gateway_app); left
+    # unguarded, this is the more destructive half of that misconfiguration --
+    # with TOOL_BACKEND unset (the default) this worker would still open the
+    # real Postgres queue, claim real customer-turn jobs, look them up in its
+    # own empty per-process InMemoryGatewayStore, and dead-letter every one of
+    # them after 3 attempts instead of merely failing to start.
+    _require_datastore_backend()
+
+    # Both stop signals take the graceful path: finish this turn, release its
+    # lease, exit between jobs. Installed first, before the slow collaborator
+    # setup below (warm_knowledge_embedder, Postgres connects), so SIGTERM/
+    # SIGINT take that path for the rest of main() -- only interpreter/import
+    # startup, before this point, can still raise a bare KeyboardInterrupt (see
+    # the except clause below). Ctrl-C used to raise straight through run_once
+    # and strand the job for the full 300 s lease.
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     # Set before anything builds the lazy process pool (datastore/pool.py reads
     # the env at construction); an explicit deployment value still wins.
     os.environ.setdefault("DATABASE_POOL_MAX_SIZE", WORKER_POOL_MAX_SIZE)
-
-    from .gateway_composition import resolve_turn_collaborators
 
     collaborators = resolve_turn_collaborators()
     queue = PostgresJobQueue()
@@ -264,12 +283,6 @@ def main() -> int:  # pragma: no cover - the process shell; run_once is the test
         POLL_SECONDS,
     )
 
-    # Both stop signals take the graceful path: finish this turn, release its
-    # lease, exit between jobs. Ctrl-C used to raise straight through run_once and
-    # strand the job for the full 300 s lease.
-    signal.signal(signal.SIGTERM, _request_stop)
-    signal.signal(signal.SIGINT, _request_stop)
-
     try:
         poll_forever(
             queue=queue,
@@ -278,7 +291,9 @@ def main() -> int:  # pragma: no cover - the process shell; run_once is the test
             worker=worker,
         )
     except KeyboardInterrupt:
-        # Only reachable in the window before the handler is installed.
+        # Only reachable in the window before main() runs the signal.signal
+        # calls above (interpreter/module-import startup) -- everything after
+        # that point takes the graceful _request_stop path instead.
         logger.info("Turn worker %s interrupted before a job was claimed", worker)
     logger.info("Turn worker %s stopped", worker)
     return 0
