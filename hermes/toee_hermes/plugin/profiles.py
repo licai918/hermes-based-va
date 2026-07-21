@@ -50,6 +50,10 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_copilot_draft",
             "toee_workbench_read",
             "toee_customer_memory",
+            # 0.0.3 S22 (FR-23): L6 Agent-experience proposals originate ONLY
+            # from the internal_copilot review fork (S23) -- never external,
+            # never supervisor (ADR-0140 boundary).
+            "toee_agent_experience",
         }
     ),
     # ADR-0038 Supervisor Admin Profile (governance only).

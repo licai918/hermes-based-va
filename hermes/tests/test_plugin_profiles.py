@@ -42,6 +42,8 @@ ADR_0035_INTERNAL = {
     "toee_copilot_draft",
     "toee_workbench_read",
     "toee_customer_memory",
+    # 0.0.3 S22 (FR-23): L6 Agent-experience proposals -- internal_copilot only.
+    "toee_agent_experience",
 }
 ADR_0038_SUPERVISOR = {
     "toee_knowledge_ops",

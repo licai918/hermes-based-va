@@ -63,10 +63,18 @@ DriverSelector = Callable[[str], ToolDriver]
 # you remember about me" read, meant to reach the EXTERNAL model's live
 # tool-calling loop (its own verified-identity gate, not this list, is what
 # keeps it safe -- see is_verified_customer_identity).
+#
+# toee_agent_experience.list_agent_experience (0.0.3 S22, FR-23) is excluded
+# for the same reason as get_memory_audit: an admin-only read of the L6 store
+# (proposed/confirmed/rejected entries, including proposer_context), meant only
+# for the admin BFF's deterministic tools:dispatch call, never the copilot
+# model's own tool-calling loop. propose_experience is deliberately NOT here --
+# it's the governed write the S23 review fork calls.
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
         ("toee_customer_memory", "get_memory_audit"),
+        ("toee_agent_experience", "list_agent_experience"),
     }
 )
 

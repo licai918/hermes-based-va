@@ -6,6 +6,7 @@ the Launch Eval runner.
 """
 
 from .admin_stubs import create_admin_stub_mock_handlers
+from .agent_experience import create_agent_experience_mock_handlers
 from .case import (
     CaseMockData,
     case_baseline_data,
@@ -60,7 +61,7 @@ from .textline import (
 
 
 def create_all_mock_handlers() -> MockHandlerRegistry:
-    """Merge every tool's baseline mock fragment into one registry (all 15 v1 tools)."""
+    """Merge every tool's baseline mock fragment into one registry (all 16 v1 tools)."""
     return merge_registries(
         create_identity_mock_handlers(),
         create_shopify_mock_handlers(),
@@ -72,6 +73,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_textline_mock_handlers(),
         create_square_mock_handlers(),
         create_admin_stub_mock_handlers(),
+        create_agent_experience_mock_handlers(),
     )
 
 
@@ -109,4 +111,5 @@ __all__ = [
     "create_square_mock_handlers",
     "square_baseline_data",
     "create_admin_stub_mock_handlers",
+    "create_agent_experience_mock_handlers",
 ]

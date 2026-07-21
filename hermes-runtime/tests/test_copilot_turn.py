@@ -63,6 +63,13 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         "toee_copilot_draft",
         "toee_workbench_read",
         "toee_customer_memory",
+        # 0.0.3 S22 (FR-23): reviewed addition. toee_agent_experience's
+        # propose_experience writes a status="proposed" L6 row (inert until an
+        # admin confirms it, S24) -- it never contacts the customer or moves
+        # money, so it does not weaken the no-auto-send invariant this
+        # tripwire guards. list_agent_experience is admin-only and excluded
+        # from LLM registration entirely (_AGENT_EXCLUDED_ACTIONS).
+        "toee_agent_experience",
     }
 )
 

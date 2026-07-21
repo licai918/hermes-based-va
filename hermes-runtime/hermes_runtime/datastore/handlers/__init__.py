@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable
 
 from .accounts import account_handlers
+from .agent_experience import agent_experience_handlers
 from .cases import case_handlers
 from .eval_review import eval_review_handlers
 from .identity import identity_handlers
@@ -42,6 +43,7 @@ def build_datastore_registry() -> DatastoreRegistry:
         account_handlers(),
         knowledge_handlers(),
         eval_review_handlers(),
+        agent_experience_handlers(),
     )
 
 

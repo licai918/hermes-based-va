@@ -82,6 +82,13 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "disable_account",
         "authenticate",
     ),
+    # 0.0.3 S22 (FR-23, NFR-3): L6 Agent-experience store -- "what the agent
+    # learns from doing the job" (distinct from L4 Customer Memory and L5's
+    # authored corpus). The governed write is LLM-callable on internal_copilot
+    # only (the S23 copilot review fork proposes); list_agent_experience is
+    # admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
+    # precedent) -- reached only via the admin BFF's deterministic dispatch.
+    "toee_agent_experience": ("propose_experience", "list_agent_experience"),
 }
 
 

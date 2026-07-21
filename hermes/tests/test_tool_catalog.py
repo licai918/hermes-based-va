@@ -30,7 +30,21 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_knowledge_ops",
         "toee_eval_review",
         "toee_workbench_admin",
+        "toee_agent_experience",
     }
+
+
+def test_agent_experience_actions_match_fr_23() -> None:
+    # 0.0.3 S22 (FR-23): the L6 Agent-experience store's governed write
+    # (propose_experience) and its admin-only read (list_agent_experience,
+    # excluded from the LLM tool-calling loop -- see
+    # toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS).
+    assert TOOL_CATALOG["toee_agent_experience"] == (
+        "propose_experience",
+        "list_agent_experience",
+    )
+    assert is_tool_action("toee_agent_experience", "propose_experience") is True
+    assert is_tool_action("toee_agent_experience", "list_agent_experience") is True
 
 
 def test_identity_lookup_actions_match_adr_0060() -> None:

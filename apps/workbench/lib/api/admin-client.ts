@@ -7,7 +7,11 @@ import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
-import type { MemoryAuditView, MemoryPreferenceSlot } from "@/lib/gateway/types";
+import type {
+  AgentExperienceEntry,
+  MemoryAuditView,
+  MemoryPreferenceSlot,
+} from "@/lib/gateway/types";
 import { getJson, sendJson } from "./http";
 
 // --- Knowledge (Required Operational Policy Slots) ---------------------------
@@ -164,5 +168,13 @@ export function clearMemorySlot(
     "POST",
     `/api/admin/memory-audit/clear?case_id=${encodeURIComponent(caseId)}`,
     { slot },
+  );
+}
+
+// --- L6 Agent-experience store (0.0.3 S22, FR-23) -----------------------------
+
+export function listAgentExperience(): Promise<AgentExperienceEntry[]> {
+  return getJson<{ entries: AgentExperienceEntry[] }>("/api/admin/agent-experience").then(
+    (b) => b.entries,
   );
 }

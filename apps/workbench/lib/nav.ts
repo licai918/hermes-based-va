@@ -18,6 +18,8 @@ const GOVERNANCE: NavItem[] = [
   // FR-20 (0.0.3 S20): supervisor memory audit view -- slots + write history +
   // attributed clear.
   { label: "Memory Audit", href: ROUTES.adminMemoryAudit },
+  // FR-23 (0.0.3 S22): L6 Agent-experience minimal admin list.
+  { label: "Agent Experience", href: ROUTES.adminAgentExperience },
 ];
 
 export function navItemsForRole(role: WorkbenchRoleId): NavItem[] {

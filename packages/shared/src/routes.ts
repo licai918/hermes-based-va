@@ -10,6 +10,8 @@ export const ROUTES = {
   adminEval: "/admin/eval",
   adminAccounts: "/admin/accounts",
   adminMemoryAudit: "/admin/memory-audit",
+  // L6 Agent-experience minimal admin list (0.0.3 S22, FR-23).
+  adminAgentExperience: "/admin/agent-experience",
 } as const;
 
 export function profileForApiPrefix(

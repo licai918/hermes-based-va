@@ -53,6 +53,33 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         # Neither is required -- the mock driver accepts either (slot first,
         # falling back to query).
     },
+    # 0.0.3 S22 (FR-23): the governed L6 propose write -- kind/content name-
+    # guessing would be exactly the S10 failure mode, so both are declared and
+    # required rather than left to an open object.
+    ("toee_agent_experience", "propose_experience"): {
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["note", "procedure"],
+                "description": "Whether this is an operational note or a procedure.",
+            },
+            "content": {
+                "type": "string",
+                "description": (
+                    "The operational learning to propose. Operational-only -- "
+                    "no customer PII."
+                ),
+            },
+            "proposer_context": {
+                "type": "object",
+                "description": (
+                    "Optional redacted operational context the proposal was "
+                    "drawn from."
+                ),
+            },
+        },
+        "required": ["kind", "content"],
+    },
 }
 
 

@@ -217,6 +217,35 @@ def test_get_memory_audit_is_never_registered_as_an_llm_tool_for_any_profile() -
         assert "toee_customer_memory__get_memory_audit" not in ctx.registered_names()
 
 
+# --- 0.0.3 S22: list_agent_experience is never LLM-callable (governance) ---
+
+
+def test_list_agent_experience_is_never_registered_as_an_llm_tool() -> None:
+    # toee_agent_experience is allowlisted for internal_copilot only;
+    # list_agent_experience must stay off the model's tool-calling surface --
+    # it's an admin-only read meant only for the admin BFF's gated dispatch
+    # (FR-23, the get_memory_audit precedent).
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert "toee_agent_experience__list_agent_experience" not in ctx.registered_names()
+
+
+def test_propose_experience_is_registered_as_an_llm_tool_for_internal_copilot() -> None:
+    # Contrast with list_agent_experience above: propose_experience IS the
+    # governed write the S23 review fork calls, so it must reach
+    # internal_copilot's tool-calling surface, not be excluded.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert "toee_agent_experience__propose_experience" in ctx.registered_names()
+
+
+def test_agent_experience_is_not_registered_for_external_profile() -> None:
+    # ADR-0034/35: toee_agent_experience is internal_copilot only.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register(ctx)
+    assert "toee_agent_experience" not in ctx.registered_toolsets()
+
+
 # --- 0.0.3 S21: get_my_memory_summary IS LLM-callable on EXTERNAL (FR-21) ---
 
 

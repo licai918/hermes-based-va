@@ -54,9 +54,10 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
   });
 
-  it("contains exactly the 15 v1 tool names", () => {
+  it("contains exactly the 16 v1 tool names", () => {
     expect([...TOOL_NAMES].sort()).toEqual(
       [
+        "toee_agent_experience",
         "toee_case",
         "toee_case_manage",
         "toee_copilot_draft",
@@ -74,6 +75,15 @@ describe("TOOL_CATALOG", () => {
         "toee_workbench_read",
       ].sort(),
     );
+  });
+
+  it("exposes the L6 Agent-experience store actions (0.0.3 S22, FR-23)", () => {
+    expect(TOOL_CATALOG.toee_agent_experience).toEqual([
+      "propose_experience",
+      "list_agent_experience",
+    ]);
+    expect(isToolAction("toee_agent_experience", "propose_experience")).toBe(true);
+    expect(isToolAction("toee_agent_experience", "list_agent_experience")).toBe(true);
   });
 });
 

@@ -55,6 +55,9 @@ export const TOOL_CATALOG = {
     "disable_account",
     "authenticate",
   ],
+  // 0.0.3 S22 (FR-23, NFR-3): L6 Agent-experience store -- see
+  // hermes/toee_hermes/tool_catalog.py for the full rationale.
+  toee_agent_experience: ["propose_experience", "list_agent_experience"],
 } as const satisfies Record<string, readonly string[]>;
 
 export type ToolName = keyof typeof TOOL_CATALOG;

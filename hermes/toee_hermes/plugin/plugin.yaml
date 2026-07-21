@@ -63,5 +63,7 @@ provides_tools:
   - toee_workbench_admin__update_account_role
   - toee_workbench_admin__disable_account
   - toee_workbench_admin__authenticate
+  - toee_agent_experience__propose_experience
+  - toee_agent_experience__list_agent_experience
 provides_hooks:
   - pre_llm_call
