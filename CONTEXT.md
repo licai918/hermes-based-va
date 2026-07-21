@@ -17,7 +17,7 @@ The production deployment model that runs **Hermes Core** on Google Cloud Run an
 _Avoid_: Fixed infrastructure bundle, infrastructure-first provisioning
 
 **Memory Layer**:
-One of the six numbered layers that make up Hermes VA storage vocabulary: **L1 Identity Graph**, **L2 Conversation** (**Customer Thread**, **Email Thread**, **SMS Session**, **MessageTurn**, **AgentTurnContext**), **L3 Operational** (**Follow-up Case**, **Workbench Audit Log**, eval records), and **L4 Customer Memory** — all shipped, all in the **Toee Business Datastore** — plus **L5 Knowledge** (decided, not built, in a separate no-PII database) and **L6 Agent-Experience Memory** (exploring). The current-state map is `docs/architecture/memory-layers.md`.
+One of the six numbered layers that make up Hermes VA storage vocabulary: **L1 Identity Graph**, **L2 Conversation** (**Customer Thread**, **Email Thread**, **SMS Session**, **MessageTurn**, **AgentTurnContext**), **L3 Operational** (**Follow-up Case**, **Workbench Audit Log**, eval records), **L4 Customer Memory**, and **L6 Agent-Experience Memory** — all shipped, all in the **Toee Business Datastore** — plus **L5 Knowledge**, shipped in a separate no-PII database. The current-state map is `docs/architecture/memory-layers.md`.
 _Avoid_: Treating the map as a decision record, treating CONTEXT.md as the structural map, adding a layer without an ADR
 
 **Hermes Native Memory**:
@@ -33,8 +33,8 @@ The structured preference layer in the **Toee Business Datastore** for durable s
 _Avoid_: Live order or AR facts, operational policy text, SMS opt-out consent, model-guessed account data, open-ended preference keys, **unattributed agent writes** (a Copilot draft-turn write is recorded as `copilot_agent`, not forbidden — but an External-profile write still requires **Tool Gate** proof the customer stated the preference), model-supplied `source`/`user_id`/`channel_identity_id`, overwriting verified slots on merge, model-writable preference injection
 
 **Agent-Experience Memory (L6)**:
-What the agent learns from doing the job, distinct from customer PII (**Customer Memory**, L4), the authored corpus (**Public Site Knowledge**, L5), and the behaviour contract (`persona.py`). Under exploration only; the direction is to copy Hermes's learning loop, not its store, routing proposed learnings through the governed tool → Postgres → audit path with a gated propose → confirm step.
-_Avoid_: Shipped capability, Hermes Native Memory as its store, model-authored PII, cross-profile recall across the EXTERNAL/INTERNAL/SUPERVISOR boundary, unbounded transcript retention
+What the agent learns from doing the job — operational notes and procedures — distinct from customer PII (**Customer Memory**, L4), the authored corpus (**Public Site Knowledge**, L5), and the behaviour contract (`persona.py`). One governed `agent_experience` store in the **Toee Business Datastore**, tagged by `kind` as note or procedure, under a **propose → confirm → inject** gate: a bounded post-copilot-turn review pass proposes, a **Workbench Supervisor** or **Workbench Admin** accepts or rejects, and only confirmed entries ever reach a turn — the **Internal Copilot Profile** draft turn and, read-only, the **External Customer Service Profile** turn, each independently disable-able. The read is operational-only with no customer binding, bounded newest-confirmed first, and fail-closed; injection stays off on the eval record/replay path so the determinism gate holds.
+_Avoid_: Hermes Native Memory as its store, model-authored PII, customer-scoped entries, proposed or rejected entries reaching a turn, cross-profile recall across the EXTERNAL/INTERNAL/SUPERVISOR boundary, unbounded transcript retention
 
 **Hermes Integration Surface**:
 The native Hermes extension model used to connect external systems through Skills, Tools, and MCP without replacing Hermes orchestration.
