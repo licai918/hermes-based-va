@@ -7,6 +7,7 @@ import {
   type WorkbenchSession,
 } from "../auth/session";
 import { parseCookies, withSession } from "./with-session";
+import { HermesApiError } from "../gateway/hermes-api-client";
 
 const SECRET = "with-session-test-secret";
 const original = process.env.WORKBENCH_SESSION_SECRET;
@@ -118,5 +119,34 @@ describe("withSession", () => {
       { params: Promise.resolve({ id: "42" }) },
     );
     expect(receivedParams).toEqual({ id: "42" });
+  });
+
+  it("maps a HermesApiError thrown by the handler to its governed status (not a bare 500)", async () => {
+    // A handler's SYNCHRONOUS setup (e.g. new HermesApiClient) can throw outside
+    // its own try/catch; withSession's last-resort catch maps it through
+    // hermesErrorToProblem so the class-derived status is preserved.
+    const guarded = withSession(() => {
+      throw new HermesApiError("policy_blocked", "blocked by policy");
+    });
+    const res = await guarded(
+      await cookieRequest("https://wb.test/api/copilot/cases", repSession()),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ errorClass: "policy_blocked" });
+  });
+
+  it("maps any other throw (or async rejection) to a governed 502, never leaking a bare 500", async () => {
+    const sync = withSession(() => {
+      throw new Error("boom in synchronous setup");
+    });
+    const asyncReject = withSession(async () => {
+      throw new Error("boom in async body");
+    });
+    const req1 = await cookieRequest("https://wb.test/api/copilot/cases", repSession());
+    const req2 = await cookieRequest("https://wb.test/api/copilot/cases", repSession());
+    const [r1, r2] = await Promise.all([sync(req1), asyncReject(req2)]);
+    expect(r1.status).toBe(502);
+    expect(r2.status).toBe(502);
+    expect(await r1.json()).toMatchObject({ errorClass: "unexpected_error" });
   });
 });
