@@ -158,20 +158,57 @@ def _provisional_key_for(identity: dict[str, Any]) -> Optional[str]:
     return resolved[0] if resolved is not None else None
 
 
+def _linked_provisional_keys(
+    identity: dict[str, Any], verified_key: str, store: Any
+) -> list[str]:
+    """Every linked channel's provisional key to merge onto ``verified_key`` (S19/
+    FR-19, ADR-0151).
+
+    Deterministic precedence: THIS turn's own channel first (the freshest,
+    just-stated signal), then every other channel identity linked to the same
+    verified customer via ``identity_link``, in a fixed ``(channel,
+    channel_identity)`` order. Because :meth:`PostgresGatewayStore.
+    merge_provisional_memory`'s ``ON CONFLICT ... DO NOTHING`` lets the FIRST
+    writer of an empty verified slot win, this list's order IS the precedence
+    for a slot stated on more than one linked channel. Deduped, so a channel
+    that is both "this turn's own" and separately linked merges exactly once.
+
+    ``list_channel_identities_for_customer`` is an optional store capability
+    (only :class:`PostgresGatewayStore` implements it) -- a test double that
+    lacks it degrades to the single-channel (pre-S19) behavior rather than
+    raising.
+    """
+    keys: list[str] = []
+    own_key = _provisional_key_for(identity)
+    if own_key is not None:
+        keys.append(own_key)
+    list_linked = getattr(store, "list_channel_identities_for_customer", None)
+    if list_linked is not None:
+        for channel, channel_identity in list_linked(verified_key):
+            resolved = binding_key_from_identity(
+                {"channel": channel, "channel_identity": channel_identity}
+            )
+            if resolved is not None and resolved[0] not in keys:
+                keys.append(resolved[0])
+    return keys
+
+
 def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) -> bool:
-    """Merge pre-verification provisional slots onto the verified record (S10/FR-4).
+    """Merge pre-verification provisional slots onto the verified record, from
+    EVERY linked channel (S10/FR-4, generalized cross-channel in S19/FR-19).
 
     Runs on the async turn — never ``process_inbound`` / the webhook ack (RK-5) — on
     every verified ingress, so it also covers a manually-seeded identity link, not
     only the first-ever verification. Gated by :func:`memory_enabled` and fail-closed
-    exactly like the read: a disabled backend, a non-verified/ambiguous identity, an
-    unresolvable channel key, or a store error degrades to "no merge" and the turn
-    still replies (FR-7). A merge failure leaves the provisional rows intact to retry
-    on the next verified turn (the merge is idempotent), so swallowing is safe.
+    exactly like the read: a disabled backend, a non-verified/ambiguous identity, or
+    no resolvable source keys degrades to "no merge" and the turn still replies
+    (FR-7). A per-key merge failure leaves that channel's provisional rows intact to
+    retry on the next verified turn (each merge is independently idempotent), and
+    does not prevent the OTHER linked channels from merging this turn.
 
     Returns whether a merge actually fired this turn (S11 observability): ``True``
-    only when the store reports it moved/overrode at least one provisional slot;
-    ``False`` on every skip, no-op, or swallowed error.
+    when the store reports it moved/overrode at least one provisional slot for at
+    least one source key; ``False`` on every skip, no-op, or swallowed error.
     """
     if not memory_enabled():
         return False
@@ -180,26 +217,31 @@ def _merge_provisional_memory(identity: dict[str, Any], store: Optional[Any]) ->
     # identity resolves to kind "provisional" (or None) and is skipped (ADR-0112).
     if verified is None or verified[1] != "verified":
         return False
-    provisional_key = _provisional_key_for(identity)
-    if provisional_key is None:
-        return False
     resolved_store = store if store is not None else _gateway_store()
-    try:
-        merged = resolved_store.merge_provisional_memory(provisional_key, verified[0])
-    except Exception as exc:
-        # ponytail: swallow so a merge hiccup never fails the reply; the provisional
-        # rows survive and the next verified turn retries (FR-7, same philosophy as
-        # the read).
-        # S11: WARN so the swallow isn't silent. Binding keys + exception TYPE only.
-        logger.warning(
-            "Customer Memory merge failed provisional_key=%s verified_key=%s "
-            "error_type=%s; provisional slots left intact for retry",
-            provisional_key,
-            verified[0],
-            type(exc).__name__,
-        )
+    provisional_keys = _linked_provisional_keys(identity, verified[0], resolved_store)
+    if not provisional_keys:
         return False
-    return merged is not None
+    merge_fired = False
+    for provisional_key in provisional_keys:
+        try:
+            merged = resolved_store.merge_provisional_memory(provisional_key, verified[0])
+        except Exception as exc:
+            # ponytail: swallow so a merge hiccup never fails the reply; the provisional
+            # rows survive and the next verified turn retries (FR-7, same philosophy as
+            # the read). Continue to the next linked channel -- one bad source must not
+            # block the others (S19).
+            # S11: WARN so the swallow isn't silent. Binding keys + exception TYPE only.
+            logger.warning(
+                "Customer Memory merge failed provisional_key=%s verified_key=%s "
+                "error_type=%s; provisional slots left intact for retry",
+                provisional_key,
+                verified[0],
+                type(exc).__name__,
+            )
+            continue
+        if merged is not None:
+            merge_fired = True
+    return merge_fired
 
 
 def _log_turn_memory(

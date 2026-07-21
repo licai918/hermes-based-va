@@ -371,6 +371,36 @@ class PostgresGatewayStore:
                 rows = cur.fetchall()
         return [{"slot": name, "value": value} for name, value in rows]
 
+    def list_channel_identities_for_customer(
+        self, shopify_customer_id: str
+    ) -> list[tuple[str, str]]:
+        """Every channel identity linked to a verified customer (S19, FR-19).
+
+        Mirrors the ``identity_link`` read the ``toee_identity_lookup`` datastore
+        handler's ``_match`` uses (``datastore/handlers/identity.py``), just the
+        other direction: given a verified ``shopify_customer_id``, which
+        ``(channel, channel_identity)`` pairs point at them. A plain, read-only,
+        context-safe lookup used internally by the cross-channel provisional
+        merge (``openrouter.py._merge_provisional_memory``) to enumerate every
+        source key to merge -- never surfaced as a tool action, since it returns
+        Identity Graph structure, not customer content (ADR-0151).
+
+        Ordered ``(channel, channel_identity)`` ascending for a deterministic,
+        reproducible merge order; the caller decides precedence on top of this
+        (this turn's own channel first, ADR-0151).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT channel, channel_identity FROM identity_link
+                    WHERE shopify_customer_id = %s
+                    ORDER BY channel, channel_identity
+                    """,
+                    (shopify_customer_id,),
+                )
+                return [(row[0], row[1]) for row in cur.fetchall()]
+
     def merge_provisional_memory(
         self, provisional_key: str, verified_key: str
     ) -> Optional[dict[str, Any]]:

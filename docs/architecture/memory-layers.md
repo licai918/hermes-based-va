@@ -61,6 +61,14 @@ ADR-0110's original substrate (Hermes Native Memory) is superseded; the layer mo
   mapping and the `copilot_agent` enum value are unchanged (historical rows keep their
   meaning); only the production write path that could reach it is removed. See
   [ADR-0150](../adr/0150-s20-reversal-copilot-draft-turn-propose-only.md).
+- **Cross-channel merge** (0.0.3 S19): a verified turn merges provisional slots
+  from *every* channel identity linked to that customer (`identity_link`), not
+  just the current turn's channel — the SMS→email continuity path. Precedence
+  (this turn's own channel first, then linked channels in a fixed order) and
+  the channel↔channel / verified↔verified dispositions are recorded in
+  [ADR-0151](../adr/0151-cross-channel-provisional-merge-precedence.md), which
+  supersedes ADR-0112's v1 "cross-channel out of scope" non-goal; ADR-0112's
+  merge trigger/behavior and the never-overwrite-verified invariant hold.
 - Reads are **exact-key**, not semantic. There is no similarity search anywhere in L1–L4.
 
 ---
@@ -160,6 +168,10 @@ designed in up front rather than retrofitted.
 
 ## Change log
 
+- **2026-07-20 (S19)** — L4 cross-channel provisional merge shipped: a verified
+  turn now merges provisional slots from every linked channel identity, not
+  just its own, per a documented precedence — ADR-0151 (supersedes ADR-0112's
+  v1 cross-channel non-goal).
 - **2026-07-20 (S13)** — L4 S20 reversal: the copilot draft turn's `toee_customer_memory`
   write overlay is removed (propose-only); reads and Knowledge are unaffected —
   ADR-0150.
