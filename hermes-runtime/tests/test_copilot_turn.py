@@ -607,3 +607,23 @@ def test_system_messages_document_read_tool_param_conventions() -> None:
         # the load-bearing framing: exact names matter, wrong name == missing value.
         lowered = message.lower()
         assert "exact" in lowered and "parameter name" in lowered
+
+
+def test_system_messages_document_the_qbo_email_link_check_workflow() -> None:
+    # FR-32 (0.0.3 S31): the External persona (persona.py:77-87) already documents
+    # that a toee_qbo_read is allowed ONLY after confirming the customer's email
+    # link -- get_email_link_status {shopify_customer_id} must be called and its
+    # status checked as `linked` BEFORE get_invoice/get_ar_summary. The copilot
+    # draft prompts didn't mirror this, so a draft turn could call the QBO read
+    # tools with no idea the link-check gate exists. Assert the convention text
+    # (and its ordering before the QBO read actions) is present on every channel.
+    for channel in ("sms", "email", "internal_note", "chat"):
+        message = _system_message(channel)
+        assert "get_email_link_status" in message
+        assert "shopify_customer_id" in message
+        assert "linked" in message
+        assert "get_invoice" in message
+        assert "get_ar_summary" in message
+        # ordering: the link-check call is documented before the QBO reads it gates.
+        assert message.index("get_email_link_status") < message.index("get_invoice")
+        assert message.index("get_email_link_status") < message.index("get_ar_summary")

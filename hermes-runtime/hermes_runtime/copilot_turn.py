@@ -152,8 +152,10 @@ _TOOL_PARAM_CONVENTIONS = (
     "treated as a missing value and the lookup fails: toee_shopify_read get_order "
     '{order_number} (the bare order number, e.g. "1042"), list_customer_orders {}, '
     "get_product {sku|product_id}, search_products {query}; toee_easyroutes_read get_delivery_status "
-    "{order_number}; toee_qbo_read get_invoice {invoice_number}, get_ar_summary "
-    "{customer_id}."
+    "{order_number}; toee_qbo_read is allowed ONLY for a verified customer whose "
+    "email link is confirmed, so you MUST call toee_identity_lookup "
+    "get_email_link_status {shopify_customer_id} FIRST and only call get_invoice "
+    "{invoice_number} or get_ar_summary {customer_id} if the returned status is linked."
 )
 # Grounded-chunks discipline (S10, FR-5): mirrors persona.py's toee_knowledge_search
 # bullet -- in-turn content is the retrieved chunks, never synthesis, and an empty

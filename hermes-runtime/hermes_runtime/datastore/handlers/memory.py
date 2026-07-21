@@ -26,8 +26,8 @@ from typing import TYPE_CHECKING, Any
 from psycopg.rows import dict_row
 
 from toee_hermes.drivers.mock.memory import (
-    MEMORY_PREFERENCE_SLOTS,
     _read_evidence,
+    _require_slot,
     _require_value,
     is_verified_customer_identity,
     resolve_clear_authorization,
@@ -40,19 +40,6 @@ from ._common import insert_audit, new_id, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
-
-
-def _require_slot(params: dict[str, Any]) -> str:
-    requested = params.get("key")
-    if requested is None:
-        requested = params.get("slot")
-    if not (isinstance(requested, str) and requested in MEMORY_PREFERENCE_SLOTS):
-        raise ToolDriverError(
-            "unexpected_error",
-            f'Customer Memory rejects open-ended preference key "{requested}"; '
-            "only the four v1 slots are allowed (ADR-0111).",
-        )
-    return requested
 
 
 def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
