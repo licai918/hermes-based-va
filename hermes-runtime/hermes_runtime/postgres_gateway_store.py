@@ -22,6 +22,7 @@ from toee_hermes.gateway.pipeline import InboundDecision
 
 from .datastore.config import database_url
 from .datastore.handlers._common import new_id
+from .datastore.pool import get_database_pool
 
 _SMS_CHANNEL = "sms"
 _EMAIL_CHANNEL = "email"
@@ -119,11 +120,8 @@ class PostgresGatewayStore:
         if self._connection is not None:
             yield self._connection
         else:
-            conn = psycopg.connect(self._dsn)
-            try:
+            with get_database_pool(self._dsn).connection() as conn:
                 yield conn
-            finally:
-                conn.close()
 
     def is_duplicate(self, event_id: str) -> bool:
         with self._connect() as conn:

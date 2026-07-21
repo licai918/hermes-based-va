@@ -30,7 +30,15 @@ KNOWLEDGE_SEARCH = "knowledge_search"
 
 
 def emit_metric_event(metric: str, flag: bool) -> None:
-    """Insert one ``metric_event`` row; swallow ANY failure, never raises."""
+    """Insert one ``metric_event`` row; swallow ANY failure, never raises.
+
+    # ponytail: intentionally NOT pooled (S29/FR-31 named only 4 sites; this
+    # S26 5th connect is a related follow-up, not in scope). A pool's
+    # getconn() can block up to its `timeout` waiting for a free slot, which
+    # would turn a "never fail a turn" fire-and-forget emit into a stall --
+    # pool it only alongside a bounded, non-blocking acquire (e.g. timeout=0
+    # + treat PoolTimeout as just another swallowed failure).
+    """
     try:
         with psycopg.connect(database_url()) as conn:
             with conn.cursor() as cur:

@@ -157,26 +157,27 @@ def retrieve(
 ) -> list[RetrievedChunk]:
     """Hybrid FTS + embedding retrieval, fused by RRF, top-``k`` with provenance.
 
-    Seams: ``conn`` (default: lazy-connect via ``knowledge_database_url()``);
-    ``embed_query_fn`` (default: the process-level singleton query embedder,
+    Seams: ``conn`` (default: a pooled connection from the process-level
+    knowledge pool, :func:`~hermes_runtime.knowledge.pool.get_knowledge_pool`,
+    S29/FR-31 -- built lazily, only if actually needed); ``embed_query_fn``
+    (default: the process-level singleton query embedder,
     :func:`get_query_embedder` -- built only if actually needed, tests inject
     a fake and never import fastembed).
     Returns ``[]`` cleanly if ``knowledge_chunk`` is empty. Two SQL round
     trips: one SELECT for all rows + embeddings, one for the FTS ranking.
-
-    # ponytail: no connection pooling (S29 does that); the embedder IS now
-    # cached (get_query_embedder), see FR-7b/S10 cold-load fix above.
     """
-    import psycopg
-
-    from .config import knowledge_database_url
+    import contextlib
 
     owns_conn = conn is None
     if owns_conn:
-        conn = psycopg.connect(knowledge_database_url())
+        from .pool import get_knowledge_pool
 
-    try:
-        with conn.cursor() as cur:
+        cm = get_knowledge_pool().connection()
+    else:
+        cm = contextlib.nullcontext(conn)
+
+    with cm as active_conn:
+        with active_conn.cursor() as cur:
             cur.execute(_ALL_SQL)
             all_rows = cur.fetchall()
             if not all_rows:
@@ -184,9 +185,6 @@ def retrieve(
 
             cur.execute(_FTS_SQL, (query, query))
             fts_ranking = [row[0] for row in cur.fetchall()]
-    finally:
-        if owns_conn:
-            conn.close()
 
     by_id = {row[0]: row for row in all_rows}  # id -> (id, page_id, page_type, title, url, chunk_text, embedding)
     vectors = {row_id: row[6] for row_id, row in by_id.items()}

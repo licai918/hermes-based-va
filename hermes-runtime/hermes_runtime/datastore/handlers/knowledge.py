@@ -269,11 +269,9 @@ def _get_corpus_status(conn, params: dict[str, Any], context: "ToolExecutionCont
     # A read -> no actor required, no audit (parity with the other knowledge
     # reads above). `conn` (the business connection) is unused on purpose.
     del conn, params, context
-    import psycopg
+    from hermes_runtime.knowledge.pool import get_knowledge_pool
 
-    from hermes_runtime.knowledge.config import knowledge_database_url
-
-    with psycopg.connect(knowledge_database_url()) as kconn:
+    with get_knowledge_pool().connection() as kconn:
         return _corpus_status_from_conn(kconn)
 
 
