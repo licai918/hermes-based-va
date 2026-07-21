@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import socket
 import time
 from typing import Any, Callable, Optional
@@ -168,8 +169,24 @@ def _fail(queue: PostgresJobQueue, job: Job, error: str) -> None:
         logger.warning("Lease lost failing job %s; another worker owns it now", job.id)
 
 
+_stopping = False
+
+
+def _request_stop(signum, frame) -> None:  # pragma: no cover - signal path
+    """Finish the job in hand, then exit (SIGTERM from `docker compose stop`).
+
+    Without this a routine restart kills the worker mid-turn and that customer's
+    turn sits stranded for the whole 300 s lease before another worker can
+    reclaim it. The handler only sets a flag, so the in-flight ``run_once``
+    completes and releases its lease normally.
+    """
+    global _stopping
+    _stopping = True
+    logger.info("Signal %s received; stopping after the current job", signum)
+
+
 def main() -> int:  # pragma: no cover - the process shell; run_once is the tested unit
-    """Poll the queue forever. Ctrl-C / SIGTERM exits between jobs."""
+    """Poll the queue until SIGTERM/Ctrl-C, which exits between jobs."""
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
@@ -189,8 +206,10 @@ def main() -> int:  # pragma: no cover - the process shell; run_once is the test
         POLL_SECONDS,
     )
 
+    signal.signal(signal.SIGTERM, _request_stop)
+
     try:
-        while True:
+        while not _stopping:
             job = run_once(
                 queue=queue,
                 store=collaborators.store,
