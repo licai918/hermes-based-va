@@ -27,7 +27,7 @@ so it cannot drift out of sync with them.
 | **L6** | **Agent experience** | what the agent learns from doing the job (operational, non-PII) | `toee_va` Postgres (`agent_experience`) | confirmed-only, bounded newest-first, injected per gated turn | ✅ **shipped** ([ADR-0152](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md)) |
 
 L1–L4 are the **four-layer model** of [ADR-0110](../adr/0110-native-memory-four-layer-model.md).
-L5 and L6 are additions in flight — see below.
+L5 (Knowledge) and L6 (Agent experience) are the 0.0.3 additions, both now shipped — see below.
 
 The same Postgres also holds **Workbench Accounts** and **knowledge publish state** (the 6
 governed operational-policy slots + history). Those sit **outside** the four-layer model; they are
