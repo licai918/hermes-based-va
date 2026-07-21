@@ -157,11 +157,14 @@ def create_app(
     @app.post("/webhooks/simpletexting")
     async def simpletexting_webhook(request: Request) -> Response:
         raw = await request.body()
-        raw_text = raw.decode("utf-8")
         token = request.query_params.get(WEBHOOK_TOKEN_QUERY_PARAM)
+        # A non-UTF-8 body is unparseable, not a crash: this runs before the auth
+        # gate, so letting UnicodeDecodeError escape let any unauthenticated caller
+        # force a 500 plus a traceback. Treat undecodable input as an empty payload
+        # and let the token check below decide the response.
         try:
-            payload = json.loads(raw_text) if raw_text else {}
-        except json.JSONDecodeError:
+            payload = json.loads(raw.decode("utf-8")) if raw else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
@@ -187,11 +190,17 @@ def create_app(
 
         # Opt-out is the only reply the gateway sends itself (compliance
         # short-circuit, no agent turn). All other replies come from the turn.
+        #
+        # Claim before sending, not after: the provider does not sign webhooks, so
+        # a captured request replays verbatim, and this branch persists no context
+        # for is_duplicate to catch. claim_event is the compare-and-set that makes
+        # the confirmation at-most-once (ADR-0016) instead of one SMS per replay.
         if (
             decision.action == "opt_out"
             and reply_sender is not None
             and decision.event is not None
             and decision.reply is not None
+            and store.claim_event(decision.event.event_id)
         ):
             reply_sender(decision.event.conversation_id, decision.reply)
 

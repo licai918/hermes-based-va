@@ -1,14 +1,14 @@
 import type { InboundChannelEvent } from "@toee/shared";
 
-// Canonical inbound normalization for the Textline pipeline (ADR-0102). The
+// Canonical inbound normalization for the SMS pipeline (ADR-0102). The
 // provider-specific JSON shape and accepted/ignored event classification are
-// extracted by the route layer (issue #17) once the Textline webhook schema is
+// extracted by the route layer (issue #17) once the provider webhook schema is
 // confirmed; this module owns the schema-independent canonical pieces: E.164
 // phone normalization and building the InboundChannelEvent the rest of the
 // system consumes.
 
-/** Extracted Textline inbound fields, provider key names already resolved. */
-export interface TextlineInboundFields {
+/** Extracted inbound SMS fields, provider key names already resolved. */
+export interface SmsInboundFields {
   eventId: string;
   conversationId: string;
   fromPhone: string;
@@ -37,10 +37,10 @@ export function normalizeE164(input: string): string {
   return `+${digits}`;
 }
 
-export function toInboundChannelEvent(fields: TextlineInboundFields): InboundChannelEvent {
+export function toInboundChannelEvent(fields: SmsInboundFields): InboundChannelEvent {
   const event: InboundChannelEvent = {
-    channel: "textline_sms",
-    provider: "textline",
+    channel: "simpletexting_sms",
+    provider: "simpletexting",
     eventId: fields.eventId,
     conversationId: fields.conversationId,
     fromPhone: normalizeE164(fields.fromPhone),

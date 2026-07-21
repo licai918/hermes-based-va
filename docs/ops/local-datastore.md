@@ -52,7 +52,7 @@ it unset for the mock-first default (ADR-0137):
 - `toee_knowledge_ops` — policy-slot versions (ADR-0003/0040)
 - `toee_eval_review` — eval runs + policy promotion (ADR-0074/0040)
 
-External-vendor tools (Shopify, QBO, EasyRoutes, Square, Textline) and LLM drafts
+External-vendor tools (Shopify, QBO, EasyRoutes, Square, SimpleTexting) and LLM drafts
 stay on the mock/Composio path — they are not system-of-record. The driver runs
 behind the **same** governed `execute_tool` as the mock (catalog check → Tool Gate
 → profile allowlist all run first), and every mutation writes a Workbench Audit Log

@@ -71,6 +71,24 @@ def test_webhook_rejects_request_without_a_valid_token() -> None:
     )  # missing token entirely
 
 
+def test_webhook_rejects_an_undecodable_body_with_401_not_500() -> None:
+    # Body decode runs before the auth gate, so an escaping UnicodeDecodeError let
+    # any unauthenticated caller force a 500 plus a traceback. Undecodable input is
+    # an unparseable payload; the token check still decides the response.
+    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
+
+    undecodable = b"\xff\xfe\x00garbage"
+
+    assert _post(client, undecodable, token="wrong-token").status_code == 401
+    assert _post(client, undecodable).status_code == 200  # authed, empty payload
+
+
+def test_webhook_rejects_a_non_ascii_token_with_401_not_500() -> None:
+    client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
+
+    assert _post(client, _inbound_payload(body="Hi"), token="café").status_code == 401
+
+
 def test_webhook_accepts_a_request_with_the_registered_token() -> None:
     client = TestClient(create_app(webhook_secret=WEBHOOK_SECRET))
     raw = _inbound_payload(body="Hi")
@@ -183,6 +201,29 @@ def test_opt_out_inbound_persists_no_context_and_enqueues_nothing() -> None:
     assert response.status_code == 200
     assert queue.payloads == []
     assert store.load_context("evt-stop") is None
+
+
+def test_replayed_opt_out_sends_exactly_one_confirmation() -> None:
+    # ADR-0016: exactly one confirmation per opt-out. The provider does not sign
+    # webhooks, so a captured request can be replayed verbatim; without a seen
+    # record for the opt-out branch every replay re-sent a real SMS to the
+    # contact — an amplification primitive billed to us (ADR-0149 follow-up).
+    store = InMemoryGatewayStore()
+    sent: list[tuple[str, str]] = []
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        store=store,
+        reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(
+        body="STOP", from_phone="+14165550188", event_id="evt-stop-replay"
+    )
+
+    codes = [_post(client, raw).status_code for _ in range(5)]
+
+    assert codes == [200] * 5  # every replay still acks
+    assert sent == [("+14165550188", SMS_OPT_OUT_CONFIRMATION)]
 
 
 def test_internal_agent_turn_requires_the_internal_job_secret() -> None:

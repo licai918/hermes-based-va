@@ -158,3 +158,40 @@ def test_build_gateway_app_fails_closed_when_a_required_secret_is_absent(
 
     with pytest.raises(ValueError, match=missing):
         build_gateway_app()
+
+
+def test_build_gateway_app_refuses_in_memory_dedup_in_a_deployed_environment(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # ADR-0149: SimpleTexting does not sign webhooks, so messageId idempotency is
+    # the only replay protection. The in-memory store dedups inside one process, so
+    # a Cloud Run replay lands on another instance (or after a scale-to-zero) and is
+    # accepted again. Booting that way in production is a misconfiguration, not a
+    # degraded mode.
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    monkeypatch.setenv("DEPLOY_ENVIRONMENT", "production")
+
+    with pytest.raises(ValueError, match="TOOL_BACKEND=datastore"):
+        build_gateway_app()
+
+
+def test_build_gateway_app_allows_the_in_memory_store_for_local_development(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TOOL_BACKEND", raising=False)
+    monkeypatch.delenv("DEPLOY_ENVIRONMENT", raising=False)
+
+    assert isinstance(build_gateway_app(), FastAPI)
+
+
+def test_build_gateway_app_installs_access_log_redaction(_full_env: None) -> None:
+    # The webhook token cannot leave the URL (SimpleTexting has no header option),
+    # so the boot path must mask it before uvicorn logs the query string.
+    import logging
+
+    from hermes_runtime.access_log import RedactQueryTokenFilter
+
+    build_gateway_app()
+
+    filters = logging.getLogger("uvicorn.access").filters
+    assert any(isinstance(f, RedactQueryTokenFilter) for f in filters)

@@ -36,3 +36,11 @@ def test_rejects_empty_secret_even_with_matching_token() -> None:
 
 def test_rejects_a_token_that_is_a_prefix_of_the_secret() -> None:
     assert verify_webhook_token(token=SECRET[:-1], secret=SECRET) is False
+
+
+def test_rejects_a_non_ascii_token_without_raising() -> None:
+    # hmac.compare_digest raises TypeError on non-ASCII str operands, which turned
+    # an unauthenticated request into a 500 (and, since the provider retries 5xx,
+    # a retry storm). A forged token must be a plain False.
+    assert verify_webhook_token(token="café", secret=SECRET) is False
+    assert verify_webhook_token(token="日本語", secret=SECRET) is False

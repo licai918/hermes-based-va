@@ -41,6 +41,8 @@ class GatewayStore(Protocol):
 
     def persist_agent_outbound(self, context: AgentTurnContext, body: str) -> None: ...
 
+    def claim_event(self, event_id: str) -> bool: ...
+
 
 class JobQueue(Protocol):
     """Async agent-turn dispatch seam (Cloud Tasks in production, ADR-0105)."""
@@ -56,6 +58,10 @@ class InMemoryGatewayStore:
         # MessageTurn bodies keyed by ref. ADR-0105 keeps PII out of the task
         # payload, so the inbound body lives here and the context carries the ref.
         self._message_turns: dict[str, str] = {}
+        # Events handled on a branch that persists no context (opt-out). Without
+        # this, is_duplicate could never see them and a replayed STOP re-sent the
+        # confirmation every time (ADR-0016 wants exactly one).
+        self._claimed_events: set[str] = set()
 
     def _thread_id(self, from_phone: str) -> str:
         # CustomerThread: one per stable channel identity (the phone number).
@@ -107,8 +113,15 @@ class InMemoryGatewayStore:
         ref = f"message_turn:{context.sms_session_id}:{context.event_id}:out"
         self._message_turns[ref] = body
 
+    def claim_event(self, event_id: str) -> bool:
+        """Atomically claim an event that persists no context; True if first claim."""
+        if event_id in self._claimed_events or event_id in self._contexts:
+            return False
+        self._claimed_events.add(event_id)
+        return True
+
     def is_duplicate(self, event_id: str) -> bool:
-        return event_id in self._contexts
+        return event_id in self._contexts or event_id in self._claimed_events
 
 
 class InMemoryJobQueue:

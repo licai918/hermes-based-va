@@ -32,6 +32,7 @@ from fastapi import FastAPI
 
 from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
 
+from hermes_runtime.access_log import install_access_log_redaction
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
 from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
@@ -51,6 +52,11 @@ WEBHOOK_SECRET_ENV = "SIMPLETEXTING_WEBHOOK_TOKEN"
 # Shared secret for the protected internal agent-turn route (ADR-0106); pairs with
 # gateway_app.INTERNAL_JOB_SECRET_HEADER.
 INTERNAL_JOB_SECRET_ENV = "INTERNAL_JOB_SECRET"
+
+# Where this process runs. Unset = local development (in-memory substrate is fine).
+# Set it on every deployed revision so the replay-protection guard below applies.
+DEPLOY_ENV = "DEPLOY_ENVIRONMENT"
+_PRODUCTION_ENVIRONMENTS = frozenset({"production", "prod", "staging"})
 
 # Canonical External profile home (ADR-0139): restricts Hermes built-ins to the
 # customer-service tool surface configured in hermes/profiles/customer_service_external.
@@ -75,12 +81,41 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _deploy_environment() -> str:
+    """Resolve where the gateway is running; unset means local development."""
+    return (os.environ.get(DEPLOY_ENV) or "").strip().lower()
+
+
+def _require_in_memory_store_is_allowed() -> None:
+    """Refuse to serve real traffic on a per-process dedup store (ADR-0149).
+
+    SimpleTexting does not sign webhooks, so replay protection rests entirely on
+    messageId idempotency. With the in-memory store that dedup is a dict inside one
+    process: Cloud Run autoscaling sends a replay to a different instance, and
+    scale-to-zero wipes it, so every captured request stays replayable forever.
+    Fail at boot rather than serve production traffic with no replay protection.
+    """
+    environment = _deploy_environment()
+    if environment in _PRODUCTION_ENVIRONMENTS:
+        raise ValueError(
+            f"{DEPLOY_ENV}={environment} requires TOOL_BACKEND=datastore: the "
+            "in-memory store dedups per process, which leaves inbound webhooks "
+            "replayable across instances and restarts (ADR-0149)."
+        )
+
+
 def build_gateway_app() -> FastAPI:
     """Assemble the production gateway app from the environment (fail-closed).
 
     Raises ``ValueError`` when any required secret is absent (webhook token,
-    internal-job secret, SimpleTexting API token, OpenRouter API key).
+    internal-job secret, SimpleTexting API token, OpenRouter API key), or when a
+    deployed environment is configured with the in-memory (per-process) store.
     """
+    # Before anything can serve a request: the webhook token rides in the URL
+    # (SimpleTexting offers no header/signature option), and uvicorn's access log
+    # would otherwise write it verbatim into Cloud Logging (ADR-0149).
+    install_access_log_redaction()
+
     webhook_secret = _require_env(WEBHOOK_SECRET_ENV)
     internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
     _apply_external_profile_env()
@@ -99,6 +134,7 @@ def build_gateway_app() -> FastAPI:
         store = PostgresGatewayStore()
         driver = select_tool_driver("datastore")
     else:
+        _require_in_memory_store_is_allowed()
         store = InMemoryGatewayStore()
         driver = None
 

@@ -49,13 +49,22 @@ curl -X POST "https://api-app2.simpletexting.com/v2/api/messages" \
    single segment is a hard requirement. `MMS_PREFERRED` sends MMS (with
    `mediaItems`/`subject`) and falls back to SMS when the carrier can't take MMS —
    use it when attaching media.
-3. **Webhook auth = URL token.** Register
-   `https://<host>/webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>` and
-   compare the token constant-time (`hmac.compare_digest`), fail-closed 401.
-   Never register a bare URL — anyone could forge inbound traffic.
+3. **Webhook auth = URL token, and it can't be anything else.** `POST /api/webhooks`
+   accepts only `{url, triggers, requestPerSecLimit, accountPhone, contactPhone}` —
+   no header, secret, or signature field — so the credential has to ride in the URL
+   you register: `https://<host>/webhooks/simpletexting?token=<secret>`. Compare it
+   constant-time and fail closed (401). Never register a bare URL.
+   **Because the token is in the URL, it lands in every access log by default** —
+   redact `token=` at the log boundary (see `hermes_runtime/access_log.py`) and
+   treat the registration URL itself as a secret.
+   Compare as **bytes**: `hmac.compare_digest` raises `TypeError` on non-ASCII
+   `str`, turning a forged token into a 500 (which the provider then retries).
 4. **Dedup on `values.messageId`**, not `reportId` — messageId is stable across
    webhook redeliveries; that's the replay protection (there is no signature/timestamp
-   scheme).
+   scheme). It therefore has to be **durable and shared**: a per-process dict dedups
+   nothing once the service autoscales or restarts. And dedup every branch that has a
+   side effect, including ones that persist nothing — an unclaimed opt-out branch
+   means one real SMS per replay.
 5. **One webhook, many triggers.** A registration can carry several triggers;
    filter on `type` and only act on `INCOMING_MESSAGE` — ack everything else 200.
 6. **`accountPhone` optional** on sends; omit to use the account's primary number.

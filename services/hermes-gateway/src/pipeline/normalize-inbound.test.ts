@@ -36,8 +36,8 @@ describe("toInboundChannelEvent", () => {
 
   it("builds the canonical InboundChannelEvent with fixed channel and provider", () => {
     expect(toInboundChannelEvent(fields)).toEqual({
-      channel: "textline_sms",
-      provider: "textline",
+      channel: "simpletexting_sms",
+      provider: "simpletexting",
       eventId: "evt_1",
       conversationId: "conv_9",
       fromPhone: "+15195550123",

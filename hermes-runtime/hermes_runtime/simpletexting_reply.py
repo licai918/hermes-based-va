@@ -38,6 +38,11 @@ _ACCOUNT_PHONE_ENV = "SIMPLETEXTING_ACCOUNT_PHONE"
 
 _NON_DIGITS = re.compile(r"\D")
 
+# Socket timeout for one outbound send. urlopen defaults to no timeout, so a hung
+# provider connection would block the dispatch thread that owns the turn forever.
+# ponytail: fixed value; make it env-tunable only if a real deploy needs it.
+SEND_TIMEOUT_SECONDS = 15
+
 # (url, headers, body) -> HTTP status code. Injected in tests; the default below
 # performs the real POST.
 Transport = Callable[..., int]
@@ -99,10 +104,19 @@ def _build_payload(*, contact_phone: str, body: str, account_phone: str) -> byte
 def _urllib_post(*, url: str, headers: dict, body: bytes) -> int:
     request = urllib.request.Request(url, data=body, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request) as response:  # noqa: S310 (fixed https host)
+        with urllib.request.urlopen(  # noqa: S310 (https host from config)
+            request, timeout=SEND_TIMEOUT_SECONDS
+        ) as response:
             return response.status
     except urllib.error.HTTPError as exc:
         return exc.code
+    except (urllib.error.URLError, OSError) as exc:
+        # DNS failure, refused connection, or the socket timeout above. HTTPError
+        # subclasses URLError, so it must be caught first. Without this the raw
+        # urllib exception escaped a sender documented to raise
+        # SimpleTextingSendError, and callers mapping that to a governed
+        # vendor_timeout error never saw the actual vendor timeout.
+        raise SimpleTextingSendError(f"SimpleTexting request failed: {exc}") from exc
 
 
 def make_simpletexting_reply_sender(

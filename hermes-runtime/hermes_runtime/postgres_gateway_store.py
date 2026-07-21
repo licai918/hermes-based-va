@@ -106,12 +106,31 @@ class PostgresGatewayStore:
             finally:
                 conn.close()
 
+    def claim_event(self, event_id: str) -> bool:
+        """Atomically claim an event that persists no context; True if first claim.
+
+        ``ON CONFLICT DO NOTHING ... RETURNING`` makes this a compare-and-set, so
+        concurrent replays of the same opt-out yield exactly one claim (ADR-0016).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO inbound_event_claim (event_id) VALUES (%s) "
+                    "ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                    (event_id,),
+                )
+                claimed = cur.fetchone() is not None
+            conn.commit()
+            return claimed
+
     def is_duplicate(self, event_id: str) -> bool:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT 1 FROM agent_turn_context WHERE event_id = %s LIMIT 1",
-                    (event_id,),
+                    "SELECT 1 FROM agent_turn_context WHERE event_id = %s "
+                    "UNION ALL "
+                    "SELECT 1 FROM inbound_event_claim WHERE event_id = %s LIMIT 1",
+                    (event_id, event_id),
                 )
                 return cur.fetchone() is not None
 

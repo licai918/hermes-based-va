@@ -23,4 +23,7 @@ def verify_webhook_token(*, token: Optional[str], secret: str) -> bool:
     """
     if not token or not secret:
         return False
-    return hmac.compare_digest(token.strip(), secret)
+    # Compare as bytes: compare_digest raises TypeError on non-ASCII str operands,
+    # so a forged token like "café" would surface as a 500 instead of a 401 (and
+    # the provider retries 5xx). UTF-8 bytes compare in constant time and never raise.
+    return hmac.compare_digest(token.strip().encode("utf-8"), secret.encode("utf-8"))

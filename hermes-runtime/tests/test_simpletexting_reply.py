@@ -15,10 +15,13 @@ must surface, never be silently dropped — ADR-0104, ADR-0020).
 from __future__ import annotations
 
 import json
+import urllib.error
+from unittest.mock import patch
 
 import pytest
 
 from hermes_runtime.simpletexting_reply import (
+    SEND_TIMEOUT_SECONDS,
     SimpleTextingConfig,
     SimpleTextingSendError,
     make_simpletexting_reply_sender,
@@ -131,3 +134,35 @@ def test_reply_sender_raises_when_simpletexting_rejects_the_send() -> None:
 
     with pytest.raises(SimpleTextingSendError):
         send("+17786803250", "Your order shipped today.")
+
+
+def test_reply_sender_converts_a_transport_failure_into_a_send_error() -> None:
+    # HTTPError subclasses URLError; only the former was caught, so a DNS failure
+    # or socket timeout escaped as a raw urllib error. Callers map
+    # SimpleTextingSendError to a governed vendor_timeout, so the escape meant a
+    # real vendor timeout crashed the dispatch thread instead of being handled.
+    send = make_simpletexting_reply_sender(config=_config())
+
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("timed out")):
+        with pytest.raises(SimpleTextingSendError):
+            send("+17786803250", "hello")
+
+
+def test_reply_sender_applies_a_socket_timeout() -> None:
+    # urlopen defaults to no timeout: a hung provider would block the turn forever.
+    seen: dict = {}
+
+    class _Resp:
+        status = 201
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["timeout"] = timeout
+        return _Resp()
+
+    send = make_simpletexting_reply_sender(config=_config())
+    with patch("urllib.request.urlopen", fake_urlopen):
+        send("+17786803250", "hello")
+
+    assert seen["timeout"] == SEND_TIMEOUT_SECONDS

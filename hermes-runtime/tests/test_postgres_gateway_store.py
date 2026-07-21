@@ -364,3 +364,45 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))
         assert cur.fetchone()[0] == 1
     assert len(queue.payloads) == 1
+
+
+def test_claim_event_is_atomic_and_survives_a_new_store_instance(datastore) -> None:
+    # ADR-0016 exactly-once, durably: the opt-out branch persists no context, so
+    # its idempotency lives in inbound_event_claim. A second claim must lose even
+    # from a fresh store object (i.e. another Cloud Run instance / after restart).
+    _, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+
+    assert store.claim_event("evt-optout-1") is True
+    assert store.claim_event("evt-optout-1") is False
+    assert store.is_duplicate("evt-optout-1") is True
+
+    other_instance = PostgresGatewayStore(connection=conn)
+    assert other_instance.claim_event("evt-optout-1") is False
+
+
+def test_replayed_opt_out_sends_one_confirmation_through_postgres(datastore) -> None:
+    # The full route against the durable store: five verbatim replays of a signed
+    # STOP webhook must yield exactly one outbound SMS.
+    driver, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+    sent: list[tuple[str, str]] = []
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        driver=driver,
+        store=store,
+        is_duplicate=store.is_duplicate,
+        reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(body="STOP", event_id="evt-optout-replay")
+
+    codes = [
+        client.post(
+            f"/webhooks/simpletexting?token={WEBHOOK_SECRET}", content=raw
+        ).status_code
+        for _ in range(5)
+    ]
+
+    assert codes == [200] * 5
+    assert len(sent) == 1

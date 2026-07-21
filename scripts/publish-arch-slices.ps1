@@ -87,10 +87,10 @@ Migrate the remaining copilot and admin BFF resource routes off the in-memory Ty
 )
 
 New-SliceIssue 36 "Copilot chat + drafts over the agent-turn API (local)" @(34) @"
-Implement ADR-0141 capability 2 locally: /api/copilot/chat and /api/copilot/drafts/* call the per-profile agent-turn API (Hermes OpenAI-compatible / embedded AIAgent) under the internal_copilot profile, with a deterministic local model option for tests. Drafts are never auto-sent (ADR-0036); governed send still goes through tools:dispatch textline reply.
+Implement ADR-0141 capability 2 locally: /api/copilot/chat and /api/copilot/drafts/* call the per-profile agent-turn API (Hermes OpenAI-compatible / embedded AIAgent) under the internal_copilot profile, with a deterministic local model option for tests. Drafts are never auto-sent (ADR-0036); governed send still goes through the tools:dispatch SMS reply.
 "@ @(
     "Copilot draft and chat routes hit the agent-turn API, not tools:dispatch",
-    "Drafts never auto-send; governed send stays on the tools:dispatch textline path (ADR-0036)",
+    "Drafts never auto-send; governed send stays on the tools:dispatch SMS path (ADR-0036)",
     "Deterministic/mock model path works in local and CI without an external LLM key",
     "Profile allowlist and Tool Gate identical to the dispatch path"
 )

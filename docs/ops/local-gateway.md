@@ -94,27 +94,32 @@ From repo root, with the gateway running:
 powershell -NoProfile -File scripts/simulate-simpletexting-webhook.ps1 -Token "<your-webhook-token>" -Body "Do you have 225/65R17 in stock?" -ContactPhone "+14165550101"
 ```
 
-Optional: `-GatewayUrl http://127.0.0.1:8080`, `-ConversationId conv-local-1`, `-EventId evt-local-1`.
+Optional: `-GatewayUrl http://127.0.0.1:8080`, `-AccountPhone 9053378266`, `-MessageId evt-local-1`.
+
+Re-running with the same `-MessageId` is a no-op ack: dedup keys on `messageId`, and
+an opt-out (`STOP`) sends its confirmation exactly once (ADR-0016). Vary `-MessageId`
+to simulate a genuinely new message.
 
 ### Manual PowerShell (one inbound)
 
 ```powershell
-$secret = $env:TEXTLINE_WEBHOOK_SECRET
+$token = $env:SIMPLETEXTING_WEBHOOK_TOKEN
 $bodyObj = @{
-  id = "evt-manual-1"
-  conversation_id = "conv-manual-1"
-  from = "+14165550101"
-  body = "Do you have 225/65R17 in stock?"
-  received_at = "2026-01-01T00:00:00Z"
-  type = "message.created"
+  reportId  = "rep-manual-1"
+  webhookId = "wh-manual"
+  type      = "INCOMING_MESSAGE"
+  values    = @{
+    messageId    = "evt-manual-1"
+    text         = "Do you have 225/65R17 in stock?"
+    accountPhone = "9053378266"
+    contactPhone = "+14165550101"
+    timestamp    = "2026-01-01T00:00:00.000Z"
+    category     = "SMS"
+  }
 }
-$body = ($bodyObj | ConvertTo-Json -Compress)
-$hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($secret))
-$sig = -join ($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString("x2") })
-Invoke-WebRequest -Method POST -Uri "http://127.0.0.1:8080/webhooks/textline" `
-  -ContentType "application/json" `
-  -Headers @{ "X-Textline-Signature" = $sig } `
-  -Body $body
+$body = ($bodyObj | ConvertTo-Json -Depth 4 -Compress)
+$uri = "http://127.0.0.1:8080/webhooks/simpletexting?token=$([uri]::EscapeDataString($token))"
+Invoke-WebRequest -Method POST -Uri $uri -ContentType "application/json" -Body $body
 ```
 
 Use a **compact JSON body** for signing; whitespace changes invalidate the signature.
