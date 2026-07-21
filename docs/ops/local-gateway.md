@@ -154,6 +154,28 @@ for ADR-0106 parity only.
 Requires `TOOL_BACKEND=datastore`: the worker reloads the context the gateway
 persisted (ADR-0107), and two processes can only share it through Postgres.
 
+### The background worker (0.0.4 S04)
+
+A **second** worker runs every non-turn job — the L6 learning fork, the Customer
+Memory retention sweep, and the knowledge corpus re-ingest:
+
+```bash
+docker compose up -d postgres background-worker
+# or, on the host:
+cd hermes-runtime && uv run python -m hermes_runtime.background_worker
+```
+
+It claims `l6_review`, `retention` and `ingest` — never `agent_turn`. The two
+allowlists are disjoint, which is why a corpus re-ingest that runs for minutes
+cannot queue ahead of a waiting customer (FR-9). Same `TOOL_BACKEND=datastore`
+boot requirement, same reason.
+
+**It also runs the schedule tick.** There is no cron in this repo: if this
+process is not up, the retention sweep never runs on its daily cadence (the admin
+panel's button still queues one, but nothing will claim it either). Set
+`INGEST_CORPUS_PATH` on it to point at the Stage A pull artifact, or a queued
+re-ingest fails naming that variable rather than wiping the corpus.
+
 ---
 
 ## What store is used today

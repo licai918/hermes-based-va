@@ -9,9 +9,13 @@
 > `job_dispatch.py`. **Supersedes ADR-0105's transport decision** (Cloud Tasks).
 > ADR-0105's *enqueue rule* and *ADR-0107 reload-by-`eventId`* contract are
 > unchanged and still hold.
+> **S04** (FR-9 background half, FR-11) added
+> `hermes_runtime/background_worker.py` + the `background-worker` compose
+> service, moved the three background triggers (L6 learning fork, retention
+> sweep, knowledge re-ingest) onto the queue, and **runs the schedule tick loop**
+> — so the recurring mechanism below is live rather than merely available.
 >
-> Remaining consumers: S04 (background worker + schedule tick loop), S05
-> (dead-letter view + governed replay).
+> Remaining consumer: S05 (dead-letter view + governed replay).
 
 ## Context
 
@@ -121,7 +125,9 @@ interval_seconds)` plus `tick_schedules(schedules)` is the whole mechanism:
 The key is a **pure function of the clock**, so ticking every second, or ticking
 from two workers at once, still produces exactly one job per interval — the unique
 index is the coordination, not a lock or a leader election. S04 calls it on the
-background worker's poll loop; a duplicate tick is a no-op by construction, and a
+background worker's poll loop (`background_worker.SCHEDULES`, one entry today:
+`retention` every 24 h — sized against the 730/90-DAY windows it enforces);
+a duplicate tick is a no-op by construction, and a
 worker that was down for one window simply misses that window rather than
 replaying a backlog (correct for probes and cadence jobs, which want "run now",
 not "catch up").
@@ -136,7 +142,11 @@ Promote to a table the day an operator must change an interval without a deploy.
 
 - **Poll interval: 250 ms** for the turn worker (`turn_worker.POLL_SECONDS`).
   S01 proposed 1 s; **S02 measured it, and 1 s misses NFR-2**, so S02 took step
-  (1) below. The background worker can poll far more slowly (S04's call).
+  (1) below. **The background worker polls at 5 s**
+  (`background_worker.POLL_SECONDS`) — nothing on it has a latency budget, since
+  NFR-2 is about a customer waiting on a reply and no customer waits on a
+  retention sweep. The only human-facing cost is that an admin trigger takes up
+  to one interval to start.
 
   **Measured (0.0.4 S02) — a one-time snapshot recorded here, NOT a CI gate.**
   Nothing regression-fences these numbers; re-measure if the loop changes.
