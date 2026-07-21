@@ -662,6 +662,27 @@ def test_get_my_memory_summary_internal_copilot_verified_still_requires_verified
     assert result.error_class == "policy_blocked"
 
 
+def test_get_my_memory_summary_isolated_by_verified_binding(datastore) -> None:
+    # Mirrors the mock-layer test of the same name: two distinct verified
+    # customers bind to two distinct Shopify customer ids, so customer B's
+    # summary must never surface customer A's slots.
+    driver, _, _ = datastore
+    customer_a = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": "gid://shopify/Customer/9001",
+    }
+    customer_b = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": "gid://shopify/Customer/9002",
+    }
+    _run(driver, "upsert_preference",
+         {"key": "contact_time_preference", "value": "mornings"}, identity=customer_a)
+
+    result = _run(driver, "get_my_memory_summary", {}, identity=customer_b)
+    assert result.ok
+    assert result.data == {"preferences": {}}
+
+
 # --- get_memory_audit (0.0.3 S20, FR-20: supervisor memory audit view) ------
 # "The audit view's full write history is the UNION of two sources": current
 # slot rows (who wrote what's live now) and the workbench_audit_log trail for

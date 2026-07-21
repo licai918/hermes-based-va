@@ -37,6 +37,10 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         # timestamps/binding_key (see the mock/datastore handlers). LLM-callable
         # on the EXTERNAL profile (NOT in _AGENT_EXCLUDED_ACTIONS, unlike
         # get_memory_audit below -- this one IS customer-facing by design).
+        # It's also LLM-callable on internal_copilot for the same reason --
+        # unexcluded actions ride this same shared toolset registration onto
+        # every profile the toolset is attached to. Not a security gap: INTERNAL
+        # already has get_preferences, a superset of this read.
         "get_my_memory_summary",
         # 0.0.3 S15 (FR-17): audit-only action for a dismissed S14 proposal --
         # persists no slot, only a Workbench Audit Log row (see the datastore

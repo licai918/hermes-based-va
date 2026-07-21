@@ -280,6 +280,57 @@ def resolve_memory_write_source(context: "ToolExecutionContext") -> str:
     )
 
 
+def resolve_clear_authorization(context: "ToolExecutionContext") -> tuple[str | None, str]:
+    """Framework-derived ``(account_id, initiator)`` gate for a governed
+    ``clear_preference`` (0.0.3 S20/S21, FR-20/FR-21).
+
+    ONE shared resolver for both the mock and Postgres datastore handlers --
+    same reasoning as :func:`resolve_memory_write_source` and
+    :func:`resolve_customer_memory_binding`: this is the security-sensitive
+    authorization gate for the clear action, and a duplicated gate is exactly
+    the kind of thing that silently drifted before (the S15 mock/dismiss
+    audit-sink gap). Raises the fail-closed ``ToolDriverError("policy_blocked",
+    ...)`` itself when unauthorized, so both call sites just call it and use
+    the returned tuple:
+
+    - EXTERNAL + a verified customer identity (:func:`is_verified_customer_identity`)
+      -> ``(None, "customer")``: the customer clearing their own binding: no
+      ``account_id`` since the customer is not a workbench account.
+    - EXTERNAL + not verified (unmatched, provisional, or ambiguous) ->
+      ``policy_blocked`` -- a resolvable provisional binding is not
+      authorization (US13).
+    - INTERNAL + ``context.user_id`` -> ``(context.user_id, "rep")``.
+    - INTERNAL with no ``context.user_id`` -> ``policy_blocked`` -- a clear is
+      always an attributed actor at the keyboard, never the unbound AI draft
+      turn.
+    - Any other profile -> ``policy_blocked`` (fail-closed, defense in depth --
+      ``toee_customer_memory`` is not allowlisted outside these two today,
+      ADR-0034/35, same posture as ``resolve_memory_write_source``).
+    """
+    # Deferred import: same partially-initialized-package hazard documented on
+    # resolve_memory_write_source above.
+    from ...plugin.profiles import EXTERNAL, INTERNAL
+
+    if context.profile == EXTERNAL:
+        if is_verified_customer_identity(context.identity):
+            return None, "customer"
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed preference clear requires a verified customer identity.",
+        )
+    if context.profile == INTERNAL:
+        if context.user_id:
+            return context.user_id, "rep"
+        raise ToolDriverError(
+            "policy_blocked",
+            "A governed preference clear requires an attributed actor.",
+        )
+    raise ToolDriverError(
+        "policy_blocked",
+        f'Customer Memory clears are not permitted for profile "{context.profile}".',
+    )
+
+
 def create_memory_mock_handlers(
     data: MemoryMockData = memory_baseline_data,
     *,
@@ -340,40 +391,18 @@ def create_memory_mock_handlers(
     def clear_preference(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
-        # Clears one preference slot and acknowledges the removal. 0.0.3 S20
-        # (FR-20) gated this to an attributed rep/supervisor actor only (the
-        # EXTERNAL profile, no context.user_id, was unconditionally
-        # policy_blocked). 0.0.3 S21 (FR-21) EXTENDS that same governed
-        # clear_preference gate -- still the one write action, no new write path
-        # -- to also allow a VERIFIED customer to clear their OWN binding on the
-        # EXTERNAL profile: source=customer_explicit, actor NULL (the customer is
-        # not a workbench account). An unverified EXTERNAL caller (unmatched,
-        # provisional, or ambiguous -- see is_verified_customer_identity) is
-        # still policy_blocked, same as before: a resolvable provisional binding
-        # is not authorization (US13). On every other profile the S20 gate is
-        # unchanged: no context.user_id -> policy_blocked (a clear is always a
-        # rep/supervisor at the keyboard, never the unbound AI draft turn). The
-        # Postgres handler additionally writes a preference_cleared audit row;
-        # this mock driver has no audit sink (same no-op-in-mock-mode convention
-        # as dismiss_proposal), so it stays a plain governed acknowledgment once
-        # the gate passes.
+        # Clears one preference slot and acknowledges the removal. The gate --
+        # who is authorized to clear (rep/supervisor with an attributed actor,
+        # or a verified EXTERNAL customer clearing their own binding) -- lives
+        # in the shared resolve_clear_authorization (see its docstring for the
+        # full S20/S21 rationale), the SAME resolver the Postgres handler calls,
+        # so the two twins can't drift the way the S15 mock/dismiss gate did.
+        # The Postgres handler additionally writes a preference_cleared audit
+        # row from the returned (account_id, initiator); this mock driver has
+        # no audit sink (same no-op-in-mock-mode convention as
+        # dismiss_proposal), so it only needs the gate check here.
         slot = _require_slot(params)
-        # Deferred import: same partially-initialized-package hazard documented
-        # on resolve_memory_write_source below.
-        from ...plugin.profiles import EXTERNAL
-
-        if context.profile == EXTERNAL:
-            if not is_verified_customer_identity(context.identity):
-                raise ToolDriverError(
-                    "policy_blocked",
-                    "A governed preference clear requires a verified customer "
-                    "identity.",
-                )
-        elif not context.user_id:
-            raise ToolDriverError(
-                "policy_blocked",
-                "A governed preference clear requires an attributed actor.",
-            )
+        resolve_clear_authorization(context)
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key).pop(slot, None)
         return {"binding_key": binding_key, "slot": slot, "cleared": True}
@@ -399,6 +428,10 @@ def create_memory_mock_handlers(
         # unverified caller (unmatched/provisional/ambiguous) must get ZERO
         # data, never a probe surface for whoever holds a phone number/email
         # (US13) -- a resolvable provisional binding is not authorization.
+        # NOTE: despite the "customer-facing" framing, this action is also
+        # LLM-callable on internal_copilot -- it isn't in _AGENT_EXCLUDED_ACTIONS,
+        # so it rides the shared toolset registration onto INTERNAL's tool loop
+        # too. Not a gap: INTERNAL already has get_preferences, a superset read.
         if not is_verified_customer_identity(context.identity):
             raise ToolDriverError(
                 "policy_blocked",

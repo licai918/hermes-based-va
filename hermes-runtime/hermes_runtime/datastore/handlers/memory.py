@@ -30,11 +30,11 @@ from toee_hermes.drivers.mock.memory import (
     _read_evidence,
     _require_value,
     is_verified_customer_identity,
+    resolve_clear_authorization,
     resolve_customer_memory_binding,
     resolve_memory_write_source,
 )
 from toee_hermes.errors import ToolDriverError
-from toee_hermes.plugin.profiles import EXTERNAL
 
 from ._common import insert_audit, new_id, serialize_row
 
@@ -103,44 +103,20 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
     """Clears one preference slot and records an attributed audit row.
 
     0.0.3 S20 (FR-20): closes the 0.0.2 PAC-1 caveat -- a clear used to leave
-    zero trace (a hard DELETE, no audit row). Gated to an attributed rep/
-    supervisor actor: no ``context.user_id`` -> ``policy_blocked`` *before* the
-    DELETE runs, same as ``_dismiss_proposal``.
+    zero trace (a hard DELETE, no audit row). 0.0.3 S21 (FR-21, NFR-2) EXTENDS
+    that same governed ``clear_preference`` action -- still the ONE write
+    action, no new write path, no schema change -- to also authorize a
+    VERIFIED customer clearing their OWN binding on the EXTERNAL profile.
 
-    0.0.3 S21 (FR-21, NFR-2) EXTENDS that same governed ``clear_preference``
-    gate -- still the ONE write action, no new write path, no schema change --
-    to also authorize a VERIFIED customer clearing their OWN binding on the
-    EXTERNAL profile: verified-only (``is_verified_customer_identity``, the
-    same signal ``binding_key_from_identity`` uses to bind to the Shopify
-    customer id), audited with ``account_id`` NULL (the customer is not a
-    workbench account -- a NULL-actor audit row is already legitimate, the
-    merge path writes them too, ADR-0148) and ``details.initiator`` marking it
-    customer-initiated so it stays distinguishable from a rep/supervisor clear
-    in the audit trail. An unverified EXTERNAL caller (unmatched, provisional,
-    or ambiguous) is still ``policy_blocked``, never a deletion -- a resolvable
-    provisional binding is not authorization (US13). Every other profile keeps
-    the unchanged S20 gate: no ``context.user_id`` -> ``policy_blocked`` (a
-    rep/supervisor clear is always an attributed actor at the keyboard, never
-    the unbound AI draft turn).
+    Who is authorized (rep/supervisor with an attributed actor, or a verified
+    EXTERNAL customer) and the resulting audited ``account_id``/``initiator``
+    are resolved by the shared ``resolve_clear_authorization`` -- the SAME
+    resolver the mock driver's ``clear_preference`` calls, so this
+    security-sensitive gate can't drift between the two twins (see its
+    docstring for the full per-profile behavior).
     """
     slot = _require_slot(params)
-
-    if context.profile == EXTERNAL:
-        if not is_verified_customer_identity(context.identity):
-            raise ToolDriverError(
-                "policy_blocked",
-                "A governed preference clear requires a verified customer identity.",
-            )
-        account_id = None
-        initiator = "customer"
-    else:
-        account_id = context.user_id
-        if not account_id:
-            raise ToolDriverError(
-                "policy_blocked",
-                "A governed preference clear requires an attributed actor.",
-            )
-        initiator = "rep"
+    account_id, initiator = resolve_clear_authorization(context)
 
     binding_key, _ = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
@@ -184,6 +160,12 @@ def _get_my_memory_summary(conn, params: dict[str, Any], context: "ToolExecution
     ALL internal metadata -- slot values only, no source, no actor, no
     timestamps, no binding_key -- reusing ``_get_preferences``' query but never
     its full response shape.
+
+    NOTE: despite the "customer-facing" framing, ``get_my_memory_summary`` is
+    also LLM-callable on internal_copilot (it isn't in
+    ``_AGENT_EXCLUDED_ACTIONS``, so unexcluded actions ride the shared toolset
+    registration onto INTERNAL's tool loop too). Not a gap: INTERNAL already
+    has ``get_preferences``, a superset read.
     """
     if not is_verified_customer_identity(context.identity):
         raise ToolDriverError(
