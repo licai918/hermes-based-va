@@ -47,7 +47,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from eval_runner.transcript import memory_proposals_from_messages
+from eval_runner.transcript import (
+    experience_proposals_from_messages,
+    memory_proposals_from_messages,
+)
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
 from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import INTERNAL
@@ -61,8 +64,10 @@ from hermes_runtime.openrouter import (
     resolve_openrouter_config,
 )
 from hermes_runtime.tool_backend import (
+    _agent_experience_extra_drivers,
     _gateway_store,
     _turn_extra_drivers,
+    agent_experience_enabled,
     memory_enabled,
 )
 
@@ -303,9 +308,124 @@ def _load_case_memory(
         return identity, None
 
 
+# --- S23 (FR-22, NFR-3): the post-copilot-turn learning-loop review pass -------
+# THE 1st line of defense (NFR-3): the review fork is asked for OPERATIONAL
+# learnings only and is EXPLICITLY forbidden person-specific data. The S22
+# write-side scan is the 2nd line (rejects PII/injection before the INSERT); the
+# S24 human confirm gate is the 3rd (a proposed row is inert until confirmed).
+# "person-specific" is load-bearing and asserted by the tests.
+_REVIEW_SYSTEM_MESSAGE = (
+    "You are a Toee Tire support quality reviewer reflecting on a support turn a "
+    "copilot just drafted. Your ONLY job is to record durable OPERATIONAL learnings "
+    "for the team -- procedures, conventions, tool quirks, or recurring patterns "
+    "that would help handle similar cases better next time. Use the "
+    "propose_experience tool to record at most one such learning; if the turn "
+    "surfaced nothing durable, record nothing. NEVER record person-specific data or "
+    "customer PII of any kind: no names, order numbers, email addresses, phone "
+    "numbers, addresses, or any fact about a specific customer. A learning must be "
+    "a general operational rule, never a note about one person. You cannot contact "
+    "the customer and cannot change the draft; you only record learnings."
+)
+
+
+def _review_user_message(case_id: str, draft_result: Mapping[str, Any]) -> str:
+    """Frame the just-completed turn for the review fork (transcript + case id).
+
+    Minimal case context only (``case_id`` is an internal id, not PII -- see
+    ``_user_message``); the draft text is what the copilot produced, which the
+    reviewer generalizes from. The prompt forbids copying any person-specific
+    detail the draft happens to contain into a proposal.
+    """
+    draft = draft_result.get("draft") or ""
+    actions = [
+        m.get("name")
+        for m in (draft_result.get("messages") or [])
+        if isinstance(m, dict) and m.get("role") == "tool" and m.get("name")
+    ]
+    tools_line = f"Tools the copilot used: {', '.join(actions)}." if actions else "The copilot used no tools."
+    return (
+        f"Review the copilot turn for case {case_id}. {tools_line}\n\n"
+        f"The copilot's draft was:\n{draft}\n\n"
+        "Record one durable operational learning if there is one, or nothing."
+    )
+
+
+def _run_review_pass(
+    *,
+    case_id: str,
+    draft_result: Mapping[str, Any],
+    review_scripted_completions: Optional[Sequence[Mapping[str, Any]]],
+    config: Optional[OpenRouterConfig],
+    openai_factory: Any,
+    is_retryable: Callable[[BaseException], bool],
+    max_iterations: int,
+) -> list[dict[str, Any]]:
+    """Run ONE bounded review fork over the just-completed turn; return proposals.
+
+    A SECOND agent pass booted ``internal_copilot`` (structurally no-send) whose
+    governed toolset is RESTRICTED to ``toee_agent_experience`` only -- it is not
+    drafting a customer reply, only reflecting. The ``_agent_experience_extra_drivers``
+    overlay routes ``propose_experience`` to Postgres when the L6 flag is on
+    (else the shared mock discards it). Provider precedence mirrors the draft
+    (scripted -> real OpenRouter -> keyless), but a keyless fork has no model to
+    reflect with, so it proposes nothing deterministically. Proposals are captured
+    framework-derived from the governed RESULT (:func:`experience_proposals_from_messages`),
+    never model free-text.
+    """
+    booted = boot_profile(INTERNAL, extra_drivers=_agent_experience_extra_drivers())
+    # Restricted toolset: only the L6 propose tool, never the reply/read tools.
+    tool_names = [n for n in booted.tool_names if n.startswith("toee_agent_experience__")]
+    user_message = _review_user_message(case_id, draft_result)
+
+    if review_scripted_completions is not None:
+        turn = run_scripted_agent(
+            user_message=user_message,
+            system_message=_REVIEW_SYSTEM_MESSAGE,
+            scripted_completions=review_scripted_completions,
+            governed_tool_names=tool_names,
+        )
+    else:
+        resolved = config
+        if resolved is None and openai_factory is None:
+            try:
+                resolved = resolve_openrouter_config()
+            except ValueError:
+                resolved = None
+        if resolved is None and openai_factory is None:
+            # Keyless: no review model available -> propose nothing (deterministic).
+            return []
+        resolved = resolved or resolve_openrouter_config()
+        base_factory = openai_factory
+        if base_factory is None:
+            from openai import OpenAI
+
+            base_factory = OpenAI
+        factory = make_fallback_openai_factory(
+            base_factory=base_factory,
+            fallback_model=resolved.fallback_model,
+            is_retryable=is_retryable,
+        )
+        turn = run_agent_turn(
+            user_message=user_message,
+            system_message=_REVIEW_SYSTEM_MESSAGE,
+            base_url=resolved.base_url,
+            api_key=resolved.api_key,
+            model=resolved.model,
+            max_iterations=max_iterations,
+            openai_factory=factory,
+            governed_tool_names=tool_names,
+        )
+
+    return [
+        {"kind": p.kind, "content": p.content, "status": p.status}
+        for p in experience_proposals_from_messages(turn.get("messages", []) or [])
+    ]
+
+
 def make_copilot_run_turn(
     *,
     scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
+    review_scripted_completions: Optional[Sequence[Mapping[str, Any]]] = None,
     config: Optional[OpenRouterConfig] = None,
     openai_factory: Any = None,
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
@@ -322,6 +442,12 @@ def make_copilot_run_turn(
     (S07, FR-3/R4) -- the shape :func:`eval_runner.transcript.turn_result_from_
     transcript` parses -- and ``proposals`` is the structured, framework-derived
     Customer Memory proposal list extracted from it (S14, FR-15).
+
+    ``review_scripted_completions`` (S23, FR-22): scripts the bounded post-turn
+    learning-loop review fork so tests are deterministic; when set (or when the
+    ``AGENT_EXPERIENCE_LEARNING`` L6 flag is on) the fork runs after the draft and
+    surfaces ``experience_proposals`` on the result. DEFAULT OFF -- the eval
+    record/replay path passes neither, so the review pass never runs there.
 
     Provider precedence (Fork C1): ``scripted_completions`` (tests) → real
     OpenRouter when ``OPENROUTER_API_KEY`` is set or ``config``/``openai_factory``
@@ -445,6 +571,35 @@ def make_copilot_run_turn(
             subject, body = _derive_email_subject_and_body(draft, case_id)
             result["subject"] = subject
             result["draft"] = body
+
+        # S23 (FR-22): the bounded post-turn review fork. The rep's draft is
+        # ALREADY produced (result above); the review pass runs AFTER it and can
+        # never delay or fail it. Gated behind the L6 flag (DEFAULT OFF, so the
+        # eval record/replay path never runs it -- determinism), OR forced on in
+        # tests by scripting the fork. Any exception is caught, logged, and
+        # swallowed (turn resilience RK): a review-pass failure leaves result
+        # intact. Proposals are captured framework-derived, as proposed (inert).
+        if agent_experience_enabled() or review_scripted_completions is not None:
+            try:
+                result["experience_proposals"] = _run_review_pass(
+                    case_id=case_id,
+                    draft_result=result,
+                    review_scripted_completions=review_scripted_completions,
+                    config=config,
+                    openai_factory=openai_factory,
+                    is_retryable=is_retryable,
+                    max_iterations=max_iterations,
+                )
+            except Exception as exc:
+                # ponytail: swallow so the learning loop can never fail the copilot
+                # turn (RK). case_id is an internal id (not PII); log the exception
+                # TYPE only, never str(exc), which could echo store-supplied content.
+                logger.warning(
+                    "Agent-experience review pass failed case_id=%s error_type=%s; "
+                    "the copilot turn is unaffected",
+                    case_id,
+                    type(exc).__name__,
+                )
         return result
 
     return run_turn

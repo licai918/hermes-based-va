@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from toee_hermes.drivers.mock.agent_experience import AGENT_EXPERIENCE_KINDS
 from toee_hermes.drivers.mock.memory import MEMORY_PREFERENCE_SLOTS
 
 from .harness import AgentTurnResult, RecordedToolCall
@@ -148,6 +149,56 @@ def memory_proposals_from_messages(messages: list[dict]) -> list[MemoryProposal]
                 slot=slot,
                 value=value,
                 evidence_turn=evidence if isinstance(evidence, str) else None,
+            )
+        )
+    return proposals
+
+
+@dataclass(frozen=True)
+class ExperienceProposal:
+    """One L6 agent-experience proposal extracted from a review-fork turn (S23, FR-22).
+
+    The learning-loop twin of :class:`MemoryProposal`: ``kind``/``content``/``status``
+    are read from the governed ``propose_experience`` RESULT, never the model's
+    free text -- so a proposal can't smuggle prose past the tool.
+    """
+
+    kind: str
+    content: str
+    status: str = "proposed"
+
+
+def experience_proposals_from_messages(messages: list[dict]) -> list[ExperienceProposal]:
+    """Structured ``toee_agent_experience.propose_experience`` proposals (S23, FR-22).
+
+    Same framework-derived discipline as :func:`memory_proposals_from_messages`:
+    reads each SUCCESSFUL governed call's RESULT (the write-side scan + kind/content
+    validation already ran there), never the raw model-supplied args. A failed
+    call (PII/injection rejected by the S22 scan, bad kind, ...) is already
+    ``ok is False`` and is skipped, so a fork that tried to propose person-specific
+    content yields nothing. A ``kind`` outside the current enum is dropped too,
+    defense in depth. The review fork writes ``status='proposed'`` only; this is
+    pure extraction from the transcript, no write path.
+    """
+    proposals: list[ExperienceProposal] = []
+    for call in _parsed_calls(messages):
+        if (
+            call.tool != "toee_agent_experience"
+            or call.action != "propose_experience"
+            or not call.ok
+        ):
+            continue
+        result = call.result if isinstance(call.result, dict) else {}
+        kind = result.get("kind")
+        content = result.get("content")
+        if kind not in AGENT_EXPERIENCE_KINDS or not isinstance(content, str) or not content:
+            continue
+        status = result.get("status")
+        proposals.append(
+            ExperienceProposal(
+                kind=kind,
+                content=content,
+                status=status if isinstance(status, str) and status else "proposed",
             )
         )
     return proposals

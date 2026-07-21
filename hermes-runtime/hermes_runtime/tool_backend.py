@@ -88,6 +88,30 @@ def simulated_mode_enabled(value: object = _UNSET) -> bool:
     return isinstance(value, str) and value.strip().lower() == _SIMULATED_MODE_VALUE
 
 
+# Env flag gating the L6 learning loop (0.0.3 S23, FR-22). DISTINCT from
+# ``memory_enabled()`` (L4 Customer Memory, ``TOOL_BACKEND``): the post-copilot
+# review pass is a separate, opt-in surface, DEFAULT OFF so the eval record/replay
+# path (which never sets it) stays byte-identical and deterministic (NFR eval
+# gate). This is the single cost knob -- one bounded review pass per copilot turn,
+# and only when this is on. S25 formalizes the eval pin + the L6 ADR.
+AGENT_EXPERIENCE_ENV = "AGENT_EXPERIENCE_LEARNING"
+_AGENT_EXPERIENCE_ON_VALUES = frozenset({"1", "on", "true", "enabled", "yes"})
+
+
+def agent_experience_enabled(value: object = _UNSET) -> bool:
+    """Whether the L6 learning-loop review pass runs (0.0.3 S23, FR-22).
+
+    Fail-closed by construction: unset, empty, or any value outside the explicit
+    on-set returns ``False`` (mirrors :func:`simulated_mode_enabled`). Its OWN
+    axis, never ``memory_enabled()`` -- L6 is on/off independently of the L4
+    Customer Memory datastore, and default-off keeps the copilot eval replay
+    gate deterministic (the review pass never runs on the record/replay path).
+    """
+    if value is _UNSET:
+        value = os.environ.get(AGENT_EXPERIENCE_ENV)
+    return isinstance(value, str) and value.strip().lower() in _AGENT_EXPERIENCE_ON_VALUES
+
+
 def select_tool_driver(backend: Optional[str] = None) -> ToolDriver:
     """Build the dispatch ToolDriver for ``backend`` (env-resolved when ``None``).
 
@@ -144,6 +168,26 @@ def _knowledge_extra_drivers() -> Optional[dict[str, Any]]:
     if not knowledge_enabled():
         return None
     return {"toee_knowledge_search": KnowledgeDriver()}
+
+
+def _agent_experience_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_agent_experience`` to the Postgres datastore for the review fork.
+
+    The L6 twin of :func:`_customer_memory_extra_drivers` / :func:`_knowledge_extra_drivers`:
+    same ``extra_drivers`` seam, same shape, but gated on its OWN axis
+    (:func:`agent_experience_enabled`, ``AGENT_EXPERIENCE_LEARNING``) -- NOT
+    ``memory_enabled()``. ``False`` (default) returns ``None`` so a
+    ``propose_experience`` call stays on the shared mock driver and is discarded,
+    and a deployment with the loop off never hard-depends on Postgres. This is
+    wired ONLY into the S23 review fork's turn composition (``copilot_turn._run_review_pass``),
+    never the main draft turn's :func:`_turn_extra_drivers` -- the draft agent
+    never proposes experiences; only the review fork does. ``select_tool_driver``
+    builds the ``PostgresDriver`` whose ``kind = "datastore"`` attributes the
+    audit rows (anti-mock, ADR-0140).
+    """
+    if not agent_experience_enabled():
+        return None
+    return {"toee_agent_experience": select_tool_driver("datastore")}
 
 
 def _turn_extra_drivers(*, include_memory_write: bool = True) -> Optional[dict[str, Any]]:
