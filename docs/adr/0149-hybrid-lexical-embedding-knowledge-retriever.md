@@ -2,7 +2,7 @@
 
 > **Status: Accepted — implemented** (decided during the 0.0.3 knowledge spike,
 > formalized 2026-07-20). Formally supersedes the **implementation
-> mechanisms** of [ADR-0001](0001-hybrid-knowledge-weekly-rag-rebuild.md) and
+> mechanisms** of [ADR-0001](0001-hybrid-knowledge-weekly-local-rag.md) and
 > [ADR-0031](0031-shopify-primary-knowledge-sync.md) — see "What this
 > supersedes" below. Ships on `feat/0.0.3-land-all`: S06–S12.
 
