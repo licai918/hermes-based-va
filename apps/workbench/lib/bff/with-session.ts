@@ -82,6 +82,13 @@ export function withSession(
       // withSession route surfaces a governed (ADR-0020-safe) error Response
       // instead of an opaque 500. HermesApiError keeps its class/status; any
       // other throw becomes a 502 "service unavailable".
+      //
+      // Log first: anything reaching this catch is UNEXPECTED (the BFF handlers
+      // already map their own dispatch errors and return a Response), so mapping
+      // it to a governed 502 must not also swallow it silently -- otherwise a
+      // real route-setup bug is invisible. The client still gets the sanitized
+      // Response; the server keeps the diagnosable detail.
+      console.error(`[withSession] unhandled error in ${pathname}:`, err);
       return hermesErrorToProblem(err);
     }
   };
