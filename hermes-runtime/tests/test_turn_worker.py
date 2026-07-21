@@ -440,17 +440,19 @@ def test_a_signed_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
 
 
 class _FlakyQueue:
-    """Raises on the first ``n`` sweeps (where a real Postgres blip surfaces),
-    then behaves like an empty queue."""
+    """Raises on the given (1-indexed) sweep numbers, behaves like an empty queue
+    otherwise -- including failing again *after* a run of successes, so a test can
+    catch a broken ``consecutive_failures`` reset. A counter that never resets
+    would keep escalating the backoff across the second failure run instead of
+    dropping back to the first-failure delay."""
 
-    def __init__(self, failures: int) -> None:
-        self.remaining = failures
+    def __init__(self, fail_on_sweep: set[int]) -> None:
+        self.fail_on_sweep = fail_on_sweep
         self.sweeps = 0
 
     def reclaim_expired_leases(self, *, lease_seconds: int) -> list:
         self.sweeps += 1
-        if self.remaining > 0:
-            self.remaining -= 1
+        if self.sweeps in self.fail_on_sweep:
             raise RuntimeError("connection to server was lost")
         return []
 
@@ -463,14 +465,19 @@ def test_a_database_blip_backs_off_and_is_logged_instead_of_killing_the_worker(c
     error propagates. It must not end the process -- ``docs/ops/local-gateway.md``
     documents running this worker on the host, where an exit is permanent -- and it
     must stay loud: one logged exception per failure, never a silent swallow.
+
+    Sweep 5 fails again after sweep 4 recovers, to prove ``consecutive_failures``
+    actually resets on success: its backoff must land back at the first-failure
+    delay (0.5s) rather than continuing the earlier escalation (which would show
+    up as 4.0s if ``consecutive_failures = 0`` were deleted from ``poll_forever``).
     """
-    queue = _FlakyQueue(failures=3)
+    queue = _FlakyQueue(fail_on_sweep={1, 2, 3, 5})
     slept: list[float] = []
     polls = {"n": 0}
 
     def _should_stop() -> bool:
         polls["n"] += 1
-        return polls["n"] > 5  # 3 failures + 2 idle polls, then stop
+        return polls["n"] > 5  # 3 failures, 1 recovery, 1 failure again
 
     with caplog.at_level(logging.ERROR, logger="hermes_runtime.turn_worker"):
         poll_forever(
@@ -482,13 +489,13 @@ def test_a_database_blip_backs_off_and_is_logged_instead_of_killing_the_worker(c
             should_stop=_should_stop,
         )
 
-    # Survived all three, then kept polling normally.
     assert queue.sweeps == 5
     # Every failure logged with its traceback -- a persistent outage stays visible.
-    assert sum("Turn worker poll failed" in r.message for r in caplog.records) == 3
-    # Backoff grows while failing, and resets to the plain poll interval after.
-    assert slept[:3] == [0.5, 1.0, 2.0]
-    assert slept[3:] == [POLL_SECONDS, POLL_SECONDS]
+    assert sum("Turn worker poll failed" in r.message for r in caplog.records) == 4
+    # Escalates while failing (0.5, 1.0, 2.0), resets on the recovery (plain poll
+    # interval), then escalates fresh from 0.5 again -- not 4.0, which is what a
+    # deleted reset would produce.
+    assert slept == [0.5, 1.0, 2.0, POLL_SECONDS, 0.5]
 
 
 def test_the_error_backoff_is_bounded():
