@@ -297,7 +297,15 @@ def test_retrieve_default_embed_path_builds_the_embedder_only_once_across_two_ca
         def query_embed(self, queries):
             return [np.asarray([1.0, 0.0], dtype=np.float32) for _ in queries]
 
-    import fastembed
+    try:
+        import fastembed
+    except ImportError:
+        # This test monkeypatches fastembed.TextEmbedding, so it needs the module
+        # importable even though the embeddings themselves are faked. Skip when
+        # fastembed is absent (CI), same guard as the sibling real-embedder test
+        # above -- the "fastembed not installed" skip is whitelisted by the NFR-7
+        # no-silent-skip CI check.
+        pytest.skip("fastembed not installed")
 
     monkeypatch.setattr(fastembed, "TextEmbedding", _CountingFakeTextEmbedding)
 

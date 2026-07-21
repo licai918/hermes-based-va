@@ -118,14 +118,19 @@ def test_get_corpus_status_is_read_only_no_audit_row_on_the_business_conn(datast
     # The registry wrapper receives the BUSINESS connection (per PostgresDriver
     # wiring) but must never write to it -- it reaches its own knowledge DSN
     # connection instead. Confirm no audit row lands on the business conn.
-    import psycopg
-
-    from hermes_runtime.knowledge.config import knowledge_database_url
+    from hermes_runtime.knowledge.migrate import migrate as provision_knowledge_db
     from toee_hermes.execute import execute_tool
     from toee_hermes.tool_gate import ToolExecutionContext
 
+    # Unlike the sibling tests, this one exercises the FULL driver path:
+    # get_corpus_status reaches its own knowledge DSN and reads knowledge_chunk in
+    # that DB's DEFAULT schema (not a throwaway one). So provision the default
+    # schema (ensure_database + run_migrations, idempotent) rather than only
+    # checking connectivity -- otherwise a fresh CI knowledge DB has an empty
+    # public schema and the read errors ("relation knowledge_chunk does not
+    # exist"). Skip only if Postgres is genuinely unreachable.
     try:
-        psycopg.connect(knowledge_database_url(), connect_timeout=2).close()
+        provision_knowledge_db()
     except Exception as exc:
         pytest.skip(f"Postgres unavailable at KNOWLEDGE_DATABASE_URL: {type(exc).__name__}: {exc}")
 
