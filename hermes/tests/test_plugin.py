@@ -239,6 +239,20 @@ def test_propose_experience_is_registered_as_an_llm_tool_for_internal_copilot() 
     assert "toee_agent_experience__propose_experience" in ctx.registered_names()
 
 
+# --- 0.0.3 S26: get_aggregate_metrics is never LLM-callable (governance) ---
+
+
+def test_get_aggregate_metrics_is_never_registered_as_an_llm_tool() -> None:
+    # toee_metrics is allowlisted for internal_copilot only, and its SOLE action
+    # get_aggregate_metrics is wholly excluded -- an admin-only read reached only
+    # through the metrics panel's gated BFF dispatch (FR-28, the get_memory_audit
+    # precedent). It must never reach the model's tool-calling surface.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_metrics__get_aggregate_metrics" not in ctx.registered_names()
+
+
 def test_agent_experience_is_not_registered_for_external_profile() -> None:
     # ADR-0034/35: toee_agent_experience is internal_copilot only.
     ctx = RecordingCtx(profile="customer_service_external")
