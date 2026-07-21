@@ -34,7 +34,13 @@ from hermes_runtime.gateway_app import create_app
 from hermes_runtime.job_queue import AGENT_TURN_JOB_TYPE, PostgresJobQueue
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from hermes_runtime.turn_runner import make_gateway_turn_runner
-from hermes_runtime.turn_worker import run_once
+from hermes_runtime.turn_worker import (
+    MAX_ERROR_BACKOFF_SECONDS,
+    POLL_SECONDS,
+    _error_backoff_seconds,
+    poll_forever,
+    run_once,
+)
 
 WEBHOOK_SECRET = "test-textline-shared-secret"
 SIGNATURE_HEADER = "X-Textline-Signature"
@@ -426,3 +432,66 @@ def test_a_signed_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
             ("We do -- want a quote?",),
         )
         assert cur.fetchone()[0] == 1
+
+
+# --------------------------------------------------------------------------
+# the loop around run_once: a database blip must not end the worker
+# --------------------------------------------------------------------------
+
+
+class _FlakyQueue:
+    """Raises on the first ``n`` sweeps (where a real Postgres blip surfaces),
+    then behaves like an empty queue."""
+
+    def __init__(self, failures: int) -> None:
+        self.remaining = failures
+        self.sweeps = 0
+
+    def reclaim_expired_leases(self, *, lease_seconds: int) -> list:
+        self.sweeps += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise RuntimeError("connection to server was lost")
+        return []
+
+    def claim(self, *, worker: str, types=None):
+        return None
+
+
+def test_a_database_blip_backs_off_and_is_logged_instead_of_killing_the_worker(caplog):
+    """``run_once``'s sweep/claim sit outside its try, so a transient Postgres
+    error propagates. It must not end the process -- ``docs/ops/local-gateway.md``
+    documents running this worker on the host, where an exit is permanent -- and it
+    must stay loud: one logged exception per failure, never a silent swallow.
+    """
+    queue = _FlakyQueue(failures=3)
+    slept: list[float] = []
+    polls = {"n": 0}
+
+    def _should_stop() -> bool:
+        polls["n"] += 1
+        return polls["n"] > 5  # 3 failures + 2 idle polls, then stop
+
+    with caplog.at_level(logging.ERROR, logger="hermes_runtime.turn_worker"):
+        poll_forever(
+            queue=queue,
+            store=None,
+            turn_runner=None,
+            worker="turn-worker-flaky",
+            sleep=slept.append,
+            should_stop=_should_stop,
+        )
+
+    # Survived all three, then kept polling normally.
+    assert queue.sweeps == 5
+    # Every failure logged with its traceback -- a persistent outage stays visible.
+    assert sum("Turn worker poll failed" in r.message for r in caplog.records) == 3
+    # Backoff grows while failing, and resets to the plain poll interval after.
+    assert slept[:3] == [0.5, 1.0, 2.0]
+    assert slept[3:] == [POLL_SECONDS, POLL_SECONDS]
+
+
+def test_the_error_backoff_is_bounded():
+    """A long outage must not stretch the retry interval without limit."""
+    assert _error_backoff_seconds(1) == 0.5
+    assert _error_backoff_seconds(100) == MAX_ERROR_BACKOFF_SECONDS

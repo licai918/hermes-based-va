@@ -55,6 +55,15 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # The graceful-stop budget, and the thing that makes turn_worker's SIGTERM
+    # handler more than decoration. SIGTERM only sets a flag; the in-flight turn
+    # then has this long to finish and release its lease before Docker SIGKILLs.
+    # Docker's default is 10s -- well under a live LLM turn -- so without this every
+    # `docker compose restart` landing mid-turn kills the worker anyway and strands
+    # that customer's job for the full lease. Exactly what the handler exists to stop.
+    # Keep this ABOVE job_queue.DEFAULT_LEASE_SECONDS (300s -- the longest turn the
+    # lease is sized for). The two move together: change the lease, change this.
+    stop_grace_period: 310s
 
 volumes:
   toee_pgdata:

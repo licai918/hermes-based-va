@@ -86,7 +86,13 @@ def run_once(
     worker: str,
     lease_seconds: int = DEFAULT_LEASE_SECONDS,
 ) -> Optional[Job]:
-    """One poll: sweep dead leases, claim one turn job, run it. Never raises.
+    """One poll: sweep dead leases, claim one turn job, run it.
+
+    **No turn failure escapes** -- a poisonous turn is failed and recorded, never
+    allowed to kill the worker. What *can* escape is a queue error: the sweep and
+    the claim run before the try block, so a Postgres outage propagates. That is
+    deliberate -- there is no job to fail and nothing useful to do here -- and
+    :func:`poll_forever` is where it is caught, logged and backed off.
 
     Returns the claimed :class:`Job` (whatever its outcome) or ``None`` when
     nothing was due -- the caller sleeps only on ``None``, so a burst drains
@@ -173,16 +179,68 @@ _stopping = False
 
 
 def _request_stop(signum, frame) -> None:  # pragma: no cover - signal path
-    """Finish the job in hand, then exit (SIGTERM from `docker compose stop`).
+    """Finish the job in hand, then exit (SIGTERM from `docker compose stop`,
+    SIGINT from Ctrl-C).
 
     Without this a routine restart kills the worker mid-turn and that customer's
     turn sits stranded for the whole 300 s lease before another worker can
     reclaim it. The handler only sets a flag, so the in-flight ``run_once``
-    completes and releases its lease normally.
+    completes and releases its lease normally. SIGINT is handled the same way on
+    purpose: a ``KeyboardInterrupt`` is a ``BaseException``, so it would escape
+    ``run_once`` mid-turn and strand exactly the job SIGTERM is careful about.
     """
     global _stopping
     _stopping = True
     logger.info("Signal %s received; stopping after the current job", signum)
+
+
+# Longest sleep between failed polls. Postgres being down is loud (one logged
+# exception per attempt) but must not become a hot loop; 30 s still recovers
+# promptly once it is back.
+MAX_ERROR_BACKOFF_SECONDS = 30.0
+
+
+def _error_backoff_seconds(consecutive_failures: int) -> float:
+    """Exponential from the poll interval, capped. 1 -> 0.5s, 2 -> 1s, ... <= 30s."""
+    return min(POLL_SECONDS * 2**consecutive_failures, MAX_ERROR_BACKOFF_SECONDS)
+
+
+def poll_forever(
+    *,
+    queue: PostgresJobQueue,
+    store: Any,
+    turn_runner: Optional[Callable[[Any, str], None]],
+    worker: str,
+    sleep: Callable[[float], None] = time.sleep,
+    should_stop: Callable[[], bool] = lambda: _stopping,
+) -> None:
+    """Run :func:`run_once` until asked to stop, surviving database outages.
+
+    A transient Postgres error must not end the process: under compose
+    ``restart: unless-stopped`` would paper over it, but ``docs/ops/local-gateway.md``
+    also documents running this worker on the host, where an exit is permanent.
+    Every failure is logged in full -- a persistent outage stays loud -- and the
+    backoff only decides how often, never whether.
+    """
+    consecutive_failures = 0
+    while not should_stop():
+        try:
+            job = run_once(
+                queue=queue, store=store, turn_runner=turn_runner, worker=worker
+            )
+        except Exception:  # noqa: BLE001 - a DB blip must not end the worker
+            consecutive_failures += 1
+            delay = _error_backoff_seconds(consecutive_failures)
+            logger.exception(
+                "Turn worker poll failed (%s in a row); retrying in %.1fs",
+                consecutive_failures,
+                delay,
+            )
+            sleep(delay)
+            continue
+        consecutive_failures = 0
+        if job is None:
+            sleep(POLL_SECONDS)
 
 
 def main() -> int:  # pragma: no cover - the process shell; run_once is the tested unit
@@ -206,20 +264,23 @@ def main() -> int:  # pragma: no cover - the process shell; run_once is the test
         POLL_SECONDS,
     )
 
+    # Both stop signals take the graceful path: finish this turn, release its
+    # lease, exit between jobs. Ctrl-C used to raise straight through run_once and
+    # strand the job for the full 300 s lease.
     signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
 
     try:
-        while not _stopping:
-            job = run_once(
-                queue=queue,
-                store=collaborators.store,
-                turn_runner=collaborators.turn_runner,
-                worker=worker,
-            )
-            if job is None:
-                time.sleep(POLL_SECONDS)
+        poll_forever(
+            queue=queue,
+            store=collaborators.store,
+            turn_runner=collaborators.turn_runner,
+            worker=worker,
+        )
     except KeyboardInterrupt:
-        logger.info("Turn worker %s stopping", worker)
+        # Only reachable in the window before the handler is installed.
+        logger.info("Turn worker %s interrupted before a job was claimed", worker)
+    logger.info("Turn worker %s stopped", worker)
     return 0
 
 
