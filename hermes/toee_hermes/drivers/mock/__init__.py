@@ -44,6 +44,7 @@ from .qbo import (
     create_qbo_mock_handlers,
     qbo_baseline_data,
 )
+from .retention import create_retention_mock_handlers
 from .shopify import (
     ShopifyMockData,
     create_shopify_mock_handlers,
@@ -62,7 +63,7 @@ from .textline import (
 
 
 def create_all_mock_handlers() -> MockHandlerRegistry:
-    """Merge every tool's baseline mock fragment into one registry (all 16 v1 tools)."""
+    """Merge every tool's baseline mock fragment into one registry (all 17 v1 tools)."""
     return merge_registries(
         create_identity_mock_handlers(),
         create_shopify_mock_handlers(),
@@ -76,6 +77,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_admin_stub_mock_handlers(),
         create_agent_experience_mock_handlers(),
         create_metrics_mock_handlers(),
+        create_retention_mock_handlers(),
     )
 
 
@@ -115,4 +117,5 @@ __all__ = [
     "create_admin_stub_mock_handlers",
     "create_agent_experience_mock_handlers",
     "create_metrics_mock_handlers",
+    "create_retention_mock_handlers",
 ]

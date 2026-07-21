@@ -102,6 +102,15 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # get_memory_audit precedent) -- reached only via the admin BFF's
     # deterministic tools:dispatch call, never a live agent's tool loop.
     "toee_metrics": ("get_aggregate_metrics",),
+    # 0.0.3 S28 (FR-30): the Customer Memory retention sweep admin panel.
+    # trigger_retention_sweep is a governed WRITE (ages out customer_memory_slot
+    # rows per the ADR-0004/0116 class windows); get_retention_status is the
+    # read-only last-run/per-class-counts view. Both admin-only (listed in
+    # _AGENT_EXCLUDED_ACTIONS, the get_memory_audit precedent) -- reached only
+    # via the admin BFF's deterministic tools:dispatch call or the schedulable
+    # CLI entrypoint (hermes_runtime.retention_sweep), never a live agent's
+    # tool-calling loop.
+    "toee_retention": ("trigger_retention_sweep", "get_retention_status"),
 }
 
 

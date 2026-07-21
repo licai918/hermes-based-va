@@ -6,6 +6,7 @@ import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { RetentionStatus, RetentionSweepResult } from "@/lib/bff/admin/retention";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
 import type { PolicySlot } from "@/lib/gateway/knowledge-store";
 import type {
@@ -200,4 +201,14 @@ export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
 
 export function getAggregateMetrics(): Promise<AggregateMetrics> {
   return getJson<AggregateMetrics>("/api/admin/metrics");
+}
+
+// --- Customer Memory retention sweep admin panel (0.0.3 S28, FR-30) ----------
+
+export function getRetentionStatus(): Promise<RetentionStatus> {
+  return getJson<RetentionStatus>("/api/admin/retention");
+}
+
+export function triggerRetentionSweep(): Promise<RetentionSweepResult> {
+  return sendJson<RetentionSweepResult>("POST", "/api/admin/retention/sweep");
 }

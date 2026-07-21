@@ -84,6 +84,15 @@ DriverSelector = Callable[[str], ToolDriver]
 # for the admin BFF's deterministic tools:dispatch call, never a live agent's
 # tool-calling loop -- it carries no customer PII, but it is still an
 # operational surface a live turn has no business calling.
+#
+# toee_retention.trigger_retention_sweep / .get_retention_status (0.0.3 S28,
+# FR-30) are excluded for the same reason: the retention sweep is an
+# admin-triggered batch job (ages out customer_memory_slot rows per the
+# ADR-0004/0116 class windows) and its last-run/per-class-counts read, neither
+# meant for a live agent's tool-calling loop -- a model with a live "delete
+# customer data" primitive is exactly the risk this exclusion list exists to
+# prevent. Reached only via the admin BFF's deterministic tools:dispatch call
+# or the schedulable CLI entrypoint (hermes_runtime.retention_sweep).
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
@@ -92,6 +101,8 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_agent_experience", "confirm_experience"),
         ("toee_agent_experience", "reject_experience"),
         ("toee_metrics", "get_aggregate_metrics"),
+        ("toee_retention", "trigger_retention_sweep"),
+        ("toee_retention", "get_retention_status"),
     }
 )
 

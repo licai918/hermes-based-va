@@ -18,6 +18,7 @@ from .identity import identity_handlers
 from .knowledge import knowledge_handlers
 from .memory import memory_handlers
 from .metrics import metrics_handlers
+from .retention import retention_handlers
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -46,6 +47,7 @@ def build_datastore_registry() -> DatastoreRegistry:
         eval_review_handlers(),
         agent_experience_handlers(),
         metrics_handlers(),
+        retention_handlers(),
     )
 
 

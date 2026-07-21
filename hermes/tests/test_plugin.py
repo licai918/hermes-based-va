@@ -253,6 +253,22 @@ def test_get_aggregate_metrics_is_never_registered_as_an_llm_tool() -> None:
         assert "toee_metrics__get_aggregate_metrics" not in ctx.registered_names()
 
 
+# --- 0.0.3 S28: retention sweep actions are never LLM-callable (governance) -
+
+
+def test_retention_actions_are_never_registered_as_llm_tools() -> None:
+    # toee_retention is allowlisted for internal_copilot only, and BOTH of its
+    # actions are wholly excluded -- an admin-triggered batch delete and its
+    # read, reached only through the admin BFF's gated dispatch or the
+    # schedulable CLI entrypoint (FR-30, the get_aggregate_metrics precedent).
+    # Must never reach the model's tool-calling surface on any profile.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_retention__trigger_retention_sweep" not in ctx.registered_names()
+        assert "toee_retention__get_retention_status" not in ctx.registered_names()
+
+
 def test_agent_experience_is_not_registered_for_external_profile() -> None:
     # ADR-0034/35: toee_agent_experience is internal_copilot only.
     ctx = RecordingCtx(profile="customer_service_external")

@@ -5,6 +5,7 @@ import {
   disableAccount,
   getCorpusStatus,
   getMemoryAudit,
+  getRetentionStatus,
   getRun,
   listAccounts,
   listAgentExperience,
@@ -17,6 +18,7 @@ import {
   saveDraft,
   signOff,
   submitSlot,
+  triggerRetentionSweep,
   updateRole,
 } from "./admin-client";
 
@@ -313,6 +315,49 @@ describe("admin-client agent experience (0.0.3 S22/S24, FR-23/FR-24)", () => {
     await expect(confirmExperience("aexp_missing")).rejects.toMatchObject({
       name: "ApiError",
       status: 404,
+    });
+  });
+});
+
+describe("admin-client retention sweep (0.0.3 S28, FR-30)", () => {
+  it("getRetentionStatus GETs the retention endpoint and returns the status", async () => {
+    const status = {
+      lastRunAt: null,
+      counts: { verified: 0, provisional: 0 },
+      totalDeleted: 0,
+      windowsDays: { verified: 730, provisional: 90 },
+    };
+    const fetchMock = stubFetch(status);
+
+    await expect(getRetentionStatus()).resolves.toEqual(status);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/retention", {
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it("triggerRetentionSweep POSTs the sweep endpoint with no body and returns the result", async () => {
+    const result = {
+      lastRunAt: "2026-07-21T08:00:00.000000+00:00",
+      runAt: "2026-07-21T08:00:00.000000+00:00",
+      counts: { verified: 1, provisional: 2 },
+      totalDeleted: 3,
+      windowsDays: { verified: 730, provisional: 90 },
+    };
+    const fetchMock = stubFetch(result);
+
+    await expect(triggerRetentionSweep()).resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/retention/sweep", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: undefined,
+    });
+  });
+
+  it("triggerRetentionSweep throws ApiError carrying a governed denial message", async () => {
+    stubFetch({ error: "a governed case write requires an attributed actor" }, 403);
+    await expect(triggerRetentionSweep()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 403,
     });
   });
 });

@@ -47,6 +47,9 @@ ADR_0035_INTERNAL = {
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over this
     # profile's API by the admin BFF (same reason get_memory_audit lives here).
     "toee_metrics",
+    # 0.0.3 S28 (FR-30): Customer Memory retention sweep admin panel, reached
+    # over this profile's API by the admin BFF (same precedent as toee_metrics).
+    "toee_retention",
 }
 ADR_0038_SUPERVISOR = {
     "toee_knowledge_ops",

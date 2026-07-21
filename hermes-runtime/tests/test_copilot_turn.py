@@ -81,6 +81,17 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         # allowlist gate lets the admin BFF's deterministic tools:dispatch call
         # reach it (ADR-0140 precedent: toee_customer_memory.get_memory_audit).
         "toee_metrics",
+        # 0.0.3 S28 (FR-30): reviewed addition. toee_retention's two actions
+        # (trigger_retention_sweep, get_retention_status) delete/read
+        # customer_memory_slot rows -- never contacts the customer and never
+        # moves money, so it does not weaken the no-auto-send invariant this
+        # tripwire guards. BOTH actions are its ONLY catalog actions and BOTH
+        # are WHOLLY excluded from LLM registration (_AGENT_EXCLUDED_ACTIONS),
+        # so it never registers a handler and never appears in a booted
+        # tool_names() set (see _wholly_excluded_toolsets below). Declared here
+        # purely so the allowlist gate lets the admin BFF's deterministic
+        # tools:dispatch call (and the schedulable CLI entrypoint) reach it.
+        "toee_retention",
     }
 )
 
