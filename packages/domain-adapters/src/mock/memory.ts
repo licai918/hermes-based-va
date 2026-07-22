@@ -1,14 +1,14 @@
+import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/shared";
 import { ToolDriverError } from "../errors";
 import type { ToolExecutionContext } from "../tool-gate";
 import type { MockHandlerRegistry } from "./mock-driver";
 
-// The four v1 Customer Memory preference slots (ADR-0111). Open-ended keys are
-// not allowed: only these slots may be written, cleared, or read.
-export type MemoryPreferenceSlot =
-  | "contact_time_preference"
-  | "channel_preference"
-  | "delivery_habit_note"
-  | "communication_style_note";
+// The four v1 Customer Memory preference slots (ADR-0111) live in
+// @toee/shared as of S07 (FR-6), the single TS-side source of truth; this
+// mock driver imports rather than re-declaring them. Re-exported below so
+// existing domain-adapters consumers keep working unchanged.
+export { MEMORY_PREFERENCE_SLOTS };
+export type { MemoryPreferenceSlot };
 
 export type CustomerPreferenceSlots = Partial<
   Record<MemoryPreferenceSlot, string>
@@ -24,16 +24,6 @@ export interface MemoryMockData {
 }
 
 export const memoryBaselineData: MemoryMockData = { preferences: {} };
-
-// Single source of truth for the four v1 slots (S09, FR-7): the workbench
-// imports this rather than hand-copying a second literal, so a fifth slot
-// added here propagates instead of silently drifting between the two lists.
-export const MEMORY_PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = [
-  "contact_time_preference",
-  "channel_preference",
-  "delivery_habit_note",
-  "communication_style_note",
-];
 
 function isPreferenceSlot(value: unknown): value is MemoryPreferenceSlot {
   return (
