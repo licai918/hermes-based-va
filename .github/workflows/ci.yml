@@ -18,6 +18,23 @@ permissions:
   contents: read
 
 jobs:
+  # NFR-6: no credential lands in a commit. One job for the whole repo (0.0.4
+  # S12) -- S14's EasyRoutes tokens and every later integration add a name to
+  # SECRET_VARS in the script, not another job. No checkout depth needed: the
+  # gate scans the tree at this ref, which is what a merge would publish.
+  secret-scan:
+    name: Secret scan (tracked files)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Selfcheck the gate's own rules
+        run: node scripts/secret-scan.mjs --selfcheck
+      - name: Scan tracked files
+        run: node scripts/secret-scan.mjs
+
   node:
     name: Node typecheck + vitest
     runs-on: ubuntu-latest
