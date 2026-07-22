@@ -3,6 +3,13 @@
 > Status: **exploration**. Candidates here are directions with evidence, not commitments.
 > The 0.0.3 pipeline applies before any build: grill → PRD (gap-audited) → issue slices.
 > 0.0.4 (job queue + scoring) is in flight and deliberately NOT expanded by this document.
+>
+> **Owner-set gate (2026-07-21): the 0.0.5 grill starts only AFTER 0.0.4 closes**, and it
+> starts with an **inventory of what 0.0.4 actually shipped** (job queue, worker cutover,
+> scoring mechanism, TS cleanup) — the candidates below get re-grounded against that reality
+> before grilling, since several lean on infrastructure 0.0.4 may have changed (scheduled
+> jobs, workers, admin panels). Theme of the iteration: **complete the memory architecture**
+> (L7 + latency SLO + memory-ops UX + systemic boundary enforcement).
 
 ---
 
