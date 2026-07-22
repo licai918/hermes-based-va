@@ -297,6 +297,48 @@ def test_authenticate_unknown_user_is_the_same_generic_failure(datastore) -> Non
     assert result.error_class == "unauthenticated"
 
 
+def test_authenticate_corrupt_stored_hash_is_a_failed_login_never_a_502(datastore) -> None:
+    """``_verify_password``'s docstring promises "a corrupt row is a failed login,
+    never a 502" (accounts.py:164-190) via four defensive ``return False`` branches.
+    One case per reachable branch, all seeded through ``create_account`` (which does
+    not validate ``password_hash`` format, so it happily stores garbage):
+
+    * wrong ``$``-part count (too few, too many)
+    * wrong scheme / an empty salt or hash segment
+    * a segment that is not valid hex (``bytes.fromhex`` raises)
+    * hex that decodes to zero bytes -- ``bytes.fromhex`` ignores whitespace, so a
+      salt/hash of all-spaces passes the emptiness check but decodes empty.
+
+    Before this test the only bogus hashes in the suite (``scrypt$dead$beef`` in
+    ``test_tool_dispatch_app.py``) were well-formed and never authenticated
+    against -- this was the ledger row 34 gap the S09 review found (0.0.4 fix
+    wave 1).
+    """
+    driver, _, _ = datastore
+    corrupt_hashes = {
+        "no_dollar_signs": "not-a-scrypt-hash-at-all",
+        "too_many_parts": "scrypt$aa$bb$cc",
+        "wrong_scheme": "bcrypt$aabbcc$aabbcc",
+        "empty_salt_segment": "scrypt$$aabbcc",
+        "empty_hash_segment": "scrypt$aabbcc$",
+        "non_hex_characters": "scrypt$zz$aabbcc",
+        "hex_decodes_to_empty_bytes": "scrypt$ $ ",
+    }
+    for label, corrupt_hash in corrupt_hashes.items():
+        username = f"corrupt_{label}"
+        created = _run(
+            driver, "toee_workbench_admin", "create_account",
+            {"username": username, "password_hash": corrupt_hash, "role": "customer_service_rep"},
+        )
+        assert created.ok, label
+        result = _run(
+            driver, "toee_workbench_admin", "authenticate",
+            {"username": username, "password": "whatever-Pass1!"},
+        )
+        assert not result.ok, label
+        assert result.error_class == "unauthenticated", label
+
+
 def test_authenticate_disabled_account_is_policy_blocked_even_with_right_password(
     datastore,
 ) -> None:
