@@ -531,7 +531,11 @@ describe("Simulator", () => {
     fireEvent.change(screen.getByLabelText("Channel"), { target: { value: "email" } });
 
     await waitFor(() => expect(simulator.getSimulatorEmailThread).toHaveBeenCalledTimes(1));
-    expect(screen.queryByText("sms hello")).toBeNull();
+    // Wait on the rendered outcome, not the fetch call: switchIdentity does not
+    // clear the transcript synchronously -- it repaints when loadThread resolves.
+    // Asserting right after the call only passed because the mock happened to
+    // settle within waitFor's poll interval, which a loaded CI runner does not.
+    await waitFor(() => expect(screen.queryByText("sms hello")).toBeNull());
   });
 
   it("selecting the verified email preset fills the From address field with the seeded address", async () => {
