@@ -441,6 +441,12 @@ def test_the_admin_button_enqueues_a_retention_job_the_worker_sweeps_with_the_SA
         cur.execute("SELECT count(*) FROM customer_memory_slot WHERE id = %s", (slot_id,))
         assert cur.fetchone()[0] == 1
     assert _audit_rows(conn, "retention_sweep") == []
+    # ...but the CLICK is already on the record (S04 fix wave 1, finding 4), the
+    # same way its sibling enqueue_corpus_reingest audits. With the worker down
+    # this row is the ONLY trace a supervisor asked for a sweep.
+    queued_rows = _audit_rows(conn, "retention_sweep_queued")
+    assert [(a, p) for a, p, _d in queued_rows] == [("acct_super", "internal_copilot")]
+    assert queued_rows[0][2]["job_id"] == trigger.data["job_id"]
 
     # The worker's poll runs the unchanged sweep body.
     monkeypatch.setattr(retention_mod, "PostgresDriver", lambda *a, **k: driver)
@@ -476,6 +482,9 @@ def test_a_scheduled_sweep_audits_unattended_exactly_like_the_cli_run(
     assert len(rows) == 1
     account_id, profile, _details = rows[0]
     assert account_id is None and profile == "internal_copilot"
+    # tick_schedules never goes through the enqueue handler, so the cadence
+    # writes no "queued" row either -- it stays as unattended as it always was.
+    assert _audit_rows(conn, "retention_sweep_queued") == []
 
 
 def test_the_reingest_panel_action_queues_a_real_ingest_job_and_reads_it_back(datastore):

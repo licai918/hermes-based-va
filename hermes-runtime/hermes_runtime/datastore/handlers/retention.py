@@ -27,6 +27,9 @@ numbers a JSONB details column already carries.
 background worker's schedule tick both put a ``retention`` job on the durable
 queue, and the worker runs ``trigger_retention_sweep`` below unchanged. The sweep
 itself, its windows, and its audit row are untouched -- only the caller moved.
+The *button* additionally writes its own ``retention_sweep_queued`` audit row, so
+a click is recorded even if the worker never runs (S04 fix wave 1); nothing reads
+that action, and ``get_retention_status`` still keys on ``retention_sweep`` alone.
 
 All three actions are admin-only, never LLM-callable (see
 ``_AGENT_EXCLUDED_ACTIONS``) -- reached only from the admin BFF's deterministic
@@ -118,6 +121,18 @@ def _enqueue_retention_sweep(
     ``insert_job`` runs on the handler's own cursor, which ``PostgresDriver.execute``
     commits around (ADR-0140) -- every statement touching ``job`` still lives in
     ``job_queue.py``; this handler supplies a cursor, never SQL.
+
+    **It audits the CLICK, matching its sibling ``enqueue_corpus_reingest``**
+    (S04 fix wave 1, finding 4). Pre-S04 the sweep's own ``retention_sweep`` row
+    was the whole record, which was complete because the DELETE happened inside
+    the request. It no longer does: with the background worker down, a
+    supervisor's click leaves only a ``job`` row and nothing in
+    ``workbench_audit_log``. Two rows per completed sweep
+    (``retention_sweep_queued`` then ``retention_sweep``) is the honest cost --
+    ``get_retention_status`` reads the ``retention_sweep`` action only, so the
+    panel's "last run" is unaffected. A SCHEDULED sweep writes no queued row at
+    all: ``tick_schedules`` never calls this handler, so the cadence is as
+    unattended as it was.
     """
     del params
     from hermes_runtime.job_queue import RETENTION_JOB_TYPE, insert_job
@@ -128,6 +143,15 @@ def _enqueue_retention_sweep(
             {"profile": context.profile, "actor_account_id": context.user_id},
             job_type=RETENTION_JOB_TYPE,
         )
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=context.user_id,
+        action="retention_sweep_queued",
+        target_type="customer_memory_slot",
+        target_id=job_id,
+        details={"job_id": job_id},
+    )
     return {"job_id": job_id, "status": "queued"}
 
 
