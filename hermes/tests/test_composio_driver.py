@@ -388,24 +388,24 @@ def test_qbo_list_customer_invoices_drops_other_customers() -> None:
 # --- square ------------------------------------------------------------------
 
 
-def test_square_send_payment_link_maps_to_contract_shape() -> None:
-    raw = {"payment_link": {"url": "https://pay.toee.example/square/INV-9001", "amount": 1250.0}}
-    client = FakeComposioClient(raw)
-    out = _run(
-        client,
-        "toee_square_payment_link",
-        "send_payment_link",
-        {"invoice_number": "INV-9001"},
-        _ctx(identity=_verified(), conversation_id=CONVERSATION_ID),
-    )
-    assert out == {
-        "payment_link_url": "https://pay.toee.example/square/INV-9001",
-        "conversation_id": CONVERSATION_ID,
-        "amount": 1250.0,
-    }
-    _assert_one_to_one(
-        client, "toee_square_payment_link", "send_payment_link", "ca_square"
-    )
+def test_square_send_payment_link_fails_closed_on_composio() -> None:
+    # 0.0.4 S12: the live surface probe found NO create-payment-link action in
+    # Composio's Square toolkit -- not at the pinned version, not at `latest`, and
+    # not anywhere in a catalog-wide search. The mapped SQUARE_CREATE_PAYMENT_LINK
+    # 404s, so the Composio path is gated off and the customer gets a governed
+    # unavailable result. Never a mock link: texting a customer a fabricated
+    # payment URL is the worst failure available here (ADR-0020, FR-21).
+    client = FakeComposioClient({})
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(
+            client,
+            "toee_square_payment_link",
+            "send_payment_link",
+            {"invoice_number": "INV-9001"},
+            _ctx(identity=_verified(), conversation_id=CONVERSATION_ID),
+        )
+    assert excinfo.value.error_class == "configuration_missing"
+    assert client.calls == []  # never reached the backend
 
 
 # --- governed failure + unsupported tool -------------------------------------
@@ -474,7 +474,12 @@ def test_action_mapping_covers_exactly_the_layer1_actions() -> None:
         for action in TOOL_CATALOG[tool]
     }
     assert set(ACTION_MAPPING) == expected
-    # Slugs are non-empty placeholders (exact values verified at staging smoke).
-    for spec in ACTION_MAPPING.values():
+    # Slugs are verified live by `python -m hermes_runtime.composio_smoke` phase 2;
+    # here we only hold the structural invariant. An entry is EITHER callable (both
+    # mappers) or deliberately gated off (an `unavailable` error) -- never neither,
+    # which would be a spec that raises TypeError mid-turn.
+    for key, spec in ACTION_MAPPING.items():
         assert spec.action_slug
         assert spec.app in {"shopify", "qbo", "square"}
+        callable_spec = spec.request_mapper is not None and spec.response_mapper is not None
+        assert callable_spec != (spec.unavailable is not None), key

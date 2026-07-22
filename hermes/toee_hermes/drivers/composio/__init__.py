@@ -9,18 +9,26 @@ from .driver import (
     ACTION_MAPPING,
     COMPOSIO_LAYER1_TOOLS,
     CONNECTED_ACCOUNT_ENV,
+    TOOLKIT_SLUG,
+    TOOLKIT_VERSION_ENV,
     ActionSpec,
     ComposioClient,
     ComposioDriver,
     build_composio_driver,
+    deadline_seconds,
+    pinned_toolkit_versions,
 )
 
 __all__ = [
     "ACTION_MAPPING",
     "COMPOSIO_LAYER1_TOOLS",
     "CONNECTED_ACCOUNT_ENV",
+    "TOOLKIT_SLUG",
+    "TOOLKIT_VERSION_ENV",
     "ActionSpec",
     "ComposioClient",
     "ComposioDriver",
     "build_composio_driver",
+    "deadline_seconds",
+    "pinned_toolkit_versions",
 ]

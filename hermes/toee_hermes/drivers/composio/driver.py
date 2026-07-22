@@ -47,6 +47,29 @@ CONNECTED_ACCOUNT_ENV: dict[str, str] = {
     SQUARE: "COMPOSIO_SQUARE_CONNECTED_ACCOUNT_ID",
 }
 
+# Toee toolkit key -> Composio's own toolkit slug. The two differ for QuickBooks
+# ("qbo" here, "quickbooks" upstream), and the version pin is keyed by the VENDOR
+# slug on both sides: the SDK resolves a call's version with
+# ``get_toolkit_version(tool.toolkit.slug, ...)`` and reads
+# ``COMPOSIO_TOOLKIT_VERSION_<SLUG>`` from the environment. So
+# COMPOSIO_TOOLKIT_VERSION_QBO would be silently ignored — hence this map rather
+# than upper-casing our own key (0.0.4 S12).
+TOOLKIT_SLUG: dict[str, str] = {SHOPIFY: "shopify", QBO: "quickbooks", SQUARE: "square"}
+
+TOOLKIT_VERSION_ENV: dict[str, str] = {
+    toolkit: f"COMPOSIO_TOOLKIT_VERSION_{slug.upper()}"
+    for toolkit, slug in TOOLKIT_SLUG.items()
+}
+
+# NFR-8: one backend call must be bounded by the *turn's* deadline, not the
+# vendor's. The SDK ships a 60s read timeout and retries on top, so an unbounded
+# Composio call can outlive the whole SMS turn it was serving. Overridable via
+# ``COMPOSIO_DEADLINE_MS``; on expiry the SDK raises, the driver converts it to a
+# governed ``composio_api_error``, and dispatch renders the Tool Unavailable
+# Response — never a fallback to mock.
+DEADLINE_ENV = "COMPOSIO_DEADLINE_MS"
+DEFAULT_DEADLINE_MS = 8000.0
+
 
 @runtime_checkable
 class ComposioClient(Protocol):
@@ -80,9 +103,15 @@ class ActionSpec:
     """One-to-one mapping for a v1 ``(tool, action)`` (ADR-0130)."""
 
     app: str  # toolkit key -> connected account
-    action_slug: str  # Composio toolkit action; exact slugs verified at staging smoke
-    request_mapper: RequestMapper
-    response_mapper: ResponseMapper
+    action_slug: str  # Composio toolkit action; slugs verified live (0.0.4 S12)
+    request_mapper: RequestMapper | None = None
+    response_mapper: ResponseMapper | None = None
+    # Set when the live toolkit cannot serve this action. The driver raises it
+    # INSTEAD of calling the backend, so the tool fails closed with a message
+    # naming the reason rather than a vendor 404 (or worse, a mock payload) —
+    # FR-21. The mappers are then dead and left unset; ``hermes_runtime.
+    # composio_smoke`` reads this field to know which slugs not to probe.
+    unavailable: ToolDriverError | None = None
 
 
 # --- shared mapping helpers --------------------------------------------------
@@ -361,45 +390,29 @@ _AR_SUMMARY_UNAVAILABLE = ToolDriverError(
     "until a per-customer QBO report is wired.",
 )
 
-
-def _qbo_ar_summary_request(
-    _params: dict[str, Any], _ctx: "ToolExecutionContext"
-) -> dict[str, Any]:
-    raise _AR_SUMMARY_UNAVAILABLE
-
-
-def _qbo_ar_summary_response(raw: dict[str, Any], ctx: "ToolExecutionContext") -> Any:
-    raise _AR_SUMMARY_UNAVAILABLE  # unreachable (request fails closed); defense in depth
-
-
-# --- square mappers ----------------------------------------------------------
-
-
-def _square_payment_link_request(
-    params: dict[str, Any], _ctx: "ToolExecutionContext"
-) -> dict[str, Any]:
-    return {
-        "invoice_number": _read(params, "invoice_number", "invoiceNumber"),
-        "amount": params.get("amount"),
-    }
-
-
-def _square_payment_link_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
-    link = raw.get("payment_link", raw)
-    # The thread the link is delivered on is a Toee SMS-channel concept, not a Square
-    # field: take it from the bound turn context (ADR-0022/0107), falling back to a
-    # model-supplied param for the unbound path.
-    conversation_id = getattr(context, "conversation_id", None)
-    return {
-        "payment_link_url": link.get("url"),
-        "conversation_id": conversation_id,
-        "amount": link.get("amount"),
-    }
+# Fail-closed: Composio's Square toolkit has NO create-payment-link action. Not a
+# version-pin gap — the 0.0.4 S12 surface probe found only SQUARE_RETRIEVE_PAYMENT_LINK
+# at the pinned version, and a catalog-wide search for a Square create action at
+# `latest` returns nothing either (other toolkits have one; Square does not). The
+# previously mapped SQUARE_CREATE_PAYMENT_LINK 404s.
+#
+# ponytail: the ceiling is "Composio cannot create a Square payment link". Upgrade
+# paths, in order of laziness: a Composio custom tool wrapping
+# POST /v2/online-checkout/payment-links, or a direct Square REST driver as a
+# per-tool overlay beside Composio — the same shape FR-20 uses for EasyRoutes.
+# Until then this fails closed: a customer must never be sent a fabricated or
+# mock payment link (ADR-0020, FR-21).
+_SQUARE_PAYMENT_LINK_UNAVAILABLE = ToolDriverError(
+    "configuration_missing",
+    "Square payment links are unavailable on the live backend: the Composio Square "
+    "toolkit exposes no create-payment-link action.",
+)
 
 
 # --- one-to-one mapping table (ADR-0130) -------------------------------------
 #
-# Composio toolkit action slugs verified against live Shopify toolkit (staging smoke).
+# Every slug below resolves against the live toolkit at its pinned version —
+# verified by `python -m hermes_runtime.composio_smoke` phase 2 (0.0.4 S12).
 ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ("toee_shopify_read", "get_order"): ActionSpec(
         SHOPIFY,
@@ -434,14 +447,12 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ("toee_qbo_read", "get_ar_summary"): ActionSpec(
         QBO,
         "QUICKBOOKS_GET_AGED_RECEIVABLES_REPORT",
-        _qbo_ar_summary_request,
-        _qbo_ar_summary_response,
+        unavailable=_AR_SUMMARY_UNAVAILABLE,
     ),
     ("toee_square_payment_link", "send_payment_link"): ActionSpec(
         SQUARE,
         "SQUARE_CREATE_PAYMENT_LINK",
-        _square_payment_link_request,
-        _square_payment_link_response,
+        unavailable=_SQUARE_PAYMENT_LINK_UNAVAILABLE,
     ),
 }
 
@@ -472,6 +483,12 @@ class ComposioDriver:
                 "configuration_missing",
                 f"No Composio Layer 1 mapping for '{request.tool}.{request.action}'.",
             )
+
+        if spec.unavailable is not None:
+            # The live toolkit cannot serve this action; never reach the backend and
+            # never fall through to a mock (FR-21). Checked before the connected
+            # account so the message names the real reason, not a missing account.
+            raise spec.unavailable
 
         connected_account_id = self._connected_accounts.get(spec.app)
         if not connected_account_id:
@@ -508,7 +525,8 @@ def build_composio_driver() -> ComposioDriver:
     This is the ONLY place that imports the optional ``composio`` SDK, lazily, so
     ``import toee_hermes`` works without the SDK installed. A missing
     ``COMPOSIO_API_KEY`` (or absent SDK) is a governed ``configuration_missing``
-    failure rather than a raw crash (ADR-0136).
+    failure rather than a raw crash (ADR-0136) — and, since 0.0.4 S12, so is a
+    missing toolkit-version pin for any configured toolkit.
     """
     api_key = os.environ.get("COMPOSIO_API_KEY")
     if not api_key:
@@ -519,32 +537,62 @@ def build_composio_driver() -> ComposioDriver:
 
     user_id = os.environ.get("COMPOSIO_USER_ID")
     connected_accounts = {
-        toolkit: os.environ.get(env_var)
+        toolkit: value
         for toolkit, env_var in CONNECTED_ACCOUNT_ENV.items()
+        if (value := os.environ.get(env_var))
     }
-    client = _build_sdk_client(api_key)
+    client = _build_sdk_client(api_key, pinned_toolkit_versions(connected_accounts))
     return ComposioDriver(
         client,
         user_id=user_id,
-        connected_accounts={k: v for k, v in connected_accounts.items() if v},
+        connected_accounts=connected_accounts,
     )
 
 
-def _toolkit_versions_from_env() -> dict[str, str]:
-    """Read ``COMPOSIO_TOOLKIT_VERSION_<TOOLKIT>`` env vars (staging-smoke verified)."""
-    prefix = "COMPOSIO_TOOLKIT_VERSION_"
-    return {
-        key[len(prefix) :].lower(): value
-        for key, value in os.environ.items()
-        if key.startswith(prefix) and value
-    }
+def pinned_toolkit_versions(connected_accounts: dict[str, str]) -> dict[str, str]:
+    """Version pin per *configured* toolkit, keyed by Composio's toolkit slug.
+
+    Fails closed on a missing pin (0.0.4 S12). Left unpinned, the SDK resolves the
+    toolkit to ``"latest"`` and then raises ``ToolVersionRequiredError`` from inside
+    ``tools.execute`` — a governed failure, but one that arrives on a customer's
+    turn and names neither the toolkit nor the env var. Raising here moves it to
+    process boot, where the operator is the one reading the message.
+    """
+    versions: dict[str, str] = {}
+    missing: list[str] = []
+    for toolkit in connected_accounts:
+        value = (os.environ.get(TOOLKIT_VERSION_ENV[toolkit]) or "").strip()
+        if not value or value == "latest":
+            missing.append(TOOLKIT_VERSION_ENV[toolkit])
+        else:
+            versions[TOOLKIT_SLUG[toolkit]] = value
+    if missing:
+        raise ToolDriverError(
+            "configuration_missing",
+            "Composio toolkit version pin missing or 'latest': "
+            f"{', '.join(sorted(missing))}. Pin each configured toolkit to an "
+            "exact version from the Composio dashboard.",
+        )
+    return versions
 
 
-def _build_sdk_client(api_key: str) -> ComposioClient:
+def deadline_seconds() -> float:
+    """Per-call backend deadline in seconds (``COMPOSIO_DEADLINE_MS``, NFR-8)."""
+    raw = os.environ.get(DEADLINE_ENV, "").strip()
+    try:
+        return (float(raw) if raw else DEFAULT_DEADLINE_MS) / 1000
+    except ValueError:
+        return DEFAULT_DEADLINE_MS / 1000
+
+
+def _build_sdk_client(api_key: str, toolkit_versions: dict[str, str]) -> ComposioClient:
     """Lazily import the Composio SDK and wrap it behind :class:`ComposioClient`.
 
-    Kept out of module import so ``toee_hermes`` stays dependency-free (ADR-0137);
-    the exact SDK call surface and response envelope are verified at staging smoke.
+    Kept out of module import so ``toee_hermes`` stays dependency-free (ADR-0137).
+    ``max_retries=0`` is deliberate: the SDK's default retries multiply the
+    timeout, so retries would make ``deadline_seconds()`` a per-attempt bound
+    instead of a per-call one (NFR-8). A transient 5xx therefore fails closed on
+    this turn rather than eating the turn's whole budget.
     """
     try:
         from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
@@ -554,21 +602,34 @@ def _build_sdk_client(api_key: str) -> ComposioClient:
             "The composio SDK is not installed in this environment.",
         ) from err
 
-    kwargs: dict[str, Any] = {"api_key": api_key}
-    toolkit_versions = _toolkit_versions_from_env()
-    if toolkit_versions:
-        kwargs["toolkit_versions"] = toolkit_versions
-    return _ComposioSdkClient(Composio(**kwargs))
+    return _ComposioSdkClient(
+        Composio(
+            api_key=api_key,
+            toolkit_versions=toolkit_versions,
+            timeout=deadline_seconds(),
+            max_retries=0,
+        )
+    )
 
 
 class _ComposioSdkClient:
     """Thin adapter from the Composio SDK to the :class:`ComposioClient` Protocol.
 
-    The exact SDK method, argument names, and response envelope
-    (``successful``/``data``/``error``) are confirmed during staging smoke; any
-    failure is translated to a governed :class:`ToolDriverError` so no raw vendor
-    or Composio error leaks (ADR-0136). Untested here by design: it requires the
-    SDK + network, which is a documented MANUAL smoke step, not a unit test.
+    Pinned against ``composio`` 0.15.0 (the hermes-runtime dependency), 0.0.4 S12:
+
+    - call surface — ``Tools.execute(slug, arguments, *, connected_account_id=None,
+      user_id=None, version=None, ...)``. ``slug`` and ``arguments`` are positional;
+      everything else is keyword-only.
+    - envelope — ``ToolExecutionResponse``, a plain ``dict`` with exactly
+      ``{"data": dict, "error": str | None, "successful": bool}``. The SDK
+      ``model_dump()``s the HTTP response before returning, so it is never a model.
+    - version — resolved per call from the SDK-level ``toolkit_versions`` map
+      (see :func:`pinned_toolkit_versions`); an unpinned toolkit raises
+      ``ToolVersionRequiredError`` here rather than silently drifting to latest.
+
+    Every failure is translated to a governed :class:`ToolDriverError` so no raw
+    vendor or Composio error leaks (ADR-0136). Not unit-tested: it needs the SDK
+    plus network, which is what ``hermes_runtime.composio_smoke`` covers.
     """
 
     def __init__(self, sdk: Any) -> None:
@@ -582,20 +643,23 @@ class _ComposioSdkClient:
         connected_account_id: str | None,
         user_id: str | None,
     ) -> dict[str, Any]:
-        # ponytail: SDK surface verified at staging smoke; upgrade path is to pin the
-        # exact Composio v3 method + envelope once confirmed against live toolkits.
         result = self._sdk.tools.execute(
             action,
-            user_id=user_id,
+            params,
             connected_account_id=connected_account_id,
-            arguments=params,
+            user_id=user_id,
         )
-        if isinstance(result, dict):
-            if result.get("successful") is False:
-                raise ToolDriverError(
-                    "composio_api_error",
-                    f"Composio reported failure for '{action}': {result.get('error')}",
-                )
-            data = result.get("data")
-            return data if isinstance(data, dict) else result
-        return result  # type: ignore[return-value]
+        if not result.get("successful", False):
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio reported failure for '{action}': {result.get('error')}",
+            )
+        data = result.get("data")
+        if not isinstance(data, dict):
+            # Fail closed rather than hand a mapper an envelope it would silently
+            # shape into an all-``None`` "result" (ADR-0020: never fabricate data).
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio returned no data object for '{action}'.",
+            )
+        return data
