@@ -20,7 +20,7 @@ restart. The store is Postgres, the same DB as Workbench Tier B (ADR-0140);
 that build the app directly.
 
 Since 0.0.4 S02 the fast-ack path enqueues into the durable Postgres queue
-(:class:`~hermes_runtime.job_queue.PostgresJobQueue`, ADR-0153) and the separate
+(:class:`~hermes_runtime.job_queue.PostgresJobQueue`, ADR-0155) and the separate
 ``hermes_runtime.turn_worker`` process runs the turn -- the in-process
 ``LocalDispatchingJobQueue`` daemon thread is gone. :func:`resolve_turn_collaborators`
 is the shared half both processes build.
@@ -237,7 +237,7 @@ def build_gateway_app() -> FastAPI:
     _require_datastore_backend()
     collaborators = resolve_turn_collaborators()
 
-    # 0.0.4 S02 (FR-10, ADR-0153): fast-ack writes one durable `job` row instead of
+    # 0.0.4 S02 (FR-10, ADR-0155): fast-ack writes one durable `job` row instead of
     # spawning a daemon thread, and the turn-worker process claims it. The write
     # happens inside PostgresGatewayStore.persist_accepted_inbound's transaction --
     # there is no queue seam to wire here, because a seam here would be a second

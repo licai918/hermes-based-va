@@ -1,4 +1,4 @@
-"""Durable Postgres job queue (0.0.4 S01, FR-7/FR-8, ADR-0153).
+"""Durable Postgres job queue (0.0.4 S01, FR-7/FR-8, ADR-0155).
 
 Replaces ADR-0105's never-built Cloud Tasks target with the database that is
 already the system of record (ADR-0140/0142): one ``job`` table, claimed with
@@ -409,7 +409,7 @@ class PostgresJobQueue:
         the id and reconstruct one.
 
         ponytail: one row per call, polled by the worker loop -- no
-        LISTEN/NOTIFY. See ADR-0153: the poll interval is the latency knob and
+        LISTEN/NOTIFY. See ADR-0155: the poll interval is the latency knob and
         NOTIFY is the named upgrade path if S02's NFR-2 measurement demands it.
         """
         # `if types else None` would turn an empty allowlist into "any type" --

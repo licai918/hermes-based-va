@@ -1,7 +1,7 @@
 """0.0.4 S01 (FR-7/FR-8): the durable Postgres job queue core.
 
 Live-Postgres tests for the claim/retry/dead-letter/lease semantics that make
-async work survive process death (ADR-0153). Skip-if-no-DB via the shared
+async work survive process death (ADR-0155). Skip-if-no-DB via the shared
 ``datastore`` fixture (a migrated throwaway schema), so these never touch dev
 data (ADR-0142 local-first).
 

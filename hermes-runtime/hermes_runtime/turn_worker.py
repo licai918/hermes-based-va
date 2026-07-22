@@ -1,6 +1,6 @@
 """Turn worker: the durable consumer of inbound agent-turn jobs (0.0.4 S02).
 
-FR-9/FR-10, ADR-0153. The gateway's fast-ack path used to hand the turn to a
+FR-9/FR-10, ADR-0155. The gateway's fast-ack path used to hand the turn to a
 daemon thread inside its own process (``LocalDispatchingJobQueue``, deleted with
 this slice): a crash lost the customer's message with no record it ever existed.
 Now the webhook writes one ``job`` row and *this* process claims it.
@@ -51,11 +51,11 @@ from .job_queue import (
 
 logger = logging.getLogger(__name__)
 
-# ADR-0153 §5: the poll interval IS the claim-latency knob (NFR-2), because the
+# ADR-0155 §5: the poll interval IS the claim-latency knob (NFR-2), because the
 # enqueue-to-claim gap is ~uniform(0, interval) -> p95 ~= 0.95 * interval.
 #
 # S01 named 1 s; measured, that is +981 ms p95 and misses NFR-2's < 500 ms budget,
-# so this took ADR-0153 §5's named step (1) -- shorten the constant. Measured on
+# so this took ADR-0155 §5's named step (1) -- shorten the constant. Measured on
 # the docker-compose Postgres: 1.0 s -> +981 ms p95, 0.5 s -> +495 ms (no margin),
 # 0.25 s -> +263 ms. Step (2), LISTEN/NOTIFY with the poll kept as the correctness
 # floor, is only worth it if the budget ever drops below ~100 ms.

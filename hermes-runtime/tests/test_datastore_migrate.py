@@ -69,6 +69,34 @@ def test_discover_migrations_is_ordered_and_nonempty() -> None:
     assert versions[0] == "0001_initial_schema"
 
 
+def test_migration_numeric_prefixes_are_unique() -> None:
+    """Two migrations may never share a numeric prefix.
+
+    The ledger keys on the full file stem, so a duplicate prefix does NOT break
+    the runner -- both files apply, each gets its own ``schema_migrations`` row.
+    That is exactly why it slips through: the failure is silent. It has now
+    happened twice, both times when two branches numbered concurrently and git
+    merged them without a conflict (the filenames differ after the prefix, so
+    there is nothing for git to flag): 0008 (agent_experience vs the first draft
+    of inbound_event_claim) and 0011 (job_queue vs inbound_event_claim). Each
+    cost a renumber after the fact.
+
+    The ordering assertion above passes with duplicates present, so this is the
+    guard that actually catches it -- at PR time, with no database required.
+    """
+    versions = [version for version, _ in discover_migrations()]
+    by_prefix: dict[str, list[str]] = {}
+    for version in versions:
+        by_prefix.setdefault(version.split("_", 1)[0], []).append(version)
+    duplicates = {
+        prefix: names for prefix, names in by_prefix.items() if len(names) > 1
+    }
+    assert not duplicates, (
+        "migrations must not share a numeric prefix; renumber the newer one to "
+        f"the next free number and make its DDL idempotent: {duplicates}"
+    )
+
+
 def test_initial_migration_declares_every_system_of_record_table() -> None:
     """No-DB CI guard for the Slice 32 acceptance criterion: the first migration
     must declare every system-of-record table. The live-DB tests below skip when

@@ -271,7 +271,8 @@ def _last_ingest_job(conn) -> Any:
     Unlike the corpus counts above this IS a business-database read -- the ``job``
     table lives there -- so it uses the handler's own ``conn``. ``None`` when no
     re-ingest has ever been queued, and ``None`` (not an error) on a database that
-    predates migration 0011, so an un-migrated deployment still renders the panel.
+    predates the job-queue migration (0014), so an un-migrated deployment still
+    renders the panel.
     """
     # Local import: job_queue reaches back into datastore.handlers._common for
     # new_id, so a module-level import here would be a cycle.

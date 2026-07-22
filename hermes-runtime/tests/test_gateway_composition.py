@@ -102,7 +102,7 @@ def test_build_gateway_app_wires_the_durable_path_without_touching_postgres(
 
     build_gateway_app()
 
-    # 0.0.4 S02 (FR-10, ADR-0153): the fast-ack path writes one durable `job` row
+    # 0.0.4 S02 (FR-10, ADR-0155): the fast-ack path writes one durable `job` row
     # and the separate turn-worker process runs the turn. No in-process dispatcher
     # remains -- and no `queue` seam either: the enqueue happens inside the store's
     # persist transaction, because a seam here would be a second commit boundary a
