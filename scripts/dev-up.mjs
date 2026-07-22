@@ -142,13 +142,33 @@ function resolveDevEnv() {
   // Exported into compose's interpolation environment. Values already present in
   // hermes-runtime/.env win over the dev defaults so nobody's real secret is
   // clobbered by this script (compose `environment:` beats `env_file:`).
+  const textline = resolveTextlineSecret(rt, wb);
+  log(
+    `TEXTLINE_WEBHOOK_SECRET resolved from ${textline.source}` +
+      (textline.source === "hermes-runtime/.env"
+        ? ""
+        : " -- set it in hermes-runtime/.env to the real provider's secret before pointing ngrok/Textline at this gateway, or every inbound is a silent 401."),
+  );
+
   return {
     HERMES_COPILOT_API_TOKEN: wb.HERMES_COPILOT_API_TOKEN,
     HERMES_ADMIN_API_TOKEN: wb.HERMES_ADMIN_API_TOKEN,
-    TEXTLINE_WEBHOOK_SECRET: wb.TEXTLINE_WEBHOOK_SECRET || rt.TEXTLINE_WEBHOOK_SECRET || "dev-webhook-secret",
+    TEXTLINE_WEBHOOK_SECRET: textline.value,
     INTERNAL_JOB_SECRET: rt.INTERNAL_JOB_SECRET || "dev-internal-job-secret",
     REPLY_SENDER: rt.REPLY_SENDER || "simulated",
   };
+}
+
+// TEXTLINE_WEBHOOK_SECRET must match whatever an EXTERNAL provider (Textline) signs
+// with, so hermes-runtime/.env -- the real-credentials file -- wins over the
+// workbench's auto-written local-dev default in apps/workbench/.env.local. Same
+// precedence as INTERNAL_JOB_SECRET/REPLY_SENDER above (0.0.4 S10 fix wave 1,
+// finding 2: the old wb-first order let a real hermes-runtime/.env secret be
+// silently shadowed by the dev default, so every real inbound 401'd).
+function resolveTextlineSecret(rt, wb) {
+  if (rt.TEXTLINE_WEBHOOK_SECRET) return { value: rt.TEXTLINE_WEBHOOK_SECRET, source: "hermes-runtime/.env" };
+  if (wb.TEXTLINE_WEBHOOK_SECRET) return { value: wb.TEXTLINE_WEBHOOK_SECRET, source: "apps/workbench/.env.local" };
+  return { value: "dev-webhook-secret", source: "dev default" };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,29 +202,91 @@ async function waitForHttp(label, url, timeoutMs = 120_000) {
   }
 }
 
-/** The workers serve no HTTP, so their readiness signal is "running, not restarting". */
-function assertWorkersRunning() {
-  const res = spawnSync("docker", ["compose", "ps", "--format", "{{.Service}}\t{{.State}}"], {
-    cwd: ROOT,
-    encoding: "utf8",
-  });
-  const states = Object.fromEntries(
-    res.stdout
+/** `docker compose ps --format {{.Service}}\t{{.State}}` -> { service: state }. */
+function parseComposeStates(stdout) {
+  return Object.fromEntries(
+    stdout
       .trim()
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => line.split("\t")),
   );
-  for (const worker of ["turn-worker", "background-worker"]) {
-    if (states[worker] !== "running") {
+}
+
+// Both workers log this line (name differs) the moment main() finishes the slow
+// collaborator setup (Postgres connect, embedder warm) and enters its poll loop --
+// the first point at which it can actually claim a job. See turn_worker.main() /
+// background_worker.main(): "Turn worker %s polling for..." / "Background worker
+// %s polling for...".
+function hasStartedPolling(logsText) {
+  return /polling for/.test(logsText);
+}
+
+/**
+ * The workers serve no HTTP, so "running" alone is not readiness: `restart:
+ * unless-stopped` with no healthcheck means a worker crash-looping on a bad DSN or
+ * missing credential is "running" most of the time too, and a worker can be
+ * "running" while still inside resolve_turn_collaborators() and not yet consuming
+ * anything. This checks three things instead of one: the probe itself succeeded,
+ * the container isn't crash-looping (RestartCount > 0), and main() actually
+ * reached its poll loop (0.0.4 S10 fix wave 1, finding 1).
+ */
+async function waitForWorkersReady(timeoutMs = 60_000) {
+  const workers = ["turn-worker", "background-worker"];
+  const ready = new Set();
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const ps = spawnSync("docker", ["compose", "ps", "--format", "{{.Service}}\t{{.State}}"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    // Finding 4: a probe failure used to surface as "absent, not running", which
+    // points the reader at the worker when the problem is `docker compose ps`
+    // itself (e.g. Docker Desktop restarting mid-command).
+    if (ps.status !== 0) {
       die(
-        `${worker} is "${states[worker] ?? "absent"}", not running.\n` +
-          `        Both workers fail closed without TOOL_BACKEND=datastore -- read the boot error:\n` +
-          `        docker compose logs ${worker}`,
+        `\`docker compose ps\` failed: ${(ps.stderr || ps.error?.message || "").trim().split("\n")[0]}\n` +
+          "        That is a probe failure, not a signal about turn-worker/background-worker -- re-run once docker responds.",
       );
     }
+    const states = parseComposeStates(ps.stdout);
+    for (const worker of workers) {
+      if (ready.has(worker)) continue;
+      const state = states[worker];
+      if (state !== "running") {
+        die(
+          `${worker} is "${state ?? "absent"}", not running.\n` +
+            `        Both workers fail closed without TOOL_BACKEND=datastore -- read the boot error:\n` +
+            `        docker compose logs ${worker}`,
+        );
+      }
+      const restarts = spawnSync("docker", ["inspect", "-f", "{{.RestartCount}}", `toee-va-${worker}`], {
+        encoding: "utf8",
+      });
+      const restartCount = restarts.status === 0 ? Number.parseInt(restarts.stdout.trim(), 10) : 0;
+      if (restartCount > 0) {
+        die(
+          `${worker} has restarted ${restartCount} time(s) -- it is crash-looping (bad DSN, missing credential, etc.).\n` +
+            `        docker compose logs ${worker}`,
+        );
+      }
+      const logs = spawnSync("docker", ["compose", "logs", worker], { cwd: ROOT, encoding: "utf8" });
+      if (logs.status === 0 && hasStartedPolling(logs.stdout)) ready.add(worker);
+    }
+    if (ready.size === workers.length) {
+      log("turn-worker + background-worker running and polling");
+      return;
+    }
+    if (Date.now() > deadline) {
+      const stuck = workers.filter((w) => !ready.has(w));
+      die(
+        `${stuck.join(", ")} still "running" but never logged its startup line within ${timeoutMs / 1000}s.\n` +
+          `        It may still be inside Postgres connect / embedder warm-up -- check:\n` +
+          `        docker compose logs ${stuck[0]}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 1000));
   }
-  log("turn-worker + background-worker running");
 }
 
 // The one runnable check: `node scripts/dev-up.mjs --selfcheck`. Env parsing is the
@@ -222,6 +304,42 @@ function selfcheck() {
   assert.deepStrictEqual(got, want, `readEnvFile mismatch: ${JSON.stringify(got)}`);
   assert.deepStrictEqual(readEnvFile(join(tmp, "does-not-exist")), {}, "missing file must parse to {}");
   rmSync(tmp);
+
+  // Finding 2: hermes-runtime/.env (the real-credentials file) must win for
+  // TEXTLINE_WEBHOOK_SECRET, not the workbench's auto-written dev default.
+  assert.deepStrictEqual(
+    resolveTextlineSecret({ TEXTLINE_WEBHOOK_SECRET: "real-provider-secret" }, { TEXTLINE_WEBHOOK_SECRET: "dev-webhook-secret" }),
+    { value: "real-provider-secret", source: "hermes-runtime/.env" },
+    "hermes-runtime/.env must win over the workbench dev default",
+  );
+  assert.deepStrictEqual(
+    resolveTextlineSecret({}, { TEXTLINE_WEBHOOK_SECRET: "dev-webhook-secret" }),
+    { value: "dev-webhook-secret", source: "apps/workbench/.env.local" },
+    "falls back to the workbench file when hermes-runtime/.env has nothing",
+  );
+  assert.deepStrictEqual(
+    resolveTextlineSecret({}, {}),
+    { value: "dev-webhook-secret", source: "dev default" },
+    "falls back to the dev default when neither file has it",
+  );
+
+  // Finding 1: readiness parsing the live worker-readiness loop depends on.
+  assert.deepStrictEqual(
+    parseComposeStates("turn-worker\trunning\nbackground-worker\trestarting\n"),
+    { "turn-worker": "running", "background-worker": "restarting" },
+    "parseComposeStates mismatch",
+  );
+  assert.deepStrictEqual(parseComposeStates(""), {}, "parseComposeStates empty -> {}");
+  assert.ok(
+    hasStartedPolling("2026-01-01 INFO hermes_runtime.turn_worker Turn worker w1 polling for agent_turn jobs every 2.0s"),
+    "must recognize turn_worker's startup line",
+  );
+  assert.ok(
+    hasStartedPolling("2026-01-01 INFO hermes_runtime.background_worker Background worker w1 polling for l6_review, retention, ingest jobs every 2.0s (schedules: retention/86400s)"),
+    "must recognize background_worker's startup line",
+  );
+  assert.ok(!hasStartedPolling("2026-01-01 INFO hermes_runtime.turn_worker starting up"), "must not false-positive on unrelated log lines");
+
   console.log("[dev-up] selfcheck ok");
 }
 
@@ -250,7 +368,7 @@ async function main() {
     waitForHttp("dispatch-admin", `http://127.0.0.1:${PORTS.admin}/healthz`),
     waitForHttp("gateway", `http://127.0.0.1:${PORTS.gateway}/healthz`),
   ]);
-  assertWorkersRunning();
+  await waitForWorkersReady();
 
   if (STACK_ONLY) {
     log("stack up. --stack-only: skipping the workbench dev server.");
@@ -264,11 +382,20 @@ async function main() {
     stdio: "inherit",
     shell: process.platform === "win32", // pnpm is a .cmd shim on Windows
   });
+  // Registered BEFORE the 180s waitForHttp below (finding 7), not after: a
+  // workbench that dies at boot should fail immediately, not leave the script
+  // polling a dead port for the full timeout.
+  let workbenchReady = false;
+  child.on("exit", (code) => {
+    if (!workbenchReady) die(`workbench dev server exited (code ${code ?? "unknown"}) before it became ready. See the output above.`);
+    process.exit(code ?? 0);
+  });
   const stop = () => child.kill();
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
 
   await waitForHttp("workbench", `http://127.0.0.1:${PORTS.workbench}/login`, 180_000);
+  workbenchReady = true;
   console.log(
     [
       "",
@@ -282,7 +409,6 @@ async function main() {
       "",
     ].join("\n"),
   );
-  child.on("exit", (code) => process.exit(code ?? 0));
 }
 
 main();
