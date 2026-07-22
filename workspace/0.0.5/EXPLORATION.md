@@ -196,7 +196,169 @@ Is it about ONE customer?
 
 ---
 
-## Candidate slots 2+ — deliberately empty
+## Candidate 2 — Memory latency: make L1-L7 imperceptible (measured SLO, not hope)
+
+### Current facts (verified)
+
+- **Fast-ack already removes memory from the webhook path** (ADR-0103): the user-felt wait is
+  the async agent turn; memory reads are a slice of that turn, the LLM call dominates (seconds).
+- Per-layer read costs today: L4 exact-key SELECT, pooled since S29 (~1-5ms; pre-S29 it was
+  2-3 fresh connects/turn); L5 hybrid retrieval **p95 48.4ms** @167 chunks (S12 gate) behind an
+  **800ms driver deadline → governed found=false** (the only layer with a deadline today);
+  L6 bounded newest-20 SELECT, flag-gated; L7 (planned) in-process cache + version bump (~0ms).
+- **The pre-turn loads are SEQUENTIAL** (`openrouter.py` run_turn: merge → L4 load → L6 load →
+  render), so worst cases add up instead of overlapping.
+- S26 gave us `metric_event` counters but **no per-layer latency measurement** — today we cannot
+  SEE a memory-latency regression except as vibes.
+
+### Direction
+
+**"用户无感" becomes a numbers contract, enforced by three disciplines already precedented:**
+
+1. **Measure first (the S26 pattern):** per-layer read-latency emit (metric, duration_ms,
+   fire-and-forget, eval-neutral) + p50/p95 tiles per layer on the metrics panel. No
+   optimization before the histogram exists.
+2. **A per-turn memory budget (the L5-deadline pattern, generalized):** every pre-turn layer
+   read gets a deadline + fail-open skip (L5 already has it; L4/L6/L7 get cheap ones). Target
+   SLO sketch: total pre-turn memory reads ≤150ms p95 — memory may degrade a reply's context,
+   it may never stall the reply.
+3. **Optimize only what the histogram indicts**, in this order: (a) parallelize the 3-4
+   independent pre-turn loads (they share nothing until render); (b) batch onto one pooled
+   connection; (c) cache read-mostly shared layers with version-bump invalidation (L7 by
+   design; L6's confirmed set is a natural next). The S10 embedder-singleton and S29 pooling
+   already killed the two historical hot spots — don't re-fix them.
+
+### Draft slices
+1. **S-L1 latency instrumentation + SLO tiles** — per-layer duration emits + metrics-panel
+   p50/p95 + the written SLO. (S)
+2. **S-L2 budget enforcement** — deadlines + fail-open on the non-L5 layers; parallel pre-turn
+   loads IF the numbers say so. (S-M, gated on S-L1 evidence)
+
+### Open questions
+- SLO number: 150ms p95 for total pre-turn reads — right bar? (owner taste; cheap to move.)
+- Parallelize with threads vs restructure to async — the turn runner is sync today; a thread
+  pool for 3 reads is the ponytail answer.
+
+---
+
+## Candidate 3 — Admin memory-ops UX: one hub, one inbox, copilot-assisted triage
+
+### Current facts (verified)
+
+- Admin nav is already a **flat list of 8 single-purpose consoles** (Knowledge, Eval, Accounts,
+  Memory Audit, Agent Experience, Metrics, Retention, Dead Letter) — it grows linearly with
+  every slice, and "which console for which layer" is itself the scope-map question.
+- Which layers actually need human maintenance (the honest inventory):
+
+| Layer | Human maintenance? | Where today |
+| --- | --- | --- |
+| L1 identity | rare exceptions (mislink fixes — future) | simulator-gated link only |
+| L2/L3 records | none (append-only; retention + dead-letter replay handle hygiene) | Retention / Dead Letter consoles |
+| L4 customer memory | **exception-driven**: audit, attributed clear, rep corrections | Memory Audit console + copilot preferences panel |
+| L5 knowledge | **content in Shopify** (established); ingest/probe/gates in admin | Knowledge console |
+| L6 experience | **review queue**: Accept/Reject proposals | Agent Experience console |
+| L7 lexicon (planned) | **review queue + manual CRUD** | (Candidate 1) |
+| policy slots (outside) | eval-gated publish | Eval console |
+
+  Pattern: **admins maintain by exception and by review queue — never by routine data entry.**
+  The design goal is to make that pattern visible instead of scattered.
+
+### Direction
+
+1. **One "Memory" hub page** mirroring the L1-L7 map (the architecture diagram AS the UI): one
+   row per layer — status, live counts (pending proposals, zero-hit entries, last ingest, last
+   sweep, found-rate), one click into the existing console. New-admin learning cost collapses
+   to "the hub is the mental model"; the 8 consoles stay as-is underneath (no rebuild — the hub
+   is navigation + counts, ~1 read route reusing existing reads).
+2. **One unified review inbox**: L6 + L7 pending proposals in a single queue with a layer badge
+   per item, Accept / Edit / Reject / **Re-classify** (the anti-mis-filing action from
+   Candidate 4). L4 proposals stay in the copilot per-case panel — they belong to reps in case
+   context, not to the admin inbox. Daily workflow becomes: log in → inbox badge (N) → clear
+   it → glance at hub counts → done.
+3. **Copilot-assisted maintenance — advisory, never writing (the S27/judge posture):**
+   - **Queue triage annotations**: a background copilot pass (the S23 fork pattern — internal
+     infra, not a new LLM-callable surface) pre-reviews each pending proposal and annotates:
+     likely-duplicate-of X / conflicts-with entry Y / PII-suspect / suggested canonical form +
+     a recommend(approve|reject) with one-line reasoning. Rendered inline in the inbox; the
+     ADMIN decides. Annotations ride a governed annotation field, framework-attributed.
+   - **Natural-language manual add**: admin types "TOEE 也叫拓意" → copilot drafts the
+     structured lexicon entry → **form pre-fill, admin confirms** — the copilot never writes a
+     row directly.
+   - Explicitly NOT chosen (records the security reasoning): a supervisor chat copilot with the
+     admin-only read tools allowlisted. Those actions sit in `_AGENT_EXCLUDED_ACTIONS`
+     precisely so cross-customer reads never enter an LLM tool loop; un-excluding them for a
+     chat surface is a real prompt-injection surface for zero benefit the annotation pass
+     doesn't already deliver. Revisit only with its own ADR.
+
+### Draft slices
+1. **S-U1 Memory hub** — hub page + counts read (reuses existing admin reads). (S)
+2. **S-U2 unified inbox** — merged L6/L7 queue + re-classify action. (M, wants Candidate 1 S-A)
+3. **S-U3 copilot triage annotations + NL manual-add pre-fill** — the fork-pattern annotator +
+   form drafting. (M)
+
+### Open questions
+- Hub replaces the flat nav, or sits above it? (lean: sits above; consoles keep deep links.)
+- Inbox digest OFF-workbench (email/Slack) — deferred until a real provider exists.
+- Annotation model cost knob: annotate every proposal vs on-demand per item.
+
+---
+
+## Candidate 4 — Systemic anti-gap / anti-overlap: from documented boundaries to enforced ones
+
+### The gap in the current answer
+
+Candidate 1 records the routing tree and boundary pins **as documentation + process**. The
+owner's requirement is *system-level* prevention: mis-filing and drift should be caught by
+machines and routines, not by everyone remembering the map. Four enforcement tiers, cheapest
+first — tiers 1 is built, 2-4 are the work:
+
+**Tier 1 — structural exclusivity (already shipped):** one governed write tool per layer;
+per-layer unique keys/tables; per-layer injection fences; single audit log with framework
+attribution. A fact physically cannot enter two layers through the write paths.
+
+**Tier 2 — tripwire tests (cheap, new):**
+- A `LAYER_OF_ACTION` map in code (every memory-writing catalog action → exactly one layer
+  table) + a completeness test: adding a write action without declaring its layer fails CI.
+- An injection-composition test: the assembled system message carries at most one fence per
+  layer and no unfenced memory content.
+- The boundary matrix rows that are testable become tests (L5 corpus no-PII already has the
+  S07 boundary-check report; L7 write scan rides the S22 scanner; L4 context-only binding
+  already has the removal tripwire). Rows that are doc-only get marked as such — honesty over
+  theater.
+
+**Tier 3 — write-time advisory checks (rides existing machinery):**
+- **Shape re-router**: `propose_experience` runs a cheap "is this lexicon-shaped?" heuristic
+  (looks like `A = B` / `A means B`); if so, the proposal is annotated "consider re-filing to
+  L7" (or auto-rerouted — owner taste). Deterministic heuristic, human decides — no prompt
+  drift dependency.
+- **Cross-layer dedup at propose time**: the handler checks existing L7 surfaces / L6 notes for
+  the same surface form and annotates duplicates for the queue.
+
+**Tier 4 — scheduled sweeps + queue actions (the S28 pattern):**
+- **Graduation sweep**: a scheduled job that flags confirmed L6 notes matching the structurable
+  shape → admin sees "graduate to L7?" items in the inbox. (The systemic anti-GAP: the free-text
+  catch-all layer is routinely drained into the structured one.)
+- **Re-classify** in the unified inbox (Candidate 3): mis-filed entries move between queues
+  instead of being rejected and retyped. (The systemic anti-OVERLAP correction path.)
+- **Zero-hit retirement report**: L7 hit counts + L6 injection usage on the metrics panel; dead
+  vocabulary gets retired instead of accumulating as shadow-overlap.
+
+### Draft slices
+1. **S-G1 tripwire tests** — LAYER_OF_ACTION map + completeness + fence-composition tests +
+   testable boundary rows. (S)
+2. **S-G2 write-time advisories** — shape re-router + dedup annotations on both propose
+   handlers. (S-M)
+3. **S-G3 graduation sweep + retirement report** — scheduled job + inbox items + metrics tile.
+   (M, wants Candidates 1+3)
+
+### Open questions
+- Auto-reroute vs annotate-only for lexicon-shaped L6 proposals (lean: annotate-only first —
+  consistent with "human decides").
+- Does the graduation sweep run on a schedule (S28 pattern) or fire on-confirm (event-driven)?
+
+---
+
+## Candidate slots 5+ — deliberately empty
 
 0.0.4 (job queue, worker cutover, scoring mechanism, TS cleanup) is heavy and in flight.
 Further 0.0.5 candidates land here only after 0.0.4 ships or an owner decision reprioritizes.
