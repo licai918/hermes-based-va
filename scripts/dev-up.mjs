@@ -112,6 +112,50 @@ SIMULATOR_GATEWAY_URL=http://127.0.0.1:${PORTS.gateway}
 SIMPLETEXTING_WEBHOOK_TOKEN=dev-webhook-token
 `;
 
+// This script deliberately never overwrites an existing apps/workbench/.env.local
+// (see the template comment above), which means a file written before main's
+// Textline retirement keeps its retired keys forever -- readEnvFile parses them
+// fine, it has no way to know a key is dead, so the stack boots looking healthy
+// while every inbound webhook silently 401s. One row per rename here; the next
+// rename is one line, not new logic. `key` marks a retired VALUE of a
+// still-live variable (REPLY_SENDER) rather than a retired key.
+const RETIRED_ENV_VARS = [
+  {
+    retired: "TEXTLINE_WEBHOOK_SECRET",
+    replacement: "SIMPLETEXTING_WEBHOOK_TOKEN",
+    consequence: "every inbound webhook 401s -- the gateway only reads SIMPLETEXTING_WEBHOOK_TOKEN now",
+  },
+  {
+    retired: "TEXTLINE_ACCESS_TOKEN",
+    replacement: "SIMPLETEXTING_API_TOKEN",
+    consequence:
+      "outbound SimpleTexting sends raise ValueError (REPLY_SENDER=simpletexting), or silently fall back to mock capture in the employee-confirmed send path",
+  },
+  {
+    key: "REPLY_SENDER",
+    retired: "textline",
+    replacement: "simpletexting",
+    consequence: 'raises at boot -- "textline" is not a recognized REPLY_SENDER value',
+  },
+];
+
+/** Warnings (never a boot failure) for retired/renamed vars found in a parsed .env file. */
+function findRetiredEnvVars(fileLabel, env) {
+  const warnings = [];
+  for (const { key, retired, replacement, consequence } of RETIRED_ENV_VARS) {
+    if (key) {
+      if ((env[key] || "").trim().toLowerCase() === retired) {
+        warnings.push(`${fileLabel} sets ${key}=${retired}, which is retired. Use ${key}=${replacement} -- until then, ${consequence}.`);
+      }
+    } else if (env[retired] !== undefined) {
+      warnings.push(
+        `${fileLabel} still sets ${retired}, which is retired and no longer read. Replace it with ${replacement} -- until then, ${consequence}.`,
+      );
+    }
+  }
+  return warnings;
+}
+
 function resolveDevEnv() {
   if (!existsSync(WORKBENCH_ENV)) {
     writeFileSync(WORKBENCH_ENV, WORKBENCH_ENV_TEMPLATE, "utf8");
@@ -119,6 +163,13 @@ function resolveDevEnv() {
   }
   const wb = readEnvFile(WORKBENCH_ENV);
   const rt = readEnvFile(RUNTIME_ENV);
+
+  for (const warning of [
+    ...findRetiredEnvVars("apps/workbench/.env.local", wb),
+    ...findRetiredEnvVars("hermes-runtime/.env", rt),
+  ]) {
+    log(`WARNING: ${warning}`);
+  }
 
   const missing = ["HERMES_COPILOT_API_URL", "HERMES_COPILOT_API_TOKEN", "HERMES_ADMIN_API_URL", "HERMES_ADMIN_API_TOKEN"].filter(
     (k) => !wb[k],
@@ -324,6 +375,43 @@ function selfcheck() {
     { value: "dev-webhook-token", source: "dev default" },
     "falls back to the dev default when neither file has it",
   );
+
+  // Retired/renamed env vars: warn with the retired name, the replacement, and
+  // the consequence -- never silently rewrite the file, never die the boot.
+  assert.deepStrictEqual(
+    findRetiredEnvVars("hermes-runtime/.env", { TEXTLINE_WEBHOOK_SECRET: "old-secret" }),
+    [
+      "hermes-runtime/.env still sets TEXTLINE_WEBHOOK_SECRET, which is retired and no longer read. Replace it with SIMPLETEXTING_WEBHOOK_TOKEN -- until then, every inbound webhook 401s -- the gateway only reads SIMPLETEXTING_WEBHOOK_TOKEN now.",
+    ],
+    "must detect a retired TEXTLINE_WEBHOOK_SECRET",
+  );
+  assert.deepStrictEqual(
+    findRetiredEnvVars("hermes-runtime/.env", { TEXTLINE_ACCESS_TOKEN: "old-token" }),
+    [
+      "hermes-runtime/.env still sets TEXTLINE_ACCESS_TOKEN, which is retired and no longer read. Replace it with SIMPLETEXTING_API_TOKEN -- until then, outbound SimpleTexting sends raise ValueError (REPLY_SENDER=simpletexting), or silently fall back to mock capture in the employee-confirmed send path.",
+    ],
+    "must detect a retired TEXTLINE_ACCESS_TOKEN",
+  );
+  assert.deepStrictEqual(
+    findRetiredEnvVars("hermes-runtime/.env", { REPLY_SENDER: "textline" }),
+    [
+      'hermes-runtime/.env sets REPLY_SENDER=textline, which is retired. Use REPLY_SENDER=simpletexting -- until then, raises at boot -- "textline" is not a recognized REPLY_SENDER value.',
+    ],
+    "must detect the retired REPLY_SENDER=textline value",
+  );
+  assert.deepStrictEqual(
+    findRetiredEnvVars("hermes-runtime/.env", { REPLY_SENDER: " TextLine " }),
+    [
+      'hermes-runtime/.env sets REPLY_SENDER=textline, which is retired. Use REPLY_SENDER=simpletexting -- until then, raises at boot -- "textline" is not a recognized REPLY_SENDER value.',
+    ],
+    "REPLY_SENDER check must match gateway_composition.py's own trim+lowercase comparison",
+  );
+  assert.deepStrictEqual(
+    findRetiredEnvVars("hermes-runtime/.env", { REPLY_SENDER: "simpletexting", SIMPLETEXTING_WEBHOOK_TOKEN: "tok" }),
+    [],
+    "must not warn on current variable names/values",
+  );
+  assert.deepStrictEqual(findRetiredEnvVars("hermes-runtime/.env", {}), [], "empty env -> no warnings");
 
   // Finding 1: readiness parsing the live worker-readiness loop depends on.
   assert.deepStrictEqual(
