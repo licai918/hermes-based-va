@@ -97,6 +97,36 @@ def test_migration_numeric_prefixes_are_unique() -> None:
     )
 
 
+def test_renumbered_job_queue_migration_is_replay_safe(temp_schema_conn) -> None:
+    """The job-queue migration's DDL must survive being executed twice.
+
+    It shipped as 0011 and was renumbered to 0014 (0011 collided with
+    0011_inbound_event_claim). The ledger keys on the full file stem, so to a
+    database that already applied ``0011_job_queue`` the renamed file is a
+    brand-new version and its DDL runs a SECOND time against a schema that
+    already has the ``job`` table. Bare ``CREATE TABLE job`` raises
+    DuplicateTable there and aborts the whole migrate -- which is every dev
+    machine that pulled the rename.
+
+    ``test_migrations_are_idempotent`` does NOT cover this: it proves the
+    *ledger* dedupes, and never re-executes any SQL. This re-executes the
+    statements directly, bypassing the ledger, which is precisely what a rename
+    does.
+    """
+    conn, _ = temp_schema_conn
+    run_migrations(conn, exclude=DEV_ONLY_MIGRATIONS)
+
+    sql_by_version = dict(discover_migrations())
+    job_queue_sql = next(
+        sql for version, sql in sql_by_version.items() if version.endswith("_job_queue")
+    )
+
+    # Must not raise: this is the re-run a renumber forces.
+    with conn.cursor() as cur:
+        cur.execute(job_queue_sql)
+    conn.commit()
+
+
 def test_initial_migration_declares_every_system_of_record_table() -> None:
     """No-DB CI guard for the Slice 32 acceptance criterion: the first migration
     must declare every system-of-record table. The live-DB tests below skip when
