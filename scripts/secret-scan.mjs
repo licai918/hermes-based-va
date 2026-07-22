@@ -49,6 +49,12 @@ const TOKEN_SHAPES = [
   ["AWS", /\bAKIA[0-9A-Z]{16}\b/],
   ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
   ["private key", /-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----/],
+  // A bearer token pasted into a test fixture or a curl example carries no
+  // variable name and no vendor prefix, so rule 3 never sees it (fix wave 1,
+  // review Finding 7). The 20-char floor clears this repo's published dev
+  // defaults -- `Bearer dev-copilot-token` is 17 -- and `${VAR}` interpolation
+  // cannot match the character class at all.
+  ["bearer token", /\bBearer\s+[A-Za-z0-9_.-]{20,}/],
 ];
 
 // Rule 3: variables whose VALUE is a credential. Add one line per new
@@ -69,12 +75,25 @@ const SECRET_VARS = [
   "NGROK_AUTHTOKEN",
 ];
 
-// Values that are not credentials. The load-bearing one is the LAST: a value
-// made only of lowercase letters and dashes is a human-written slug
-// ("dev-webhook-token", "copilot-tok", "from-env"), not a credential -- every
-// provider's tokens carry digits, mixed case, or underscores. That single rule
-// clears the test fixtures and published dev defaults this repo is full of,
-// while "zz9realvaluepastedhere" still trips.
+// Values that are not credentials. The two load-bearing ones are the last two:
+// a value made only of lowercase letters and dashes is a human-written slug
+// ("dev-webhook-token", "copilot-tok", "from-env"), and an all-caps one is a
+// constant reference -- neither is a credential, because every provider's tokens
+// carry digits, mixed case, or underscores. Those two rules clear the test
+// fixtures and published dev defaults this repo is full of.
+//
+// Both were too wide at the original 40-char ceiling (fix wave 1, review Finding
+// 7) -- they waved through a real token that happened to be all-caps
+// ("AB12CD34EF56GH78IJ90KL12MN34OP56", which the SCREAMING_CASE rule accepted
+// digits and all) or all-lowercase ("zzrealvaluepastedhereandhere"). Two cheap
+// tightenings, no guessing:
+//
+//   - a constant reference is capped at 24 chars. This repo's longest is
+//     INTERNAL_JOB_SECRET (19); no provider issues a 24-char all-caps token that
+//     is also a plausible identifier.
+//   - a lowercase value longer than 24 chars must be HYPHENATED to count as
+//     human-written. "workbench-dev-session-secret-change-me" (38) reads as a
+//     published dev default; an unbroken run of 28 letters reads as a paste.
 const NOT_A_SECRET = [
   /^$/,
   /^<.*>$/, //          <your-token>
@@ -82,16 +101,31 @@ const NOT_A_SECRET = [
   /^\$\{?[A-Za-z_]/, // ${VAR} / $VAR interpolation
   /^-/, //              ${VAR:-default} shell substitution
   /^[A-Za-z_$][\w$]*\./, // code reference: rt.INTERNAL_JOB_SECRET, webhookToken.value
-  /^[A-Z_][A-Z0-9_]{0,39}$/, // SCREAMING_CASE constant reference: `= SECRET`
+  /^[A-Z_][A-Z0-9_]{0,23}$/, // SCREAMING_CASE constant reference: `= SECRET`
   /^[a-z0-9-]+:(latest|\d+)$/, // Secret Manager ref: composio-api-key:latest
-  /^[a-z][a-z-]{0,39}$/, // slug-shaped -> human-written, not a token
+  /^[a-z][a-z-]{0,23}$/, //     short slug: "from-env", "dev-webhook-token"
+  /^(?=.{2,40}$)[a-z][a-z-]*-[a-z-]*$/, // longer slug, but hyphenated
+  /^[a-z][a-z0-9-]{0,11}$/, //  short fixture stub: "tok-123", "or-key-123"
 ];
 
 // The value stops at whitespace, a comment, or the punctuation that ends a
 // literal in .env / YAML / JS / shell -- otherwise a `--set-secrets="A=x,B=y"`
 // list is captured as one giant "value".
+//
+// Fix wave 1 (review Finding 7): the name may be QUOTED, so `"COMPOSIO_API_KEY":
+// "..."` in JSON matches -- previously the closing quote sat between the name and
+// the `:` and the whole rule missed.
 const SECRET_ASSIGNMENT = new RegExp(
-  `\\b(${SECRET_VARS.join("|")})\\s*[=:]\\s*["']?([^\\s#,;"'\`)}]*)`,
+  `["']?\\b(${SECRET_VARS.join("|")})\\b["']?\\s*[=:]\\s*["']?([^\\s#,;"'\`)}]*)`,
+);
+
+// Same rule for a lower/mixed-case spelling (`composio_api_key = "..."` in a
+// fixture), but ONLY when the value is a quoted string literal. Without that
+// restriction every Python parameter and local named `internal_job_secret` is a
+// finding, and a gate that cries wolf is a gate people stop reading.
+const SECRET_ASSIGNMENT_QUOTED = new RegExp(
+  `\\b(${SECRET_VARS.join("|")})\\b\\s*[=:]\\s*["']([^\\s#,;"'\`)}]*)`,
+  "i",
 );
 
 // Files whose whole point is to describe the gate. Scanning them makes every
@@ -119,8 +153,9 @@ export function checkLine(file, lineNo, text) {
       return finding("token shape", file, lineNo, `looks like a ${vendor} credential`);
     }
   }
-  const assignment = SECRET_ASSIGNMENT.exec(text);
-  if (assignment) {
+  for (const pattern of [SECRET_ASSIGNMENT, SECRET_ASSIGNMENT_QUOTED]) {
+    const assignment = pattern.exec(text);
+    if (!assignment) continue;
     const [, name, value] = assignment;
     if (!NOT_A_SECRET.some((allowed) => allowed.test(value))) {
       return finding("secret assignment", file, lineNo, `${name} is assigned a non-placeholder value`);
@@ -195,6 +230,37 @@ function selfcheck() {
     [checkLine("x", 1, 'process.env.WORKBENCH_SESSION_SECRET = "from-env";'), false, "test fixture slug is fine"],
     [checkLine("x", 1, "process.env.WORKBENCH_SESSION_SECRET = SECRET;"), false, "constant reference is fine"],
     [checkLine("x", 1, "the sk- prefix identifies OpenAI keys"), false, "prose is not a token"],
+    // Fix wave 1 (review Finding 7): the four shapes the gate used to wave through.
+    [
+      checkLine("x", 1, '  "COMPOSIO_API_KEY": "zz9realvaluepastedhere",'),
+      true,
+      "quoted/JSON key is still a secret assignment",
+    ],
+    [
+      checkLine("x", 1, 'composio_api_key = "zz9realvaluepastedhere"'),
+      true,
+      "lowercase variable name is still a secret assignment",
+    ],
+    [
+      checkLine("x", 1, "COMPOSIO_API_KEY=zzrealvaluepastedhereandhere"),
+      true,
+      "an all-lowercase value past the length cap is not a slug",
+    ],
+    [
+      checkLine("x", 1, "COMPOSIO_API_KEY=AB12CD34EF56GH78IJ90KL12MN34OP56"),
+      true,
+      "an all-caps value past the length cap is not a constant reference",
+    ],
+    [
+      checkLine("x", 1, '  headers: { authorization: "Bearer a1b2c3d4e5f6g7h8i9j0k1l2" },'),
+      true,
+      "a bare bearer token in a fixture has no variable name to key on",
+    ],
+    [
+      checkLine("x", 1, "  -H 'authorization: Bearer dev-copilot-token' \\"),
+      false,
+      "the published dev bearer default is below the length floor",
+    ],
   ];
   let failed = 0;
   for (const [result, shouldFind, label] of cases) {

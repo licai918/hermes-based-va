@@ -130,12 +130,18 @@ jobs:
       # gates -- a silent skip there is a green build proving nothing. S03's is the
       # one that proves a replayed turn does not text a customer twice; S04's is
       # the one that proves a long ingest cannot delay a customer's turn.
+      #
+      # test_composio_sdk_pin.py (0.0.4 S12) is in the pattern for a different
+      # reason: it guards on `pytest.importorskip("composio")`, so dropping the SDK
+      # from the lock would make the ENTIRE pin gate vanish while CI stayed green --
+      # the one gate whose job is to notice an SDK surface change (fix wave 1,
+      # review Finding 8).
       - name: Runtime + gateway tests
         working-directory: hermes-runtime
         run: |
           set -o pipefail
           uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
-          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view)' /tmp/pytest-runtime.log \
+          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin)' /tmp/pytest-runtime.log \
               | grep -v 'fastembed not installed'; then
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1
