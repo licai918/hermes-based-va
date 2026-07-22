@@ -1,9 +1,15 @@
-# Local end-to-end runbook (Tier A + Tier B)
+# Local end-to-end runbook
 
 This runbook chains the local-first paths (ADR-0142) so a new developer can reach a
-working Workbench in about 30 minutes. **Tier B** is the full Postgres + dual
-dispatch + Workbench API path — the target of Increment 1. **Tier A** is the
-fast in-memory demo when you only need UI smoke without Docker.
+working Workbench in about 30 minutes: the full Postgres + dual dispatch +
+Workbench API path.
+
+> **There is no in-memory tier any more.** 0.0.4 S09 deleted the workbench's
+> in-memory stores, so Postgres + both dispatch servers are the only way to run the
+> app. The BFF refuses to boot without `HERMES_COPILOT_API_URL/TOKEN` and
+> `HERMES_ADMIN_API_URL/TOKEN` — it names the missing variables and exits rather
+> than starting on a fake backend. (The old "Tier A" quick demo is gone; what this
+> file used to call "Tier B" is now just "local".)
 
 See also: [`local-datastore.md`](local-datastore.md), [`local-dispatch-servers.md`](local-dispatch-servers.md), repo-root [`.env.example`](../../.env.example).
 
@@ -24,23 +30,7 @@ cd hermes-runtime && uv sync
 
 ---
 
-## Tier A — in-memory quick demo (~5 min)
-
-No Docker, no dispatch servers. The Workbench BFF uses in-memory stores (ADR-0137).
-
-```bash
-pnpm dev:workbench
-```
-
-Open [http://localhost:3000](http://localhost:3000). Log in with any seeded account
-below (same passwords as Tier B). The copilot queue, knowledge slots, and drafts
-render from `apps/workbench/lib/gateway/seed.ts`.
-
-Use Tier A for UI-only work. For Postgres-backed API mode, continue to Tier B.
-
----
-
-## Tier B — full local API path (~30 min)
+## Full local API path (~30 min)
 
 Four terminals after one-time setup. All commands assume repo root unless noted.
 
@@ -119,6 +109,8 @@ Create `apps/workbench/.env.local`:
 WORKBENCH_SESSION_SECRET=workbench-dev-session-secret-change-me
 
 # Per-profile Hermes dispatch servers (tokens must match DISPATCH_API_TOKEN above).
+# REQUIRED: all four. The workbench is API-only (0.0.4 S09) and refuses to boot
+# without them, naming whichever are missing.
 HERMES_COPILOT_API_URL=http://127.0.0.1:8081
 HERMES_COPILOT_API_TOKEN=dev-copilot-token
 HERMES_ADMIN_API_URL=http://127.0.0.1:8082
@@ -146,12 +138,12 @@ Migration `0005_dev_bootstrap` seeds three accounts. **Password for all:**
 | `supervisor` | Workbench supervisor | `seed-supervisor` | Supervisor routes (same password) |
 | `admin` | Workbench admin | `seed-admin` | `/admin` accounts, knowledge slots, eval |
 
-These mirror the in-memory `AccountStore` seed (`apps/workbench/lib/auth/account-store.ts`).
+These accounts live in Postgres (`workbench_account`); the workbench verifies
+credentials through `toee_workbench_admin.authenticate`, never in-process.
 
 **Locked yourself out?** Five wrong passwords in a row lock an account for 15
-minutes (ADR-0018). In Tier B that ladder lives in Postgres, so it survives
-restarting the dispatch server or the workbench — restarting is not the way out.
-Clear it:
+minutes (ADR-0018). That ladder lives in Postgres, so it survives restarting the
+dispatch server or the workbench — restarting is not the way out. Clear it:
 
 ```bash
 docker exec toee-va-postgres psql -U toee -d toee_va \
@@ -165,13 +157,13 @@ Demo cases seeded for the copilot queue:
 | `case_ar_urgent` | Urgent SMS, active session — good for queue + Textline send after claim |
 | `case_toolfail` | Urgent billing, `tool_failure` flag |
 
-Thread previews and identity summaries follow `apps/workbench/lib/gateway/seed.ts`.
+Thread previews and identity summaries follow migration `0005_dev_bootstrap`.
 
 ---
 
 ## Verification checklist
 
-Run these after Tier B is up.
+Run these once the four terminals are up.
 
 ### 1. Dispatch health
 
@@ -202,7 +194,11 @@ curl http://127.0.0.1:8082/healthz   # -> {"status":"ok"}
 
 1. Open `case_ar_urgent`.
 2. Claim the case.
-3. Use **Draft SMS** — should succeed (mock Textline path; no live Textline token required).
+3. Use **Draft SMS** — the reply is a real `internal_copilot` agent turn over
+   `POST /v1/agent:turn`. Without `OPENROUTER_API_KEY` the dispatch server falls
+   back to its own deterministic keyless completion, so the panel still works
+   offline; the outbound send itself uses the mock Textline capture, so no live
+   Textline token is required.
 
 ### 6. Audit row
 
@@ -233,21 +229,22 @@ Governed writes append rows in the same transaction (ADR-0029/0085).
 | Docker **not healthy** | Start Docker Desktop; `docker inspect -f '{{.State.Health.Status}}' toee-va-postgres` should be `healthy`. |
 | `error during connect ... dockerDesktopLinuxEngine` | Docker engine not running — start Docker Desktop. |
 | `dial tcp [::1]:2375 ... refused` | Stale `DOCKER_HOST` — unset it or set `DOCKER_CONTEXT=desktop-linux`. |
-| Login works in Tier A but not Tier B | Confirm Terminal 3 (admin dispatch) is up with `TOOL_BACKEND=datastore` and `HERMES_ADMIN_API_*` is set in `.env.local`. |
-| Empty copilot queue in Tier B | Re-run migrate **with `HERMES_APPLY_DEV_SEED=1`**; confirm `0005_dev_bootstrap` applied and copilot server uses `TOOL_BACKEND=datastore`. |
+| Workbench exits at startup with `Hermes API configuration missing: ...` | Expected fail-closed boot (0.0.4 S09). Set the variables it names in `apps/workbench/.env.local` — there is no in-memory fallback to run without them. |
+| Login fails | Confirm Terminal 3 (admin dispatch) is up with `TOOL_BACKEND=datastore` and `HERMES_ADMIN_API_*` matches it in `.env.local`. |
+| Empty copilot queue | Re-run migrate **with `HERMES_APPLY_DEV_SEED=1`**; confirm `0005_dev_bootstrap` applied and the copilot server uses `TOOL_BACKEND=datastore`. |
 | Dispatch **401** | Bearer token mismatch — `HERMES_*_API_TOKEN` must equal that server's `DISPATCH_API_TOKEN`. |
 
 More detail: [`local-datastore.md`](local-datastore.md) (Postgres), [`local-dispatch-servers.md`](local-dispatch-servers.md) (dispatch).
 
 ---
 
-## Optional — not required for Tier B
+## Optional — not required locally
 
-These are deferred or optional for local Tier B:
+These are deferred or optional locally:
 
 | Topic | Notes |
 | --- | --- |
-| **OpenRouter** | Agent-turn / LLM drafts against live models need `OPENROUTER_API_KEY` on the gateway path — not required for queue, login, or mock Textline send. |
+| **OpenRouter** | Drafts and copilot chat are real agent turns; a *live model* needs `OPENROUTER_API_KEY` on the dispatch server. Without it the runtime uses its deterministic keyless completion, so the panels still work — the replies are just canned. Automated tests drive the turn through `scripted_completions` instead. |
 | **Live Textline** | Outbound SMS uses the mock Textline capture in local dev; `TEXTLINE_ACCESS_TOKEN` is for production/live integration. |
 | **Gateway** | Inbound Textline webhook + async agent turn — see [`local-gateway.md`](local-gateway.md) (`pnpm dev:gateway` is a stub; use uvicorn). |
 

@@ -74,10 +74,11 @@ HERMES_ADMIN_API_URL=http://127.0.0.1:8082
 HERMES_ADMIN_API_TOKEN=dev-admin-token
 ```
 
-When a pair is unset the BFF falls back to its in-memory store, so the workbench
-still runs without the servers. With the pair set, `/api/copilot/*` reaches the
-copilot server and `/api/admin/*` the admin server (route-derived profile, ADR-0093).
-Start the workbench with `pnpm dev:workbench`.
+All four are REQUIRED (0.0.4 S09): the workbench is API-only, so it refuses to boot
+without them and names whichever are missing -- there is no in-memory store left to
+run on. `/api/copilot/*` reaches the copilot server and `/api/admin/*` the admin
+server (route-derived profile, ADR-0093). Start the workbench with
+`pnpm dev:workbench`.
 
 ## Verify
 
