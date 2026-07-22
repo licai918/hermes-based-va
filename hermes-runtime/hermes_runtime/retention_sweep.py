@@ -63,7 +63,18 @@ def run_sweep(
 
 
 def run_retention_sweep_job(payload: Mapping[str, Any]) -> None:
-    """The ``retention`` job body (S04). Payload carries the triggering actor."""
+    """The ``retention`` job body (S04). Payload carries the triggering actor.
+
+    Known and accepted: unlike ``ingest``, this type keeps ``max_attempts=3``, so
+    a sweep that outlives ``job_queue.DEFAULT_LEASE_SECONDS`` (300 s) is reclaimed
+    back to ``failed`` and re-runs -- and with two background-worker replicas the
+    reclaiming poll can be a different process than the one still sweeping. The
+    DELETE is idempotent so the data outcome is unchanged; the visible cost is a
+    SECOND ``retention_sweep`` audit row (and therefore a "last run" showing the
+    later, mostly-empty sweep). Nobody has measured how close a real sweep gets to
+    300 s; if it ever does, the fix is a per-type lease, not a heartbeat (which
+    the S01 fence forbids).
+    """
     run_sweep(
         profile=payload.get("profile") or INTERNAL,
         actor_account_id=payload.get("actor_account_id"),

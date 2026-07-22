@@ -329,7 +329,14 @@ def _enqueue_corpus_reingest(
     TRUNCATE + re-embed of the whole corpus; three automatic attempts would wipe
     and reload it three times over a transient fastembed/OOM failure. A failed
     ingest goes straight to ``dead`` for S05's governed replay instead. Raise it
-    only if ingest ever becomes cheap and resumable.
+    only if ingest ever becomes cheap and resumable **and** the lease is solved
+    first: an ingest that outlives ``job_queue.DEFAULT_LEASE_SECONDS`` (300 s) is
+    reclaimed mid-run, and that is harmless today ONLY because
+    ``attempts >= max_attempts`` sends the reclaimed row to ``dead`` (never
+    claimable) rather than back to ``failed``. Above 1, a reclaimed-but-still-
+    running ingest becomes claimable again and two processes TRUNCATE the corpus
+    concurrently -- so chunking ingest into cheap resumable pieces satisfies the
+    first half of this condition while leaving that hazard fully intact.
     """
     del params
     from hermes_runtime.job_queue import INGEST_JOB_TYPE, insert_job
