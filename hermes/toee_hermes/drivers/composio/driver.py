@@ -562,6 +562,20 @@ def build_composio_driver() -> ComposioDriver:
         for toolkit, env_var in CONNECTED_ACCOUNT_ENV.items()
         if (value := os.environ.get(env_var))
     }
+    if not connected_accounts:
+        # 0.0.4 S12 fix wave 2: with zero *_CONNECTED_ACCOUNT_ID set,
+        # pinned_toolkit_versions({}) iterates nothing and finds nothing missing,
+        # so this used to return a driver that boots clean and then raises
+        # "configuration_missing" on every single tool call in ComposioDriver.execute
+        # (line ~515) -- exactly the class of bug the boot gate exists to catch
+        # (review Finding 4). A composio driver connected to no vendor account is
+        # unusable, so fail closed here instead of on the first customer turn.
+        raise ToolDriverError(
+            "configuration_missing",
+            "INTEGRATION_DRIVER=composio but no Composio connected account is "
+            "configured; set at least one of: "
+            f"{', '.join(sorted(CONNECTED_ACCOUNT_ENV.values()))}.",
+        )
     client = _build_sdk_client(api_key, pinned_toolkit_versions(connected_accounts))
     return ComposioDriver(
         client,
@@ -608,6 +622,11 @@ def require_composio_configuration() -> None:
     exception, where dispatch expects a governed result. The runbook told operators
     to "watch for ``configuration_missing`` at boot"; this is what makes that true
     (fix wave 1, review Finding 4).
+
+    Also fails closed on ``INTEGRATION_DRIVER=composio`` with zero
+    ``*_CONNECTED_ACCOUNT_ID`` variables set (fix wave 2, review Finding 5) --
+    without a connected account, ``pinned_toolkit_versions({})`` has nothing to
+    check, so this case used to boot clean and then fail every single tool call.
 
     Called from every composition root that can execute a tool: the gateway, the
     turn worker, the background worker, and the per-profile dispatch server. No-op

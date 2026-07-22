@@ -85,15 +85,26 @@ const SECRET_VARS = [
 // Both were too wide at the original 40-char ceiling (fix wave 1, review Finding
 // 7) -- they waved through a real token that happened to be all-caps
 // ("AB12CD34EF56GH78IJ90KL12MN34OP56", which the SCREAMING_CASE rule accepted
-// digits and all) or all-lowercase ("zzrealvaluepastedhereandhere"). Two cheap
-// tightenings, no guessing:
+// digits and all) or all-lowercase ("zzrealvaluepastedhereandhere"). Fix wave 1
+// was one tightening plus one widening, not two tightenings (0.0.4 S12 fix wave
+// 2 correction -- the report had claimed both were tightened):
 //
-//   - a constant reference is capped at 24 chars. This repo's longest is
-//     INTERNAL_JOB_SECRET (19); no provider issues a 24-char all-caps token that
-//     is also a plausible identifier.
+//   - a constant reference is capped at 24 chars (TIGHTENED from 40). This
+//     repo's longest is INTERNAL_JOB_SECRET (19); no provider issues a 24-char
+//     all-caps token that is also a plausible identifier. This cap alone would
+//     flag an honest placeholder like "CHANGE_ME_BEFORE_DEPLOY_PLEASE" (31
+//     chars) as a secret -- the explicit placeholder allowlist below (fix wave
+//     2) keeps those clean without reopening the 24+ char real-token shape.
 //   - a lowercase value longer than 24 chars must be HYPHENATED to count as
-//     human-written. "workbench-dev-session-secret-change-me" (38) reads as a
-//     published dev default; an unbroken run of 28 letters reads as a paste.
+//     human-written (TIGHTENED). "workbench-dev-session-secret-change-me" (38)
+//     reads as a published dev default; an unbroken run of 28 letters reads as
+//     a paste.
+//   - a short (<=12 char) lowercase-alnum stub, e.g. "tok-123" / "or-key-123",
+//     now passes where it previously did not (WIDENED, fix wave 1 -- these are
+//     exactly the fixture values `tests/test_gateway_composition.py` and
+//     friends assign to SIMPLETEXTING_API_TOKEN / OPENROUTER_API_KEY). Kept
+//     deliberately: no real vendor token is this short, and every shaped one
+//     is caught by TOKEN_SHAPES regardless of length.
 const NOT_A_SECRET = [
   /^$/,
   /^<.*>$/, //          <your-token>
@@ -101,11 +112,18 @@ const NOT_A_SECRET = [
   /^\$\{?[A-Za-z_]/, // ${VAR} / $VAR interpolation
   /^-/, //              ${VAR:-default} shell substitution
   /^[A-Za-z_$][\w$]*\./, // code reference: rt.INTERNAL_JOB_SECRET, webhookToken.value
+  // Obvious placeholders, regardless of length -- added fix wave 2 so narrowing
+  // the SCREAMING_CASE cap to 24 (above) doesn't flag a legitimate long
+  // placeholder like "CHANGE_ME_BEFORE_DEPLOY_PLEASE" or "YOUR_API_KEY_HERE".
+  // Named prefixes only, so this can't accidentally wave through a real random
+  // token -- a real secret does not spell out "replace me".
+  /^(CHANGE_?ME|REPLACE_?ME|YOUR_[A-Z0-9_]*_HERE|TODO|FIXME|PLACEHOLDER|SAMPLE|EXAMPLE)([A-Z0-9_]*)$/i,
+  /^X{4,}$/i, //        XXXX... redaction placeholder
   /^[A-Z_][A-Z0-9_]{0,23}$/, // SCREAMING_CASE constant reference: `= SECRET`
   /^[a-z0-9-]+:(latest|\d+)$/, // Secret Manager ref: composio-api-key:latest
   /^[a-z][a-z-]{0,23}$/, //     short slug: "from-env", "dev-webhook-token"
   /^(?=.{2,40}$)[a-z][a-z-]*-[a-z-]*$/, // longer slug, but hyphenated
-  /^[a-z][a-z0-9-]{0,11}$/, //  short fixture stub: "tok-123", "or-key-123"
+  /^[a-z][a-z0-9-]{0,11}$/, //  short fixture stub: "tok-123", "or-key-123" (widened, see above)
 ];
 
 // The value stops at whitespace, a comment, or the punctuation that ends a
@@ -260,6 +278,29 @@ function selfcheck() {
       checkLine("x", 1, "  -H 'authorization: Bearer dev-copilot-token' \\"),
       false,
       "the published dev bearer default is below the length floor",
+    ],
+    // Fix wave 2: the SCREAMING_CASE cap narrowed to 24 (fix wave 1) created a
+    // false-positive class on long, obvious placeholders. These prove the
+    // placeholder allowlist clears them without reopening the real-token shape.
+    [
+      checkLine("x", 1, "WORKBENCH_SESSION_SECRET=CHANGE_ME_BEFORE_DEPLOY_PLEASE"),
+      false,
+      "a CHANGE_ME placeholder past the 24-char cap is still clean",
+    ],
+    [
+      checkLine("x", 1, "COMPOSIO_API_KEY=YOUR_API_KEY_HERE"),
+      false,
+      "a YOUR_..._HERE placeholder is clean",
+    ],
+    [
+      checkLine("x", 1, "COMPOSIO_API_KEY=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"),
+      false,
+      "an XXXX redaction placeholder is clean",
+    ],
+    [
+      checkLine("x", 1, "WORKBENCH_SESSION_SECRET=ZZ99YY88XX77WW66VV55UU44TT33SS22"),
+      true,
+      "a real-looking all-caps token past the cap is still caught -- placeholder allowlist did not reopen it",
     ],
   ];
   let failed = 0;

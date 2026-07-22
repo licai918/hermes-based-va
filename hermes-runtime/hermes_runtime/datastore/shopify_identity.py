@@ -51,6 +51,13 @@ def _lookup_budget_s() -> float:
     reading. Two calls' worth is the cap, and it tracks the operator's deadline
     knob rather than adding a second one.
 
+    The loop checks remaining budget *before* starting a call, so a naive
+    ``now >= deadline`` check still lets one full ``COMPOSIO_DEADLINE_MS`` call
+    start a hair under the line -- true worst case 3 calls' worth, not 2 (0.0.4
+    S12 fix wave 2). Both loops instead stop once less than one call's worth of
+    budget remains, so the real worst case matches this docstring: ``<= 2 x
+    COMPOSIO_DEADLINE_MS``.
+
     Exceeding it is not an error: the lookup gives up, the caller stays unmatched,
     and the next inbound message retries.
     """
@@ -184,7 +191,11 @@ def _lookup_via_search(
         deadline = time.monotonic() + _lookup_budget_s()
     tool_available = False
     for query in _search_queries(phone):
-        if time.monotonic() >= deadline:
+        # Reserve one call's worth of budget (half of _lookup_budget_s(), which
+        # is defined as 2 x the per-call deadline) so a call is never *started*
+        # this close to the deadline -- otherwise it can still run a full
+        # COMPOSIO_DEADLINE_MS past it (0.0.4 S12 fix wave 2).
+        if time.monotonic() >= deadline - _lookup_budget_s() / 2:
             # Out of ack budget mid-search. The tool exists (we called it at least
             # once), so report "no match" rather than falling through to the scan,
             # which is the slower path by two orders of magnitude.
@@ -216,7 +227,8 @@ def _lookup_via_pagination(
         deadline = time.monotonic() + _lookup_budget_s()
     since_id = ""
     for page in range(_MAX_SCAN_PAGES):
-        if time.monotonic() >= deadline:
+        # Same one-call margin as the search loop above -- see its comment.
+        if time.monotonic() >= deadline - _lookup_budget_s() / 2:
             logger.warning(
                 "Shopify phone-match scan hit the %.1fs ack budget after %d page(s) "
                 "without a match; reporting no match for this inbound.",

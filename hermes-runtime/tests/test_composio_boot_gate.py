@@ -14,7 +14,6 @@ composition root still calls it.
 
 from __future__ import annotations
 
-import inspect
 import sys
 import types
 
@@ -58,6 +57,13 @@ def test_every_composition_root_calls_the_boot_gate() -> None:
 
     A root that forgets the call is a process that goes back to failing on the
     first customer turn -- silently, because nothing else would notice.
+
+    0.0.4 S12 fix wave 2: the previous assertion (`"require_composio_configuration()"
+    in inspect.getsource(fn)`) is a substring match on source TEXT, so it stays
+    green if the call is commented out. `fn.__code__.co_names` is the compiled
+    bytecode's name table -- a comment is never in it, and this holds for both
+    module-level imports (`gateway_composition`, `tool_dispatch_composition`) and
+    the two function-local imports (`turn_worker.main`, `background_worker.main`).
     """
     from hermes_runtime import (
         background_worker,
@@ -73,4 +79,4 @@ def test_every_composition_root_calls_the_boot_gate() -> None:
         "build_tool_dispatch_app": tool_dispatch_composition.build_tool_dispatch_app,
     }
     for name, fn in roots.items():
-        assert "require_composio_configuration()" in inspect.getsource(fn), name
+        assert "require_composio_configuration" in fn.__code__.co_names, name

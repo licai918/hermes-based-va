@@ -53,6 +53,10 @@ def test_build_composio_driver_without_sdk_is_governed(monkeypatch) -> None:
     # governed ToolDriverError rather than an ImportError escaping dispatch.
     monkeypatch.setenv("COMPOSIO_API_KEY", "ck_test_not_used_for_network")
     monkeypatch.setenv("COMPOSIO_USER_ID", "toee-local-test")
+    # A connected account must be configured so this test still reaches the SDK
+    # import it means to exercise, rather than tripping the (0.0.4 S12 fix wave
+    # 2) zero-connected-account boot gate first.
+    monkeypatch.setenv("COMPOSIO_SHOPIFY_CONNECTED_ACCOUNT_ID", "ca_shopify")
     for env_var in TOOLKIT_VERSION_ENV.values():
         monkeypatch.setenv(env_var, "20260506_00")
 
@@ -160,6 +164,9 @@ def test_sdk_timeout_divides_the_deadline_across_the_round_trips(monkeypatch) ->
     captured = _fake_composio_sdk(monkeypatch)
     monkeypatch.setenv("COMPOSIO_API_KEY", "ck_test_not_used_for_network")
     monkeypatch.setenv("COMPOSIO_DEADLINE_MS", "9000")
+    # A connected account is required since 0.0.4 S12 fix wave 2 (a driver with
+    # zero connected accounts now fails closed at boot instead of building).
+    monkeypatch.setenv("COMPOSIO_SHOPIFY_CONNECTED_ACCOUNT_ID", "ca_shopify")
     for env_var in TOOLKIT_VERSION_ENV.values():
         monkeypatch.setenv(env_var, "20260506_00")
 
@@ -200,3 +207,27 @@ def test_require_composio_configuration_fails_on_a_missing_pin(monkeypatch) -> N
 
     assert excinfo.value.error_class == "configuration_missing"
     assert "COMPOSIO_TOOLKIT_VERSION_SHOPIFY" in str(excinfo.value)
+
+
+def test_require_composio_configuration_fails_on_zero_connected_accounts(
+    monkeypatch,
+) -> None:
+    """0.0.4 S12 fix wave 2, review Finding 5.
+
+    ``INTEGRATION_DRIVER=composio`` with every ``*_CONNECTED_ACCOUNT_ID`` unset
+    used to boot clean: ``pinned_toolkit_versions({})`` iterates nothing, finds
+    nothing missing, and the process starts with a driver that cannot serve a
+    single tool call. A Composio driver connected to no vendor account is
+    unusable, so this now fails closed at boot instead of on the first call.
+    """
+    _fake_composio_sdk(monkeypatch)
+    monkeypatch.setenv("INTEGRATION_DRIVER", "composio")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "ck_test_not_used_for_network")
+    for env_var in CONNECTED_ACCOUNT_ENV.values():
+        monkeypatch.delenv(env_var, raising=False)
+
+    with pytest.raises(ToolDriverError) as excinfo:
+        require_composio_configuration()
+
+    assert excinfo.value.error_class == "configuration_missing"
+    assert "connected account" in str(excinfo.value)
