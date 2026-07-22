@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from ...errors import ToolDriverError
+from ..base import resolve_integration_driver
 
 if TYPE_CHECKING:
     from ...execute import ToolRequest
@@ -67,8 +68,28 @@ TOOLKIT_VERSION_ENV: dict[str, str] = {
 # ``COMPOSIO_DEADLINE_MS``; on expiry the SDK raises, the driver converts it to a
 # governed ``composio_api_error``, and dispatch renders the Tool Unavailable
 # Response — never a fallback to mock.
+#
+# The budget is for ONE ``execute_action``, not one HTTP request — see
+# ``_ROUND_TRIPS_PER_EXECUTE``.
 DEADLINE_ENV = "COMPOSIO_DEADLINE_MS"
 DEFAULT_DEADLINE_MS = 8000.0
+
+# HTTP requests the SDK makes for one ``Tools.execute`` call (composio 0.15.0,
+# ``core/models/tools.py``), fix wave 1:
+#
+#   1. ``execute()``  -> ``client.tools.retrieve``  (cached in ``_tool_schemas``)
+#   2. ``_execute_tool()`` -> ``get_raw_composio_tool_by_slug`` -> a SECOND
+#      ``client.tools.retrieve``, which is NOT cached anywhere
+#   3. ``client.tools.execute`` -- the actual vendor call
+#
+# The SDK ``timeout`` bounds one request, so passing the whole deadline made the
+# real per-call bound 3x the advertised one (24 s at the 8 s default, since the
+# driver is rebuilt per turn and cache 1 is always cold). Divide instead, so
+# ``COMPOSIO_DEADLINE_MS`` is what NFR-8 says it is: the bound on one tool call.
+# Measured live against the pinned Shopify toolkit (fix wave 1): a metadata
+# retrieve is ~0.2-0.3 s and a full three-round-trip execute ~0.9 s, so the
+# resulting 2.67 s per-request slice is ~3x the observed whole-call cost.
+_ROUND_TRIPS_PER_EXECUTE = 3
 
 
 @runtime_checkable
@@ -555,8 +576,9 @@ def pinned_toolkit_versions(connected_accounts: dict[str, str]) -> dict[str, str
     Fails closed on a missing pin (0.0.4 S12). Left unpinned, the SDK resolves the
     toolkit to ``"latest"`` and then raises ``ToolVersionRequiredError`` from inside
     ``tools.execute`` — a governed failure, but one that arrives on a customer's
-    turn and names neither the toolkit nor the env var. Raising here moves it to
-    process boot, where the operator is the one reading the message.
+    turn and names neither the toolkit nor the env var. Raising here moves it off
+    the customer's turn; :func:`require_composio_configuration`, called from every
+    composition root, is what actually moves it to process boot.
     """
     versions: dict[str, str] = {}
     missing: list[str] = []
@@ -576,6 +598,25 @@ def pinned_toolkit_versions(connected_accounts: dict[str, str]) -> dict[str, str
     return versions
 
 
+def require_composio_configuration() -> None:
+    """Boot gate: refuse to start a tool-executing process on a broken Composio config.
+
+    ``build_composio_driver`` is reached from ``_build_driver_selector``, which runs
+    per ``boot_profile()`` — i.e. once per TURN, not once per process. So without
+    this, a missing ``COMPOSIO_TOOLKIT_VERSION_*`` produced a clean boot followed by
+    a first-turn crash: the ``ToolDriverError`` escapes ``register_turn`` as a raw
+    exception, where dispatch expects a governed result. The runbook told operators
+    to "watch for ``configuration_missing`` at boot"; this is what makes that true
+    (fix wave 1, review Finding 4).
+
+    Called from every composition root that can execute a tool: the gateway, the
+    turn worker, the background worker, and the per-profile dispatch server. No-op
+    unless ``INTEGRATION_DRIVER=composio``.
+    """
+    if resolve_integration_driver() == "composio":
+        build_composio_driver()
+
+
 def deadline_seconds() -> float:
     """Per-call backend deadline in seconds (``COMPOSIO_DEADLINE_MS``, NFR-8)."""
     raw = os.environ.get(DEADLINE_ENV, "").strip()
@@ -592,7 +633,10 @@ def _build_sdk_client(api_key: str, toolkit_versions: dict[str, str]) -> Composi
     ``max_retries=0`` is deliberate: the SDK's default retries multiply the
     timeout, so retries would make ``deadline_seconds()`` a per-attempt bound
     instead of a per-call one (NFR-8). A transient 5xx therefore fails closed on
-    this turn rather than eating the turn's whole budget.
+    this turn rather than eating the turn's whole budget. The timeout is the
+    deadline divided by ``_ROUND_TRIPS_PER_EXECUTE`` for the same reason: the SDK
+    makes three HTTP requests per ``execute``, so an undivided budget would be a
+    3x-larger bound than the one NFR-8 states.
     """
     try:
         from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
@@ -606,7 +650,7 @@ def _build_sdk_client(api_key: str, toolkit_versions: dict[str, str]) -> Composi
         Composio(
             api_key=api_key,
             toolkit_versions=toolkit_versions,
-            timeout=deadline_seconds(),
+            timeout=deadline_seconds() / _ROUND_TRIPS_PER_EXECUTE,
             max_retries=0,
         )
     )

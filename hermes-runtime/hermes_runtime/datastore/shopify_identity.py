@@ -8,6 +8,7 @@ new link. Returns ``None`` when Composio is not configured (mock / missing env).
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,13 +22,41 @@ from toee_hermes.identity.shopify_phone import (
 
 logger = logging.getLogger(__name__)
 
+# Both slugs are probed live by `python -m hermes_runtime.composio_smoke` phase 2
+# (0.0.4 S12 fix wave 1) -- this module is the gateway's ingress ack path, so a slug
+# that does not exist at the pinned toolkit version is exactly the class of bug the
+# smoke exists to catch. It caught one: the previous _LIST_ACTION value,
+# "SHOPIFY_GET_ALL_CUSTOMERS", 404s at pin 20260506_00; the real slug is
+# SHOPIFY_LIST_CUSTOMERS (live-probed 2026-07-22). The scan below had therefore
+# never worked.
 _SEARCH_ACTION = "SHOPIFY_GET_CUSTOMERS_SEARCH"
-_LIST_ACTION = "SHOPIFY_GET_ALL_CUSTOMERS"
+_LIST_ACTION = "SHOPIFY_LIST_CUSTOMERS"
 _PAGE_SIZE = 250
-# ponytail: GET_ALL_CUSTOMERS paginated scan runs on the webhook ack path, so it is
-# hard-capped at _MAX_SCAN_PAGES (~10k customers). The upgrade path is
-# SHOPIFY_GET_CUSTOMERS_SEARCH when the pinned Composio toolkit exposes it.
+# ponytail: the paginated scan runs on the webhook ack path, so it is hard-capped at
+# _MAX_SCAN_PAGES (~10k customers) AND at _lookup_budget_s() of wall clock. It only
+# fires when _SEARCH_ACTION is absent from the toolkit, which the pinned version
+# live-probes as present. Upgrade path if the store outgrows the cap: a persisted
+# phone->customer index, not a longer scan.
 _MAX_SCAN_PAGES = 40
+
+
+def _lookup_budget_s() -> float:
+    """Aggregate wall clock for ONE phone lookup, in seconds (0.0.4 S12 fix wave 1).
+
+    Identity resolves before ``persist_accepted_inbound`` returns the provider's
+    200, so everything in this module sits on the latency-critical ack path
+    (NFR-1). Each Composio call is bounded by ``COMPOSIO_DEADLINE_MS`` (8 s), but
+    one lookup makes up to 3 search queries plus up to ``_MAX_SCAN_PAGES`` scan
+    pages -- 43 calls, ~344 s at the default -- which is not an ack budget by any
+    reading. Two calls' worth is the cap, and it tracks the operator's deadline
+    knob rather than adding a second one.
+
+    Exceeding it is not an error: the lookup gives up, the caller stays unmatched,
+    and the next inbound message retries.
+    """
+    from toee_hermes.drivers.composio import deadline_seconds
+
+    return 2 * deadline_seconds()
 
 
 @dataclass(frozen=True)
@@ -147,10 +176,24 @@ def _is_missing_search_tool(err: ToolDriverError) -> bool:
     return any(marker in message for marker in _MISSING_TOOL_MARKERS)
 
 
-def _lookup_via_search(phone: str) -> list[ShopifyPhoneMatch] | None:
+def _lookup_via_search(
+    phone: str, deadline: float | None = None
+) -> list[ShopifyPhoneMatch] | None:
     """Try Composio customer search when the toolkit exposes it; ``None`` if absent."""
+    if deadline is None:
+        deadline = time.monotonic() + _lookup_budget_s()
     tool_available = False
     for query in _search_queries(phone):
+        if time.monotonic() >= deadline:
+            # Out of ack budget mid-search. The tool exists (we called it at least
+            # once), so report "no match" rather than falling through to the scan,
+            # which is the slower path by two orders of magnitude.
+            logger.warning(
+                "Shopify phone-match search hit the %.1fs ack budget; reporting "
+                "no match for this inbound.",
+                _lookup_budget_s(),
+            )
+            return [] if tool_available else None
         try:
             raw = _execute_shopify(_SEARCH_ACTION, {"query": query, "limit": 10})
         except ToolDriverError as err:
@@ -166,9 +209,21 @@ def _lookup_via_search(phone: str) -> list[ShopifyPhoneMatch] | None:
     return None
 
 
-def _lookup_via_pagination(phone: str) -> list[ShopifyPhoneMatch]:
+def _lookup_via_pagination(
+    phone: str, deadline: float | None = None
+) -> list[ShopifyPhoneMatch]:
+    if deadline is None:
+        deadline = time.monotonic() + _lookup_budget_s()
     since_id = ""
-    for _page in range(_MAX_SCAN_PAGES):
+    for page in range(_MAX_SCAN_PAGES):
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "Shopify phone-match scan hit the %.1fs ack budget after %d page(s) "
+                "without a match; reporting no match for this inbound.",
+                _lookup_budget_s(),
+                page,
+            )
+            return []
         params: dict[str, Any] = {
             "limit": _PAGE_SIZE,
             "fields": "id,phone,first_name,last_name,company,default_address",
@@ -204,7 +259,10 @@ def lookup_shopify_customers_by_phone(phone: str) -> list[ShopifyPhoneMatch] | N
     """
     if _composio_client() is None:
         return None
-    search_matches = _lookup_via_search(phone)
+    # One budget for the whole lookup, not one per phase -- otherwise the search
+    # phase's spend is invisible to the scan that follows it (0.0.4 S12 fix wave 1).
+    deadline = time.monotonic() + _lookup_budget_s()
+    search_matches = _lookup_via_search(phone, deadline)
     if search_matches is not None:
         return search_matches
-    return _lookup_via_pagination(phone)
+    return _lookup_via_pagination(phone, deadline)

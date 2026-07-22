@@ -13,6 +13,8 @@ per-call deadline (NFR-8).
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
 
 import pytest
 
@@ -23,8 +25,12 @@ from toee_hermes.drivers.composio import (
     build_composio_driver,
     deadline_seconds,
     pinned_toolkit_versions,
+    require_composio_configuration,
 )
-from toee_hermes.drivers.composio.driver import DEFAULT_DEADLINE_MS
+from toee_hermes.drivers.composio.driver import (
+    DEFAULT_DEADLINE_MS,
+    _ROUND_TRIPS_PER_EXECUTE,
+)
 from toee_hermes.errors import ToolDriverError
 
 _COMPOSIO_INSTALLED = importlib.util.find_spec("composio") is not None
@@ -127,3 +133,70 @@ def test_deadline_defaults_and_overrides(monkeypatch) -> None:
     # A typo must not silently remove the bound.
     monkeypatch.setenv("COMPOSIO_DEADLINE_MS", "soon")
     assert deadline_seconds() == DEFAULT_DEADLINE_MS / 1000
+
+
+def _fake_composio_sdk(monkeypatch) -> dict:
+    """Swap the optional SDK for a constructor that records its kwargs."""
+    captured: dict = {}
+
+    class _Composio:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    module = types.ModuleType("composio")
+    module.Composio = _Composio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "composio", module)
+    return captured
+
+
+def test_sdk_timeout_divides_the_deadline_across_the_round_trips(monkeypatch) -> None:
+    """NFR-8 bounds one TOOL CALL; the SDK ``timeout`` bounds one HTTP REQUEST.
+
+    ``Tools.execute`` makes three HTTP requests (schema retrieve, a second
+    *uncached* retrieve inside ``_execute_tool``, then the vendor call), so passing
+    the whole deadline made the real per-call bound 3x the advertised one --
+    24 s at the 8 s default (0.0.4 S12 fix wave 1, review Finding 2).
+    """
+    captured = _fake_composio_sdk(monkeypatch)
+    monkeypatch.setenv("COMPOSIO_API_KEY", "ck_test_not_used_for_network")
+    monkeypatch.setenv("COMPOSIO_DEADLINE_MS", "9000")
+    for env_var in TOOLKIT_VERSION_ENV.values():
+        monkeypatch.setenv(env_var, "20260506_00")
+
+    build_composio_driver()
+
+    # Retries would make the deadline per-ATTEMPT instead of per-call.
+    assert captured["max_retries"] == 0
+    assert captured["timeout"] == pytest.approx(9.0 / _ROUND_TRIPS_PER_EXECUTE)
+    # The property that matters: worst case for one execute_action <= the deadline.
+    assert captured["timeout"] * _ROUND_TRIPS_PER_EXECUTE == pytest.approx(
+        deadline_seconds()
+    )
+
+
+# --- boot gate (review Finding 4) --------------------------------------------
+
+
+def test_require_composio_configuration_is_a_noop_off_composio(monkeypatch) -> None:
+    monkeypatch.setenv("INTEGRATION_DRIVER", "mock")
+    monkeypatch.delenv("COMPOSIO_API_KEY", raising=False)
+
+    require_composio_configuration()  # must not raise: mock deployments boot clean
+
+
+def test_require_composio_configuration_fails_on_a_missing_pin(monkeypatch) -> None:
+    # The whole point: this runs at process boot, so the operator reading the
+    # message is the one who can fix it. Before it existed, build_composio_driver
+    # was only reached per boot_profile() -- per TURN -- and this ToolDriverError
+    # escaped register_turn as a raw exception on the first customer message.
+    _fake_composio_sdk(monkeypatch)
+    monkeypatch.setenv("INTEGRATION_DRIVER", "composio")
+    monkeypatch.setenv("COMPOSIO_API_KEY", "ck_test_not_used_for_network")
+    monkeypatch.setenv("COMPOSIO_SHOPIFY_CONNECTED_ACCOUNT_ID", "ca_shopify")
+    monkeypatch.delenv("COMPOSIO_TOOLKIT_VERSION_SHOPIFY", raising=False)
+
+    with pytest.raises(ToolDriverError) as excinfo:
+        require_composio_configuration()
+
+    assert excinfo.value.error_class == "configuration_missing"
+    assert "COMPOSIO_TOOLKIT_VERSION_SHOPIFY" in str(excinfo.value)

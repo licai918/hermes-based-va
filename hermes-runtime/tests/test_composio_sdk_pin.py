@@ -94,6 +94,20 @@ def test_smoke_calls_name_real_mapped_actions() -> None:
         assert call.gated_off == (spec.unavailable is not None)
 
 
+def test_smoke_probes_the_ingress_ack_path_slugs() -> None:
+    """The gateway's ingress phone match is not in ACTION_MAPPING (fix wave 1).
+
+    Probing only ACTION_MAPPING left the one path with a latency SLO unprobed --
+    and it was wrong: SHOPIFY_GET_ALL_CUSTOMERS does not exist at the pinned
+    Shopify version. The smoke reads the slugs from shopify_identity rather than
+    re-typing them, so the two cannot drift; this holds that wiring.
+    """
+    from hermes_runtime.composio_smoke import _INGRESS_SLUGS
+    from hermes_runtime.datastore.shopify_identity import _LIST_ACTION, _SEARCH_ACTION
+
+    assert {slug for _name, slug in _INGRESS_SLUGS} == {_SEARCH_ACTION, _LIST_ACTION}
+
+
 def test_driver_client_fails_closed_on_a_missing_data_object() -> None:
     from toee_hermes.errors import ToolDriverError
 

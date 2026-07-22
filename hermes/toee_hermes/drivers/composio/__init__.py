@@ -17,6 +17,7 @@ from .driver import (
     build_composio_driver,
     deadline_seconds,
     pinned_toolkit_versions,
+    require_composio_configuration,
 )
 
 __all__ = [
@@ -31,4 +32,5 @@ __all__ = [
     "build_composio_driver",
     "deadline_seconds",
     "pinned_toolkit_versions",
+    "require_composio_configuration",
 ]

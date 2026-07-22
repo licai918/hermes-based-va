@@ -24,6 +24,7 @@ import os
 
 from fastapi import FastAPI
 
+from toee_hermes.drivers.composio import require_composio_configuration
 from toee_hermes.plugin.profiles import INTERNAL, PROFILE_ENV_VAR, PROFILES
 from toee_hermes.tool_gate import GateDecision, ToolExecutionContext, ToolGate
 
@@ -102,6 +103,11 @@ def build_tool_dispatch_app() -> FastAPI:
             f"Expected one of: {', '.join(PROFILES)}."
         )
     api_token = _require_env(DISPATCH_API_TOKEN_ENV)
+    # 0.0.4 S12 fix wave 1: the copilot server's agent:turn route boots a profile per
+    # turn, so a broken Composio config used to escape as a raw exception on the
+    # first draft. No-op unless INTEGRATION_DRIVER=composio, and the runbook sets
+    # that on every dispatch server so the fleet cannot go split-brain.
+    require_composio_configuration()
 
     # S10 cold-load mitigation: nudges the fastembed model into memory in the
     # background so the first real knowledge query doesn't pay the ~800ms load

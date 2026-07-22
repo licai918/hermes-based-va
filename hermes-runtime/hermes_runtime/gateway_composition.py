@@ -39,6 +39,7 @@ from typing import Any, NamedTuple
 
 from fastapi import FastAPI
 
+from toee_hermes.drivers.composio import require_composio_configuration
 from toee_hermes.plugin.profiles import EXTERNAL, PROFILE_ENV_VAR
 
 from hermes_runtime.access_log import install_access_log_redaction
@@ -268,7 +269,8 @@ def build_gateway_app() -> FastAPI:
 
     Raises ``ValueError`` when any required secret is absent (webhook token,
     internal-job secret, SimpleTexting API token, OpenRouter API key) or when
-    ``TOOL_BACKEND`` is not ``datastore``.
+    ``TOOL_BACKEND`` is not ``datastore``, and ``ToolDriverError`` when
+    ``INTEGRATION_DRIVER=composio`` is misconfigured (0.0.4 S12 fix wave 1).
     """
     # Before anything can serve a request: the webhook token rides in the URL
     # (SimpleTexting offers no header/signature option), and uvicorn's access log
@@ -278,6 +280,9 @@ def build_gateway_app() -> FastAPI:
     webhook_secret = _require_env(WEBHOOK_SECRET_ENV)
     internal_job_secret = _require_env(INTERNAL_JOB_SECRET_ENV)
     _require_datastore_backend()
+    # The gateway reaches Composio on the ingress ack path (shopify_identity), so a
+    # broken pin here is a first-webhook failure, not a first-turn one.
+    require_composio_configuration()
     collaborators = resolve_turn_collaborators()
 
     # 0.0.4 S02 (FR-10, ADR-0155): fast-ack writes one durable `job` row instead of

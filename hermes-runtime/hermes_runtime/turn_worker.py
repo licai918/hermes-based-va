@@ -251,6 +251,8 @@ def poll_forever(
 
 def main() -> int:  # pragma: no cover - the process shell; run_once is the tested unit
     """Poll the queue until SIGTERM/Ctrl-C, which exits between jobs."""
+    from toee_hermes.drivers.composio import require_composio_configuration
+
     from .gateway_composition import _require_datastore_backend, resolve_turn_collaborators
 
     # Fail closed before building anything (fix wave 2). The gateway already
@@ -261,6 +263,11 @@ def main() -> int:  # pragma: no cover - the process shell; run_once is the test
     # own empty per-process InMemoryGatewayStore, and dead-letter every one of
     # them after 3 attempts instead of merely failing to start.
     _require_datastore_backend()
+    # Same posture for the Composio config (0.0.4 S12 fix wave 1). This process is
+    # where toee_shopify_read / toee_qbo_read actually execute, and the driver is
+    # built per boot_profile() -- i.e. per turn -- so a missing toolkit pin used to
+    # escape register_turn as a raw exception on the FIRST customer message.
+    require_composio_configuration()
 
     # Both stop signals take the graceful path: finish this turn, release its
     # lease, exit between jobs. Installed first, before the slow collaborator

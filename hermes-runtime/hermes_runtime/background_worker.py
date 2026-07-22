@@ -349,6 +349,8 @@ def poll_forever(
 
 def main() -> int:  # pragma: no cover - the process shell; run_once is the tested unit
     """Poll the queue until SIGTERM/Ctrl-C, which exits between jobs."""
+    from toee_hermes.drivers.composio import require_composio_configuration
+
     from .gateway_composition import _require_datastore_backend
 
     # Fail closed BEFORE building anything (the S02 lesson). On a non-datastore
@@ -356,6 +358,10 @@ def main() -> int:  # pragma: no cover - the process shell; run_once is the test
     # writes to a store nobody else can see -- and the worker would still claim
     # and destroy real queued jobs while doing it.
     _require_datastore_backend()
+    # Same posture for the Composio config (0.0.4 S12 fix wave 1): this worker
+    # shares the image and the l6_review fork's tool surface, so it can build the
+    # Composio driver too -- per job, not per process, until this check.
+    require_composio_configuration()
 
     # Installed before the slow setup below, so SIGTERM/SIGINT take the graceful
     # path for the whole of boot, not just the loop.

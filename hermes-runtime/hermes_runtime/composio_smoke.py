@@ -14,15 +14,18 @@ Three phases, each printing one PASS/FAIL/SKIP line per check:
    version pins. A missing pin fails the driver build (see
    ``pinned_toolkit_versions``), so this phase is what tells the operator which
    env var to set.
-2. **surface**  -- every callable slug in ``ACTION_MAPPING`` is resolved against
-   the live toolkit AT THE PINNED VERSION. This is the check that catches "the
-   pin is a real version, but this action does not exist in it" before a customer
-   does -- it is how S12 found that Composio's Square toolkit has no
-   create-payment-link action at all.
+2. **surface**  -- every callable slug in ``ACTION_MAPPING`` **plus the two slugs
+   the gateway ingress ack path uses** (``hermes_runtime.datastore.shopify_identity``)
+   is resolved against the live toolkit AT THE PINNED VERSION. This is the check
+   that catches "the pin is a real version, but this action does not exist in it"
+   before a customer does -- it is how S12 found that Composio's Square toolkit has
+   no create-payment-link action at all, and how fix wave 1 found that
+   ``SHOPIFY_GET_ALL_CUSTOMERS`` does not exist either.
 3. **per-tool** -- happy path (a real governed call through ``execute_tool``,
-   asserting the public contract shape) and fail-closed path (the same call with
-   the backend unreachable, asserting a governed unavailable result inside the
-   driver deadline -- NFR-8 -- and never a mock payload).
+   asserting the public contract shape) and fail-closed path (the same call
+   against a socket that accepts and never answers, asserting a governed
+   unavailable result inside the driver deadline -- NFR-8 -- and never a mock
+   payload).
 
 Actions the driver deliberately gates off (``ActionSpec.unavailable``) are not
 probed; their happy-path check asserts the governed refusal instead. A check that
@@ -33,9 +36,12 @@ that it cannot be made green without a live backend.
 from __future__ import annotations
 
 import os
+import socket
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterator, Optional, Sequence
 
 from toee_hermes.drivers.composio import (
     ACTION_MAPPING,
@@ -50,15 +56,45 @@ from toee_hermes.execute import execute_tool
 from toee_hermes.plugin.profiles import EXTERNAL
 from toee_hermes.tool_gate import ToolExecutionContext
 
+from hermes_runtime.datastore.shopify_identity import _LIST_ACTION, _SEARCH_ACTION
 from hermes_runtime.tool_dispatch_app import profile_allowlist_gate
-
-# An address nothing listens on, so a call attempt fails at connect. Used only by
-# the fail-closed phase, which rebuilds the driver against it.
-_BLACKHOLE_BASE_URL = "http://127.0.0.1:9"
 
 # Slack over the deadline before we call a "fail-closed" degrade a hang instead.
 # Same shape as the knowledge driver's deadline gate.
 _DEADLINE_SLACK_S = 2.0
+
+
+@contextmanager
+def _hanging_backend() -> Iterator[str]:
+    """A TCP listener that accepts a connection and then never answers.
+
+    The fail-closed phase used ``http://127.0.0.1:9``, which *refuses* instantly.
+    That proves the driver fails closed, but it never exercises the timeout path
+    NFR-8 is actually about -- a backend that takes the connection and hangs. This
+    does, so the elapsed-vs-deadline assertion below measures something.
+    """
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    accepted: list[socket.socket] = []
+    stop = threading.Event()
+
+    def _accept_and_stall() -> None:
+        while not stop.is_set():
+            try:
+                conn, _addr = listener.accept()
+            except OSError:
+                return
+            accepted.append(conn)  # held open, never written to
+
+    threading.Thread(target=_accept_and_stall, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        stop.set()
+        listener.close()
+        for conn in accepted:
+            conn.close()
 
 
 @dataclass
@@ -132,6 +168,19 @@ def check_config() -> list[Check]:
 # --- phase 2: surface --------------------------------------------------------
 
 
+# Slugs the GATEWAY INGRESS ACK PATH depends on, which are NOT in ACTION_MAPPING:
+# hermes_runtime.datastore.shopify_identity resolves an unknown inbound phone
+# through them before persist_accepted_inbound returns the provider's 200. Probing
+# only ACTION_MAPPING left the one path with a latency SLO unprobed (fix wave 1,
+# review Finding 1) -- and it was wrong: SHOPIFY_GET_ALL_CUSTOMERS 404s at pin
+# 20260506_00. Imported from that module rather than re-typed, so the two cannot
+# drift.
+_INGRESS_SLUGS: tuple[tuple[str, str], ...] = (
+    ("ingress phone match (search)", _SEARCH_ACTION),
+    ("ingress phone match (scan fallback)", _LIST_ACTION),
+)
+
+
 def check_surface() -> list[Check]:
     """Resolve every mapped action slug against the live toolkit at its pin.
 
@@ -147,6 +196,14 @@ def check_surface() -> list[Check]:
     if sdk is None:  # pragma: no cover - only when the client seam is faked
         return [Check("sdk client", False, "driver is not backed by the Composio SDK")]
 
+    def _resolve(name: str, slug: str) -> Check:
+        try:
+            resolved = sdk.tools.get_raw_composio_tool_by_slug(slug)
+            toolkit = getattr(getattr(resolved, "toolkit", None), "slug", "?")
+            return Check(name, True, f"toolkit={toolkit}")
+        except Exception as err:  # noqa: BLE001 - any resolution failure is a FAIL
+            return Check(name, False, f"{type(err).__name__}: {err}")
+
     checks: list[Check] = []
     for (tool, action), spec in sorted(ACTION_MAPPING.items()):
         if spec.unavailable is not None:
@@ -158,24 +215,9 @@ def check_surface() -> list[Check]:
                 )
             )
             continue
-        try:
-            resolved = sdk.tools.get_raw_composio_tool_by_slug(spec.action_slug)
-            toolkit = getattr(getattr(resolved, "toolkit", None), "slug", "?")
-            checks.append(
-                Check(
-                    f"{tool}.{action} -> {spec.action_slug}",
-                    True,
-                    f"toolkit={toolkit}",
-                )
-            )
-        except Exception as err:  # noqa: BLE001 - any resolution failure is a FAIL
-            checks.append(
-                Check(
-                    f"{tool}.{action} -> {spec.action_slug}",
-                    False,
-                    f"{type(err).__name__}: {err}",
-                )
-            )
+        checks.append(_resolve(f"{tool}.{action} -> {spec.action_slug}", spec.action_slug))
+    for name, slug in _INGRESS_SLUGS:
+        checks.append(_resolve(f"{name} -> {slug}", slug))
     return checks
 
 
@@ -274,65 +316,81 @@ def check_happy_paths() -> list[Check]:
 
 
 def check_fail_closed() -> list[Check]:
-    """Backend unreachable -> governed unavailable inside the deadline (NFR-8).
+    """Backend HUNG -> governed unavailable inside the deadline (NFR-8).
 
-    Points the SDK at a dead address rather than mocking the client, so this
-    exercises the real timeout/connect path the deadline is supposed to bound.
-    Also asserts the result is NOT a mock payload: FR-21's "never a silent
-    fallback to mock in production" is the failure mode with teeth.
+    Points the SDK at a socket that accepts and never answers (:func:`_hanging_backend`)
+    rather than mocking the client, so this exercises the real read-timeout path the
+    deadline is supposed to bound -- NFR-8's words are "a hung external backend".
+    Also asserts the result is NOT a mock payload: FR-21's "never a silent fallback
+    to mock in production" is the failure mode with teeth.
     """
     customer_id = _env_customer_id() or "gid://shopify/Customer/0"
     deadline = deadline_seconds()
     budget = deadline + _DEADLINE_SLACK_S
 
     previous = os.environ.get("COMPOSIO_BASE_URL")
-    os.environ["COMPOSIO_BASE_URL"] = _BLACKHOLE_BASE_URL
-    try:
+    with _hanging_backend() as base_url:
+        os.environ["COMPOSIO_BASE_URL"] = base_url
         try:
-            driver = build_composio_driver()
-        except ToolDriverError as err:
-            return [Check("build driver (blackhole)", False, str(err))]
+            try:
+                driver = build_composio_driver()
+            except ToolDriverError as err:
+                return [Check("build driver (hung backend)", False, str(err))]
 
-        mock = MockDriver(create_all_mock_handlers())
-        checks: list[Check] = []
-        for call in SMOKE_CALLS:
-            name = f"{call.tool}.{call.action} fail-closed"
-            if call.gated_off:
-                # Its refusal is asserted in 3a and never depends on the backend.
-                checks.append(Check(name, None, "gated off in the driver"))
-                continue
-            started = time.monotonic()
-            result = _run_governed(driver, call, customer_id)
-            elapsed = time.monotonic() - started
+            mock = MockDriver(create_all_mock_handlers())
+            checks: list[Check] = []
+            for call in SMOKE_CALLS:
+                name = f"{call.tool}.{call.action} fail-closed"
+                if call.gated_off:
+                    # Its refusal is asserted in 3a and never depends on the backend.
+                    checks.append(Check(name, None, "gated off in the driver"))
+                    continue
+                started = time.monotonic()
+                result = _run_governed(driver, call, customer_id)
+                elapsed = time.monotonic() - started
 
-            if result.ok:
-                checks.append(
-                    Check(name, False, f"backend down but result ok=True after {elapsed:.1f}s")
-                )
-                continue
-            if elapsed > budget:
+                if result.ok:
+                    # The FR-21 check, and the only branch it can live in: a
+                    # governed failure carries data=None, so comparing THAT to the
+                    # mock's payload could never fire (fix wave 1, Finding 10). An
+                    # ok=True result with the backend hung is the actual silent
+                    # fallback FR-21 forbids, so name it when the payload matches.
+                    mock_result = _run_governed(mock, call, customer_id)
+                    fell_back = mock_result.ok and result.data == mock_result.data
+                    checks.append(
+                        Check(
+                            name,
+                            False,
+                            "returned the MOCK payload (FR-21 violation) after "
+                            f"{elapsed:.1f}s"
+                            if fell_back
+                            else f"backend hung but result ok=True after {elapsed:.1f}s",
+                        )
+                    )
+                    continue
+                if elapsed > budget:
+                    checks.append(
+                        Check(
+                            name,
+                            False,
+                            f"governed {result.error_class} but took {elapsed:.1f}s "
+                            f"(deadline {deadline:.1f}s + {_DEADLINE_SLACK_S:.0f}s slack)",
+                        )
+                    )
+                    continue
                 checks.append(
                     Check(
                         name,
-                        False,
-                        f"governed {result.error_class} but took {elapsed:.1f}s "
-                        f"(deadline {deadline:.1f}s + {_DEADLINE_SLACK_S:.0f}s slack)",
+                        True,
+                        f"{result.error_class} in {elapsed:.1f}s (deadline {deadline:.1f}s)",
                     )
                 )
-                continue
-            mock_result = _run_governed(mock, call, customer_id)
-            if mock_result.ok and result.data == mock_result.data:
-                checks.append(Check(name, False, "returned the MOCK payload (FR-21 violation)"))
-                continue
-            checks.append(
-                Check(name, True, f"{result.error_class} in {elapsed:.1f}s (deadline {deadline:.1f}s)")
-            )
-        return checks
-    finally:
-        if previous is None:
-            os.environ.pop("COMPOSIO_BASE_URL", None)
-        else:
-            os.environ["COMPOSIO_BASE_URL"] = previous
+            return checks
+        finally:
+            if previous is None:
+                os.environ.pop("COMPOSIO_BASE_URL", None)
+            else:
+                os.environ["COMPOSIO_BASE_URL"] = previous
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -351,7 +409,7 @@ def main() -> int:
     passed = _print("1. config", check_config())
     passed &= _print("2. surface (slugs resolve at the pinned toolkit version)", check_surface())
     passed &= _print("3a. happy path", check_happy_paths())
-    passed &= _print("3b. fail-closed (backend unreachable)", check_fail_closed())
+    passed &= _print("3b. fail-closed (backend hung -- accepts, never answers)", check_fail_closed())
 
     print(f"\nsmoke: {'PASS' if passed else 'FAIL'}")
     return 0 if passed else 1
