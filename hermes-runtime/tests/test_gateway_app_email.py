@@ -2,7 +2,7 @@
 
 A single signed POST to ``/webhooks/simulated-email`` fast-acks and enqueues via
 ``store.queue``. In production that is the durable Postgres queue the separate
-turn-worker process claims (0.0.4 S02, ADR-0153); here a test-only
+turn-worker process claims (0.0.4 S02, ADR-0155); here a test-only
 ``_InlineTurnQueue`` runs the same shared ``execute_agent_turn_job`` inline instead,
 so the test stays DB-free and synchronous while covering the S17 email-channel
 binding (subject folded into the turn body, reply mirrored onto the email thread
@@ -51,7 +51,7 @@ class _InlineTurnQueue:
     """Test-only ``JobQueue`` that runs the shared bound-turn job body inline.
 
     Production writes a durable row inside the store's persist transaction and the
-    turn-worker process claims it (0.0.4 S02, ADR-0153); this test is about the S17
+    turn-worker process claims it (0.0.4 S02, ADR-0155); this test is about the S17
     email channel binding, not the substrate, so running the job body inline keeps
     it synchronous and DB-free. Injected into the store, which is where the enqueue
     lives now.

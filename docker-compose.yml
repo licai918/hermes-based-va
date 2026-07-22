@@ -25,7 +25,7 @@ services:
       timeout: 5s
       retries: 10
 
-  # Turn worker (0.0.4 S02, FR-9/FR-10, ADR-0153). Claims `agent_turn` jobs only --
+  # Turn worker (0.0.4 S02, FR-9/FR-10, ADR-0155). Claims `agent_turn` jobs only --
   # FR-9 isolation IS the claim allowlist, so a slow background job (S04) can never
   # queue ahead of a customer turn. Same image as the gateway, different command;
   # the gateway process now only enqueues.
@@ -65,7 +65,7 @@ services:
     # lease is sized for). The two move together: change the lease, change this.
     stop_grace_period: 310s
 
-  # Background worker (0.0.4 S04, FR-9 background half / FR-11, ADR-0153). Claims
+  # Background worker (0.0.4 S04, FR-9 background half / FR-11, ADR-0155). Claims
   # `l6_review`, `retention` and `ingest` -- never `agent_turn`. That allowlist IS
   # the isolation: a corpus re-ingest that runs for minutes cannot queue ahead of
   # a customer's turn, because the two processes claim disjoint type sets.

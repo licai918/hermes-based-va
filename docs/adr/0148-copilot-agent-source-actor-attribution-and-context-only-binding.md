@@ -189,11 +189,11 @@ this test, not just a code review (RK-4).
 
 > Added 2026-07-21 (0.0.4 S04 fix wave 1). Decision 1's invariant above is
 > **amended, not repealed**: `context.user_id` no longer has exactly one source.
-> Recorded here rather than in [ADR-0153](0153-durable-postgres-job-queue-supersedes-cloud-tasks.md)
+> Recorded here rather than in [ADR-0155](0155-durable-postgres-job-queue-supersedes-cloud-tasks.md)
 > because it is *this* ADR's invariant that moved — anyone who touches
 > `resolve_memory_write_source`, the `actor_account_id` column, or the
 > `context.user_id` contract reads this file, and none of them would think to
-> read a queue ADR. ADR-0153 carries a one-line pointer back here.
+> read a queue ADR. ADR-0155 carries a one-line pointer back here.
 
 ### What changed
 

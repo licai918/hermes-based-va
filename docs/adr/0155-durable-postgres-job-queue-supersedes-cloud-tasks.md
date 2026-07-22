@@ -1,8 +1,14 @@
 # Durable Postgres job queue (supersedes ADR-0105's Cloud Tasks target)
 
+> ADR number: originally drafted as 0153; renumbered to 0155 because `main`
+> landed a different ADR-0153 (provider-neutral SMS tool naming) first, and 0154
+> is taken by the manual-scoring-feedback ADR. Both 0153s were authored the same
+> day on separate branches; because their filenames differ after the number
+> prefix, the merge would have produced two ADR-0153s with no git conflict.
+
 > **Status: Accepted — queue core implemented and cut over** (decided during
 > 0.0.4, 2026-07-21). Ships on `feat/0.0.4-land-all`: S01 (FR-7, FR-8, FR-14; PRD
-> Track T2), with [migration 0011](../../hermes-runtime/migrations/0011_job_queue.sql)
+> Track T2), with [migration 0014](../../hermes-runtime/migrations/0014_job_queue.sql)
 > and `hermes-runtime/hermes_runtime/job_queue.py`; **S02** (FR-9 turn half, FR-10,
 > NFR-1, NFR-2) wired the gateway's fast-ack path to it, added
 > `hermes_runtime/turn_worker.py` + the `turn-worker` compose service, and deleted
@@ -55,7 +61,7 @@ answer "what runs this every N minutes" itself.
 
 ### 1. The queue is a Postgres table in the Toee Business Datastore
 
-One `job` table (migration `0011_job_queue.sql`) in the database that is already
+One `job` table (migration `0014_job_queue.sql`) in the database that is already
 the system of record (ADR-0140), claimed with `FOR UPDATE SKIP LOCKED`.
 
 Rationale: it is **zero new infrastructure**. Postgres is already provisioned,

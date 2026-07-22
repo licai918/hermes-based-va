@@ -58,7 +58,7 @@ class JobQueue(Protocol):
     """Async agent-turn dispatch seam for the **in-memory** store.
 
     Production does not go through this Protocol any more: the durable Postgres
-    path (ADR-0153) enqueues inside ``PostgresGatewayStore``'s own transaction
+    path (ADR-0155) enqueues inside ``PostgresGatewayStore``'s own transaction
     via :func:`hermes_runtime.job_queue.insert_job`, because a seam here is by
     construction a second commit boundary. What remains is the DB-free substrate
     -- :class:`InMemoryJobQueue` and the test doubles that run the job body

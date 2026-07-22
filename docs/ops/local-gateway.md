@@ -136,7 +136,7 @@ Use a **compact JSON body** for signing; whitespace changes invalidate the signa
 | Transient identity lookup failure | **500** | Retryable ingress error |
 
 After a **200 enqueue** the gateway has written one row to the durable `job` table and
-returned (fast-ack, ADR-0103/ADR-0153). **The turn does not run in the gateway process
+returned (fast-ack, ADR-0103/ADR-0155). **The turn does not run in the gateway process
 any more** — you must also be running the turn worker:
 
 ```bash

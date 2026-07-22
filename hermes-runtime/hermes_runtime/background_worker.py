@@ -1,6 +1,6 @@
 """Background worker: the durable consumer of every NON-turn job (0.0.4 S04).
 
-FR-9 (background half) / FR-11, ADR-0153. The L6 learning fork, the Customer
+FR-9 (background half) / FR-11, ADR-0155. The L6 learning fork, the Customer
 Memory retention sweep and the knowledge corpus re-ingest used to run in three
 different places -- inline on the copilot turn's thread, synchronously inside an
 admin ``tools:dispatch`` call, and nowhere at all (a panel that printed a CLI

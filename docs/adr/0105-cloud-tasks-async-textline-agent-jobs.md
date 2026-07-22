@@ -1,14 +1,26 @@
 # Cloud Tasks handoff for async Textline agent execution
 
-> **Transport superseded by ADR-0153.** Cloud Tasks was never built and
+> **Two independent supersessions — both apply.** This ADR's *provider* and its
+> *transport* were each replaced, on separate branches, within a day of each
+> other.
+>
+> **1. Provider retired (2026-07-21).** Textline was cancelled: the webhook is
+> `/webhooks/simpletexting` and outbound SMS uses `toee_sms_reply`.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+>
+> **2. Transport superseded (0.0.4).** Cloud Tasks was never built and
 > contradicts the local-first posture of ADR-0142; the async handoff is a durable
 > **Postgres job queue** in the Toee Business Datastore
-> ([migration 0011](../../hermes-runtime/migrations/0011_job_queue.sql)), claimed
-> by worker processes with `FOR UPDATE SKIP LOCKED`. The **enqueue rule below
-> still holds** — identity keys only (`eventId` + `conversationId`), no PII body —
-> as does reload-by-`eventId` (ADR-0107). What changes is the transport and the
-> handler seam: a turn worker claims from the table instead of Cloud Tasks POSTing
-> `/internal/jobs/agent-turn`.
+> ([migration 0014](../../hermes-runtime/migrations/0014_job_queue.sql)), claimed
+> by worker processes with `FOR UPDATE SKIP LOCKED`. What changes is the transport
+> and the handler seam: a turn worker claims from the table instead of Cloud Tasks
+> POSTing `/internal/jobs/agent-turn`.
+> Superseding decision → [ADR-0155](0155-durable-postgres-job-queue-supersedes-cloud-tasks.md).
+>
+> **What still holds:** the **enqueue rule below** — identity keys only
+> (`eventId` + `conversationId`), no PII body — and reload-by-`eventId`
+> (ADR-0107). Nothing else in this ADR is live: read the body as the historical
+> record of a decision whose provider *and* transport have both moved on.
 
 After a Textline webhook returns `200`, **External Customer Service Profile** execution runs asynchronously through Google Cloud Tasks rather than inside the webhook request lifecycle.
 
