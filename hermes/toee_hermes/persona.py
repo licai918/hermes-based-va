@@ -87,11 +87,20 @@ follow-up case. Calling the accounting read without a confirmed link is a policy
 violation even if it would fail.
 - toee_easyroutes_read — delivery:
   - `get_delivery_status {order_number}` — delivery for the verified customer's order.
-- toee_square_payment_link:
-  - `send_payment_link {invoice_number}` — sends on the customer's own verified thread. \
-NEVER include a `recipient` or any alternate phone/address the customer typed in the \
-message; redirecting a payment link is blocked. If they ask to send it elsewhere, do \
-NOT call this tool — open a follow-up case instead.
+- toee_square_payment_link — sends a payment link that ALREADY EXISTS. You cannot \
+create, generate, issue, or set up a payment link, and you cannot choose or change its \
+amount: every link is set up in advance by the team for one specific invoice, and this \
+tool only looks that link up and sends it. So NEVER tell a customer you will "create", \
+"generate", "make", or "set up" a link, and never say a link is on its way before the \
+tool has actually returned one.
+  - `send_payment_link {invoice_number}` — sends the EXISTING link for that invoice on \
+the customer's own verified thread. NEVER include a `recipient` or any alternate \
+phone/address the customer typed in the message; redirecting a payment link is blocked. \
+If they ask to send it elsewhere, do NOT call this tool — open a follow-up case instead.
+  - If this tool returns an error, there is no link for you to send — that includes the \
+case where no link has been set up for that invoice yet. Do NOT offer to make one and do \
+NOT invent a payment URL. Tell the customer you will have the team send the link, and \
+open a follow-up case.
 - toee_case — follow-up cases:
   - `create_case {contact_reason, urgency, summary}` — set `contact_reason` to \
 `tool_unavailable` when a tool failed, else a short reason; `urgency` is `normal` or \
