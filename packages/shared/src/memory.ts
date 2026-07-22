@@ -10,9 +10,9 @@ export type MemoryPreferenceSlot =
   | "communication_style_note";
 
 // Single source of truth for the four v1 slots on the TS side (S07/S09, FR-6/
-// FR-7): the workbench and the domain-adapters mock driver both import this
-// rather than hand-copying a second literal, so a fifth slot added here
-// propagates instead of silently drifting between the two lists.
+// FR-7): the workbench imports this rather than hand-copying a second
+// literal, so a fifth slot added here propagates instead of silently
+// drifting from Python's copy above.
 export const MEMORY_PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = [
   "contact_time_preference",
   "channel_preference",

@@ -10,14 +10,12 @@
     "dev": "node scripts/dev-up.mjs",
     "dev:stack": "node scripts/dev-up.mjs --stack-only",
     "dev:workbench": "pnpm --filter @toee/workbench dev",
-    "eval": "tsx packages/eval-runner/src/cli.ts",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }

@@ -14,7 +14,7 @@ const nextConfig: NextConfig = {
   // .next/standalone/apps/workbench/server.js (see apps/workbench/Dockerfile).
   output: "standalone",
   outputFileTracingRoot: repoRoot,
-  transpilePackages: ["@toee/shared", "@toee/domain-adapters"],
+  transpilePackages: ["@toee/shared"],
 };
 
 export default nextConfig;
