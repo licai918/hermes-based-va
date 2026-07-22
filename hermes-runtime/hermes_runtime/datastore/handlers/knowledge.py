@@ -331,12 +331,21 @@ def _enqueue_corpus_reingest(
     ingest goes straight to ``dead`` for S05's governed replay instead. Raise it
     only if ingest ever becomes cheap and resumable **and** the lease is solved
     first: an ingest that outlives ``job_queue.DEFAULT_LEASE_SECONDS`` (300 s) is
-    reclaimed mid-run, and that is harmless today ONLY because
-    ``attempts >= max_attempts`` sends the reclaimed row to ``dead`` (never
-    claimable) rather than back to ``failed``. Above 1, a reclaimed-but-still-
-    running ingest becomes claimable again and two processes TRUNCATE the corpus
-    concurrently -- so chunking ingest into cheap resumable pieces satisfies the
-    first half of this condition while leaving that hazard fully intact.
+    reclaimed mid-run, and above 1 the reclaimed-but-still-running row goes back
+    to ``failed`` and becomes claimable again, so two processes TRUNCATE the
+    corpus concurrently. Chunking ingest into cheap resumable pieces satisfies
+    the first half of this condition while leaving that hazard fully intact.
+
+    **Correction (S05 fix wave 1).** This note used to say the reclaim is
+    harmless *because* ``attempts >= max_attempts`` sends the row to ``dead``,
+    which is "never claimable". That stopped being true the moment S05 shipped a
+    governed Replay: ``dead`` is claimable again on one click, and the replay
+    resets ``attempts`` to 0. What holds the property now is
+    ``dead_letter._replay_job``'s refusal to replay while a job of the same type
+    is ``running`` -- so a lease-reclaimed ingest that is still embedding cannot
+    be handed a second runner. ``max_attempts=1`` still earns its place (it stops
+    the *automatic* retry from wiping the corpus twice over a transient
+    failure); it is no longer the concurrency argument.
     """
     del params
     from hermes_runtime.job_queue import INGEST_JOB_TYPE, insert_job

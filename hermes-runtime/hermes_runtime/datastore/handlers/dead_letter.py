@@ -31,6 +31,11 @@ into buckets an operator can act on differently:
                      these (deliberately -- S05 surfaces, it does not sweep).
 ===================  ==========================================================
 
+``recent_replays`` is the third, smallest list: the tail of the ``job_replayed``
+audit rows this handler writes, named to an account. FR-13 asks for a VISIBLE
+audit row and every other workbench audit view is case- or record-scoped, so
+without this the only way to see a replay's provenance was ``psql``.
+
 Both actions are admin-only (``_AGENT_EXCLUDED_ACTIONS``) -- reached only from
 the admin BFF's deterministic ``tools:dispatch`` call, never a live agent's tool
 loop. The toolset is allowlisted on ``supervisor_admin`` (ADR-0038): this is an
@@ -67,6 +72,16 @@ _STALE_INTENT_SECONDS = 900
 # prompt (draft text included); the view is a list, not a transcript.
 _SUMMARY_CHARS = 160
 
+# How many `job_replayed` audit rows the panel shows. FR-13 gate (2) asks for a
+# VISIBLE audit row, and every other workbench audit view is case- or
+# record-scoped, so a replay's provenance had nowhere to be seen.
+# ponytail: a fixed tail of the audit log, not an audit browser -- it exists so
+# an operator can confirm "my replay was recorded under my account" without
+# psql. Widen the action filter (it is already a list) the day the sibling
+# global audits -- corpus_reingest_queued, retention_sweep -- need the same.
+_REPLAY_LOG_LIMIT = 20
+_REPLAY_LOG_ACTIONS = ("job_replayed",)
+
 _JOB_COLUMNS = (
     "j.id, j.type, j.payload, j.attempts, j.max_attempts, j.last_error,"
     " j.run_at, j.created_at, j.updated_at"
@@ -86,6 +101,20 @@ def _summarize(payload: Any) -> dict[str, Any]:
         else:
             summary[key] = value
     return summary
+
+
+def _running_type_reason(job_type: str) -> str:
+    """Why a replay is refused while another job of this type is in flight.
+
+    Same sentence the handler denies with, but this is the copy that actually
+    reaches a human: a ``ToolDriverError`` message is sanitized on the way out
+    (ADR-0136), so a blocked reason has to ride the LIST row, exactly as the
+    per-type block already does.
+    """
+    return (
+        f"A {job_type} job is running right now, so replay would put a second "
+        "copy of the same work alongside a live one. Refresh once it finishes."
+    )
 
 
 def _list_dead_letters(
@@ -128,9 +157,32 @@ def _list_dead_letters(
         )
         outbound_rows = [serialize_row(row) for row in cur.fetchall()]
 
+        # Which types have a job in flight right now -- the same condition
+        # `_replay_job` denies on, read once for the whole list.
+        cur.execute("SELECT DISTINCT type FROM job WHERE status = 'running'")
+        running_types = {row["type"] for row in cur.fetchall()}
+
+        # The replay provenance (FR-13 gate 2). Joined to the account so the row
+        # names a human, the way _get_audit_log does for case audits.
+        cur.execute(
+            """
+            SELECT a.target_id AS job_id, a.account_id, a.created_at,
+                   a.details, acct.username AS actor_username
+            FROM workbench_audit_log a
+            LEFT JOIN workbench_account acct ON acct.id = a.account_id
+            WHERE a.action = ANY(%s)
+            ORDER BY a.created_at DESC
+            LIMIT %s
+            """,
+            (list(_REPLAY_LOG_ACTIONS), _REPLAY_LOG_LIMIT),
+        )
+        replay_rows = [serialize_row(row) for row in cur.fetchall()]
+
     jobs = []
     for row in job_rows:
         blocked = replay_blocked_reason(row["type"])
+        if blocked is None and row["type"] in running_types:
+            blocked = _running_type_reason(row["type"])
         outbound_status = row["outbound_status"]
         jobs.append(
             {
@@ -158,7 +210,17 @@ def _list_dead_letters(
         )
 
     outbound = [{**row, "bucket": _bucket(row)} for row in outbound_rows]
-    return {"jobs": jobs, "outbound": outbound}
+    recent_replays = [
+        {
+            "job_id": row["job_id"],
+            "type": (row["details"] or {}).get("type"),
+            "account_id": row["account_id"],
+            "actor_username": row["actor_username"],
+            "created_at": row["created_at"],
+        }
+        for row in replay_rows
+    ]
+    return {"jobs": jobs, "outbound": outbound, "recent_replays": recent_replays}
 
 
 def _bucket(row: dict[str, Any]) -> str:
@@ -190,13 +252,23 @@ def _replay_job(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     """Return one dead job to the queue, attributed and audited (FR-13).
 
     Order matters: actor first (fail closed), then the type check, then the
-    reset -- so a blocked or unattributed replay leaves both the ``job`` row and
-    the audit log untouched. The reset and the audit row share the handler's
-    transaction (``PostgresDriver.execute`` commits around the whole call,
-    ADR-0140), so a replay is never recorded without happening.
+    same-type-running check, then the reset -- so a blocked or unattributed
+    replay leaves both the ``job`` row and the audit log untouched. The reset and
+    the audit row share the handler's transaction (``PostgresDriver.execute``
+    commits around the whole call, ADR-0140), so a replay is never recorded
+    without happening.
 
-    No bulk replay in v1 (PRD default): one ``job_id``, one row. That is also
-    what keeps ``ingest`` safe -- see ``REPLAY_BLOCKED_JOB_TYPES``.
+    **Never a second copy of live work.** The single-``job_id`` API and the
+    absence of bulk replay bound how many rows ONE click touches; neither says
+    anything about a job of the same type that is *already running*. That gap is
+    reachable: a long ``ingest`` outliving the 300 s lease is reclaimed mid-run
+    and dead-lettered with ``last_error = 'lease expired'`` while it is still
+    embedding, and that row is then the most inviting Replay in the table. So
+    the guard is here, generic over every type rather than special-cased for
+    ``ingest``: refuse while a job of the same type is ``running``. It is also
+    what replaced ``ingest``'s old protection -- ``max_attempts = 1`` kept a
+    reclaimed row out of the claimable set only while ``dead`` was terminal, and
+    replay is precisely the operation that un-terminates it.
     """
     from hermes_runtime.job_queue import replay_blocked_reason, replay_dead_job
 
@@ -215,6 +287,13 @@ def _replay_job(conn, params: dict[str, Any], context: "ToolExecutionContext") -
         blocked = replay_blocked_reason(job_type)
         if blocked is not None:
             raise ToolDriverError("policy_blocked", blocked)
+
+        cur.execute(
+            "SELECT 1 FROM job WHERE type = %s AND status = 'running' LIMIT 1",
+            (job_type,),
+        )
+        if cur.fetchone() is not None:
+            raise ToolDriverError("policy_blocked", _running_type_reason(job_type))
 
         replayed_type = replay_dead_job(cur, job_id)
         if replayed_type is None:  # raced another replay between the two statements

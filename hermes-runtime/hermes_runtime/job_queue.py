@@ -97,10 +97,11 @@ INGEST_JOB_TYPE = "ingest"
 #   ingest     -- TRUNCATE + reload is idempotent in OUTCOME but NEVER safe
 #                 concurrently, and it re-reads INGEST_CORPUS_PATH at run time
 #                 (a replay ingests whatever artifact is on disk *now*).
-#                 ``max_attempts=1`` is what keeps a second ingest from starting
-#                 while the first still runs; one-at-a-time holds only while
-#                 there is no bulk replay, which is out of scope in v1 and must
-#                 stay that way for this type.
+#                 One-at-a-time is enforced by ``_replay_job``'s same-type
+#                 RUNNING check, NOT by ``max_attempts=1``: that ceiling only
+#                 kept a lease-reclaimed row out of the claimable set while
+#                 ``dead`` was terminal, and replay is exactly what un-terminates
+#                 it. Bulk replay stays out of scope for this type regardless.
 REPLAY_BLOCKED_JOB_TYPES: dict[str, str] = {
     L6_REVIEW_JOB_TYPE: (
         "Replay is blocked for l6_review: the review fork writes a proposal and "

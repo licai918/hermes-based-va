@@ -180,7 +180,11 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
         # "unavailable" receipt, never a fabricated job id (same shape as
         # enqueue_corpus_reingest above).
         "toee_job_queue": {
-            "list_dead_letters": lambda params, context: {"jobs": [], "outbound": []},
+            "list_dead_letters": lambda params, context: {
+                "jobs": [],
+                "outbound": [],
+                "recent_replays": [],
+            },
             "replay_job": lambda params, context: {
                 "job_id": _read_string(params, "job_id", "jobId", default=""),
                 "type": None,

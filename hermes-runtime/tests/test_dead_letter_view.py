@@ -235,17 +235,27 @@ def test_a_sent_row_carrying_an_error_is_the_missing_mirror_bucket(datastore):
     assert row["bucket"] == "mirror_missing"
 
 
-def test_a_stale_intent_row_is_surfaced_although_its_job_is_green(datastore):
+def test_a_stale_intent_row_is_surfaced_although_its_job_is_green(datastore, queue):
     """The gap nothing else catches: a process died between recording intent and
     the POST, the re-run skipped quietly, and the JOB SUCCEEDED. No dead-letter
-    row exists. Only the age of the ``intent`` row shows it."""
+    row exists. Only the age of the ``intent`` row shows it.
+
+    The green job is REAL here (driven through claim -> complete) and the
+    assertion covers both halves: the dead list is empty, and the stale send is
+    surfaced anyway. Fix wave 1, finding 5 -- the name used to over-claim,
+    because no job was created at all."""
     driver, conn, _schema = datastore
-    _outbound(conn, "job_z:evt-c:reply", status="intent", minutes_old=120)
+    green = queue.enqueue({}, job_type=AGENT_TURN_JOB_TYPE)
+    queue.complete(queue.claim(worker="w", types=(AGENT_TURN_JOB_TYPE,)))
+    _outbound(
+        conn, f"{green}:evt-c:reply", status="intent", minutes_old=120, job_id=green
+    )
     _outbound(conn, "job_w:evt-d:reply", status="intent", minutes_old=0)  # in flight
 
-    buckets = _list(driver)["outbound"]
+    view = _list(driver)
 
-    assert [(b["bucket"], b["event_id"]) for b in buckets] == [
+    assert view["jobs"] == []  # the job really is green -- nothing dead-lettered
+    assert [(b["bucket"], b["event_id"]) for b in view["outbound"]] == [
         ("stale_intent", "evt-c")
     ]
 
@@ -342,6 +352,47 @@ def test_every_other_job_type_is_replayable(datastore, queue, job_type):
     assert _row(conn, job_id, "status")[0] == "queued"
 
 
+def test_replay_is_refused_while_a_job_of_the_same_type_is_running(datastore, queue):
+    """S05 fix wave 1, finding 1. The single-``job_id`` API and the absence of
+    bulk replay bound how many rows ONE click touches; neither says anything
+    about a job of the same type that is ALREADY RUNNING.
+
+    That gap is reachable without an operator doing anything odd: an ``ingest``
+    outliving the 300 s lease is reclaimed mid-run and dead-lettered with
+    ``last_error = 'lease expired'`` while it is still embedding, and that row is
+    then the most inviting Replay in the table. ``max_attempts=1`` used to be the
+    stated protection -- it stopped being one when replay made ``dead``
+    claimable again and reset ``attempts`` to 0.
+    """
+    driver, conn, _schema = datastore
+    dead_id = _dead_job(queue, conn, INGEST_JOB_TYPE)
+    queue.enqueue({}, job_type=INGEST_JOB_TYPE)
+    assert queue.claim(worker="w-live", types=(INGEST_JOB_TYPE,)) is not None
+
+    result = _replay(driver, dead_id)
+
+    assert result.ok is False and result.error_class == "policy_blocked"
+    assert _row(conn, dead_id, "status")[0] == "dead"
+    assert _audit_rows(conn, "job_replayed") == []
+    # ...and the operator is told WHY on the list, because a ToolDriverError
+    # message is sanitized on the way out (ADR-0136).
+    row = next(j for j in _list(driver)["jobs"] if j["job_id"] == dead_id)
+    assert row["replayable"] is False
+    assert "running right now" in row["replay_blocked_reason"]
+
+
+def test_a_running_job_only_blocks_replay_of_its_own_type(datastore, queue):
+    """The guard is per type, not a global freeze -- a live agent_turn must not
+    stop a supervisor from replaying a stuck retention sweep."""
+    driver, conn, _schema = datastore
+    dead_id = _dead_job(queue, conn, RETENTION_JOB_TYPE)
+    queue.enqueue({}, job_type=AGENT_TURN_JOB_TYPE)
+    assert queue.claim(worker="w-live", types=(AGENT_TURN_JOB_TYPE,)) is not None
+
+    assert _replay(driver, dead_id).ok is True
+    assert _row(conn, dead_id, "status")[0] == "queued"
+
+
 def test_the_blocked_set_is_exactly_l6_review():
     """One grep, so a new job type has to make a decision rather than inherit
     'replayable' by silence."""
@@ -389,6 +440,35 @@ def test_the_replay_is_audited_and_attributed_to_the_session_account(datastore, 
     assert (account_id, profile, target_id) == ("acct_super", "supervisor_admin", job_id)
     assert details["type"] == INGEST_JOB_TYPE
     assert details["attempts_before"] == 1
+
+
+def test_a_replay_is_visible_on_the_panel_with_the_account_that_did_it(
+    datastore, queue
+):
+    """S05 fix wave 1, finding 3. FR-13's acceptance gate asks for a VISIBLE
+    audit row, but ``job_replayed`` is written with ``target_type='job'`` and
+    every workbench audit view is case- or record-scoped, so no UI could show
+    it -- PAC-3 needed ``psql``. The list now carries the replay tail, named to
+    an account, which is also the only place it can be seen once a successful
+    replay removes the job from the dead list."""
+    driver, conn, _schema = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role)"
+            " VALUES ('acct_super', 'super@toee', 'x', 'supervisor')"
+        )
+    conn.commit()
+    job_id = _dead_job(queue, conn, RETENTION_JOB_TYPE)
+
+    _replay(driver, job_id)
+    replays = _list(driver)["recent_replays"]
+
+    assert len(replays) == 1
+    assert replays[0]["job_id"] == job_id
+    assert replays[0]["type"] == RETENTION_JOB_TYPE
+    assert replays[0]["account_id"] == "acct_super"
+    assert replays[0]["actor_username"] == "super@toee"
+    assert replays[0]["created_at"]
 
 
 def test_replay_is_fail_closed_on_a_missing_actor(datastore, queue):
