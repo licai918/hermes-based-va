@@ -1,7 +1,7 @@
 scenario_id: "17"
 title: "Named recipient request intake without directory leak"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "Is John Smith available? I need to speak with him about a delivery."

@@ -10,6 +10,7 @@ fixture (ADR-0142).
 
 from __future__ import annotations
 
+from hermes_runtime.datastore.handlers._common import customer_thread_id
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
 
@@ -364,11 +365,15 @@ def test_get_thread_by_phone_resolves_case_from_deterministic_thread_key(datasto
     """S02 (FR-9): the simulator BFF only knows the from-phone it posted, not a
     case_id -- the gateway's inbound webhook creates the case asynchronously.
     get_thread_by_phone must resolve the same customer_thread key the gateway
-    store derives (``customer_thread:textline:{from_phone}``) and return the
-    identical shape as get_thread by case_id.
+    store derives and return the identical shape as get_thread by case_id.
+
+    This one covers the response *shape* off a hand-seeded row; the key itself
+    is proved against the real write path by
+    ``test_get_thread_by_phone_resolves_a_thread_the_gateway_store_actually_wrote``
+    below — a hand-seeded key can only ever assert the test author's guess.
     """
     driver, conn, _ = datastore
-    thread_id = "customer_thread:textline:+15551234567"
+    thread_id = customer_thread_id("sms", "+15551234567")
     _seed_thread(
         conn,
         thread_id=thread_id,
@@ -491,3 +496,74 @@ def test_get_audit_log_includes_actor_username(datastore) -> None:
     ).data["entries"]
     claim = next(e for e in entries if e["action"] == "claim_case")
     assert claim["actor_username"] == "jane"
+
+
+def test_get_thread_by_phone_resolves_a_thread_the_gateway_store_actually_wrote(
+    datastore,
+) -> None:
+    """Key-match proof for the SMS side, mirroring the email sibling above.
+
+    The pre-existing get_thread_by_phone test hand-seeds a row under the key the
+    handler computes, so it asserts the author's guess rather than the write
+    path — and stayed green when the provider rename moved the gateway store's
+    prefix to ``sms`` while the handler kept the old provider-named literal,
+    leaving every simulator SMS read-back permanently empty (ADR-0153).
+
+    This writes through the real PostgresGatewayStore — the same one the
+    /webhooks/simpletexting route uses — then reads back through the handler, so
+    a prefix or normalization drift on either side fails loudly.
+    """
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+    from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+    from toee_hermes.gateway.normalize import SmsInboundFields, to_inbound_channel_event
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    driver, conn, _ = datastore
+    store = PostgresGatewayStore(connection=conn)
+
+    event = to_inbound_channel_event(
+        SmsInboundFields(
+            event_id="evt-sms-readback",
+            conversation_id="+15557654321",
+            from_phone="+15557654321",
+            body="Do you have 225/65R17 in stock?",
+            received_at="2026-01-01T00:00:00Z",
+            raw_event_type="INCOMING_MESSAGE",
+        )
+    )
+    snapshot = SessionIdentitySnapshot(
+        outcome="unmatched_caller", resolved_at="2026-01-01T00:00:00Z"
+    )
+    decision = InboundDecision(
+        status=200, action="enqueue", stage="accept", event=event, snapshot=snapshot
+    )
+    context, created = store.persist_accepted_inbound(decision)
+    assert created is True
+    store.persist_agent_outbound(context, "Yes — two in stock.")
+
+    # A non-E.164 spelling of the same number must resolve the same thread: the
+    # write side stores the normalized form, so the read side has to normalize too.
+    for spelling in ("+15557654321", "5557654321", "(555) 765-4321"):
+        probe = _run(
+            driver,
+            "toee_workbench_read",
+            "get_thread_by_phone",
+            {"from_phone": spelling},
+        ).data
+        assert probe["case"] is not None, f"{spelling!r} did not resolve the thread"
+
+    result = _run(
+        driver,
+        "toee_workbench_read",
+        "get_thread_by_phone",
+        {"from_phone": "+15557654321"},
+    ).data
+
+    assert result["case"] is not None, (
+        "get_thread_by_phone did not resolve the thread the gateway store wrote; "
+        "the two sides derive different customer_thread keys."
+    )
+    assert [m["body"] for m in result["messages"]] == [
+        "Do you have 225/65R17 in stock?",
+        "Yes — two in stock.",
+    ]

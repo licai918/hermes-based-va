@@ -1,7 +1,7 @@
 """Mock handlers for ``toee_square_payment_link`` (ports mock/square.ts, ADR-0066).
 
 ``send_payment_link`` requires a Verified Customer and must stay on the current
-verified Textline thread (ADR-0022); the thread is modeled here by a required,
+verified SMS thread (ADR-0022); the thread is modeled here by a required,
 non-empty conversation id. A request to redirect to a new contact (eval scenario
 05 turn 2) is refused so the agent opens a Follow-up Case instead. Outputs are
 deterministic — the link is derived from the resolved payable, with no external
@@ -88,12 +88,12 @@ def _send_payment_link(
     customer_id = _require_verified_customer_id(context)
 
     # Same-thread gate (ADR-0022): the link is delivered only in the current
-    # authenticated Textline thread, modeled by a required conversation id.
+    # authenticated SMS thread, modeled by a required conversation id.
     conversation_id = _read_string(params, "conversation_id", "conversationId")
     if conversation_id is None or not conversation_id.strip():
         raise ToolDriverError(
             "policy_blocked",
-            "Payment link must be sent in the current verified Textline thread.",
+            "Payment link must be sent in the current verified SMS thread.",
         )
 
     # A new contact supplied in the message body never changes the send target

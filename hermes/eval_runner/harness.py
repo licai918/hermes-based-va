@@ -26,7 +26,7 @@ from toee_hermes.drivers.mock import (
     create_qbo_mock_handlers,
     create_shopify_mock_handlers,
     create_square_mock_handlers,
-    create_textline_mock_handlers,
+    create_sms_reply_mock_handlers,
     merge_registries,
 )
 from toee_hermes.errors import ToolDriverError
@@ -128,7 +128,7 @@ def build_scenario_registry(ctx: MergedMockContext) -> MockHandlerRegistry:
         create_knowledge_mock_handlers(ctx.knowledge),
         create_memory_mock_handlers(ctx.memory),
         create_case_mock_handlers(),
-        create_textline_mock_handlers(),
+        create_sms_reply_mock_handlers(),
         create_admin_stub_mock_handlers(),
         create_agent_experience_mock_handlers(),
     )

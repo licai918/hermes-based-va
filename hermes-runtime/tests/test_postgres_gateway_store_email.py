@@ -9,8 +9,6 @@ webhook-in → reply-in-store seam.
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 
 from starlette.testclient import TestClient
@@ -18,13 +16,9 @@ from starlette.testclient import TestClient
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
-SIGNATURE_HEADER = "X-Textline-Signature"
+WEBHOOK_SECRET = "test-simpletexting-url-token"
 _FROM = "accounts@acme-fleet.example"
 
-
-def _sign(raw_body: bytes) -> str:
-    return hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
 
 
 def _email_payload(*, from_address=_FROM, subject="Order 10444", body="Where is my order?",
@@ -143,7 +137,7 @@ def test_email_webhook_matches_sender_and_persists_verified(datastore) -> None:
     raw = _email_payload()
 
     resp = client.post(
-        "/webhooks/simulated-email", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
+        f"/webhooks/simulated-email?token={WEBHOOK_SECRET}", content=raw
     )
     assert resp.status_code == 200
 

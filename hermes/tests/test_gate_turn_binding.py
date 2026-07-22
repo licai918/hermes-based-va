@@ -1,7 +1,7 @@
-"""Tests for the async Textline turn-binding Tool Gate (ADR-0107, ADR-0066).
+"""Tests for the async SMS turn-binding Tool Gate (ADR-0107, ADR-0066).
 
 The async agent turn runs with the inbound turn's loaded session context. An
-outbound ``toee_textline_reply.send_message`` must target the bound conversation
+outbound ``toee_sms_reply.send_message`` must target the bound conversation
 (and SMS Session) of that turn; a send aimed at a different conversation — or one
 that omits the binding — is a governed ``policy_blocked`` failure so model output
 can never redirect a reply to another thread or number.
@@ -42,7 +42,7 @@ def test_allows_reply_that_targets_the_bound_conversation() -> None:
     gate = create_turn_binding_gate()
     decision = gate(
         ToolRequest(
-            tool="toee_textline_reply",
+            tool="toee_sms_reply",
             action="send_message",
             params={"conversation_id": "conv-1", "body": "On its way."},
         ),
@@ -55,7 +55,7 @@ def test_blocks_reply_that_targets_a_different_conversation() -> None:
     gate = create_turn_binding_gate()
     decision = gate(
         ToolRequest(
-            tool="toee_textline_reply",
+            tool="toee_sms_reply",
             action="send_message",
             params={"conversation_id": "conv-OTHER", "body": "leak"},
         ),
@@ -71,7 +71,7 @@ def test_blocks_reply_that_omits_the_conversation_when_bound() -> None:
     gate = create_turn_binding_gate()
     decision = gate(
         ToolRequest(
-            tool="toee_textline_reply",
+            tool="toee_sms_reply",
             action="send_message",
             params={"body": "where to?"},
         ),
@@ -96,7 +96,7 @@ def test_gate_is_inert_without_a_turn_binding() -> None:
     gate = create_turn_binding_gate()
     decision = gate(
         ToolRequest(
-            tool="toee_textline_reply",
+            tool="toee_sms_reply",
             action="send_message",
             params={"conversation_id": "conv-anything", "body": "ok"},
         ),

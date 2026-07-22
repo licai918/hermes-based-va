@@ -221,12 +221,12 @@ services:
       test: ["CMD", "python", "-c",
              "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8092/healthz', timeout=3).status == 200 else 1)"]
 
-  # Inbound SMS gateway. The workbench's External Profile Simulator posts a signed
+  # Inbound SMS gateway. The workbench's External Profile Simulator posts a tokened
   # webhook here (SIMULATOR_GATEWAY_URL), the gateway fast-acks by writing one `job`
   # row, and turn-worker runs the turn -- so the simulator round trip needs all three.
   #
   # REPLY_SENDER=simulated is the dev default on purpose: it skips the real provider
-  # POST (so no TEXTLINE_ACCESS_TOKEN is needed and a dev box can never text a real
+  # POST (so no SIMPLETEXTING_API_TOKEN is needed and a dev box can never text a real
   # customer) while still mirroring the reply into `message_turn` for the simulator.
   gateway:
     <<: *hermes-runtime
@@ -236,9 +236,9 @@ services:
               "--factory", "--host", "0.0.0.0", "--port", "8080"]
     environment:
       <<: *datastore-env
-      # Must equal the workbench's TEXTLINE_WEBHOOK_SECRET or every simulated
+      # Must equal the workbench's SIMPLETEXTING_WEBHOOK_TOKEN or every simulated
       # inbound is a 401. dev-up.mjs exports both from apps/workbench/.env.local.
-      TEXTLINE_WEBHOOK_SECRET: ${TEXTLINE_WEBHOOK_SECRET:-dev-webhook-secret}
+      SIMPLETEXTING_WEBHOOK_TOKEN: ${SIMPLETEXTING_WEBHOOK_TOKEN:-dev-webhook-token}
       INTERNAL_JOB_SECRET: ${INTERNAL_JOB_SECRET:-dev-internal-job-secret}
       REPLY_SENDER: ${REPLY_SENDER:-simulated}
     ports:

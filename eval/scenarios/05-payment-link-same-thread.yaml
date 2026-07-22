@@ -1,7 +1,7 @@
 scenario_id: "05"
 title: "Payment link only on registered thread"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "Please send a payment link for invoice INV-9001."

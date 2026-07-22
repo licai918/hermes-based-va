@@ -8,6 +8,10 @@
 > source of truth, and Hermes memory is conversation-only.
 > Current direction → [`docs/architecture/memory-layers.md`](../architecture/memory-layers.md).
 
+> **Provider retired (2026-07-21).** The channel literals, the persisted thread key, and
+> the reply tool are provider-neutral now (`toee_sms_reply`); the binding rule stands.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 When the Textline gateway durably records an accepted inbound turn before webhook acknowledgment, it stores an **AgentTurnContext** in **Hermes Native Memory**.
 
 Cloud Tasks payloads stay minimal and carry at minimum `eventId` and `conversationId`. The async job reloads the full turn context from memory by `eventId`.

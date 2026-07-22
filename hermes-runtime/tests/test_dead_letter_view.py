@@ -145,7 +145,7 @@ def test_a_dead_turn_job_carries_the_outbound_record_it_left_behind(datastore, q
         cur.execute(
             "INSERT INTO outbound_send (idempotency_key, job_id, event_id,"
             " conversation_id, channel, status, skip_count)"
-            " VALUES (%s, %s, 'evt-1', 'conv-1', 'textline_sms', 'sent', 1)",
+            " VALUES (%s, %s, 'evt-1', 'conv-1', 'simpletexting_sms', 'sent', 1)",
             (f"{job_id}:evt-1:reply", job_id),
         )
     conn.commit()
@@ -192,7 +192,7 @@ def _outbound(conn, key, *, status, last_error=None, job_id=None, minutes_old=0)
         cur.execute(
             "INSERT INTO outbound_send (idempotency_key, job_id, event_id,"
             " conversation_id, channel, status, last_error, created_at, updated_at)"
-            " VALUES (%s, %s, %s, 'conv-1', 'textline_sms', %s, %s,"
+            " VALUES (%s, %s, %s, 'conv-1', 'simpletexting_sms', %s, %s,"
             "         now() - make_interval(mins => %s),"
             "         now() - make_interval(mins => %s))",
             (key, job_id, key.split(":")[1], status, last_error, minutes_old, minutes_old),
@@ -573,7 +573,7 @@ def test_a_replayed_turn_keeps_its_idempotency_lineage_and_re_sends_nothing(
         job_id=job_id,
         event_id="evt-replay",
         conversation_id="conv-1",
-        channel="textline_sms",
+        channel="simpletexting_sms",
         deliver=lambda: sent.append("first"),
     )
     assert sent == ["first"]
@@ -587,7 +587,7 @@ def test_a_replayed_turn_keeps_its_idempotency_lineage_and_re_sends_nothing(
         job_id=replayed.id,
         event_id="evt-replay",
         conversation_id="conv-1",
-        channel="textline_sms",
+        channel="simpletexting_sms",
         deliver=lambda: sent.append("second"),
     )
 

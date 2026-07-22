@@ -36,3 +36,19 @@ def test_profile_home_has_required_files(profile: str) -> None:
 def test_profile_config_enables_toee_plugin(profile: str) -> None:
     cfg = yaml.safe_load((HOMES / profile / "config.yaml").read_text(encoding="utf-8"))
     assert "toee-tire" in cfg["plugins"]["enabled"]
+
+
+# Vendors we no longer use. SOUL.md is loaded into the model's context, so a
+# retired provider named there is something the agent can repeat to a live
+# customer ("I'll follow up on Textline") — ADR-0153.
+RETIRED_VENDORS = ("textline",)
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_profile_soul_names_no_retired_vendor(profile: str) -> None:
+    soul = (HOMES / profile / "SOUL.md").read_text(encoding="utf-8").lower()
+    for vendor in RETIRED_VENDORS:
+        assert vendor not in soul, (
+            f"{profile}/SOUL.md names retired vendor {vendor!r}; the model can "
+            "repeat it to a customer."
+        )

@@ -58,7 +58,7 @@ function rawOutbound(overrides: Record<string, unknown> = {}) {
     job_id: null,
     event_id: "evt-stop",
     conversation_id: "conv-1",
-    channel: "textline_sms",
+    channel: "simpletexting_sms",
     status: "failed",
     skip_count: 0,
     last_error: "refused",

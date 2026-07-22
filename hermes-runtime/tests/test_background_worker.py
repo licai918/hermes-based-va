@@ -137,8 +137,8 @@ def test_a_long_background_job_never_delays_a_queued_turn(datastore, queue):
 
     # ...then a customer message arrives.
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt-iso",
         conversation_id="conv-iso",
         from_phone="+15559876543",

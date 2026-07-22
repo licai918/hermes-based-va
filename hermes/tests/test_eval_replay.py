@@ -39,7 +39,7 @@ def test_replays_recorded_transcript_into_turn_result() -> None:
                         "id": "c1",
                         "type": "function",
                         "function": {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": json.dumps(
                                 {"conversation_id": "conv1", "body": body}
                             ),
@@ -50,7 +50,7 @@ def test_replays_recorded_transcript_into_turn_result() -> None:
             {
                 "role": "tool",
                 "tool_call_id": "c1",
-                "name": "toee_textline_reply__send_message",
+                "name": "toee_sms_reply__send_message",
                 "content": json.dumps(
                     {"message_id": "m1", "conversation_id": "conv1", "body": body}
                 ),
@@ -64,7 +64,7 @@ def test_replays_recorded_transcript_into_turn_result() -> None:
 
     assert result.outbound_text == body
     assert [(c.tool, c.action) for c in result.tool_calls] == [
-        ("toee_textline_reply", "send_message")
+        ("toee_sms_reply", "send_message")
     ]
 
 

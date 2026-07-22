@@ -58,8 +58,8 @@ def wired(datastore):
 
 def _sms_decision(*, event_id: str, conversation_id: str, body: str) -> InboundDecision:
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id=event_id,
         conversation_id=conversation_id,
         from_phone="+15559876543",
@@ -164,7 +164,7 @@ def _seed_outbound_row(
             INSERT INTO outbound_send
                 (idempotency_key, job_id, event_id, conversation_id, channel,
                  status, last_error)
-            VALUES (%s, NULL, %s, %s, 'textline_sms', %s, %s)
+            VALUES (%s, NULL, %s, %s, 'simpletexting_sms', %s, %s)
             """,
             (f"killed:{event_id}:reply", event_id, conversation_id, status, error),
         )
@@ -331,7 +331,7 @@ def test_a_rejected_send_is_recorded_and_still_never_re_posts(wired) -> None:
     )
 
     def _reject(conversation_id: str, text: str) -> None:
-        raise RuntimeError("Textline rejected the reply (HTTP 500)")
+        raise RuntimeError("SimpleTexting rejected the reply (HTTP 500)")
 
     runner = make_gateway_turn_runner(
         reply_sender=_reject,
@@ -344,7 +344,7 @@ def test_a_rejected_send_is_recorded_and_still_never_re_posts(wired) -> None:
 
     status, error = _outbound_row(conn, "evt-reject", "status", "last_error")
     assert status == "failed"
-    assert "Textline rejected" in error
+    assert "SimpleTexting rejected" in error
 
     # The job's own retry comes back here. It must not re-post -- and it must not
     # pretend the turn succeeded either: this reply never reached the customer, so
@@ -374,7 +374,7 @@ def test_a_burned_reply_dead_letters_instead_of_reporting_success(wired) -> None
         event_id="evt-burn",
         conversation_id="conv-burn",
         status="failed",
-        error="RuntimeError: Textline rejected the reply (HTTP 500)",
+        error="RuntimeError: SimpleTexting rejected the reply (HTTP 500)",
     )
     sent: list = []
     runner = _runner("Hello!", sent=sent, store=store, log=log)
@@ -485,7 +485,12 @@ def test_a_replayed_email_turn_writes_no_second_mirror_row(wired) -> None:
     runner(context, "Where is my order?", job_id)
 
     assert _mirror_bodies(conn, context.sms_session_id) == ["Shipped Tuesday."]
-    assert sent == [("conv-email-s03", "Shipped Tuesday.")]
+    # And the SMS provider is never called on an email turn (ADR-0153, RK-4): the
+    # sender strips its argument to digits, so an email conversation_id that
+    # happened to look like a phone number would become a real, billable SMS.
+    # The mirror above is the whole delivery -- which is exactly why it still sits
+    # inside the same deliver_once wrap.
+    assert sent == []
     assert _outbound_row(conn, "evt-email-s03", "channel", "skip_count") == (
         "simulated_email",
         1,
@@ -569,7 +574,7 @@ def test_the_wrap_records_the_conversation_binding_for_the_auditor(wired) -> Non
 
     assert _outbound_row(
         conn, "evt-audit", "job_id", "conversation_id", "channel", "status"
-    ) == (job_id, "conv-audit", "textline_sms", "sent")
+    ) == (job_id, "conv-audit", "simpletexting_sms", "sent")
 
 
 def test_an_unbound_context_is_not_needed_to_read_the_record(wired) -> None:

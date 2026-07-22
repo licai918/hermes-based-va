@@ -386,7 +386,7 @@ def _square_payment_link_request(
 
 def _square_payment_link_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
     link = raw.get("payment_link", raw)
-    # The thread the link is delivered on is a Toee/Textline concept, not a Square
+    # The thread the link is delivered on is a Toee SMS-channel concept, not a Square
     # field: take it from the bound turn context (ADR-0022/0107), falling back to a
     # model-supplied param for the unbound path.
     conversation_id = getattr(context, "conversation_id", None)

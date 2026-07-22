@@ -9,7 +9,7 @@ row and skips the whole delivery.
 
 **One wrap, not one guard per sender.** ``deliver_once`` takes a single
 ``deliver`` callable, and :func:`hermes_runtime.turn_runner.make_gateway_turn_runner`
-puts the *entire* delivery step inside it -- the Textline POST (or the
+puts the *entire* delivery step inside it -- the SimpleTexting POST (or the
 ``REPLY_SENDER=simulated`` no-op that stands in for it, 0.0.3 S01) *and* the
 ``message_turn`` reply mirror (0.0.3 S17, which is the email channel's whole
 outbound surface). There is deliberately no per-sender guard: three guards is
@@ -303,7 +303,7 @@ def deliver_once(
       exists to prevent. So it raises :class:`OutboundSendBurned` instead: the
       job fails, burns its attempts, and lands in the dead-letter view (S05).
 
-    ponytail: an existing row is still absolute -- a Textline outage burns that
+    ponytail: an existing row is still absolute -- a provider outage burns that
     turn's reply rather than risking a duplicate; only the *reporting* changed.
     That is the at-most-once trade FR-12 asks for and it is the safe direction.
     Upgrade path, named rather than built: record the provider's response on the

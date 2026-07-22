@@ -17,8 +17,6 @@ throwaway schema), so these never touch dev data (ADR-0142 local-first).
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 
@@ -42,8 +40,8 @@ from hermes_runtime.turn_worker import (
     run_once,
 )
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
-SIGNATURE_HEADER = "X-Textline-Signature"
+WEBHOOK_SECRET = "test-simpletexting-url-token"
+WEBHOOK_PATH = f"/webhooks/simpletexting?token={WEBHOOK_SECRET}"
 
 
 # --------------------------------------------------------------------------
@@ -88,8 +86,8 @@ def _persisted_turn(store, conn, *, event_id: str, conversation_id: str, body: s
     enqueueing -- production cannot do that either, which is the whole point.
     """
     event = InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id=event_id,
         conversation_id=conversation_id,
         from_phone="+15559876543",
@@ -130,19 +128,27 @@ def _reply_runner(reply: str, *, sent: list, store=None, before=None):
     )
 
 
-def _sign(raw_body: bytes, secret: str = WEBHOOK_SECRET) -> str:
-    return hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
 
 
-def _inbound_payload(*, event_id: str, conversation_id: str, body: str) -> bytes:
+def _inbound_payload(*, event_id: str, contact_phone: str, body: str) -> bytes:
+    """A SimpleTexting INCOMING_MESSAGE report (API v2 shape, ADR-0153).
+
+    SimpleTexting has no conversation resource: the conversation IS the contact
+    phone, E.164-normalized by the gateway's parse step.
+    """
     return json.dumps(
         {
-            "id": event_id,
-            "conversation_id": conversation_id,
-            "from": "+15559876543",
-            "body": body,
-            "received_at": "2026-01-01T00:00:00Z",
-            "type": "message.created",
+            "reportId": f"rep-{event_id}",
+            "webhookId": "wh-1",
+            "type": "INCOMING_MESSAGE",
+            "values": {
+                "messageId": event_id,
+                "text": body,
+                "accountPhone": "9053378266",
+                "contactPhone": contact_phone,
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "category": "SMS",
+            },
         }
     ).encode("utf-8")
 
@@ -389,7 +395,7 @@ def test_a_stale_lease_holder_logs_lease_lost_and_never_reruns_the_turn(wired, c
 # --------------------------------------------------------------------------
 
 
-def test_a_signed_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
+def test_a_tokened_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
     wired,
 ):
     """FR-10 acceptance: fast-ack writes a durable job row (not a thread), and a
@@ -403,12 +409,10 @@ def test_a_signed_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
         is_duplicate=store.is_duplicate,
     )
     raw = _inbound_payload(
-        event_id="evt-e2e", conversation_id="conv-e2e", body="Do you have 225/65R17?"
+        event_id="evt-e2e", contact_phone="+15559876543", body="Do you have 225/65R17?"
     )
 
-    response = TestClient(app).post(
-        "/webhooks/textline", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
-    )
+    response = TestClient(app).post(WEBHOOK_PATH, content=raw)
 
     assert response.status_code == 200
     # Fast-ack left a durable row behind, and no reply has been sent yet.
@@ -426,7 +430,7 @@ def test_a_signed_webhook_enqueues_a_job_the_worker_turns_into_a_mirrored_reply(
     )
 
     assert job is not None and job.id == rows[0][0]
-    assert sent == [("conv-e2e", "We do -- want a quote?")]
+    assert sent == [("+15559876543", "We do -- want a quote?")]
     with conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM message_turn WHERE author = 'hermes' AND body = %s",

@@ -1,11 +1,11 @@
-// Governed Textline send (ADR-0083, ADR-0141 / #42). Phase-1 customer-facing write:
+// Governed SMS send (ADR-0083, ADR-0141 / #42). Phase-1 customer-facing write:
 // an employee sends an SMS reply inside an active SMS Session on a case they hold.
 // Strict precondition order — 400 empty body, 404 missing case, 403 ineligible —
-// then a governed `toee_case_manage.send_textline_message` over tools:dispatch, so
-// the vendor capture, the message_turn mirror, and the textline_send audit land
-// server-side in one transaction. ADR-0035 keeps `toee_textline_reply` off the
-// copilot allowlist (agent no-send); this composite action is the employee-confirmed
-// write seam. On tool failure nothing is fabricated.
+// then a governed `toee_case_manage.send_sms_message` over tools:dispatch, so the
+// vendor capture, the message_turn mirror, and the sms_send audit land server-side
+// in one transaction. ADR-0035 keeps `toee_sms_reply` off the copilot allowlist
+// (agent no-send); this composite action is the employee-confirmed write seam.
+// On tool failure nothing is fabricated.
 import { json, problem } from "../respond";
 import { readJsonBody, readNonEmptyString } from "./deps";
 import { dispatchGetCaseData } from "./cases";
@@ -14,18 +14,18 @@ import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { mapWorkbenchCase } from "../../gateway/hermes-map";
 
-interface SentTextlineMessage {
+interface SentSmsMessage {
   messageId: string;
   conversationId: string;
   body: string;
   mediaUrl?: string;
 }
 
-function mapSentTextlineMessage(
+function mapSentSmsMessage(
   raw: Record<string, unknown>,
   fallbackBody: string,
-): SentTextlineMessage {
-  const message: SentTextlineMessage = {
+): SentSmsMessage {
+  const message: SentSmsMessage = {
     messageId: String(raw.message_id ?? raw.messageId ?? ""),
     conversationId: String(raw.conversation_id ?? raw.conversationId ?? ""),
     body: typeof raw.body === "string" ? raw.body : fallbackBody,
@@ -37,7 +37,7 @@ function mapSentTextlineMessage(
   return message;
 }
 
-export async function handleTextlineSendViaApi(
+export async function handleSmsSendViaApi(
   req: Request,
   client: HermesApiClient,
   session: WorkbenchSession,
@@ -59,12 +59,12 @@ export async function handleTextlineSendViaApi(
       mapped.channel === "sms" &&
       mapped.smsSessionActive === true &&
       mapped.assigneeAccountId === session.accountId;
-    if (!eligible) return problem(403, "case not eligible for Textline send");
+    if (!eligible) return problem(403, "case not eligible for SMS send");
 
     const mediaUrl = readNonEmptyString(raw, "mediaUrl") ?? undefined;
     const result = (await client.dispatchWrite(
       "toee_case_manage",
-      "send_textline_message",
+      "send_sms_message",
       {
         case_id: caseId,
         body: text,
@@ -72,7 +72,7 @@ export async function handleTextlineSendViaApi(
       },
     )) as { message?: Record<string, unknown> };
     const msg = result?.message ?? {};
-    return json({ message: mapSentTextlineMessage(msg, text) });
+    return json({ message: mapSentSmsMessage(msg, text) });
   } catch (err) {
     return hermesErrorToProblem(err);
   }

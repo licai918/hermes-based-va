@@ -99,7 +99,7 @@ Demo cases seeded for the copilot queue:
 
 | Case ID | Notes |
 | --- | --- |
-| `case_ar_urgent` | Urgent SMS, active session — good for queue + Textline send after claim |
+| `case_ar_urgent` | Urgent SMS, active session — good for queue + SMS send after claim |
 | `case_toolfail` | Urgent billing, `tool_failure` flag |
 
 Thread previews and identity summaries follow migration `0005_dev_bootstrap`.
@@ -146,8 +146,8 @@ docker compose ps                     # both workers `running`
 3. Use **Draft SMS** — the reply is a real `internal_copilot` agent turn over
    `POST /v1/agent:turn`. Without `OPENROUTER_API_KEY` the dispatch server falls
    back to its own deterministic keyless completion, so the panel still works
-   offline; the outbound send itself uses the mock Textline capture, so no live
-   Textline token is required.
+   offline; the outbound send itself uses the mock SMS capture, so no live
+   SimpleTexting token is required.
 
 ### 6. Audit row
 
@@ -194,8 +194,8 @@ These are deferred or optional locally:
 | Topic | Notes |
 | --- | --- |
 | **OpenRouter** | Drafts and copilot chat are real agent turns; a *live model* needs `OPENROUTER_API_KEY` in `hermes-runtime/.env`, which compose mounts into the dispatch servers. Without it the Python runtime uses its deterministic keyless completion, so the panels still work — the replies are just canned. (The TypeScript stub is gone as of 0.0.4 S09.) Automated tests drive the turn through `scripted_completions` instead. |
-| **Live outbound SMS** | `pnpm dev` sets `REPLY_SENDER=simulated`, so a dev box never posts to the real provider; the reply still mirrors into `message_turn`. Set `REPLY_SENDER=textline` + a token in `hermes-runtime/.env` only if you mean it. |
-| **Gateway** | Already up on :8080 as part of `pnpm dev`. Webhook signing and the inbound path: [`local-gateway.md`](local-gateway.md). |
+| **Live outbound SMS** | `pnpm dev` sets `REPLY_SENDER=simulated`, so a dev box never posts to the real provider; the reply still mirrors into `message_turn`. Set `REPLY_SENDER=simpletexting` + `SIMPLETEXTING_API_TOKEN` in `hermes-runtime/.env` only if you mean it. |
+| **Gateway** | Already up on :8080 as part of `pnpm dev` — the Python FastAPI app in `hermes-runtime/`; there is no `pnpm dev:gateway` and no TypeScript `services/hermes-gateway` stub (deleted, ADR-0153). Webhook token auth and the inbound path: [`local-gateway.md`](local-gateway.md). |
 
 Cloud SQL, Cloud Run, and Secret Manager wiring remain Slice 37 (#40).
 

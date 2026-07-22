@@ -105,7 +105,7 @@ def test_sms_turn_still_binds_on_the_phone_channel(monkeypatch) -> None:
         sms_session_id=None,
         from_phone="+14165550175",
         session_identity_snapshot=None,
-        channel="textline_sms",
+        channel="simpletexting_sms",
     )
     run_turn(context, "hi")
     assert store.read_keys == ["provisional:sms:+14165550175"]

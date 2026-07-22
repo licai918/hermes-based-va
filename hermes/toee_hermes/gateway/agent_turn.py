@@ -23,7 +23,7 @@ class AgentTurnContext:
 
     ``channel`` (S17) threads the ingress channel to the async turn so the turn
     binds Customer Memory on the correct channel identity (email vs SMS). Defaulted
-    to ``textline_sms`` so pre-S17 construction sites remain byte-compatible.
+    to ``simpletexting_sms`` so pre-S17 construction sites remain byte-compatible.
     """
 
     event_id: str
@@ -33,7 +33,7 @@ class AgentTurnContext:
     from_phone: str
     session_identity_snapshot: Optional[SessionIdentitySnapshot]
     inbound_body_ref: str
-    channel: str = "textline_sms"
+    channel: str = "simpletexting_sms"
 
 
 @dataclass(frozen=True)

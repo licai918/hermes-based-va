@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
-    TextlineInboundFields,
+    SmsInboundFields,
     canonicalize_email,
     normalize_e164,
     to_inbound_channel_event,
@@ -38,7 +38,7 @@ def test_keeps_leading_plus_for_international() -> None:
     assert normalize_e164("+44 20 7946 0958") == "+442079460958"
 
 
-def _fields(**overrides) -> TextlineInboundFields:
+def _fields(**overrides) -> SmsInboundFields:
     base = dict(
         event_id="evt_1",
         conversation_id="conv_9",
@@ -48,13 +48,13 @@ def _fields(**overrides) -> TextlineInboundFields:
         raw_event_type="message:received",
     )
     base.update(overrides)
-    return TextlineInboundFields(**base)
+    return SmsInboundFields(**base)
 
 
 def test_builds_canonical_event() -> None:
     assert to_inbound_channel_event(_fields()) == InboundChannelEvent(
-        channel="textline_sms",
-        provider="textline",
+        channel="simpletexting_sms",
+        provider="simpletexting",
         event_id="evt_1",
         conversation_id="conv_9",
         from_phone="+15195550123",

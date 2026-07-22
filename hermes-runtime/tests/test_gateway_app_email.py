@@ -1,6 +1,6 @@
 """S17: the simulated-email webhook drives the same governed turn + reply (FR-18).
 
-A single signed POST to ``/webhooks/simulated-email`` fast-acks and enqueues via
+A single tokened POST to ``/webhooks/simulated-email`` fast-acks and enqueues via
 ``store.queue``. In production that is the durable Postgres queue the separate
 turn-worker process claims (0.0.4 S02, ADR-0155); here a test-only
 ``_InlineTurnQueue`` runs the same shared ``execute_agent_turn_job`` inline instead,
@@ -12,8 +12,6 @@ constraint d).
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 
 from starlette.testclient import TestClient
@@ -23,13 +21,9 @@ from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 
-WEBHOOK_SECRET = "test-textline-shared-secret"
-SIGNATURE_HEADER = "X-Textline-Signature"
+WEBHOOK_SECRET = "test-simpletexting-url-token"
 JOB_SECRET = "test-internal-job-secret"
 
-
-def _sign(raw_body: bytes) -> str:
-    return hmac.new(WEBHOOK_SECRET.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
 
 
 def _email_payload(*, from_address="accounts@acme-fleet.example", subject="Order 10444",
@@ -70,6 +64,7 @@ class _InlineTurnQueue:
 def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
     store = InMemoryGatewayStore()
     sent: list[tuple[str, str]] = []
+    mirrored: list[tuple[str, str]] = []
     # A reply longer than the SMS single-segment cap (480): an email must deliver it
     # in full (never clip_sms_reply'd). No trailing whitespace, so the delivered
     # text is byte-identical to the model's final_response.
@@ -90,6 +85,7 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
     turn_runner = make_gateway_turn_runner(
         reply_sender=lambda conv, text: sent.append((conv, text)),
         run_turn=run_turn,
+        on_reply_sent=lambda ctx, text: mirrored.append((ctx.conversation_id, text)),
     )
     # The inline queue needs the turn runner, which needs the store -- so it is
     # attached after construction rather than passed to __init__.
@@ -104,10 +100,14 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
     raw = _email_payload()
 
     resp = client.post(
-        "/webhooks/simulated-email", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
+        f"/webhooks/simulated-email?token={WEBHOOK_SECRET}", content=raw
     )
     assert resp.status_code == 200
-    assert sent == [("conv-email", reply_body)]
+    # Email delivery is the mirror, not the SMS provider: reply_sender is the live
+    # SimpleTexting client and strips its argument to digits, so an email turn must
+    # never reach it (RK-4 — there is no email provider; ADR-0153).
+    assert sent == []
+    assert mirrored == [("conv-email", reply_body)]
 
     # The outbound reply mirrored onto the EMAIL thread/session, not a phone-shaped key.
     context = store.load_context("evt-email")
@@ -116,12 +116,12 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
     assert context.customer_thread_id == "customer_thread:email:accounts@acme-fleet.example"
 
 
-def test_simulated_email_webhook_rejects_a_forged_signature() -> None:
+def test_simulated_email_webhook_rejects_a_forged_token() -> None:
     app = create_app(webhook_secret=WEBHOOK_SECRET)
     client = TestClient(app)
     raw = _email_payload()
     resp = client.post(
-        "/webhooks/simulated-email", content=raw, headers={SIGNATURE_HEADER: "deadbeef"}
+        "/webhooks/simulated-email?token=deadbeef", content=raw
     )
     assert resp.status_code == 401
 
@@ -133,6 +133,6 @@ def test_simulated_email_webhook_rejects_a_blank_event_id() -> None:
     client = TestClient(app)
     raw = _email_payload(event_id="")
     resp = client.post(
-        "/webhooks/simulated-email", content=raw, headers={SIGNATURE_HEADER: _sign(raw)}
+        f"/webhooks/simulated-email?token={WEBHOOK_SECRET}", content=raw
     )
     assert resp.status_code == 401

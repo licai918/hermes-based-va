@@ -276,8 +276,8 @@ def test_ack_path_persist_does_not_merge(datastore) -> None:
         action="enqueue",
         stage="accept",
         event=InboundChannelEvent(
-            channel="textline_sms",
-            provider="textline",
+            channel="simpletexting_sms",
+            provider="simpletexting",
             event_id="evt-ack-nomerge",
             conversation_id="conv-ack-nomerge",
             from_phone=phone,

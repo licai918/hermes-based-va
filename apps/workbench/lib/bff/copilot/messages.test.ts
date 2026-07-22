@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { WORKBENCH_ROLES } from "@toee/shared";
 import type { WorkbenchSession } from "../../auth/session";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
-import { handleTextlineSendViaApi } from "./messages";
+import { handleSmsSendViaApi } from "./messages";
 
 const NOW = 1_700_000_000_000;
 
@@ -16,17 +16,17 @@ function session(accountId = "seed-rep"): WorkbenchSession {
 }
 
 function sendReq(body: unknown): Request {
-  return new Request("http://localhost/api/copilot/messages/textline/send", {
+  return new Request("http://localhost/api/copilot/messages/sms/send", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
 
-// ADR-0141 / #42: governed Textline send over tools:dispatch. Preserves store-path
+// ADR-0141 / #42: governed SMS send over tools:dispatch. Preserves store-path
 // 400/404/403 ordering, returns { message }, and writes NO in-memory thread/audit
-// (mirror + textline_send audit land server-side).
-describe("handleTextlineSendViaApi", () => {
+// (mirror + sms_send audit land server-side).
+describe("handleSmsSendViaApi", () => {
   type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
   type SentDispatch = {
     tool: string;
@@ -71,14 +71,14 @@ describe("handleTextlineSendViaApi", () => {
 
   it("sends on an eligible case and dispatches exactly one governed write", async () => {
     let send: SentDispatch | null = null;
-    // Every dispatched action, in order -- a second send_textline_message would
+    // Every dispatched action, in order -- a second send_sms_message would
     // still leave `send` above looking fine (it just gets overwritten), so the
     // "exactly one" claim in this test's title is only real once it is checked
     // against the full sequence, not just the last capture (0.0.4 S09 fix wave 1,
     // finding 4 -- messages.test.ts brought up to drafts.test.ts's `seen` array
     // treatment, ADR-0141 / #42).
     const seen: string[] = [];
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "Your tires arrive today." }),
       client(
         eligibleCase,
@@ -91,7 +91,7 @@ describe("handleTextlineSendViaApi", () => {
         },
         (sent) => {
           seen.push(sent.action);
-          if (sent.action === "send_textline_message") send = sent;
+          if (sent.action === "send_sms_message") send = sent;
         },
       ),
       session(),
@@ -102,10 +102,10 @@ describe("handleTextlineSendViaApi", () => {
     };
     expect(payload.message.messageId).toBe("msg_abc");
     expect(payload.message.body).toBe("Your tires arrive today.");
-    expect(seen).toEqual(["get_case", "send_textline_message"]);
+    expect(seen).toEqual(["get_case", "send_sms_message"]);
     const dispatched = send as SentDispatch | null;
     expect(dispatched?.tool).toBe("toee_case_manage");
-    expect(dispatched?.action).toBe("send_textline_message");
+    expect(dispatched?.action).toBe("send_sms_message");
     expect(dispatched?.params).toEqual({
       case_id: "case_api",
       body: "Your tires arrive today.",
@@ -115,7 +115,7 @@ describe("handleTextlineSendViaApi", () => {
 
   it("400s an empty body without network", async () => {
     let called = false;
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "  " }),
       new HermesApiClient({
         baseUrl: "http://copilot.internal",
@@ -133,7 +133,7 @@ describe("handleTextlineSendViaApi", () => {
   });
 
   it("404s an unknown case", async () => {
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "missing", body: "hello" }),
       client(null, {}),
       session(),
@@ -142,7 +142,7 @@ describe("handleTextlineSendViaApi", () => {
   });
 
   it("403s when the case is not eligible (inactive SMS session)", async () => {
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "hello" }),
       client({ ...eligibleCase, sms_session_active: false }, {}),
       session(),
@@ -151,7 +151,7 @@ describe("handleTextlineSendViaApi", () => {
   });
 
   it("502s on a governed send failure (ADR-0104)", async () => {
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "hello" }),
       new HermesApiClient({
         baseUrl: "http://copilot.internal",
@@ -159,7 +159,7 @@ describe("handleTextlineSendViaApi", () => {
         actorAccountId: WRITE_ACTOR,
         fetchImpl: async (_url, init) => {
           const sent = JSON.parse(init.body as string) as SentDispatch;
-          if (sent.action === "send_textline_message") {
+          if (sent.action === "send_sms_message") {
             return new Response(
               JSON.stringify({
                 ok: false,
@@ -211,13 +211,13 @@ describe("handleTextlineSendViaApi", () => {
       ...eligibleCase,
       assignee_account_id: "seed-other",
     });
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "hello" }),
       c,
       session(),
     );
     expect(res.status).toBe(403);
-    expect(seen).not.toContain("send_textline_message");
+    expect(seen).not.toContain("send_sms_message");
   });
 
   it("403s an unclaimed case and never dispatches the send", async () => {
@@ -225,23 +225,23 @@ describe("handleTextlineSendViaApi", () => {
       ...eligibleCase,
       assignee_account_id: null,
     });
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "hello" }),
       c,
       session(),
     );
     expect(res.status).toBe(403);
-    expect(seen).not.toContain("send_textline_message");
+    expect(seen).not.toContain("send_sms_message");
   });
 
   it("403s a non-SMS case even when the actor holds it", async () => {
     const { client: c, seen } = ineligible({ ...eligibleCase, channel: "email" });
-    const res = await handleTextlineSendViaApi(
+    const res = await handleSmsSendViaApi(
       sendReq({ caseId: "case_api", body: "hello" }),
       c,
       session(),
     );
     expect(res.status).toBe(403);
-    expect(seen).not.toContain("send_textline_message");
+    expect(seen).not.toContain("send_sms_message");
   });
 });

@@ -100,7 +100,7 @@ Source of truth for anything the workbench and a server must agree on.
 | `HERMES_ADMIN_API_TOKEN` | yes | becomes the admin server's `DISPATCH_API_TOKEN` |
 | `WORKBENCH_SESSION_SECRET` | no | session cookie signing; a dev fallback applies when unset |
 | `SIMULATOR_GATEWAY_URL` | for the simulator | `http://127.0.0.1:8080` |
-| `TEXTLINE_WEBHOOK_SECRET` | for the simulator | dev default here, but `hermes-runtime/.env` wins if it also sets this (needed to match a real provider); a mismatch is a 401 on every simulated inbound |
+| `SIMPLETEXTING_WEBHOOK_TOKEN` | for the simulator | dev default here, but `hermes-runtime/.env` wins if it also sets this (needed to match the token in the registered provider webhook URL); a mismatch is a 401 on every simulated inbound |
 
 ### `hermes-runtime/.env` — real credentials
 

@@ -1,7 +1,7 @@
 scenario_id: "13"
 title: "Shopify unavailable tool failure and follow-up case"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "Send me a picture of your All-Season 225/60R16 tire."

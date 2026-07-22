@@ -1,5 +1,9 @@
 # Copilot Governed Write phase 1 Textline send confirmation flow
 
+> **Provider retired (2026-07-21).** The Textline names below — the tool, the BFF route,
+> and the "Send via Textline" button — are provider-neutral now; the flow itself stands.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 Phase 1 **Copilot Governed Write** is employee-confirmed Textline send from a **Copilot Draft Action** inside an active **Human Intervention Case** tied to the current customer thread per ADR-0036.
 
 ## UI flow on `/copilot`

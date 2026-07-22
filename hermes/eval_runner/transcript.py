@@ -83,9 +83,9 @@ def tool_calls_from_messages(messages: list[dict]) -> list[RecordedToolCall]:
     ]
 
 
-def _textline_body(call: _ParsedCall) -> str | None:
-    """The customer-facing SMS body of a successful governed Textline send."""
-    if call.tool != "toee_textline_reply" or call.action != "send_message" or not call.ok:
+def _sms_reply_body(call: _ParsedCall) -> str | None:
+    """The customer-facing SMS body of a successful governed SMS send."""
+    if call.tool != "toee_sms_reply" or call.action != "send_message" or not call.ok:
         return None
     source = call.result if isinstance(call.result, dict) else call.args
     body = source.get("body")
@@ -209,7 +209,7 @@ def turn_result_from_transcript(
 ) -> AgentTurnResult:
     """Compose the deterministic AgentTurnResult from a Hermes turn transcript.
 
-    Customer-facing text is the governed Textline reply body (ADR-0083); when the
+    Customer-facing text is the governed SMS reply body (ADR-0083); when the
     turn sent none, the agent's ``final_response`` stands in.
     """
     calls = _parsed_calls(messages)
@@ -218,7 +218,7 @@ def turn_result_from_transcript(
         for call in calls
     ]
 
-    bodies = [body for call in calls if (body := _textline_body(call)) is not None]
+    bodies = [body for call in calls if (body := _sms_reply_body(call)) is not None]
     outbound_text = "\n".join(bodies) if bodies else (final_response or "")
 
     case_created = any(

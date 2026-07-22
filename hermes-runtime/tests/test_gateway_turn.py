@@ -1,9 +1,9 @@
-"""Gateway turn runner: a bound async Textline turn enforces ADR-0107 in the real loop.
+"""Gateway turn runner: a bound async SMS turn enforces ADR-0107 in the real loop.
 
 :func:`hermes_runtime.turn_runner.run_gateway_turn` boots the External profile bound
 to the inbound turn's ``conversation_id`` (``register_turn``) and runs a real
 ``AIAgent`` turn against a scripted provider. The turn-binding gate (ADR-0107/0066)
-then admits a governed ``toee_textline_reply.send_message`` only when it targets the
+then admits a governed ``toee_sms_reply.send_message`` only when it targets the
 bound conversation; a send aimed at any other conversation is a governed
 ``policy_blocked`` failure, so the leaked body never becomes customer-facing text.
 
@@ -44,7 +44,7 @@ def test_gateway_turn_admits_a_reply_bound_to_the_inbound_conversation() -> None
             {
                 "tool_calls": [
                     {
-                        "name": "toee_textline_reply__send_message",
+                        "name": "toee_sms_reply__send_message",
                         "arguments": {"conversation_id": "conv-A", "body": body},
                     }
                 ]
@@ -56,7 +56,7 @@ def test_gateway_turn_admits_a_reply_bound_to_the_inbound_conversation() -> None
     result = _replay(turn)
 
     assert [(c.tool, c.action) for c in result.tool_calls] == [
-        ("toee_textline_reply", "send_message")
+        ("toee_sms_reply", "send_message")
     ]
     assert result.tool_calls[0].ok
     assert result.outbound_text == body
@@ -74,7 +74,7 @@ def test_gateway_turn_blocks_a_reply_to_a_different_conversation() -> None:
             {
                 "tool_calls": [
                     {
-                        "name": "toee_textline_reply__send_message",
+                        "name": "toee_sms_reply__send_message",
                         "arguments": {"conversation_id": "conv-B", "body": leaked},
                     }
                 ]

@@ -1,5 +1,9 @@
 # Per-phone soft inbound rate limiting at Textline gateway
 
+> **Provider retired (2026-07-21).** `services/hermes-gateway` is deleted and the provider
+> is SimpleTexting; the per-phone soft limit below stands on the Python gateway.
+> Superseding decision → [ADR-0153](0153-provider-neutral-sms-tool-naming.md).
+
 `services/hermes-gateway` applies a per-sender soft rate limit to accepted inbound Textline customer messages in v1.
 
 ## v1 limit rule

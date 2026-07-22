@@ -1,7 +1,7 @@
 scenario_id: "14"
 title: "Non-customer government default urgent"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "Canada Revenue Agency regarding your HST filing"

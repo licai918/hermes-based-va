@@ -1,7 +1,7 @@
 scenario_id: "24"
 title: "Customer Memory explicit preference upsert"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "Please only text me after 2pm Eastern for any follow-ups."

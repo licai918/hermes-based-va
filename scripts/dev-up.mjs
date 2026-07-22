@@ -107,9 +107,9 @@ HERMES_ADMIN_API_URL=http://127.0.0.1:${PORTS.admin}
 HERMES_ADMIN_API_TOKEN=dev-admin-token
 
 # External Profile Simulator -> the real gateway webhook (no bypass chat).
-# TEXTLINE_WEBHOOK_SECRET must equal the gateway's; \`pnpm dev\` passes this value on.
+# SIMPLETEXTING_WEBHOOK_TOKEN must equal the gateway's; \`pnpm dev\` passes this value on.
 SIMULATOR_GATEWAY_URL=http://127.0.0.1:${PORTS.gateway}
-TEXTLINE_WEBHOOK_SECRET=dev-webhook-secret
+SIMPLETEXTING_WEBHOOK_TOKEN=dev-webhook-token
 `;
 
 function resolveDevEnv() {
@@ -142,33 +142,35 @@ function resolveDevEnv() {
   // Exported into compose's interpolation environment. Values already present in
   // hermes-runtime/.env win over the dev defaults so nobody's real secret is
   // clobbered by this script (compose `environment:` beats `env_file:`).
-  const textline = resolveTextlineSecret(rt, wb);
+  const webhookToken = resolveWebhookToken(rt, wb);
   log(
-    `TEXTLINE_WEBHOOK_SECRET resolved from ${textline.source}` +
-      (textline.source === "hermes-runtime/.env"
+    `SIMPLETEXTING_WEBHOOK_TOKEN resolved from ${webhookToken.source}` +
+      (webhookToken.source === "hermes-runtime/.env"
         ? ""
-        : " -- set it in hermes-runtime/.env to the real provider's secret before pointing ngrok/Textline at this gateway, or every inbound is a silent 401."),
+        : " -- set it in hermes-runtime/.env to the token embedded in the registered SimpleTexting webhook URL before pointing ngrok at this gateway, or every inbound is a silent 401."),
   );
 
   return {
     HERMES_COPILOT_API_TOKEN: wb.HERMES_COPILOT_API_TOKEN,
     HERMES_ADMIN_API_TOKEN: wb.HERMES_ADMIN_API_TOKEN,
-    TEXTLINE_WEBHOOK_SECRET: textline.value,
+    SIMPLETEXTING_WEBHOOK_TOKEN: webhookToken.value,
     INTERNAL_JOB_SECRET: rt.INTERNAL_JOB_SECRET || "dev-internal-job-secret",
     REPLY_SENDER: rt.REPLY_SENDER || "simulated",
   };
 }
 
-// TEXTLINE_WEBHOOK_SECRET must match whatever an EXTERNAL provider (Textline) signs
-// with, so hermes-runtime/.env -- the real-credentials file -- wins over the
+// SIMPLETEXTING_WEBHOOK_TOKEN must match the token in the webhook URL registered
+// with the EXTERNAL provider (SimpleTexting does not sign payloads -- the URL token
+// is the whole credential, ADR-0153), so hermes-runtime/.env -- the
+// real-credentials file -- wins over the
 // workbench's auto-written local-dev default in apps/workbench/.env.local. Same
 // precedence as INTERNAL_JOB_SECRET/REPLY_SENDER above (0.0.4 S10 fix wave 1,
 // finding 2: the old wb-first order let a real hermes-runtime/.env secret be
 // silently shadowed by the dev default, so every real inbound 401'd).
-function resolveTextlineSecret(rt, wb) {
-  if (rt.TEXTLINE_WEBHOOK_SECRET) return { value: rt.TEXTLINE_WEBHOOK_SECRET, source: "hermes-runtime/.env" };
-  if (wb.TEXTLINE_WEBHOOK_SECRET) return { value: wb.TEXTLINE_WEBHOOK_SECRET, source: "apps/workbench/.env.local" };
-  return { value: "dev-webhook-secret", source: "dev default" };
+function resolveWebhookToken(rt, wb) {
+  if (rt.SIMPLETEXTING_WEBHOOK_TOKEN) return { value: rt.SIMPLETEXTING_WEBHOOK_TOKEN, source: "hermes-runtime/.env" };
+  if (wb.SIMPLETEXTING_WEBHOOK_TOKEN) return { value: wb.SIMPLETEXTING_WEBHOOK_TOKEN, source: "apps/workbench/.env.local" };
+  return { value: "dev-webhook-token", source: "dev default" };
 }
 
 // ---------------------------------------------------------------------------
@@ -306,20 +308,20 @@ function selfcheck() {
   rmSync(tmp);
 
   // Finding 2: hermes-runtime/.env (the real-credentials file) must win for
-  // TEXTLINE_WEBHOOK_SECRET, not the workbench's auto-written dev default.
+  // SIMPLETEXTING_WEBHOOK_TOKEN, not the workbench's auto-written dev default.
   assert.deepStrictEqual(
-    resolveTextlineSecret({ TEXTLINE_WEBHOOK_SECRET: "real-provider-secret" }, { TEXTLINE_WEBHOOK_SECRET: "dev-webhook-secret" }),
-    { value: "real-provider-secret", source: "hermes-runtime/.env" },
+    resolveWebhookToken({ SIMPLETEXTING_WEBHOOK_TOKEN: "real-provider-token" }, { SIMPLETEXTING_WEBHOOK_TOKEN: "dev-webhook-token" }),
+    { value: "real-provider-token", source: "hermes-runtime/.env" },
     "hermes-runtime/.env must win over the workbench dev default",
   );
   assert.deepStrictEqual(
-    resolveTextlineSecret({}, { TEXTLINE_WEBHOOK_SECRET: "dev-webhook-secret" }),
-    { value: "dev-webhook-secret", source: "apps/workbench/.env.local" },
+    resolveWebhookToken({}, { SIMPLETEXTING_WEBHOOK_TOKEN: "dev-webhook-token" }),
+    { value: "dev-webhook-token", source: "apps/workbench/.env.local" },
     "falls back to the workbench file when hermes-runtime/.env has nothing",
   );
   assert.deepStrictEqual(
-    resolveTextlineSecret({}, {}),
-    { value: "dev-webhook-secret", source: "dev default" },
+    resolveWebhookToken({}, {}),
+    { value: "dev-webhook-token", source: "dev default" },
     "falls back to the dev default when neither file has it",
   );
 

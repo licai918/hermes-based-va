@@ -1,7 +1,7 @@
 scenario_id: "16"
 title: "Sales outreach brief decline and low-priority case"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "Hi, I'm from Best SEO Services and wanted to offer you a marketing package."

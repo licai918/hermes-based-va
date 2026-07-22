@@ -1,7 +1,7 @@
 scenario_id: "27"
 title: "Customer Memory cross-customer isolation"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 memory_preset:
   contact_time_preference: "before 10am Pacific"

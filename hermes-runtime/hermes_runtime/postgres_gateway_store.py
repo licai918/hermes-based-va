@@ -25,7 +25,7 @@ from toee_hermes.gateway.normalize import is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
 
 from .datastore.config import database_url
-from .datastore.handlers._common import new_id
+from .datastore.handlers._common import customer_thread_id, new_id
 from .datastore.pool import get_database_pool
 from .job_queue import AGENT_TURN_JOB_TYPE, insert_job
 
@@ -44,7 +44,7 @@ def _channel_column(channel: str) -> str:
     """Map the ingress channel to the persisted channel vocabulary (S17).
 
     ``customer_thread`` / ``session_identity_snapshot`` / ``cases`` / ``identity_link``
-    all use ``sms`` | ``email`` (CaseChannel), not the ingress ``textline_sms`` |
+    all use ``sms`` | ``email`` (CaseChannel), not the ingress ``simpletexting_sms`` |
     ``simulated_email``. Keeping the column value ``email`` is what makes the copilot
     case view label an email ingress correctly and an Email Sender Match resolve.
     """
@@ -52,8 +52,7 @@ def _channel_column(channel: str) -> str:
 
 
 def _thread_id(channel: str, from_identity: str) -> str:
-    prefix = "email" if is_email_channel(channel) else "textline"
-    return f"customer_thread:{prefix}:{from_identity}"
+    return customer_thread_id(channel, from_identity)
 
 
 def _session_id(thread_id: str, conversation_id: str) -> str:
@@ -128,12 +127,31 @@ class PostgresGatewayStore:
             with get_database_pool(self._dsn).connection() as conn:
                 yield conn
 
+    def claim_event(self, event_id: str) -> bool:
+        """Atomically claim an event that persists no context; True if first claim.
+
+        ``ON CONFLICT DO NOTHING ... RETURNING`` makes this a compare-and-set, so
+        concurrent replays of the same opt-out yield exactly one claim (ADR-0016).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO inbound_event_claim (event_id) VALUES (%s) "
+                    "ON CONFLICT (event_id) DO NOTHING RETURNING event_id",
+                    (event_id,),
+                )
+                claimed = cur.fetchone() is not None
+            conn.commit()
+            return claimed
+
     def is_duplicate(self, event_id: str) -> bool:
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT 1 FROM agent_turn_context WHERE event_id = %s LIMIT 1",
-                    (event_id,),
+                    "SELECT 1 FROM agent_turn_context WHERE event_id = %s "
+                    "UNION ALL "
+                    "SELECT 1 FROM inbound_event_claim WHERE event_id = %s LIMIT 1",
+                    (event_id, event_id),
                 )
                 return cur.fetchone() is not None
 
@@ -327,7 +345,7 @@ class PostgresGatewayStore:
                     captured_at,
                 ) = row
 
-                # ponytail: conversation_id is the Textline id suffix on the session key.
+                # ponytail: conversation_id is the suffix on the session key (contact phone).
                 conversation_id = session_id.rsplit(":", 1)[-1]
 
                 snapshot = _snapshot_from_json(

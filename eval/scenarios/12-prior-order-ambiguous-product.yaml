@@ -1,7 +1,7 @@
 scenario_id: "12"
 title: "Prior order product reference requires disambiguation"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: verified_customer_a
 turns:
   - inbound: "Send me a photo of the tire I ordered last time."
@@ -20,6 +20,6 @@ assertions:
     must_contain: ["order number"]
   tool:
     forbidden_tools:
-      - tool: toee_textline_reply
+      - tool: toee_sms_reply
         action: send_message
   max_severity: medium

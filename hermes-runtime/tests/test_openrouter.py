@@ -218,7 +218,7 @@ def test_make_openrouter_run_turn_falls_back_to_the_secondary_model_on_retryable
             {
                 "tool_calls": [
                     {
-                        "name": "toee_textline_reply__send_message",
+                        "name": "toee_sms_reply__send_message",
                         "arguments": {"conversation_id": "conv-A", "body": body},
                     }
                 ]
@@ -278,7 +278,7 @@ def test_make_openrouter_run_turn_runs_a_bound_governed_turn_via_injected_provid
                 {
                     "tool_calls": [
                         {
-                            "name": "toee_textline_reply__send_message",
+                            "name": "toee_sms_reply__send_message",
                             "arguments": {"conversation_id": "conv-A", "body": body},
                         }
                     ]

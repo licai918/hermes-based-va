@@ -119,7 +119,7 @@ describe("DeadLetterPanel (0.0.4 S05, FR-13)", () => {
                 jobId: "job_2",
                 eventId: "evt-2",
                 conversationId: "conv-2",
-                channel: "textline_sms",
+                channel: "simpletexting_sms",
                 status: "sent",
                 skipCount: 0,
                 lastError: "mirror write failed",

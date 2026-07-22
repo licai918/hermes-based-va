@@ -27,7 +27,7 @@ vi.mock("@/lib/api/copilot-client", () => ({
   dismissProposal: vi.fn(),
   draft: vi.fn(),
   chat: vi.fn(),
-  sendTextline: vi.fn(),
+  sendSms: vi.fn(),
   normalizeDraft: (x: unknown) => String(x),
   proposalsFromDraft: vi.fn().mockReturnValue([]),
 }));

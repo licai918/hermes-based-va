@@ -1,8 +1,8 @@
-"""Textline inbound gateway primitives (ADR-0102, ADR-0021, ADR-0108, ADR-0109).
+"""SMS/email inbound gateway primitives (ADR-0102, ADR-0021, ADR-0108, ADR-0109).
 
-Schema-independent core for the Textline pipeline, ported from the TypeScript
-hermes-gateway: signature verification, canonical normalization, opt-out keyword
-detection, and the per-phone soft rate limiter. The route/embedding layer wires
+Schema-independent core for the inbound pipeline: webhook-token verification,
+canonical normalization, opt-out keyword detection, and the per-identity soft
+rate limiter. The route/embedding layer wires
 these into the live webhook handler and Hermes agent turn.
 """
 
@@ -23,7 +23,7 @@ from toee_hermes.gateway.ingress import (
 )
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
-    TextlineInboundFields,
+    SmsInboundFields,
     canonicalize_email,
     is_email_channel,
     normalize_e164,
@@ -37,11 +37,11 @@ from toee_hermes.gateway.rate_limit import (
     RateLimitDecision,
     create_inbound_rate_limiter,
 )
-from toee_hermes.gateway.verify import verify_textline_signature
+from toee_hermes.gateway.verify import verify_webhook_token
 
 __all__ = [
     "InboundChannelEvent",
-    "TextlineInboundFields",
+    "SmsInboundFields",
     "normalize_e164",
     "canonicalize_email",
     "is_email_channel",
@@ -52,7 +52,7 @@ __all__ = [
     "InboundRateLimiter",
     "RateLimitDecision",
     "create_inbound_rate_limiter",
-    "verify_textline_signature",
+    "verify_webhook_token",
     "IngressMatchResult",
     "SessionIdentitySnapshot",
     "match_ingress_phone",

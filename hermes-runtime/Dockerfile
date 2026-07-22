@@ -40,7 +40,7 @@ RUN uv sync --frozen
 
 # Cloud Run injects $PORT (default 8080) and routes to it; bind 0.0.0.0. The factory
 # fails closed at boot when a required secret is missing (webhook/internal-job
-# secrets, Textline token, OpenRouter key) — see gateway_composition.build_gateway_app.
+# secrets, SimpleTexting token, OpenRouter key) — see gateway_composition.build_gateway_app.
 ENV PORT=8080
 EXPOSE 8080
 CMD ["sh", "-c", "uv run --frozen uvicorn hermes_runtime.gateway_composition:build_gateway_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]

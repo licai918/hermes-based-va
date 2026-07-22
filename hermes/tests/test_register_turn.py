@@ -1,9 +1,9 @@
-"""Binding-aware registration for the async Textline turn (ADR-0107, ADR-0139).
+"""Binding-aware registration for the async SMS turn (ADR-0107, ADR-0139).
 
 ``register_turn(ctx, conversation_id=...)`` is the gateway-embedding entry point:
 it registers the profile's allowlisted tools exactly like ``register`` but binds
 the loaded turn's ``conversation_id`` into every governed dispatch and wires the
-turn-binding gate, so a scripted/model ``toee_textline_reply.send_message`` can
+turn-binding gate, so a scripted/model ``toee_sms_reply.send_message`` can
 only target the inbound turn's conversation (ADR-0066). The default ``register``
 (eval/replay + Copilot paths) stays unbound and unconstrained.
 
@@ -41,7 +41,7 @@ def _reply_handler(ctx: RecordingCtx) -> Any:
     entry = next(
         tool
         for tool in ctx.tools
-        if tool["name"] == "toee_textline_reply__send_message"
+        if tool["name"] == "toee_sms_reply__send_message"
     )
     return entry["handler"]
 

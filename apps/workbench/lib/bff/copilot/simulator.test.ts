@@ -8,7 +8,6 @@ import {
   handleSimulatorEmailIngress,
   handleSimulatorIngress,
   handleSimulatorLinkIdentity,
-  signLegacyTextlinePayload,
 } from "./simulator";
 
 function jsonReq(body: unknown): Request {
@@ -27,44 +26,26 @@ function emailReq(body: unknown): Request {
   });
 }
 
-describe("signLegacyTextlinePayload", () => {
-  it("matches a known HMAC-SHA256 hex vector (verify.py's legacy branch)", () => {
-    // Independently computed: node -e "crypto.createHmac('sha256',
-    // 'test-secret-123').update(<body>, 'utf8').digest('hex')" -- same
-    // algorithm as hermes/toee_hermes/gateway/verify.py's non-TGP branch and
-    // scripts/simulate-textline-webhook.ps1.
-    const body =
-      '{"id":"evt_1","conversation_id":"conv_1","from":"+15550001111",' +
-      '"body":"hello","received_at":"2026-07-20T14:00:00.000Z","type":"message.created"}';
-    const signature = signLegacyTextlinePayload(body, "test-secret-123");
-    expect(signature).toBe(
-      "8497964c981a1c26f15b8fd7908aeee89dcdab8306d748310956259ba886b1af",
-    );
-  });
-
-  it("changes when the body changes (not a constant stub)", () => {
-    const a = signLegacyTextlinePayload("body-a", "secret");
-    const b = signLegacyTextlinePayload("body-b", "secret");
-    expect(a).not.toBe(b);
-  });
-});
-
 describe("buildSimulatedInboundEvent", () => {
-  it("builds the legacy flat-JSON shape (id/conversation_id/from/body/received_at/type)", () => {
+  it("builds the SimpleTexting INCOMING_MESSAGE report shape", () => {
     const event = buildSimulatedInboundEvent({
       fromPhone: "+14165550101",
       body: "Do you have 225/65R17 in stock?",
-      conversationId: "conv-sim-1",
       eventId: "evt-sim-1",
       nowIso: "2026-07-20T14:00:00.000Z",
     });
     expect(event).toEqual({
-      id: "evt-sim-1",
-      conversation_id: "conv-sim-1",
-      from: "+14165550101",
-      body: "Do you have 225/65R17 in stock?",
-      received_at: "2026-07-20T14:00:00.000Z",
-      type: "message.created",
+      reportId: "rep-evt-sim-1",
+      webhookId: "wh-simulator",
+      type: "INCOMING_MESSAGE",
+      values: {
+        messageId: "evt-sim-1",
+        text: "Do you have 225/65R17 in stock?",
+        accountPhone: "simulator",
+        contactPhone: "+14165550101",
+        timestamp: "2026-07-20T14:00:00.000Z",
+        category: "SMS",
+      },
     });
   });
 
@@ -72,16 +53,16 @@ describe("buildSimulatedInboundEvent", () => {
     const event = buildSimulatedInboundEvent({
       fromPhone: "+14165550101",
       body: "hi",
-      conversationId: "conv-sim-2",
     });
-    expect(event.id).toMatch(/^sim-/);
-    expect(() => new Date(event.received_at).toISOString()).not.toThrow();
-    expect(new Date(event.received_at).toISOString()).toBe(event.received_at);
+    expect(event.values.messageId).toMatch(/^sim-/);
+    const ts = event.values.timestamp;
+    expect(() => new Date(ts).toISOString()).not.toThrow();
+    expect(new Date(ts).toISOString()).toBe(ts);
   });
 });
 
 describe("handleSimulatorIngress", () => {
-  it("POSTs the signed flat-JSON event to the gateway webhook and returns accepted:true", async () => {
+  it("POSTs the report to the tokened gateway webhook and returns accepted:true", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | null = null;
     const res = await handleSimulatorIngress(
@@ -101,24 +82,31 @@ describe("handleSimulatorIngress", () => {
       },
     );
 
-    expect(capturedUrl).toBe("http://127.0.0.1:8080/webhooks/textline");
+    // The token is the auth channel: SimpleTexting signs nothing and its webhook
+    // registration accepts no custom header (ADR-0153).
+    expect(capturedUrl).toBe(
+      "http://127.0.0.1:8080/webhooks/simpletexting?token=whsec-dev",
+    );
     const init = capturedInit as unknown as RequestInit;
     expect(init.method).toBe("POST");
+    // Exact match, not a per-key check: the token is the whole auth story, so no
+    // signature header of any kind may be sent. A re-introduced one fails here.
     const headers = init.headers as Record<string, string>;
-    expect(headers["content-type"]).toBe("application/json");
+    expect(headers).toEqual({ "content-type": "application/json" });
     const sentBody = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(sentBody).toEqual({
-      id: expect.stringMatching(/^sim-/),
-      conversation_id: "conv-sim-1",
-      from: "+14165550101",
-      body: "Do you have 225/65R17 in stock?",
-      received_at: expect.any(String),
-      type: "message.created",
+      reportId: expect.stringMatching(/^rep-sim-/),
+      webhookId: "wh-simulator",
+      type: "INCOMING_MESSAGE",
+      values: {
+        messageId: expect.stringMatching(/^sim-/),
+        text: "Do you have 225/65R17 in stock?",
+        accountPhone: "simulator",
+        contactPhone: "+14165550101",
+        timestamp: expect.any(String),
+        category: "SMS",
+      },
     });
-    // The signature must be the legacy HMAC over the exact bytes sent.
-    expect(headers["X-Textline-Signature"]).toBe(
-      signLegacyTextlinePayload(init.body as string, "whsec-dev"),
-    );
 
     expect(res.status).toBe(200);
     const payload = (await res.json()) as {
@@ -126,12 +114,12 @@ describe("handleSimulatorIngress", () => {
       eventId: string;
       accepted: boolean;
     };
-    expect(payload.conversationId).toBe("conv-sim-1");
+    expect(payload.conversationId).toBe("+14165550101");
     expect(payload.eventId).toMatch(/^sim-/);
     expect(payload.accepted).toBe(true);
   });
 
-  it("generates a conversationId when none is supplied", async () => {
+  it("reports the contact phone as the conversation id", async () => {
     const res = await handleSimulatorIngress(
       jsonReq({ fromPhone: "+14165550101", body: "hi" }),
       {
@@ -141,10 +129,10 @@ describe("handleSimulatorIngress", () => {
       },
     );
     const payload = (await res.json()) as { conversationId: string };
-    expect(payload.conversationId).toMatch(/^sim-/);
+    expect(payload.conversationId).toBe("+14165550101");
   });
 
-  it("reports accepted:false when the gateway rejects the signature (401)", async () => {
+  it("reports accepted:false when the gateway rejects the token (401)", async () => {
     const res = await handleSimulatorIngress(
       jsonReq({ fromPhone: "+14165550101", body: "hi", conversationId: "conv-x" }),
       {
@@ -226,7 +214,7 @@ describe("buildSimulatedInboundEmail", () => {
 });
 
 describe("handleSimulatorEmailIngress", () => {
-  it("POSTs the signed email event to the simulated-email webhook and returns accepted:true", async () => {
+  it("POSTs the email event to the tokened simulated-email webhook and returns accepted:true", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | null = null;
     const res = await handleSimulatorEmailIngress(
@@ -247,9 +235,13 @@ describe("handleSimulatorEmailIngress", () => {
       },
     );
 
-    expect(capturedUrl).toBe("http://127.0.0.1:8080/webhooks/simulated-email");
+    expect(capturedUrl).toBe(
+      "http://127.0.0.1:8080/webhooks/simulated-email?token=whsec-dev",
+    );
     const init = capturedInit as unknown as RequestInit;
+    // Same invariant as the SMS ingress above: token only, never a signature header.
     const headers = init.headers as Record<string, string>;
+    expect(headers).toEqual({ "content-type": "application/json" });
     const sentBody = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(sentBody).toEqual({
       id: expect.stringMatching(/^sim-/),
@@ -260,9 +252,6 @@ describe("handleSimulatorEmailIngress", () => {
       received_at: expect.any(String),
       type: "email.received",
     });
-    expect(headers["X-Textline-Signature"]).toBe(
-      signLegacyTextlinePayload(init.body as string, "whsec-dev"),
-    );
     expect(res.status).toBe(200);
     const payload = (await res.json()) as { accepted: boolean; conversationId: string };
     expect(payload.accepted).toBe(true);
@@ -296,6 +285,8 @@ describe("handleSimulatorEmailIngress", () => {
       },
     );
     const payload = (await res.json()) as { conversationId: string };
+    // Email keeps its own conversation id — unlike SMS, where the contact phone
+    // IS the conversation (SimpleTexting has no conversation resource).
     expect(payload.conversationId).toMatch(/^sim-/);
   });
 });

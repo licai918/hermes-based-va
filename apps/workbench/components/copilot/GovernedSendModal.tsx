@@ -1,13 +1,13 @@
 "use client";
 
-// Governed Textline send confirmation (ADR-0083). The two-step send flow ends
+// Governed SMS send confirmation (ADR-0083). The two-step send flow ends
 // here: the employee confirms the exact outbound body, the acting account, and
 // the case before the governed BFF send fires. On success we close and let the
 // container refetch the thread (onSent); on failure we surface the server message
 // through the global error banner and keep the modal open — nothing is fabricated.
 import { useState } from "react";
 import { ApiError } from "@/lib/api/http";
-import { sendTextline } from "@/lib/api/copilot-client";
+import { sendSms } from "@/lib/api/copilot-client";
 import { useErrorBanner } from "@/components/shell/error-banner";
 
 const META: React.CSSProperties = { fontSize: "0.78rem", color: "#555" };
@@ -19,7 +19,7 @@ export function GovernedSendModal({
   identitySummary,
   onSent,
   onClose,
-  send = sendTextline,
+  send = sendSms,
 }: {
   caseId: string;
   body: string;
@@ -40,7 +40,7 @@ export function GovernedSendModal({
       onClose();
     } catch (err) {
       const message =
-        err instanceof ApiError ? err.message : "Failed to send Textline message";
+        err instanceof ApiError ? err.message : "Failed to send SMS message";
       showError(message, err instanceof ApiError ? `HTTP ${err.status}` : undefined);
       setBusy(false);
     }
@@ -50,7 +50,7 @@ export function GovernedSendModal({
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Confirm Textline send"
+      aria-label="Confirm SMS send"
       style={{
         position: "fixed",
         inset: 0,
@@ -73,7 +73,7 @@ export function GovernedSendModal({
           gap: "0.75rem",
         }}
       >
-        <h2 style={{ margin: 0 }}>Send via Textline</h2>
+        <h2 style={{ margin: 0 }}>Send via SMS</h2>
         <p style={{ margin: 0, color: "#555" }}>
           Confirm this SMS reply. It will be sent to the customer and recorded in the
           case thread and audit log.

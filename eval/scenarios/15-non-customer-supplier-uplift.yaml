@@ -1,7 +1,7 @@
 scenario_id: "15"
 title: "Non-customer supplier invoice uplift urgent"
 suite: text_first_launch
-channel: textline
+channel: simpletexting
 identity_preset: unmatched_phone
 turns:
   - inbound: "This is ABC Supply calling about an invoice reconciliation issue on shipment 8821."

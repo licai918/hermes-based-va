@@ -23,7 +23,7 @@ from typing import Any, Callable, Mapping, Optional
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
 from toee_hermes.gateway.ingress import snapshot_as_identity_dict
 from toee_hermes.gateway.normalize import (
-    TEXTLINE_SMS,
+    SIMPLETEXTING_SMS,
     canonicalize_email,
     is_email_channel,
     normalize_e164,
@@ -81,7 +81,7 @@ _RETRYABLE_ERROR_NAMES = frozenset(
 
 
 def _with_channel_identity(
-    identity: Optional[dict[str, Any]], from_identity: str, channel: str = TEXTLINE_SMS
+    identity: Optional[dict[str, Any]], from_identity: str, channel: str = SIMPLETEXTING_SMS
 ) -> dict[str, Any]:
     """Merge the ingress channel identity into the turn's identity dict (S01/S17).
 
@@ -424,7 +424,7 @@ def make_openrouter_run_turn(
         identity = _with_channel_identity(
             base_identity,
             context.from_phone,
-            getattr(context, "channel", TEXTLINE_SMS),
+            getattr(context, "channel", SIMPLETEXTING_SMS),
         )
         # S10/FR-4: on a verified ingress, merge the caller's pre-verification
         # provisional slots onto the verified record BEFORE the read below, so the

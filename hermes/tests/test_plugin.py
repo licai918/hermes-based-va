@@ -196,7 +196,7 @@ def test_link_identity_is_never_registered_as_an_llm_tool_for_any_profile() -> N
 
 
 def test_link_identity_stays_excluded_on_register_turn_too() -> None:
-    # register_turn is the live async Textline turn's entry point -- the actual
+    # register_turn is the live async SMS turn's entry point -- the actual
     # production path a prompt-injected customer message would try to exploit.
     ctx = RecordingCtx(profile="customer_service_external")
     register_turn(ctx, conversation_id="conv_1")
@@ -318,7 +318,7 @@ def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     }
     assert fully_excluded == {"toee_job_queue"}
     assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"]) - fully_excluded
-    assert "toee_textline_reply" not in toolsets
+    assert "toee_sms_reply" not in toolsets
     assert "toee_square_payment_link" not in toolsets
 
 

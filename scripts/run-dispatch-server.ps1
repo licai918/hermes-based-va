@@ -39,7 +39,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Load hermes-runtime/.env (TEXTLINE_ACCESS_TOKEN, DATABASE_URL, …) — same as run-gateway.ps1.
+# Load hermes-runtime/.env (SIMPLETEXTING_API_TOKEN, DATABASE_URL, …) — same as run-gateway.ps1.
 $runtimeDir = Join-Path (Join-Path $PSScriptRoot "..") "hermes-runtime"
 $envFile = Join-Path $runtimeDir ".env"
 if (Test-Path $envFile) {

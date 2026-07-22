@@ -30,7 +30,7 @@ export interface WorkbenchCase {
   threadId: string;
   lastMessagePreview: string;
   toolFailure: boolean;
-  // Governed Textline send (ADR-0083) is only enabled on SMS cases with an
+  // Governed SMS send (ADR-0083) is only enabled on SMS cases with an
   // active SMS Session on the current thread.
   smsSessionActive: boolean;
   openedAt: number;
@@ -64,7 +64,7 @@ export type AuditAction =
   | "update_contact_reason"
   | "resolve_case"
   | "draft_generated"
-  | "textline_send"
+  | "sms_send"
   | "audit_view";
 
 export interface AuditLogEntry {

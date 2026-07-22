@@ -1,6 +1,6 @@
-# Local Textline Gateway — inbound SMS simulation
+# Local SMS Gateway (SimpleTexting) — inbound SMS simulation
 
-Simulate **customer inbound SMS** on your machine: signed webhook → Python Gateway →
+Simulate **customer inbound SMS** on your machine: tokened webhook → Python Gateway →
 ingress match → Postgres persist + one durable `job` row → **turn worker** runs the
 async **External Customer Service Profile** agent turn. This is **not** the
 Workbench copilot chat path.
@@ -51,15 +51,15 @@ repo-root [`.env.example`](../../.env.example), never commit secrets).
 | --- | --- | --- |
 | `TOOL_BACKEND=datastore` | compose | Boot requirement (0.0.4 S02). The gateway persists the turn context and a *separate* worker reloads it; no other backend can cross that gap. |
 | `DATABASE_URL` / `KNOWLEDGE_DATABASE_URL` | compose | In-network DSNs for the two databases. |
-| `REPLY_SENDER` | compose (`simulated`) | Skips the real provider POST — no `TEXTLINE_ACCESS_TOKEN` needed and a dev box can never text a real customer — while still mirroring the reply into `message_turn`. Set `textline` in `hermes-runtime/.env` (plus a token) to send for real. |
-| `TEXTLINE_WEBHOOK_SECRET` | `hermes-runtime/.env` if set, else `apps/workbench/.env.local`'s dev default, passed through by `pnpm dev` | HMAC key for inbound `/webhooks/textline` (ADR-0021). Must match whatever signs the request, or every inbound is a 401. `pnpm dev` logs which file won. |
+| `REPLY_SENDER` | compose (`simulated`) | Skips the real provider POST — no `SIMPLETEXTING_API_TOKEN` needed and a dev box can never text a real customer — while still mirroring the reply into `message_turn`. Set `simpletexting` in `hermes-runtime/.env` (plus a token) to send for real. Any other value fails closed at boot. |
+| `SIMPLETEXTING_WEBHOOK_TOKEN` | `hermes-runtime/.env` if set, else `apps/workbench/.env.local`'s dev default, passed through by `pnpm dev` | Shared token in the inbound `/webhooks/simpletexting?token=…` URL (ADR-0153). SimpleTexting does not sign payloads, so this is the only inbound credential — it must match the registered URL or every inbound is a 401. `pnpm dev` logs which file won. |
 | `INTERNAL_JOB_SECRET` | `hermes-runtime/.env` | Shared secret for `/internal/jobs/agent-turn` (ADR-0106). |
 | `OPENROUTER_API_KEY` | `hermes-runtime/.env` | Live LLM for the async agent turn (ADR-0009). |
-| `TEXTLINE_ACCESS_TOKEN` | `hermes-runtime/.env` | Only with `REPLY_SENDER=textline`. |
-| `TEXTLINE_MAX_SIGNATURE_AGE_SECONDS` | `hermes-runtime/.env` | Recommended in prod. Opt-in TGP replay window: the live TGP signature covers only `event_type + event_time + secret` (not the body, no expiry), so a leaked triple can be replayed. Suggested `900`. Unset = no freshness check. |
+| `SIMPLETEXTING_API_TOKEN` | `hermes-runtime/.env` | Only with `REPLY_SENDER=simpletexting`. |
 
-Optional overrides (defaults are fine locally): `TEXTLINE_API_BASE_URL`,
-`OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODEL`.
+Optional overrides (defaults are fine locally): `SIMPLETEXTING_API_BASE_URL`,
+`SIMPLETEXTING_ACCOUNT_PHONE`, `OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`,
+`OPENROUTER_FALLBACK_MODEL`.
 
 Identity ingress resolves against mock fixtures with the mock driver (verified test
 phone `+14165550101`); with `INTEGRATION_DRIVER=composio` it reads `identity_link`
@@ -67,53 +67,56 @@ in Postgres first and falls back to a Shopify phone lookup.
 
 ### The easy way in: the workbench simulator
 
-`/copilot/simulator` posts a signed webhook to this gateway
+`/copilot/simulator` posts a tokened webhook to this gateway
 (`SIMULATOR_GATEWAY_URL`), so the whole inbound path runs without any curl or
-signing by hand — and it reads the reply back out of `message_turn`. That is the
-recommended local exercise; the raw signing recipes below are for debugging the
-webhook contract itself.
+hand-built payload — and it reads the reply back out of `message_turn`. That is the
+recommended local exercise; the raw recipes below are for debugging the webhook
+contract itself.
 
 ---
 
-## Simulate inbound SMS (no real Textline)
+## Simulate inbound SMS (no real SimpleTexting)
 
-**Route:** `POST /webhooks/textline`  
-**Header:** `X-Textline-Signature` = HMAC-SHA256 hex digest of the **exact raw JSON body**,
-keyed by `TEXTLINE_WEBHOOK_SECRET` (ADR-0021).
+**Route:** `POST /webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>`  
+There is no signature header and no body-signature scheme at all — SimpleTexting does
+not sign webhooks, so the only inbound credential is the shared URL token, and replay
+protection is `messageId` idempotency (ADR-0153).
 
 ### Helper script (recommended)
 
 From repo root, with the gateway running:
 
 ```powershell
-$env:TEXTLINE_WEBHOOK_SECRET = '<your-webhook-secret>'
-powershell -NoProfile -File scripts/simulate-textline-webhook.ps1 -Body "Do you have 225/65R17 in stock?" -From "+14165550101"
+powershell -NoProfile -File scripts/simulate-simpletexting-webhook.ps1 -Token "<your-webhook-token>" -Body "Do you have 225/65R17 in stock?" -ContactPhone "+14165550101"
 ```
 
-Optional: `-GatewayUrl http://127.0.0.1:8080`, `-ConversationId conv-local-1`, `-EventId evt-local-1`.
+Optional: `-GatewayUrl http://127.0.0.1:8080`, `-AccountPhone 9053378266`, `-MessageId evt-local-1`.
+
+Re-running with the same `-MessageId` is a no-op ack: dedup keys on `messageId`, and
+an opt-out (`STOP`) sends its confirmation exactly once (ADR-0016). Vary `-MessageId`
+to simulate a genuinely new message.
 
 ### Manual PowerShell (one inbound)
 
 ```powershell
-$secret = $env:TEXTLINE_WEBHOOK_SECRET
+$token = $env:SIMPLETEXTING_WEBHOOK_TOKEN
 $bodyObj = @{
-  id = "evt-manual-1"
-  conversation_id = "conv-manual-1"
-  from = "+14165550101"
-  body = "Do you have 225/65R17 in stock?"
-  received_at = "2026-01-01T00:00:00Z"
-  type = "message.created"
+  reportId  = "rep-manual-1"
+  webhookId = "wh-manual"
+  type      = "INCOMING_MESSAGE"
+  values    = @{
+    messageId    = "evt-manual-1"
+    text         = "Do you have 225/65R17 in stock?"
+    accountPhone = "9053378266"
+    contactPhone = "+14165550101"
+    timestamp    = "2026-01-01T00:00:00.000Z"
+    category     = "SMS"
+  }
 }
-$body = ($bodyObj | ConvertTo-Json -Compress)
-$hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($secret))
-$sig = -join ($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($body)) | ForEach-Object { $_.ToString("x2") })
-Invoke-WebRequest -Method POST -Uri "http://127.0.0.1:8080/webhooks/textline" `
-  -ContentType "application/json" `
-  -Headers @{ "X-Textline-Signature" = $sig } `
-  -Body $body
+$body = ($bodyObj | ConvertTo-Json -Depth 4 -Compress)
+$uri = "http://127.0.0.1:8080/webhooks/simpletexting?token=$([uri]::EscapeDataString($token))"
+Invoke-WebRequest -Method POST -Uri $uri -ContentType "application/json" -Body $body
 ```
-
-Use a **compact JSON body** for signing; whitespace changes invalidate the signature.
 
 ---
 
@@ -121,10 +124,10 @@ Use a **compact JSON body** for signing; whitespace changes invalidate the signa
 
 | Case | Status | Gateway behavior |
 | --- | --- | --- |
-| Missing / wrong signature | **401** | Rejected before processing |
+| Missing / wrong `token` | **401** | Rejected before processing |
 | Normal inbound (e.g. stock question) | **200** | Persist + enqueue async agent turn |
-| Opt-out keyword (`STOP`, etc.) | **200** | Fixed compliance reply via Textline; **no** agent turn |
-| Duplicate `event_id` (when idempotency wired) | **200** | No-op ack |
+| Opt-out keyword (`STOP`, etc.) | **200** | Fixed compliance reply via SimpleTexting; **no** agent turn |
+| Duplicate `messageId` | **200** | No-op ack (`claim_event` compare-and-set; ADR-0016/0153) |
 | Rate-limited sender | **200** | Persist snapshot; **no** enqueue |
 | Transient identity lookup failure | **500** | Retryable ingress error |
 
@@ -196,7 +199,7 @@ When ``TOOL_BACKEND`` is unset or ``mock``, ``build_gateway_app()`` **raises at 
   single match. Without a Shopify registered phone on file, inbound still acks as
   *Unmatched Caller*. Manual seed (below) remains valid for dev overrides.
 - The async agent turn still routes **business tools** through the plugin's `INTEGRATION_DRIVER` (mock/composio), not `TOOL_BACKEND`. Case rows for inbound are opened at persist time so Workbench shows the thread immediately; agent `create_case` during the turn still uses mock unless you wire Composio + future composite driver work.
-- A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS, a working `TEXTLINE_ACCESS_TOKEN` + real `conversation_id`.
+- A **live agent reply** needs a valid `OPENROUTER_API_KEY` (LLM) and, for outbound SMS, a working `SIMPLETEXTING_API_TOKEN` (the conversation_id is the contact's E.164 phone).
 - With `TOOL_BACKEND` unset the production gateway does not boot at all: it fails
   closed rather than acking webhooks it can never reply to.
 
@@ -223,7 +226,7 @@ VALUES ('link_real_1', 'sms', '+1YOUR_CUSTOMER_E164', 'gid://shopify/Customer/YO
 ON CONFLICT DO NOTHING;
 ```
 
-Replace `+1YOUR_CUSTOMER_E164` with the Textline `from` phone (E.164). Without this row, ingress still acks but `identity_summary` shows the raw phone.
+Replace `+1YOUR_CUSTOMER_E164` with the inbound `contactPhone` (E.164). Without this row, ingress still acks but `identity_summary` shows the raw phone.
 
 #### Optional: hide demo seed cases
 
@@ -238,16 +241,16 @@ DELETE FROM customer_thread WHERE id IN ('thread_ar', 'thread_toolfail');
 
 Accounts (`rep` / `admin`) remain; only demo queue rows are removed.
 
-### Point Textline webhook at local gateway
+### Point the SimpleTexting webhook at the local gateway
 
-Textline must reach your machine on `/webhooks/textline`:
+SimpleTexting must reach your machine on `/webhooks/simpletexting`:
 
 1. Boot gateway on port **8080** (above).
 2. Expose with a tunnel, e.g. [ngrok](https://ngrok.com/): `ngrok http 8080`
-3. In Textline Developer settings, set webhook URL to `https://<tunnel-host>/webhooks/textline`.
-4. Set `TEXTLINE_WEBHOOK_SECRET` in `hermes-runtime/.env` to the **same secret** Textline uses to sign payloads.
+3. Register the webhook (API `POST /api/webhooks` or dashboard Integrations → Webhooks) with URL `https://<tunnel-host>/webhooks/simpletexting?token=<SIMPLETEXTING_WEBHOOK_TOKEN>` and trigger `INCOMING_MESSAGE`.
+4. Set `SIMPLETEXTING_WEBHOOK_TOKEN` in `hermes-runtime/.env` to the **same token** embedded in that URL.
 
-Production: deploy gateway to Cloud Run and point Textline at the service URL (see [`deploy-cloud-run.md`](deploy-cloud-run.md)). The old Cloud Run URL returning 404 is a different (legacy) service — update Textline to the new gateway URL.
+Production: deploy gateway to Cloud Run and point the SimpleTexting webhook at the service URL (see [`deploy-cloud-run.md`](deploy-cloud-run.md)).
 
 ---
 
@@ -258,4 +261,5 @@ cd hermes-runtime
 uv run pytest tests/test_gateway_app.py tests/test_gateway_composition.py tests/test_gateway_healthz.py -q
 ```
 
-Signature crypto unit tests live under `hermes/tests/test_gateway_verify.py`.
+Webhook **token** verification unit tests live under `hermes/tests/test_gateway_verify.py`
+(constant-time token compare, fail-closed — there is no signature crypto to test).

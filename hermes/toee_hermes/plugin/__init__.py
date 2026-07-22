@@ -179,7 +179,7 @@ def _make_context_provider(
     the profile alone and identity-scoped reads see ``identity is None``. A closed
     over ``identity`` (the eval Session Identity Snapshot, ADR-0043) takes
     precedence, because the agent loop never supplies it as a per-call kwarg. The
-    async Textline turn binding (``conversation_id``/``sms_session_id``, ADR-0107)
+    async SMS turn binding (``conversation_id``/``sms_session_id``, ADR-0107)
     is injected by :func:`register_turn` and closed over here — never model-supplied.
     """
 
@@ -298,11 +298,11 @@ def register_turn(
     memory_preferences: Optional[list[dict[str, Any]]] = None,
     extra_drivers: Optional[dict[str, ToolDriver]] = None,
 ) -> None:
-    """Register for one async Textline turn bound to ``conversation_id`` (ADR-0107).
+    """Register for one async SMS turn bound to ``conversation_id`` (ADR-0107).
 
     The gateway embedding calls this after the internal job reloads + verifies the
     inbound binding; every governed dispatch then carries the binding, and the
-    turn-binding gate rejects a ``toee_textline_reply.send_message`` aimed at any
+    turn-binding gate rejects a ``toee_sms_reply.send_message`` aimed at any
     other conversation (ADR-0066). ``identity`` is the ingress Session Identity
     Snapshot (ADR-0043) closed over for Tool Gate authorization and ``pre_llm_call``
     injection (ADR-0140). ``extra_drivers`` is the per-tool driver override (S04)
@@ -334,7 +334,7 @@ def register_eval(
     Injects the scenario's ``driver`` (its MockDriver), the External-profile
     ``gate``, and the closed-over Session Identity Snapshot (ADR-0043), so a
     recorded live ``AIAgent`` turn dispatches through the scenario's mock data and
-    policy. This path is unbound (no async Textline ``conversation_id``), so the
+    policy. This path is unbound (no async SMS ``conversation_id``), so the
     reply tool is unconstrained — recording captures whatever conversation the
     scenario's scripted/model turn targets.
     """

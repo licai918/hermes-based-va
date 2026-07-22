@@ -35,5 +35,5 @@ def test_discover_plugins_loads_external_profile_via_entry_point(monkeypatch) ->
 
     # The External profile's allowlisted governed tool is registered globally,
     # and the identity/memory injection hook (ADR-0140) is wired.
-    assert registry.get_entry("toee_textline_reply__send_message") is not None
+    assert registry.get_entry("toee_sms_reply__send_message") is not None
     assert has_hook("pre_llm_call")

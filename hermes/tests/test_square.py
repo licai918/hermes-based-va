@@ -1,7 +1,7 @@
 """toee_square_payment_link mock handlers (ports mock/square.test.ts).
 
 ``send_payment_link`` requires a Verified Customer (Session Identity Snapshot,
-ADR-0043) and must stay on the current verified Textline thread (ADR-0022),
+ADR-0043) and must stay on the current verified SMS thread (ADR-0022),
 modeled by a required, non-empty conversation id. A new contact supplied in the
 message body never redirects the link (eval scenario 05 turn 2); the agent opens
 a Follow-up Case instead. Exercised through ``execute_tool`` so the governed
@@ -15,7 +15,7 @@ from toee_hermes.tool_gate import ToolExecutionContext
 
 VERIFIED_CUSTOMER_ID = "gid://shopify/Customer/1001"
 OTHER_CUSTOMER_ID = "gid://shopify/Customer/9999"
-CONVERSATION_ID = "textline:conv_abc123"
+CONVERSATION_ID = "sms:conv_abc123"
 
 
 def _driver() -> MockDriver:
