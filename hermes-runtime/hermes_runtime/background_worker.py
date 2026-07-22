@@ -106,6 +106,64 @@ INGEST_CORPUS_PATH_ENV = "INGEST_CORPUS_PATH"
 JobBody = Callable[[Mapping[str, Any]], None]
 
 
+class L6ReviewMisconfigured(RuntimeError):
+    """An ``l6_review`` job reached a process that cannot durably run the fork.
+
+    **Why this is a misconfiguration and not the default-OFF state.** The job's
+    own existence proves the L6 flag was ON in the process that enqueued it:
+    ``copilot_turn.run_turn``'s ``if agent_experience_enabled():`` is the only
+    thing in the repo that enqueues this type, and nothing schedules it. So a
+    flag that reads OFF *here* means the flag is split across the two processes
+    (dispatch/copilot has it, this worker does not) -- exactly the gap S04 opened
+    by moving the fork into a second process.
+
+    Both halves of the check make the fork write **nothing** while the job would
+    otherwise report ``succeeded``: with the flag off,
+    ``_agent_experience_extra_drivers`` returns ``None`` and the governed
+    ``propose_experience`` call lands in a throwaway per-process mock; with no
+    ``OPENROUTER_API_KEY``, ``_run_review_pass`` returns ``[]`` without reaching a
+    model at all. FR-11 promises the durable ``agent_experience`` row is identical
+    after the move, so a silent no-op is a lost row, not a no-op.
+
+    Shape borrowed from S03 fix wave 1's :class:`~hermes_runtime.outbound_send.OutboundSendBurned`:
+    log at ERROR naming the variable and the consequence, then raise so the job
+    fails and lands where a human sees it (``max_attempts=1`` -> straight to
+    ``dead`` -> S05's dead-letter view), instead of reporting success.
+    """
+
+
+def _require_l6_writable() -> None:
+    """Fail closed when this process cannot durably run an ``l6_review`` job."""
+    from .openrouter import resolve_openrouter_config
+    from .tool_backend import AGENT_EXPERIENCE_ENV, agent_experience_enabled
+
+    if not agent_experience_enabled():
+        logger.error(
+            "An l6_review job was queued by a process with %s ON, but it is OFF on "
+            "this worker: the review fork would run against the throwaway mock "
+            "driver and persist NO agent_experience row. Failing the job; set %s "
+            "on the background worker.",
+            AGENT_EXPERIENCE_ENV,
+            AGENT_EXPERIENCE_ENV,
+        )
+        raise L6ReviewMisconfigured(
+            f"{AGENT_EXPERIENCE_ENV} is off on this worker but an l6_review job "
+            "was enqueued; the fork would write nothing"
+        )
+    try:
+        resolve_openrouter_config()
+    except ValueError as exc:
+        logger.error(
+            "An l6_review job cannot run on this worker: %s. The fork would "
+            "propose nothing and the job would report success having written "
+            "no agent_experience row. Failing it instead.",
+            exc,
+        )
+        raise L6ReviewMisconfigured(
+            f"the l6_review fork has no review model on this worker: {exc}"
+        ) from exc
+
+
 def _run_ingest(payload: Mapping[str, Any]) -> None:
     """The ``ingest`` job body: Stage B over the operator's pull artifact."""
     from .knowledge.ingest import ingest
@@ -133,6 +191,10 @@ def job_bodies() -> dict[str, JobBody]:
     from .retention_sweep import run_retention_sweep_job
 
     def l6_review(payload: Mapping[str, Any]) -> None:
+        # The enqueue was gated on the L6 flag in ANOTHER process (S04 split them).
+        # If this one is configured differently the fork writes nothing, so check
+        # before running it rather than reporting success on a lost row.
+        _require_l6_writable()
         # The proposals it returns were already persisted by the governed
         # propose_experience call inside the fork; the return value was only ever
         # an echo for the copilot result, and nothing reads it here.

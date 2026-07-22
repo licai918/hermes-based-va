@@ -98,6 +98,17 @@ services:
       # an operator mounts the corpus and sets this, and an ingest job with nothing
       # to ingest fails loudly naming this variable rather than wiping the corpus.
       # INGEST_CORPUS_PATH: /corpus/corpus.json
+      #
+      # The L6 review fork EXECUTES here but is ENQUEUED by the copilot/dispatch
+      # process, so these two must be set the same on both. Default OFF, so unset
+      # means no `l6_review` job is ever created and this worker never needs them.
+      # The day the flag goes on in the dispatch process it must go on here too:
+      # otherwise every l6_review job dead-letters with L6ReviewMisconfigured
+      # (deliberately loud -- the alternative is a job reporting `succeeded`
+      # having written no agent_experience row). Usually supplied via the
+      # hermes-runtime/.env above; named here so the coupling is visible.
+      # AGENT_EXPERIENCE_LEARNING: "on"
+      # OPENROUTER_API_KEY: sk-or-...
     depends_on:
       postgres:
         condition: service_healthy

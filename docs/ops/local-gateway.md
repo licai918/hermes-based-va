@@ -176,6 +176,16 @@ panel's button still queues one, but nothing will claim it either). Set
 `INGEST_CORPUS_PATH` on it to point at the Stage A pull artifact, or a queued
 re-ingest fails naming that variable rather than wiping the corpus.
 
+**Environment that must match the dispatch/copilot process.** An `l6_review` job is
+*enqueued* by whichever process runs the copilot turn and *executed* here, so
+`AGENT_EXPERIENCE_LEARNING` and `OPENROUTER_API_KEY` are needed on **both**. Both
+are default OFF/unset and no `l6_review` job exists while the flag is off, so
+neither is required today. The day you turn the L6 learning loop on, turn it on for
+this worker too: a job that reaches a worker with the flag off (or with no key)
+fails with `L6ReviewMisconfigured` and dead-letters, instead of quietly reporting
+success without writing the `agent_experience` row the loop exists for. Both
+variables are named (commented out) in the `background-worker` compose service.
+
 ---
 
 ## What store is used today

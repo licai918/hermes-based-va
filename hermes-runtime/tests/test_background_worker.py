@@ -28,6 +28,7 @@ from hermes_runtime.background_worker import (
     INGEST_CORPUS_PATH_ENV,
     POLL_SECONDS,
     SCHEDULES,
+    L6ReviewMisconfigured,
     _error_backoff_seconds,
     _run_ingest,
     job_bodies,
@@ -299,11 +300,18 @@ def test_an_ingest_with_no_corpus_artifact_fails_with_an_actionable_error(monkey
         _run_ingest({})
 
 
+def _l6_configured(monkeypatch) -> None:
+    """The env an l6_review job's EXISTENCE implies (see _require_l6_writable)."""
+    monkeypatch.setenv("AGENT_EXPERIENCE_LEARNING", "on")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+
+
 def test_the_l6_body_runs_the_fork_over_the_payloads_prompt(monkeypatch):
     """The migrated L6 trigger: the copilot turn builds the prompt and enqueues;
     the worker's body feeds that exact prompt to the unchanged fork."""
     import hermes_runtime.copilot_turn as copilot_mod
 
+    _l6_configured(monkeypatch)
     seen: dict = {}
 
     def _fake_pass(*, user_message, **_kwargs):
@@ -317,6 +325,53 @@ def test_the_l6_body_runs_the_fork_over_the_payloads_prompt(monkeypatch):
     )
 
     assert seen["user_message"] == "Review the copilot turn for case_x."
+
+
+@pytest.mark.parametrize(
+    "missing, expected",
+    [("AGENT_EXPERIENCE_LEARNING", "AGENT_EXPERIENCE_LEARNING"), ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY")],
+)
+def test_an_l6_job_on_a_differently_configured_worker_fails_instead_of_writing_nothing(
+    monkeypatch, caplog, missing, expected
+):
+    """S04 fix wave 1, finding 1. The enqueue is gated in the copilot/dispatch
+    process; the fork executes HERE. If the two processes disagree, the fork
+    silently persists no ``agent_experience`` row -- the exact thing FR-11 promises
+    is identical after the move. The job's existence proves the flag was on where
+    it was enqueued, so this is a misconfiguration, not the default-OFF state:
+    fail loudly (max_attempts=1 -> ``dead``) instead of reporting success.
+    """
+    import hermes_runtime.copilot_turn as copilot_mod
+
+    _l6_configured(monkeypatch)
+    monkeypatch.delenv(missing, raising=False)
+
+    def _never(**_kwargs):  # the fork must not even be attempted
+        raise AssertionError("the fork ran on a worker that cannot persist its write")
+
+    monkeypatch.setattr(copilot_mod, "_run_review_pass", _never)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(L6ReviewMisconfigured, match=expected):
+            job_bodies()[L6_REVIEW_JOB_TYPE]({"case_id": "c", "review_prompt": "p"})
+
+    assert any(expected in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+
+
+def test_a_misconfigured_l6_job_dead_letters_rather_than_succeeding(datastore, queue, monkeypatch):
+    """The same failure, through the real worker: the operator sees a `dead` row
+    naming the variable, not a `succeeded` job that wrote nothing."""
+    _driver, conn, _schema = datastore
+    monkeypatch.delenv("AGENT_EXPERIENCE_LEARNING", raising=False)
+    job_id = queue.enqueue(
+        {"case_id": "c", "review_prompt": "p"}, job_type=L6_REVIEW_JOB_TYPE, max_attempts=1
+    )
+
+    run_once(queue=queue, bodies=job_bodies(), worker="bg-1", schedules=())
+
+    status, last_error = _row(conn, job_id, "status", "last_error")
+    assert status == "dead"
+    assert "AGENT_EXPERIENCE_LEARNING" in last_error
 
 
 # --------------------------------------------------------------------------
