@@ -22,9 +22,8 @@ pnpm dev
 As of 0.0.4 S10 the gateway is a `docker compose` service (`gateway`, port 8080)
 and comes up with the rest of the stack — together with the **turn worker**, which
 is the process that actually runs the inbound turn. Nothing here needs a
-hand-started uvicorn or a spare terminal. (`pnpm dev:gateway` is a leftover stub
-that prints a placeholder; the live gateway is the Python FastAPI app in
-`hermes-runtime/`, ADR-0095.)
+hand-started uvicorn or a spare terminal. (The live gateway is the Python
+FastAPI app in `hermes-runtime/`, ADR-0095.)
 
 Smoke the liveness route (no auth):
 
@@ -53,7 +52,7 @@ repo-root [`.env.example`](../../.env.example), never commit secrets).
 | `TOOL_BACKEND=datastore` | compose | Boot requirement (0.0.4 S02). The gateway persists the turn context and a *separate* worker reloads it; no other backend can cross that gap. |
 | `DATABASE_URL` / `KNOWLEDGE_DATABASE_URL` | compose | In-network DSNs for the two databases. |
 | `REPLY_SENDER` | compose (`simulated`) | Skips the real provider POST — no `TEXTLINE_ACCESS_TOKEN` needed and a dev box can never text a real customer — while still mirroring the reply into `message_turn`. Set `textline` in `hermes-runtime/.env` (plus a token) to send for real. |
-| `TEXTLINE_WEBHOOK_SECRET` | `apps/workbench/.env.local`, passed through by `pnpm dev` | HMAC key for inbound `/webhooks/textline` (ADR-0021). Must match whatever signs the request, or every inbound is a 401. |
+| `TEXTLINE_WEBHOOK_SECRET` | `hermes-runtime/.env` if set, else `apps/workbench/.env.local`'s dev default, passed through by `pnpm dev` | HMAC key for inbound `/webhooks/textline` (ADR-0021). Must match whatever signs the request, or every inbound is a 401. `pnpm dev` logs which file won. |
 | `INTERNAL_JOB_SECRET` | `hermes-runtime/.env` | Shared secret for `/internal/jobs/agent-turn` (ADR-0106). |
 | `OPENROUTER_API_KEY` | `hermes-runtime/.env` | Live LLM for the async agent turn (ADR-0009). |
 | `TEXTLINE_ACCESS_TOKEN` | `hermes-runtime/.env` | Only with `REPLY_SENDER=textline`. |
@@ -184,7 +183,7 @@ variables are named (commented out) in the `background-worker` compose service.
 
 ## What store is used today
 
-When ``TOOL_BACKEND=datastore`` (recommended for Tier B + real inbound), ``build_gateway_app`` wires **`PostgresGatewayStore`** and **`PostgresDriver`** for ingress identity lookup. Accepted inbound turns write `customer_thread`, `sms_session`, `message_turn`, `session_identity_snapshot`, `agent_turn_context`, and an **open Follow-up Case** into the same Postgres database the Workbench BFF reads.
+When ``TOOL_BACKEND=datastore`` (the default under `pnpm dev`, and required for real inbound), ``build_gateway_app`` wires **`PostgresGatewayStore`** and **`PostgresDriver`** for ingress identity lookup. Accepted inbound turns write `customer_thread`, `sms_session`, `message_turn`, `session_identity_snapshot`, `agent_turn_context`, and an **open Follow-up Case** into the same Postgres database the Workbench BFF reads.
 
 When ``TOOL_BACKEND`` is unset or ``mock``, ``build_gateway_app()`` **raises at boot** (0.0.4 S02 fix wave 1). The turn runs in a separate worker process, which cannot see another process's in-memory store, so that configuration could only ack webhooks and silently never reply — the exact failure this composition root's fail-closed posture exists to prevent. ``create_app()`` still defaults to **`InMemoryGatewayStore`** for DB-free tests, which build the app directly.
 

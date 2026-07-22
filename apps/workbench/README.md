@@ -75,8 +75,10 @@ pnpm dev:stack   # same stack, no workbench dev server (CI / running the UI your
 container image. You still want it to run `pytest` locally.
 
 First run builds the `toee-hermes-runtime:local` image (a `uv sync` over the
-pinned lock — several minutes, once). Later runs reuse it. Rebuild after changing
-Python dependencies: `docker compose build`.
+pinned lock — several minutes, once). Every `pnpm dev` after that rebuilds it
+again via phase 2's `docker compose run --rm --build migrate`, so a Python
+code or dependency change is picked up on the very next run — no manual
+`docker compose build` needed.
 
 ---
 
@@ -98,7 +100,7 @@ Source of truth for anything the workbench and a server must agree on.
 | `HERMES_ADMIN_API_TOKEN` | yes | becomes the admin server's `DISPATCH_API_TOKEN` |
 | `WORKBENCH_SESSION_SECRET` | no | session cookie signing; a dev fallback applies when unset |
 | `SIMULATOR_GATEWAY_URL` | for the simulator | `http://127.0.0.1:8080` |
-| `TEXTLINE_WEBHOOK_SECRET` | for the simulator | becomes the gateway's; a mismatch is a 401 on every simulated inbound |
+| `TEXTLINE_WEBHOOK_SECRET` | for the simulator | dev default here, but `hermes-runtime/.env` wins if it also sets this (needed to match a real provider); a mismatch is a 401 on every simulated inbound |
 
 ### `hermes-runtime/.env` — real credentials
 
