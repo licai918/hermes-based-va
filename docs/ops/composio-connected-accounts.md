@@ -386,12 +386,36 @@ customer (seeded)" vs "(live test entity)".
 
 Composio's Square toolkit has **no create-payment-link action** at any version
 (verified 0.0.4 S12: only `SQUARE_RETRIEVE_PAYMENT_LINK` exists, and a
-catalog-wide search finds no Square create action). `toee_square_payment_link`
-therefore fails closed on the Composio backend with a governed
-`configuration_missing` — a customer is never sent a fabricated or mock link. The
-Square connected account is still required for the other checks and for whichever
-upgrade path is taken (a Composio custom tool, or a direct Square REST driver
-overlay in the shape FR-20 uses for EasyRoutes).
+catalog-wide search finds no Square create action). The owner's 0.0.4 S26 decision
+switched the tool to **retrieve** semantics — links are pre-created in the Square
+console and the agent only fetches and sends an existing one — and S26's live
+probe confirms `SQUARE_RETRIEVE_PAYMENT_LINK` resolves at pin `20260616_00` with
+exactly one parameter, `{"required": ["id"]}`.
+
+`toee_square_payment_link` **still fails closed** with a governed
+`configuration_missing`, so a customer is never sent a fabricated or mock link.
+What is missing is no longer the action but the link's identity: retrieve is by
+the Square-assigned payment link id, nothing the agent legitimately holds maps to
+one, and there is no list/search action at the pin to resolve one
+(`SQUARE_LIST_PAYMENT_LINKS` 404s).
+
+**To turn this on, the owner must decide and supply:**
+
+1. **How a link is identified** — one fixed link for all payments, or one
+   pre-created link per invoice. Either way the runtime needs the Square-assigned
+   **ids**, not the console URLs; a console naming convention alone does not work,
+   because nothing at the pin can look a name up.
+2. **Whether the amount must be confirmed before send** (ADR-0066 says it must).
+   A retrieved payment link carries no money field — only `orderId` — so a
+   confirmed amount needs a second Square call, which ADR-0130 currently forbids
+   for one v1 action.
+3. **`ORDERS_READ` on the Square connected account.** S26's live execute came back
+   `INSUFFICIENT_SCOPES` for `ORDERS_READ` — and Composio reported that vendor
+   error as `successful: true` with a null link, so a naive response mapper would
+   turn it into an empty "result" instead of a failure. Re-authorize the Square
+   connection with `ORDERS_READ` before enabling the path.
+
+The Square connected account is required for the smoke's other checks regardless.
 
 ## Appendix A: Dashboard troubleshooting
 
