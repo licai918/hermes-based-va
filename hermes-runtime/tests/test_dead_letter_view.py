@@ -33,6 +33,7 @@ from hermes_runtime.job_queue import (
     AGENT_TURN_JOB_TYPE,
     INGEST_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
+    NON_CONCURRENT_JOB_TYPES,
     RETENTION_JOB_TYPE,
     PostgresJobQueue,
     replay_blocked_reason,
@@ -381,9 +382,29 @@ def test_replay_is_refused_while_a_job_of_the_same_type_is_running(datastore, qu
     assert "running right now" in row["replay_blocked_reason"]
 
 
+def test_an_agent_turn_replay_is_allowed_while_another_turn_runs(datastore, queue):
+    """S05 fix wave 2. The running-check is a per-type property
+    (``job_queue.NON_CONCURRENT_JOB_TYPES``), not a blanket rule -- fix wave 1's
+    first cut applied it to every type, which is wrong for ``agent_turn``:
+    turns run concurrently by design, S03's outbound idempotency already makes
+    a replayed turn safe, and ``agent_turn`` is the highest-volume job type, so
+    on any busy system some turn is almost always running. Gating replay on
+    that blocked the single most common recovery operation for no safety
+    reason -- this is the exact case that regressed and is now fixed.
+    """
+    driver, conn, _schema = datastore
+    dead_id = _dead_job(queue, conn, AGENT_TURN_JOB_TYPE)
+    queue.enqueue({}, job_type=AGENT_TURN_JOB_TYPE)
+    assert queue.claim(worker="w-live", types=(AGENT_TURN_JOB_TYPE,)) is not None
+
+    assert _replay(driver, dead_id).ok is True
+    assert _row(conn, dead_id, "status")[0] == "queued"
+
+
 def test_a_running_job_only_blocks_replay_of_its_own_type(datastore, queue):
-    """The guard is per type, not a global freeze -- a live agent_turn must not
-    stop a supervisor from replaying a stuck retention sweep."""
+    """The guard is scoped to ``NON_CONCURRENT_JOB_TYPES`` -- a live agent_turn
+    must not stop a supervisor from replaying a stuck retention sweep, and a
+    live agent_turn is not even in the set that gets checked."""
     driver, conn, _schema = datastore
     dead_id = _dead_job(queue, conn, RETENTION_JOB_TYPE)
     queue.enqueue({}, job_type=AGENT_TURN_JOB_TYPE)
@@ -399,6 +420,15 @@ def test_the_blocked_set_is_exactly_l6_review():
     assert replay_blocked_reason(L6_REVIEW_JOB_TYPE) is not None
     for job_type in (AGENT_TURN_JOB_TYPE, RETENTION_JOB_TYPE, INGEST_JOB_TYPE):
         assert replay_blocked_reason(job_type) is None
+
+
+def test_the_non_concurrent_set_is_exactly_ingest():
+    """S05 fix wave 2. Non-concurrency is a per-type property, separate from
+    replay-blocking -- ``agent_turn`` runs concurrently by design and
+    ``retention``'s sweep is idempotent, so neither belongs here."""
+    assert INGEST_JOB_TYPE in NON_CONCURRENT_JOB_TYPES
+    for job_type in (AGENT_TURN_JOB_TYPE, RETENTION_JOB_TYPE, L6_REVIEW_JOB_TYPE):
+        assert job_type not in NON_CONCURRENT_JOB_TYPES
 
 
 def test_replaying_an_unknown_or_live_job_is_a_governed_not_found(datastore):

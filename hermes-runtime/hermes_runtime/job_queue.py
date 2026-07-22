@@ -89,19 +89,16 @@ INGEST_JOB_TYPE = "ingest"
 # the value is the message the operator sees. Default is replayable, so this dict
 # is the one grep a new job type has to be measured against.
 #
-# The other three are safe, for reasons that live outside this module and must
-# not be re-derived from a type name:
+# The other three are safe to re-run at all, for reasons that live outside this
+# module and must not be re-derived from a type name:
 #   agent_turn -- S03's ``UNIQUE (event_id)`` on ``outbound_send`` suppresses the
 #                 re-send, so a replay re-runs the model and texts nobody twice.
-#   retention  -- the sweep is a DELETE by age; running it again is correct.
-#   ingest     -- TRUNCATE + reload is idempotent in OUTCOME but NEVER safe
-#                 concurrently, and it re-reads INGEST_CORPUS_PATH at run time
-#                 (a replay ingests whatever artifact is on disk *now*).
-#                 One-at-a-time is enforced by ``_replay_job``'s same-type
-#                 RUNNING check, NOT by ``max_attempts=1``: that ceiling only
-#                 kept a lease-reclaimed row out of the claimable set while
-#                 ``dead`` was terminal, and replay is exactly what un-terminates
-#                 it. Bulk replay stays out of scope for this type regardless.
+#   retention  -- the sweep is a DELETE by age; running it again is correct, and
+#                 a concurrent sweep is harmless (idempotent DELETE; at worst a
+#                 second, also-correct audit row).
+#   ingest     -- TRUNCATE + reload is idempotent in OUTCOME, but see
+#                 NON_CONCURRENT_JOB_TYPES below: outcome-idempotent is not the
+#                 same as concurrency-safe.
 REPLAY_BLOCKED_JOB_TYPES: dict[str, str] = {
     L6_REVIEW_JOB_TYPE: (
         "Replay is blocked for l6_review: the review fork writes a proposal and "
@@ -114,6 +111,49 @@ REPLAY_BLOCKED_JOB_TYPES: dict[str, str] = {
 def replay_blocked_reason(job_type: str) -> Optional[str]:
     """Why ``job_type`` may not be replayed, or ``None`` when it may be."""
     return REPLAY_BLOCKED_JOB_TYPES.get(job_type)
+
+
+# Per-type CONCURRENCY safety (S05 fix wave 2). A type listed here may not be
+# replayed while another job of the same type is ``running`` -- checked
+# separately from ``REPLAY_BLOCKED_JOB_TYPES`` above, because "safe to replay at
+# all" and "safe to replay alongside a live sibling" are different questions.
+# Default is concurrency-safe, so a new type does NOT inherit this check by
+# silence; it has to be added here with a reason, same discipline as the dict
+# above. Fix wave 1 applied this check to every type, which blocked the highest-
+# volume, always-someone-running type (agent_turn) for no safety reason -- do
+# not repeat that mistake by adding a type here without one.
+#
+#   ingest -- MUST NOT run concurrently: it re-reads INGEST_CORPUS_PATH at run
+#             time and TRUNCATEs + reloads the whole corpus, so two concurrent
+#             runs TRUNCATE+INSERT the same corpus. This is the reachable gap
+#             fix wave 1 found: an ingest that outlives the 300 s lease is
+#             reclaimed mid-run and dead-lettered with ``last_error =
+#             'lease expired'`` while it is still embedding, and S05 made that
+#             ``dead`` row claimable again. ``max_attempts=1`` does NOT cover
+#             this -- it only kept a lease-reclaimed row out of the claimable
+#             set while ``dead`` was terminal, and replay is exactly what
+#             un-terminates it. This check is what actually enforces
+#             one-at-a-time; bulk replay stays out of scope for this type.
+#
+# Not here, and why:
+#   agent_turn -- concurrency is the normal operating mode (many turns run at
+#                 once by design), and S03's outbound idempotency already makes
+#                 a replayed turn safe alongside a live one -- it cannot
+#                 double-text. This is also the highest-volume job type, so on
+#                 any busy system some agent_turn is almost always ``running``;
+#                 gating replay on that would block the single most common
+#                 recovery operation, permanently and for no safety reason.
+#   retention  -- the DELETE is idempotent; a concurrent sweep is harmless (see
+#                 REPLAY_BLOCKED_JOB_TYPES's comment above).
+#   l6_review  -- already fully blocked by REPLAY_BLOCKED_JOB_TYPES; this check
+#                 would never be reached for it.
+NON_CONCURRENT_JOB_TYPES: dict[str, str] = {
+    INGEST_JOB_TYPE: (
+        "ingest re-reads INGEST_CORPUS_PATH and TRUNCATEs + reloads the whole "
+        "corpus at run time; two concurrent runs would TRUNCATE+INSERT the same "
+        "corpus."
+    ),
+}
 
 
 class LeaseLost(RuntimeError):

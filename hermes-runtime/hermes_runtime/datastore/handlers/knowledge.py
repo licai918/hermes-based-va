@@ -342,8 +342,9 @@ def _enqueue_corpus_reingest(
     governed Replay: ``dead`` is claimable again on one click, and the replay
     resets ``attempts`` to 0. What holds the property now is
     ``dead_letter._replay_job``'s refusal to replay while a job of the same type
-    is ``running`` -- so a lease-reclaimed ingest that is still embedding cannot
-    be handed a second runner. ``max_attempts=1`` still earns its place (it stops
+    is ``running``, gated on ``job_queue.NON_CONCURRENT_JOB_TYPES`` (``ingest``
+    is the one member) -- so a lease-reclaimed ingest that is still embedding
+    cannot be handed a second runner. ``max_attempts=1`` still earns its place (it stops
     the *automatic* retry from wiping the corpus twice over a transient
     failure); it is no longer the concurrency argument.
     """

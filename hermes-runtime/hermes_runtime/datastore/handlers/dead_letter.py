@@ -122,7 +122,7 @@ def _list_dead_letters(
 ) -> Any:
     # A read -> no actor required, no audit (parity with get_retention_status).
     del params, context
-    from hermes_runtime.job_queue import replay_blocked_reason
+    from hermes_runtime.job_queue import NON_CONCURRENT_JOB_TYPES, replay_blocked_reason
 
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
@@ -157,9 +157,14 @@ def _list_dead_letters(
         )
         outbound_rows = [serialize_row(row) for row in cur.fetchall()]
 
-        # Which types have a job in flight right now -- the same condition
-        # `_replay_job` denies on, read once for the whole list.
-        cur.execute("SELECT DISTINCT type FROM job WHERE status = 'running'")
+        # Which NON_CONCURRENT_JOB_TYPES have a job in flight right now -- the
+        # same condition `_replay_job` denies on, read once for the whole list.
+        # Scoped to that set: a running agent_turn (the common case) must not
+        # mark every other agent_turn row unreplayable.
+        cur.execute(
+            "SELECT DISTINCT type FROM job WHERE status = 'running' AND type = ANY(%s)",
+            (list(NON_CONCURRENT_JOB_TYPES),),
+        )
         running_types = {row["type"] for row in cur.fetchall()}
 
         # The replay provenance (FR-13 gate 2). Joined to the account so the row
@@ -258,19 +263,31 @@ def _replay_job(conn, params: dict[str, Any], context: "ToolExecutionContext") -
     commits around the whole call, ADR-0140), so a replay is never recorded
     without happening.
 
-    **Never a second copy of live work.** The single-``job_id`` API and the
-    absence of bulk replay bound how many rows ONE click touches; neither says
-    anything about a job of the same type that is *already running*. That gap is
-    reachable: a long ``ingest`` outliving the 300 s lease is reclaimed mid-run
-    and dead-lettered with ``last_error = 'lease expired'`` while it is still
-    embedding, and that row is then the most inviting Replay in the table. So
-    the guard is here, generic over every type rather than special-cased for
-    ``ingest``: refuse while a job of the same type is ``running``. It is also
-    what replaced ``ingest``'s old protection -- ``max_attempts = 1`` kept a
+    **Never a second copy of work that cannot tolerate one.** The single-
+    ``job_id`` API and the absence of bulk replay bound how many rows ONE click
+    touches; neither says anything about a job of the same type that is
+    *already running*. For most types that is fine -- ``agent_turn`` runs many
+    at once by design and S03's outbound idempotency already makes a replayed
+    turn safe alongside a live one, and a concurrent ``retention`` sweep is just
+    a second, also-correct DELETE. But a long ``ingest`` outliving the 300 s
+    lease is reclaimed mid-run and dead-lettered with ``last_error =
+    'lease expired'`` while it is still embedding, and that row is then the most
+    inviting Replay in the table -- replaying it hands a second runner to a
+    TRUNCATE-and-reload that is not concurrency-safe.
+
+    So the guard below is per type, gated on ``job_queue.NON_CONCURRENT_JOB_TYPES``
+    (today: ``ingest`` only) rather than applied to every type -- fix wave 1's
+    first cut gated everything, which blocked the highest-volume, always-
+    someone-running type (``agent_turn``) for no safety reason. It is also what
+    replaced ``ingest``'s old protection -- ``max_attempts = 1`` kept a
     reclaimed row out of the claimable set only while ``dead`` was terminal, and
     replay is precisely the operation that un-terminates it.
     """
-    from hermes_runtime.job_queue import replay_blocked_reason, replay_dead_job
+    from hermes_runtime.job_queue import (
+        NON_CONCURRENT_JOB_TYPES,
+        replay_blocked_reason,
+        replay_dead_job,
+    )
 
     job_id = read_string(params, "job_id", "jobId")
     if not job_id:
@@ -288,12 +305,13 @@ def _replay_job(conn, params: dict[str, Any], context: "ToolExecutionContext") -
         if blocked is not None:
             raise ToolDriverError("policy_blocked", blocked)
 
-        cur.execute(
-            "SELECT 1 FROM job WHERE type = %s AND status = 'running' LIMIT 1",
-            (job_type,),
-        )
-        if cur.fetchone() is not None:
-            raise ToolDriverError("policy_blocked", _running_type_reason(job_type))
+        if job_type in NON_CONCURRENT_JOB_TYPES:
+            cur.execute(
+                "SELECT 1 FROM job WHERE type = %s AND status = 'running' LIMIT 1",
+                (job_type,),
+            )
+            if cur.fetchone() is not None:
+                raise ToolDriverError("policy_blocked", _running_type_reason(job_type))
 
         replayed_type = replay_dead_job(cur, job_id)
         if replayed_type is None:  # raced another replay between the two statements
