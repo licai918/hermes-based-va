@@ -21,6 +21,15 @@
 .vscode
 .idea
 
+# Agent scratch, never needed by either Dockerfile (phase 2 runs `--build` on
+# every `pnpm dev`, so these are a build-context tax paid daily -- 0.0.4 S10 fix
+# wave 1, finding 5). .codegraph/ and .claude/ are each ~150-280 MB locally.
+.codegraph
+.claude
+.tools
+.scratch
+.cursor
+
 # Local env files and secrets — never bake into an image (prod uses Secret Manager).
 **/.env
 **/.env.*
