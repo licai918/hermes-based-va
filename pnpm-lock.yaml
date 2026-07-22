@@ -26,9 +26,6 @@ importers:
       '@toee/domain-adapters':
         specifier: workspace:^
         version: link:../../packages/domain-adapters
-      '@toee/hermes-runtime':
-        specifier: workspace:*
-        version: link:../../packages/hermes-runtime
       '@toee/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -82,28 +79,7 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
 
-  packages/hermes-runtime:
-    dependencies:
-      '@toee/domain-adapters':
-        specifier: workspace:*
-        version: link:../domain-adapters
-      '@toee/shared':
-        specifier: workspace:*
-        version: link:../shared
-
   packages/shared: {}
-
-  services/hermes-gateway:
-    dependencies:
-      '@toee/domain-adapters':
-        specifier: workspace:*
-        version: link:../../packages/domain-adapters
-      '@toee/hermes-runtime':
-        specifier: workspace:*
-        version: link:../../packages/hermes-runtime
-      '@toee/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
 
 packages:
 

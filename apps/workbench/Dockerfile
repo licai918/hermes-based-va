@@ -3,8 +3,8 @@
 # Workbench image -> Cloud Run service `toee-hermes-workbench` (ADR-0098, #33).
 #
 # Build context MUST be the repo root: this is a pnpm workspace, so the build needs
-# the root lockfile + the sibling workspace packages (@toee/shared, @toee/hermes-runtime,
-# @toee/domain-adapters) that apps/workbench depends on.
+# the root lockfile + the sibling workspace packages (@toee/shared, @toee/domain-adapters)
+# that apps/workbench depends on.
 #
 #   docker build -f apps/workbench/Dockerfile -t toee-hermes-workbench .
 #
@@ -27,10 +27,8 @@ FROM base AS builder
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/workbench/package.json ./apps/workbench/
 COPY packages/shared/package.json ./packages/shared/
-COPY packages/hermes-runtime/package.json ./packages/hermes-runtime/
 COPY packages/domain-adapters/package.json ./packages/domain-adapters/
 COPY packages/eval-runner/package.json ./packages/eval-runner/
-COPY services/hermes-gateway/package.json ./services/hermes-gateway/
 RUN pnpm install --frozen-lockfile
 
 COPY . .
