@@ -110,6 +110,13 @@ HERMES_ADMIN_API_TOKEN=dev-admin-token
 # SIMPLETEXTING_WEBHOOK_TOKEN must equal the gateway's; \`pnpm dev\` passes this value on.
 SIMULATOR_GATEWAY_URL=http://127.0.0.1:${PORTS.gateway}
 SIMPLETEXTING_WEBHOOK_TOKEN=dev-webhook-token
+
+# PAC-6 (0.0.4 S12). Only needed with INTEGRATION_DRIVER=composio: ingress phone
+# match then runs against the LIVE Shopify store, where the seeded mock number
+# (+14165550101) is nobody, so the simulator's "verified" preset resolves
+# unmatched. Set this to a DEDICATED TEST CUSTOMER's phone in that store -- never
+# a real customer's. Unset = the seeded mock number, correct for mock-driver dev.
+# NEXT_PUBLIC_SIM_VERIFIED_PHONE=
 `;
 
 // This script deliberately never overwrites an existing apps/workbench/.env.local

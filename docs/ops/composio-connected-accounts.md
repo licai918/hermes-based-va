@@ -181,14 +181,30 @@ Smoke proves governed **Domain Adapter** actions work through the composio drive
 | 3 | `toee_easyroutes_read.get_delivery_status` | Non-Composio regression | Still succeeds via direct driver |
 | 4 | `toee_square_payment_link.send_payment_link` | Square connectivity | Staging only; use vendor sandbox or controlled test invoice |
 
-### 3.2 Automated smoke (placeholder)
+### 3.2 Automated smoke
 
 ```bash
-# TODO: replace when scripts/smoke or packages/eval-runner integration smoke exists
-pnpm smoke:integrations -- --env staging
+# From the deployment environment (or a box carrying the same hermes-runtime/.env):
+cd hermes-runtime && uv run python -m hermes_runtime.composio_smoke
 ```
 
-Until that command exists, use [manual smoke](#33-manual-smoke-until-runner-implements-integration-smoke).
+Four phases; exits non-zero on any FAIL (0.0.4 S12):
+
+1. **config** — `INTEGRATION_DRIVER`, the three connected accounts, and the three
+   **required** toolkit version pins.
+2. **surface** — every mapped action slug resolves against the live toolkit *at
+   its pinned version*. This is what catches "the pin is a real version but the
+   action is not in it" before a customer does.
+3. **happy path** — one governed identity-scoped read per tool through
+   `execute_tool`, asserting the public contract shape. Needs
+   `SMOKE_SHOPIFY_CUSTOMER_ID` (the PAC-6 test customer, §6.3); without it those
+   checks print SKIP and the run is not a pass.
+4. **fail-closed** — the same calls with the backend unreachable: a governed
+   `composio_api_error` inside the driver deadline (NFR-8), and explicitly **not**
+   the mock payload (FR-21).
+
+There is no mocked mode, on purpose: a smoke that can go green without a backend
+is not evidence of a cutover.
 
 ### 3.3 Manual smoke (until Runner implements integration smoke)
 
@@ -239,12 +255,12 @@ contracts are unchanged from the mock drivers.
    toolkit `connected_account_id`, the v1 tool name, and the v1 `action` — and shows
    no `error_class=configuration_missing` / `auth_expired` on the success path.
 
-**Verify the Composio action slugs here.** The slugs in the driver's one-to-one
-mapping table (`hermes/toee_hermes/drivers/composio/driver.py`,
-`ACTION_MAPPING` — e.g. `SHOPIFY_GET_ORDER`, `QUICKBOOKS_GET_INVOICE`,
-`SQUARE_CREATE_PAYMENT_LINK`) are plausible placeholders. Confirm each against the
-live Composio toolkit during this smoke, along with the SDK response envelope the
-`_ComposioSdkClient` adapter unwraps, and correct any mismatch before go-live.
+**The action slugs are pinned as of 0.0.4 S12** — they are no longer placeholders.
+`python -m hermes_runtime.composio_smoke` phase 2 resolves every slug in
+`ACTION_MAPPING` against the live toolkit at its pinned version, and
+`hermes-runtime/tests/test_composio_sdk_pin.py` holds the SDK call surface and
+response envelope in CI. Re-run the smoke after any toolkit-version bump or SDK
+upgrade; that is what "pinned" buys you.
 
 ## 4. Reconnect on `auth_expired`
 
@@ -279,6 +295,83 @@ Rerun [staging smoke](#3-staging-smoke) for the affected toolkit actions only.
 4. Revoke the old Composio API key after services reload.
 
 Connected account ids usually remain valid across API key rotation. If calls fail after rotation, check secret binding and service revision rollout first.
+
+## 6. Production cutover checklist (0.0.4 S12, FR-18)
+
+### 6.1 Every process that executes tools — not just the gateway
+
+The cutover surface is wider than "the gateway". Five processes reach a Composio
+toolkit, and a revision that sets `INTEGRATION_DRIVER=composio` on only some of
+them is a split brain: the same customer gets live data on one path and mock data
+on another.
+
+| Process | Why it calls Composio | Local (`docker-compose.yml`) |
+|---------|----------------------|------------------------------|
+| **gateway** | Ingress Phone Match falls back to a live Shopify customer lookup (`hermes_runtime/datastore/shopify_identity.py`) | `gateway` |
+| **turn worker** | Runs the customer's async agent turn — this is where `toee_shopify_read` / `toee_qbo_read` actually execute | `turn-worker` |
+| **dispatch server (copilot, 8091)** | The Copilot draft turn calls the same external reads | `dispatch-copilot` |
+| **dispatch server (admin, 8092)** | Same deterministic `tools:dispatch` surface, `supervisor_admin` profile | `dispatch-admin` |
+| **background worker** | Shares the image and the `l6_review` fork's tool surface | `background-worker` |
+
+Locally all five inherit `hermes-runtime/.env` through the `x-hermes-runtime`
+anchor, so one file covers them. **On Cloud Run each is its own service and each
+needs the variables set independently.**
+
+### 6.2 Per-service variables
+
+Required on **every** service in the table above:
+
+| Variable | Source | Notes |
+|----------|--------|-------|
+| `INTEGRATION_DRIVER=composio` | plain env | |
+| `COMPOSIO_API_KEY` | Secret Manager | |
+| `COMPOSIO_USER_ID` | plain env | |
+| `COMPOSIO_{SHOPIFY,QBO,SQUARE}_CONNECTED_ACCOUNT_ID` | plain env | |
+| `COMPOSIO_TOOLKIT_VERSION_SHOPIFY` | plain env | **required** — boot fails without it |
+| `COMPOSIO_TOOLKIT_VERSION_QUICKBOOKS` | plain env | **required**; note `QUICKBOOKS`, not `QBO` |
+| `COMPOSIO_TOOLKIT_VERSION_SQUARE` | plain env | **required** |
+| `COMPOSIO_DEADLINE_MS` | plain env | optional; defaults to 8000 (NFR-8) |
+| `TOOL_BACKEND=datastore` | plain env | pre-existing boot requirement |
+
+The version-pin variables are keyed by **Composio's** toolkit slug, not ours:
+`COMPOSIO_TOOLKIT_VERSION_QBO` is silently ignored. A missing or `latest` pin now
+fails `build_composio_driver()` at boot naming the variable, rather than raising
+`ToolVersionRequiredError` from inside a customer's turn.
+
+### 6.3 PAC-6 test data (owner action)
+
+Before a PAC drill runs against the live store:
+
+1. Create a **dedicated test customer** in the live Shopify store with a phone
+   number that is not a real customer's.
+2. Give it a test order, and a matching test invoice in QuickBooks.
+3. Set `SMOKE_SHOPIFY_CUSTOMER_ID=gid://shopify/Customer/<id>` in the deployment
+   env (smoke happy path) and `NEXT_PUBLIC_SIM_VERIFIED_PHONE=<phone>` in
+   `apps/workbench/.env.local` (simulator "verified" preset).
+
+Until step 3, the simulator's verified preset still points at the mock-seeded
+`+14165550101`, which resolves `unmatched_caller` against a live store — the PAC
+drill has no verified path.
+
+### 6.4 Order of operations
+
+1. Link/verify all three connected accounts (§1.3) and confirm **active**.
+2. Set the variables in §6.2 on every service in §6.1.
+3. Run `python -m hermes_runtime.composio_smoke` from one of them; require PASS.
+4. Roll the services. Watch for `error_class=configuration_missing` at boot —
+   that is a missing pin, not a vendor outage.
+5. Roll back = `INTEGRATION_DRIVER=mock` on every service in §6.1, together.
+
+### 6.5 Known gap: Square payment links
+
+Composio's Square toolkit has **no create-payment-link action** at any version
+(verified 0.0.4 S12: only `SQUARE_RETRIEVE_PAYMENT_LINK` exists, and a
+catalog-wide search finds no Square create action). `toee_square_payment_link`
+therefore fails closed on the Composio backend with a governed
+`configuration_missing` — a customer is never sent a fabricated or mock link. The
+Square connected account is still required for the other checks and for whichever
+upgrade path is taken (a Composio custom tool, or a direct Square REST driver
+overlay in the shape FR-20 uses for EasyRoutes).
 
 ## Appendix A: Dashboard troubleshooting
 

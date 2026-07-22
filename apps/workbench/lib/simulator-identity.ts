@@ -39,8 +39,38 @@ export interface IdentityPreset {
   phone?: string;
 }
 
+/** The phone the mock identity driver seeds as `verified_customer` (Acme Fleet). */
+export const SEEDED_VERIFIED_PHONE = "+14165550101";
+
+// PAC-6 test-data precondition (0.0.4 S12). Everything above describes the MOCK
+// driver. The moment INTEGRATION_DRIVER=composio, ingress phone match runs
+// against the LIVE Shopify store, where +14165550101 is nobody -- the "verified"
+// preset resolves `unmatched_caller` and the PAC drill has no verified path to
+// run. Point this at a DEDICATED TEST CUSTOMER created in the live store (with a
+// test order + invoice), never a real customer's number:
+//
+//   NEXT_PUBLIC_SIM_VERIFIED_PHONE=+1...   (apps/workbench/.env.local)
+//
+// Left unset -- the local-dev default -- the seeded mock number is used and
+// nothing changes. It is NEXT_PUBLIC_ because the Simulator is a client
+// component; the value is a test phone number, not a credential.
+export function resolveVerifiedPhone(configured?: string): string {
+  return configured?.trim() || SEEDED_VERIFIED_PHONE;
+}
+
+const VERIFIED_PHONE = resolveVerifiedPhone(process.env.NEXT_PUBLIC_SIM_VERIFIED_PHONE);
+
 export const IDENTITY_PRESETS: readonly IdentityPreset[] = [
-  { id: "verified", label: "Verified customer (seeded)", phone: "+14165550101" },
+  {
+    id: "verified",
+    // The label names the data source, because which one is live decides whether
+    // a failed PAC run means "the tool is broken" or "the test customer is missing".
+    label:
+      VERIFIED_PHONE === SEEDED_VERIFIED_PHONE
+        ? "Verified customer (seeded)"
+        : "Verified customer (live test entity)",
+    phone: VERIFIED_PHONE,
+  },
   { id: "ambiguous", label: "Ambiguous match (seeded)", phone: "+14165550222" },
   { id: "unknown", label: "Unknown caller (fresh number)" },
 ];

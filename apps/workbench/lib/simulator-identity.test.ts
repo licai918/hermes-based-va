@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   EMAIL_PRESETS,
   IDENTITY_PRESETS,
+  SEEDED_VERIFIED_PHONE,
   generateUnknownCallerEmail,
   generateUnknownCallerPhone,
   resolvePresetEmail,
   resolvePresetPhone,
+  resolveVerifiedPhone,
 } from "./simulator-identity";
 
 describe("generateUnknownCallerPhone", () => {
@@ -49,6 +51,21 @@ describe("resolvePresetPhone", () => {
 describe("IDENTITY_PRESETS", () => {
   it("declares exactly the three FR-9 presets", () => {
     expect(IDENTITY_PRESETS.map((p) => p.id)).toEqual(["verified", "ambiguous", "unknown"]);
+  });
+});
+
+// PAC-6 (0.0.4 S12): under INTEGRATION_DRIVER=composio the seeded mock number is
+// nobody in the live Shopify store, so the verified preset points at a dedicated
+// live TEST CUSTOMER instead -- never a real customer's number.
+describe("resolveVerifiedPhone", () => {
+  it("falls back to the seeded mock number when unconfigured", () => {
+    expect(resolveVerifiedPhone(undefined)).toBe(SEEDED_VERIFIED_PHONE);
+    expect(resolveVerifiedPhone("")).toBe(SEEDED_VERIFIED_PHONE);
+    expect(resolveVerifiedPhone("   ")).toBe(SEEDED_VERIFIED_PHONE);
+  });
+
+  it("uses the configured live test-customer phone when set", () => {
+    expect(resolveVerifiedPhone(" +16475550199 ")).toBe("+16475550199");
   });
 });
 

@@ -60,12 +60,16 @@ missing.
 | `SIMPLETEXTING_ACCOUNT_PHONE` | plain env | no | Sending number; account primary when unset |
 | `SIMPLETEXTING_API_BASE_URL` | plain env | no | Defaults to `https://api-app2.simpletexting.com/v2/` |
 | `OPENROUTER_BASE_URL` / `OPENROUTER_MODEL` / `OPENROUTER_FALLBACK_MODEL` | plain env | no | Defaults pinned in code (ADR-0009) |
-| `INTEGRATION_DRIVER` | plain env | no | `mock` (default) until the integration phase |
-| `COMPOSIO_API_KEY` | Secret Manager | **optional until integration phase (#33)** | Only when `INTEGRATION_DRIVER=composio` |
+| `INTEGRATION_DRIVER` | plain env | no | `mock` (default) or `composio`. The `rest` value was deleted in 0.0.4 S12 (FR-21); anything else raises at boot |
+| `COMPOSIO_API_KEY` | Secret Manager | only with composio | |
 | `COMPOSIO_USER_ID`, `COMPOSIO_{SHOPIFY,QBO,SQUARE}_CONNECTED_ACCOUNT_ID` | plain env | only with composio | See the Composio runbook |
+| `COMPOSIO_TOOLKIT_VERSION_{SHOPIFY,QUICKBOOKS,SQUARE}` | plain env | **required** with composio | Exact version per configured toolkit; boot fails naming a missing one. Note `QUICKBOOKS`, not `QBO` |
+| `COMPOSIO_DEADLINE_MS` | plain env | no | Per-call backend deadline, default 8000 (NFR-8) |
 
 Composio onboarding, link-time `*_AUTH_CONFIG_ID` vars, and per-toolkit smoke live in
-[`composio-connected-accounts.md`](./composio-connected-accounts.md).
+[`composio-connected-accounts.md`](./composio-connected-accounts.md). **The cutover
+applies to every service that executes tools — gateway, turn worker, both dispatch
+servers, background worker — see that runbook's §6 checklist.**
 
 ### Workbench (`toee-hermes-workbench`)
 
