@@ -17,7 +17,13 @@ param(
     [ValidateSet("internal_copilot", "supervisor_admin", "customer_service_external")]
     [string]$Profile,
 
-    [int]$Port = 8081,
+    # No default: internal_copilot and supervisor_admin bind different composed
+    # ports (8091/8092) and customer_service_external has no composed port at
+    # all, so any single hardcoded default is wrong for at least two of the
+    # three profiles -- and a wrong default that happens to still bind
+    # SOMETHING (the pre-S10 8081) is worse than an explicit error.
+    [Parameter(Mandatory = $true)]
+    [int]$Port,
 
     # Dev default only. The workbench BFF must present the SAME value via
     # HERMES_COPILOT_API_TOKEN / HERMES_ADMIN_API_TOKEN for the matching server.
