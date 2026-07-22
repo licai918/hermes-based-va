@@ -72,6 +72,14 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_workbench_admin",
             "toee_workbench_read",
             "toee_knowledge_search",
+            # 0.0.4 S05 (FR-13): the dead-letter view + governed Replay. An
+            # OPERATIONS surface, so the workbench gates it to supervisor+admin
+            # (ADR-0093 gives /admin/* exactly that) rather than admin-only --
+            # deliberately different from a credential surface. Both actions are
+            # in _AGENT_EXCLUDED_ACTIONS, so registering the toolset here exposes
+            # nothing to a live agent's tool loop; it is what lets the admin BFF's
+            # deterministic tools:dispatch reach it over this profile's API.
+            "toee_job_queue",
         }
     ),
 }

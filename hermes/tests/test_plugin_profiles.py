@@ -57,6 +57,10 @@ ADR_0038_SUPERVISOR = {
     "toee_workbench_admin",
     "toee_workbench_read",
     "toee_knowledge_search",
+    # 0.0.4 S05 (FR-13): the dead-letter view + governed Replay -- an OPERATIONS
+    # surface reached over this profile's API by the admin BFF. Both actions are
+    # agent-excluded, so nothing here reaches a model's tool loop.
+    "toee_job_queue",
 }
 
 

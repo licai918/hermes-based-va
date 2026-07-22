@@ -33,6 +33,8 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_agent_experience",
         "toee_metrics",
         "toee_retention",
+        # 0.0.4 S05 (FR-13): dead-letter view + governed Replay.
+        "toee_job_queue",
     }
 
 

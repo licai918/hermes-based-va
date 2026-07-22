@@ -99,6 +99,11 @@ DriverSelector = Callable[[str], ToolDriver]
 # Letting a model reach them would hand it the very primitives the two exclusions
 # above exist to withhold, one level of indirection away -- "delete customer
 # data" and "TRUNCATE and reload the whole knowledge corpus".
+#
+# 0.0.4 S05 (FR-13) adds the dead-letter view's two actions. Replay re-enqueues
+# arbitrary stuck work -- including the retention and ingest jobs the exclusions
+# above exist to withhold -- and the list read exposes other customers' job
+# payloads, so neither belongs in a live turn's tool loop.
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
@@ -111,6 +116,8 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_retention", "enqueue_retention_sweep"),
         ("toee_retention", "get_retention_status"),
         ("toee_knowledge_ops", "enqueue_corpus_reingest"),
+        ("toee_job_queue", "list_dead_letters"),
+        ("toee_job_queue", "replay_job"),
     }
 )
 

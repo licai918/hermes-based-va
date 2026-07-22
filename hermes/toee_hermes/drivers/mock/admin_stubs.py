@@ -174,6 +174,19 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 "status": "unavailable",
             },
         },
+        # 0.0.4 S05 (FR-13): the dead-letter view + governed Replay. The `job`
+        # and `outbound_send` tables are Postgres-only, so the mock has nothing
+        # stuck to report and nothing to replay -- an honest empty view and an
+        # "unavailable" receipt, never a fabricated job id (same shape as
+        # enqueue_corpus_reingest above).
+        "toee_job_queue": {
+            "list_dead_letters": lambda params, context: {"jobs": [], "outbound": []},
+            "replay_job": lambda params, context: {
+                "job_id": _read_string(params, "job_id", "jobId", default=""),
+                "type": None,
+                "status": "unavailable",
+            },
+        },
         "toee_eval_review": {
             "list_eval_runs": lambda params, context: {"runs": []},
             "get_eval_run": lambda params, context: {

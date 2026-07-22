@@ -118,7 +118,7 @@ jobs:
         run: |
           set -o pipefail
           uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
-          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker)' /tmp/pytest-runtime.log \
+          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view)' /tmp/pytest-runtime.log \
               | grep -v 'fastembed not installed'; then
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1

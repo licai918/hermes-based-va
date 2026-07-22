@@ -305,7 +305,19 @@ def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     ctx = RecordingCtx(profile="supervisor_admin")
     register(ctx)
     toolsets = ctx.registered_toolsets()
-    assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"])
+    # An allowlisted toolset whose EVERY action is agent-excluded registers no
+    # tool at all, so it never appears here (0.0.4 S05's toee_job_queue is the
+    # first such toolset on this profile -- the dead-letter view is reached only
+    # by the admin BFF's deterministic dispatch, never a model's tool loop).
+    fully_excluded = {
+        tool
+        for tool in PROFILE_TOOL_ALLOWLIST["supervisor_admin"]
+        if all(
+            (tool, action) in _AGENT_EXCLUDED_ACTIONS for action in TOOL_CATALOG[tool]
+        )
+    }
+    assert fully_excluded == {"toee_job_queue"}
+    assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"]) - fully_excluded
     assert "toee_textline_reply" not in toolsets
     assert "toee_square_payment_link" not in toolsets
 

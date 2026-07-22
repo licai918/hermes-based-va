@@ -123,6 +123,15 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "enqueue_retention_sweep",
         "get_retention_status",
     ),
+    # 0.0.4 S05 (FR-13): the dead-letter operator view + governed Replay.
+    # list_dead_letters is the read (dead `job` rows plus the outbound_send
+    # states S03/S04 leave that no dead-letter row captures); replay_job returns
+    # ONE dead job to the queue, attributed to the acting supervisor and audited.
+    # Both admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
+    # precedent) -- reached only via the admin BFF's deterministic tools:dispatch
+    # call. Replay in particular re-runs arbitrary queued work, which is not a
+    # primitive any live turn may reach.
+    "toee_job_queue": ("list_dead_letters", "replay_job"),
 }
 
 

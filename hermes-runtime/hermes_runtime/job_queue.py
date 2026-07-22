@@ -85,6 +85,35 @@ L6_REVIEW_JOB_TYPE = "l6_review"
 RETENTION_JOB_TYPE = "retention"
 INGEST_JOB_TYPE = "ingest"
 
+# Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
+# the value is the message the operator sees. Default is replayable, so this dict
+# is the one grep a new job type has to be measured against.
+#
+# The other three are safe, for reasons that live outside this module and must
+# not be re-derived from a type name:
+#   agent_turn -- S03's ``UNIQUE (event_id)`` on ``outbound_send`` suppresses the
+#                 re-send, so a replay re-runs the model and texts nobody twice.
+#   retention  -- the sweep is a DELETE by age; running it again is correct.
+#   ingest     -- TRUNCATE + reload is idempotent in OUTCOME but NEVER safe
+#                 concurrently, and it re-reads INGEST_CORPUS_PATH at run time
+#                 (a replay ingests whatever artifact is on disk *now*).
+#                 ``max_attempts=1`` is what keeps a second ingest from starting
+#                 while the first still runs; one-at-a-time holds only while
+#                 there is no bulk replay, which is out of scope in v1 and must
+#                 stay that way for this type.
+REPLAY_BLOCKED_JOB_TYPES: dict[str, str] = {
+    L6_REVIEW_JOB_TYPE: (
+        "Replay is blocked for l6_review: the review fork writes a proposal and "
+        "the model is non-deterministic, so a re-run produces a second, different "
+        "proposal for one copilot turn. Blocked until proposal dedupe exists."
+    ),
+}
+
+
+def replay_blocked_reason(job_type: str) -> Optional[str]:
+    """Why ``job_type`` may not be replayed, or ``None`` when it may be."""
+    return REPLAY_BLOCKED_JOB_TYPES.get(job_type)
+
 
 class LeaseLost(RuntimeError):
     """Raised when :meth:`PostgresJobQueue.complete`/:meth:`~PostgresJobQueue.fail`
@@ -168,6 +197,49 @@ def insert_job(
     # Dedupe no-op: hand back the job that already owns the key.
     cur.execute("SELECT id FROM job WHERE dedupe_key = %s", (dedupe_key,))
     return cur.fetchone()[0], False
+
+
+def replay_dead_job(cur: psycopg.Cursor, job_id: str) -> Optional[str]:
+    """Return one ``dead`` job to the queue on a **caller-owned cursor**.
+
+    ``(job_type)`` on success, ``None`` when ``job_id`` does not exist or is not
+    ``dead`` -- the caller turns that into a governed ``not_found`` denial. Does
+    not commit; the S05 handler's transaction ties the reset and its audit row
+    together, so a replay is never recorded without happening or vice versa.
+
+    **This is the one operation in the system that deliberately returns a row to
+    a claimable status**, so it is where S01's fence invariant is easiest to
+    break. It holds here because:
+
+    * ``WHERE status = 'dead'`` -- a ``running`` row is never touched, so no live
+      worker's ``locked_at`` lease credential is ever rewritten;
+    * a ``dead`` row already carries ``locked_at IS NULL`` (``_release`` nulls it
+      on every transition), so nothing is being cleared out from under anyone;
+    * ``run_at = now()`` pushes the schedule forward before the row is claimable
+      again, which is the second half of the invariant.
+
+    ``attempts = 0`` is the reset FR-13 names. The **payload is untouched**, on
+    purpose: ADR-0148's S04 addendum bounds "a job payload may be an audit
+    attribution source" to Python enqueue sites, and a replay that re-runs a
+    payload verbatim preserves that property while one that edits it would not.
+    """
+    cur.execute(
+        """
+        UPDATE job SET
+            status = 'queued',
+            attempts = 0,
+            run_at = now(),
+            last_error = NULL,
+            locked_at = NULL,
+            locked_by = NULL,
+            updated_at = now()
+        WHERE id = %s AND status = 'dead'
+        RETURNING type
+        """,
+        (job_id,),
+    )
+    row = cur.fetchone()
+    return None if row is None else row[0]
 
 
 def _as_payload(payload: Any) -> dict[str, Any]:

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from .accounts import account_handlers
 from .agent_experience import agent_experience_handlers
 from .cases import case_handlers
+from .dead_letter import dead_letter_handlers
 from .eval_review import eval_review_handlers
 from .identity import identity_handlers
 from .knowledge import knowledge_handlers
@@ -48,6 +49,7 @@ def build_datastore_registry() -> DatastoreRegistry:
         agent_experience_handlers(),
         metrics_handlers(),
         retention_handlers(),
+        dead_letter_handlers(),
     )
 
 
