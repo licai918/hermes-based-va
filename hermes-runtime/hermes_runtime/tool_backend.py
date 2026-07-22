@@ -9,7 +9,7 @@ selects the Postgres system-of-record driver (ADR-0140).
 This is a **separate axis** from ``INTEGRATION_DRIVER`` (the external-vendor
 backend, ADR-0137): ``TOOL_BACKEND`` chooses the system-of-record store for the
 internal ``toee_*`` tools, while ``INTEGRATION_DRIVER`` chooses the external
-integration backend (mock/composio/rest). The PostgresDriver lives in this
+integration backend (mock | composio). The PostgresDriver lives in this
 embedding venv because ``psycopg`` must never reach the dependency-free
 ``toee_hermes`` plugin (ADR-0096/0100); importing it is deferred to the datastore
 branch so a mock-first app never imports the database adapter.

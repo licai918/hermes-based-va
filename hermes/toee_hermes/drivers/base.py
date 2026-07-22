@@ -1,6 +1,6 @@
 """Integration backend selection (ports driver.ts).
 
-Local dev and eval default to ``mock``; ``composio`` and ``rest`` are wired per
+Local dev and eval default to ``mock``; ``composio`` is the live backend per
 ADR-0132 and ADR-0137.
 """
 
@@ -13,10 +13,15 @@ from typing import Literal
 # Postgres system-of-record driver (ADR-0140), wired in the hermes-runtime
 # embedding; it is intentionally NOT a KNOWN_DRIVERS value because it is selected
 # on a separate axis from the external-vendor INTEGRATION_DRIVER backend.
-IntegrationDriver = Literal["mock", "composio", "rest", "datastore"]
+#
+# The speculative "rest" shell is gone (0.0.4 S12, FR-21): it was an accepted
+# INTEGRATION_DRIVER value whose only behaviour was raising NotImplementedError,
+# and EasyRoutes -- the REST integration it was reserved for -- lands as a
+# per-tool driver overlay beside Composio (FR-20), not as a third value here.
+IntegrationDriver = Literal["mock", "composio", "datastore"]
 
 # Valid INTEGRATION_DRIVER env values (the external vendor backend, ADR-0137).
-KNOWN_DRIVERS: tuple[IntegrationDriver, ...] = ("mock", "composio", "rest")
+KNOWN_DRIVERS: tuple[IntegrationDriver, ...] = ("mock", "composio")
 
 _UNSET = object()
 

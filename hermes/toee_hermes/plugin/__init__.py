@@ -146,13 +146,12 @@ def _build_driver_selector(
     if injected is not None:
         return lambda _tool: injected
 
+    # resolve_integration_driver already rejects anything outside KNOWN_DRIVERS
+    # (mock | composio) with a ValueError naming the accepted values, so there is
+    # no third arm to guard here (0.0.4 S12, FR-21: the "rest" shell is deleted).
     kind = resolve_integration_driver()
     mock_driver = MockDriver(create_all_mock_handlers())
     composio_driver = build_composio_driver() if kind == "composio" else None
-    if kind not in ("mock", "composio"):
-        raise NotImplementedError(
-            f'Integration driver "{kind}" is not implemented yet (mock-first, ADR-0137).'
-        )
     overrides = dict(extra_drivers or {})
 
     def select(tool: str) -> ToolDriver:

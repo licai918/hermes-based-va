@@ -20,11 +20,21 @@ def test_datastore_is_a_valid_driver_kind() -> None:
 
 
 def test_datastore_is_not_an_integration_driver_env_value() -> None:
-    # INTEGRATION_DRIVER selects the external vendor backend (mock/composio/rest).
+    # INTEGRATION_DRIVER selects the external vendor backend (mock|composio).
     # The datastore is a separate axis wired in the runtime, never via this env.
     assert "datastore" not in KNOWN_DRIVERS
     with pytest.raises(ValueError):
         resolve_integration_driver("datastore")
+
+
+def test_rest_driver_shell_is_deleted() -> None:
+    # 0.0.4 S12 / FR-21: "rest" was an accepted INTEGRATION_DRIVER value that only
+    # ever raised NotImplementedError deep in plugin registration. It is now an
+    # unknown value, rejected here with the list of what IS accepted.
+    assert KNOWN_DRIVERS == ("mock", "composio")
+    assert "rest" not in get_args(IntegrationDriver)
+    with pytest.raises(ValueError, match="mock, composio"):
+        resolve_integration_driver("rest")
 
 
 def test_resolve_defaults_to_mock_when_unset() -> None:
