@@ -63,25 +63,6 @@ export interface AggregateMetrics {
   l6ConfirmedEntries: ProxyCount;
 }
 
-// Fallback for an unconfigured backend (mirrors admin/agent-experience.ts's
-// `{ entries: [] }` degrade) -- structurally correct zero shape, not a
-// fabricated number: an unconfigured API has literally computed nothing.
-export const EMPTY_AGGREGATE_METRICS: AggregateMetrics = {
-  memoryInjection: { injected: 0, total: 0, rate: null },
-  knowledgeSearch: { found: 0, total: 0, rate: null },
-  slotsPopulatedDistribution: { "1": 0, "2": 0, "3": 0, "4": 0 },
-  honoredRate: {
-    live: false,
-    rate: null,
-    label: "Honored rate is advisory and judge-sampled (S27) -- never gating.",
-  },
-  mergeCount: 0,
-  correctionCount: 0,
-  proposalOutcomes: { accepted: 0, dismissed: 0, rate: null },
-  selfServiceUsage: { count: 0, proxy: true, label: "proxy: clears only (uninstrumented reads)" },
-  l6ConfirmedEntries: { count: 0, proxy: true, label: "proxy: confirmed L6 rows (uninstrumented per-turn events)" },
-};
-
 function malformed(detail: string): never {
   throw new HermesApiError("unexpected_error", `malformed aggregate metrics payload: ${detail}`);
 }

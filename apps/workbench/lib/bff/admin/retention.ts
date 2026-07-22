@@ -55,9 +55,8 @@ export interface RetentionSweepQueued {
   status: string;
 }
 
-// Fallback for an unconfigured backend (mirrors admin/metrics.ts's
-// EMPTY_AGGREGATE_METRICS) -- structurally correct "never run" shape, not a
-// fabricated number.
+// Fallback for an unconfigured backend -- structurally correct "never run"
+// shape, not a fabricated number.
 export const NEVER_RUN_RETENTION_STATUS: RetentionStatus = {
   lastRunAt: null,
   counts: { verified: 0, provisional: 0 },
