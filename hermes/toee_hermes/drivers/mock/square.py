@@ -3,9 +3,14 @@
 ``send_payment_link`` requires a Verified Customer and must stay on the current
 verified SMS thread (ADR-0022); the thread is modeled here by a required,
 non-empty conversation id. A request to redirect to a new contact (eval scenario
-05 turn 2) is refused so the agent opens a Follow-up Case instead. Outputs are
-deterministic — the link is derived from the resolved payable, with no external
-Square call.
+05 turn 2) is refused so the agent opens a Follow-up Case instead.
+
+RETRIEVE semantics, not create (0.0.4 S26 owner decision): a payment link is
+created ahead of time in the Square console, and this action only looks up the
+one already attached to an invoice. So the mock stores each link's URL rather
+than deriving one, and an invoice with no stored link is refused — the same
+answer the live path owes when no link has been set up. Outputs stay
+deterministic, with no external Square call.
 
 Handlers receive ``(params, context)`` (faithful to the TS handlers). The Session
 Identity Snapshot lives at ``context.identity`` (ADR-0043): ``None`` for an
@@ -27,28 +32,36 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class SquarePayable:
+class SquarePaymentLink:
+    """One payment link PRE-CREATED in the Square console for one invoice.
+
+    ``payment_link_url`` is stored, not computed: under retrieve semantics the
+    link exists before the turn does, so a mock that derived a URL from the
+    invoice number would model creation and let dev succeed where production has
+    nothing to fetch.
+    """
+
     invoice_number: str
     shopify_customer_id: str
     amount: float
+    payment_link_url: str
 
 
 @dataclass(frozen=True)
 class SquareMockData:
-    payment_link_base_url: str
-    payables: tuple[SquarePayable, ...] = ()
+    payment_links: tuple[SquarePaymentLink, ...] = ()
 
 
 # Seeded to match the QBO invoice in eval/mocks/base.yaml (INV-9001, balance
 # 1250.0, owned by gid://shopify/Customer/1001) so the payment-link amount lines
 # up with the open invoice used in eval scenario 05.
 square_baseline_data = SquareMockData(
-    payment_link_base_url="https://pay.toee.example/square",
-    payables=(
-        SquarePayable(
+    payment_links=(
+        SquarePaymentLink(
             invoice_number="INV-9001",
             shopify_customer_id="gid://shopify/Customer/1001",
             amount=1250.0,
+            payment_link_url="https://pay.toee.example/square/INV-9001",
         ),
     ),
 )
@@ -106,26 +119,31 @@ def _send_payment_link(
             "create a follow-up case instead.",
         )
 
+    # One lookup covers both refusals — no link set up for this invoice, and a link
+    # owned by someone else — because both must answer the same way: nothing to
+    # send. Keeping them one branch keeps the mock from leaking which invoices
+    # exist for other customers.
     invoice_number = _read_string(params, "invoice_number", "invoiceNumber")
-    payable = next(
+    link = next(
         (
             candidate
-            for candidate in data.payables
+            for candidate in data.payment_links
             if candidate.invoice_number == invoice_number
             and candidate.shopify_customer_id == customer_id
         ),
         None,
     )
-    if payable is None:
+    if link is None:
         raise ToolDriverError(
             "policy_blocked",
-            f"No payable {invoice_number or '<missing>'} owned by the verified customer.",
+            f"No pre-created payment link for {invoice_number or '<missing>'} "
+            "owned by the verified customer.",
         )
 
     return {
-        "payment_link_url": f"{data.payment_link_base_url}/{payable.invoice_number}",
+        "payment_link_url": link.payment_link_url,
         "conversation_id": conversation_id,
-        "amount": payable.amount,
+        "amount": link.amount,
     }
 
 

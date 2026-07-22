@@ -27,10 +27,12 @@ Three phases, each printing one PASS/FAIL/SKIP line per check:
    unavailable result inside the driver deadline -- NFR-8 -- and never a mock
    payload).
 
-Actions the driver deliberately gates off (``ActionSpec.unavailable``) are not
-probed; their happy-path check asserts the governed refusal instead. A check that
-did not run prints SKIP and never counts as a pass -- the point of this script is
-that it cannot be made green without a live backend.
+Actions the driver deliberately gates off (``ActionSpec.unavailable``) still get
+their slug resolved in phase 2 -- both gates are governance gaps over actions that
+really exist (0.0.4 S26) -- but never get called: their happy-path check asserts
+the governed refusal instead. A check that did not run prints SKIP and never
+counts as a pass -- the point of this script is that it cannot be made green
+without a live backend.
 """
 
 from __future__ import annotations
@@ -206,16 +208,16 @@ def check_surface() -> list[Check]:
 
     checks: list[Check] = []
     for (tool, action), spec in sorted(ACTION_MAPPING.items()):
+        # Gated-off actions are probed too (0.0.4 S26). They used to SKIP, which
+        # was right while the Square spec named a slug that does not exist — but
+        # both gated-off specs now name a REAL action and are held back by a
+        # governance gap, not a missing action. Probing them keeps standing
+        # evidence that the slug the driver would call still resolves at the pin,
+        # so the day the gate opens there is nothing left to discover.
+        name = f"{tool}.{action} -> {spec.action_slug}"
         if spec.unavailable is not None:
-            checks.append(
-                Check(
-                    f"{tool}.{action} -> {spec.action_slug}",
-                    None,
-                    f"gated off in the driver: {spec.unavailable}",
-                )
-            )
-            continue
-        checks.append(_resolve(f"{tool}.{action} -> {spec.action_slug}", spec.action_slug))
+            name += " (gated off in the driver)"
+        checks.append(_resolve(name, spec.action_slug))
     for name, slug in _INGRESS_SLUGS:
         checks.append(_resolve(f"{name} -> {slug}", slug))
     return checks

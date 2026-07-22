@@ -389,12 +389,19 @@ def test_qbo_list_customer_invoices_drops_other_customers() -> None:
 
 
 def test_square_send_payment_link_fails_closed_on_composio() -> None:
-    # 0.0.4 S12: the live surface probe found NO create-payment-link action in
-    # Composio's Square toolkit -- not at the pinned version, not at `latest`, and
-    # not anywhere in a catalog-wide search. The mapped SQUARE_CREATE_PAYMENT_LINK
-    # 404s, so the Composio path is gated off and the customer gets a governed
-    # unavailable result. Never a mock link: texting a customer a fabricated
-    # payment URL is the worst failure available here (ADR-0020, FR-21).
+    # 0.0.4 S26: the owner switched this tool to RETRIEVE semantics, and
+    # SQUARE_RETRIEVE_PAYMENT_LINK does resolve at pin 20260616_00 (S26 live
+    # probe), so S12's reason -- "no such action" -- no longer holds. It is still
+    # gated off for a different one: retrieve is by the Square-assigned link id,
+    # nothing the agent legitimately holds maps to one, and no list/search action
+    # exists at the pin to resolve one. Until the owner names a governed source for
+    # that id the customer gets a governed unavailable result -- never a mock link,
+    # and never a link belonging to another invoice. Texting a verified customer a
+    # fabricated or wrong payment URL is the worst failure available here
+    # (ADR-0020, ADR-0148, FR-21).
+    spec = ACTION_MAPPING[("toee_square_payment_link", "send_payment_link")]
+    assert spec.action_slug == "SQUARE_RETRIEVE_PAYMENT_LINK"
+
     client = FakeComposioClient({})
     with pytest.raises(ToolDriverError) as excinfo:
         _run(

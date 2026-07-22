@@ -411,22 +411,51 @@ _AR_SUMMARY_UNAVAILABLE = ToolDriverError(
     "until a per-customer QBO report is wired.",
 )
 
-# Fail-closed: Composio's Square toolkit has NO create-payment-link action. Not a
-# version-pin gap — the 0.0.4 S12 surface probe found only SQUARE_RETRIEVE_PAYMENT_LINK
-# at the pinned version, and a catalog-wide search for a Square create action at
-# `latest` returns nothing either (other toolkits have one; Square does not). The
-# previously mapped SQUARE_CREATE_PAYMENT_LINK 404s.
+# Still fail-closed, but for a DIFFERENT reason than S12's (0.0.4 S26).
 #
-# ponytail: the ceiling is "Composio cannot create a Square payment link". Upgrade
-# paths, in order of laziness: a Composio custom tool wrapping
-# POST /v2/online-checkout/payment-links, or a direct Square REST driver as a
-# per-tool overlay beside Composio — the same shape FR-20 uses for EasyRoutes.
-# Until then this fails closed: a customer must never be sent a fabricated or
-# mock payment link (ADR-0020, FR-21).
+# The owner's 2026-07-22 decision moved this tool from create to RETRIEVE
+# semantics: payment links are pre-created in the Square console and the agent
+# only ever fetches an existing one. The action that implements that is real —
+# ``SQUARE_RETRIEVE_PAYMENT_LINK`` resolves live at pin ``20260616_00`` and takes
+# exactly one parameter, ``{"required": ["id"]}`` (S26 probe). So the ACTION is no
+# longer the blocker. Two things still are, and both are product decisions rather
+# than code:
+#
+#  1. LINK IDENTITY. Retrieve is by the Square-assigned payment link id
+#     ("PAY_LINK_ID_123"). Nothing the agent legitimately holds maps to one — not
+#     the verified ``shopify_customer_id``, not the QBO ``invoice_number``, not the
+#     conversation id — and the toolkit exposes no list/search action to resolve
+#     one at the pin (``SQUARE_LIST_PAYMENT_LINKS`` 404s), so not even a console
+#     naming convention would help. The id can only come from owner-maintained
+#     configuration, whose shape (one fixed link, or a per-invoice map) is the
+#     owner's call. Letting the model supply the id is not an option: retrieving
+#     the WRONG link texts a verified customer someone else's amount (ADR-0148 —
+#     identity- and money-bearing values come from framework context, never the
+#     model).
+#  2. AMOUNT. The public contract returns ``amount`` and ADR-0066 has Hermes
+#     confirm the amount before send. The retrieved ``PaymentLink`` carries only
+#     ``orderId`` — no money field — so the amount needs a SECOND call
+#     (``SQUARE_RETRIEVE_ORDER``), which ADR-0130 forbids for one v1 action.
+#
+# One more trap for whoever wires the mappers: the S26 probe's live execute
+# returned ``successful: true`` with ``data = {"errors": [...], "payment_link":
+# null}`` (the connected account is missing Square's ORDERS_READ scope). Composio
+# calls a vendor-level error a success, and ``data`` IS a dict, so
+# ``_ComposioSdkClient`` passes it straight through. The response mapper must fail
+# closed on ``data["errors"]`` / a null link rather than shape an all-``None``
+# result (ADR-0020). Note also that the live envelope is snake_case
+# (``payment_link``) while the published schema says ``paymentLink``.
+#
+# ponytail: the ceiling is "Composio can retrieve a Square payment link, but
+# nothing in this system knows WHICH one". Upgrade path: the owner names the
+# link-identity source, after which this is an ordinary mapping (request mapper ->
+# ``{"id": ...}``, response mapper -> ``payment_link.url``). Until then it fails
+# closed: a customer must never be sent a fabricated, mock, or wrong-invoice
+# payment link (ADR-0020, FR-21).
 _SQUARE_PAYMENT_LINK_UNAVAILABLE = ToolDriverError(
     "configuration_missing",
-    "Square payment links are unavailable on the live backend: the Composio Square "
-    "toolkit exposes no create-payment-link action.",
+    "Square payment links are unavailable on the live backend: the pre-created "
+    "link to retrieve is not identified by anything this system knows.",
 )
 
 
@@ -472,7 +501,10 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ),
     ("toee_square_payment_link", "send_payment_link"): ActionSpec(
         SQUARE,
-        "SQUARE_CREATE_PAYMENT_LINK",
+        # Retrieve, not create (0.0.4 S26 owner decision). This slug DOES resolve
+        # at the pin — the smoke's surface phase probes it like any other — but the
+        # action stays gated off until the link id has a governed source.
+        "SQUARE_RETRIEVE_PAYMENT_LINK",
         unavailable=_SQUARE_PAYMENT_LINK_UNAVAILABLE,
     ),
 }
