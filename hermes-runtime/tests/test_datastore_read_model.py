@@ -252,6 +252,29 @@ def test_list_cases_honors_queue_filter_and_adr0079_sort(datastore) -> None:
     ]
 
 
+def test_supervisor_mode_all_sees_another_reps_case(datastore) -> None:
+    """The outcome half of ``assignee: {mode: "all"}`` (0.0.4 S09 review fix wave 1,
+    finding 5): a supervisor's queue query carries no assignee predicate
+    (``cases.py`` ``_list_cases``: "mode in (None, 'all') -> no assignee
+    predicate"), so a case claimed by one rep must still surface for a
+    supervisor's ``mode: "all"`` read -- not just derive the wire shape (that half
+    is pinned at the BFF client seam, ``cases.test.ts``), but actually return the
+    other rep's case.
+    """
+    driver, conn, _ = datastore
+    rep_a = "acct_rep_a"
+    _seed_case(conn, case_id="case_owned_by_rep_a", assignee_account_id=rep_a)
+
+    listed = _run(
+        driver,
+        "toee_workbench_read",
+        "list_cases",
+        {"statuses": ["open", "in_progress"], "assignee": {"mode": "all"}},
+    ).data["cases"]
+
+    assert "case_owned_by_rep_a" in [c["case_id"] for c in listed]
+
+
 def test_get_thread_returns_timeline_with_derived_channel_and_segment(datastore) -> None:
     driver, conn, _ = datastore
     _seed_thread(
