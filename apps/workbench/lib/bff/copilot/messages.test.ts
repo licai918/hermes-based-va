@@ -71,6 +71,13 @@ describe("handleTextlineSendViaApi", () => {
 
   it("sends on an eligible case and dispatches exactly one governed write", async () => {
     let send: SentDispatch | null = null;
+    // Every dispatched action, in order -- a second send_textline_message would
+    // still leave `send` above looking fine (it just gets overwritten), so the
+    // "exactly one" claim in this test's title is only real once it is checked
+    // against the full sequence, not just the last capture (0.0.4 S09 fix wave 1,
+    // finding 4 -- messages.test.ts brought up to drafts.test.ts's `seen` array
+    // treatment, ADR-0141 / #42).
+    const seen: string[] = [];
     const res = await handleTextlineSendViaApi(
       sendReq({ caseId: "case_api", body: "Your tires arrive today." }),
       client(
@@ -83,6 +90,7 @@ describe("handleTextlineSendViaApi", () => {
           },
         },
         (sent) => {
+          seen.push(sent.action);
           if (sent.action === "send_textline_message") send = sent;
         },
       ),
@@ -94,6 +102,7 @@ describe("handleTextlineSendViaApi", () => {
     };
     expect(payload.message.messageId).toBe("msg_abc");
     expect(payload.message.body).toBe("Your tires arrive today.");
+    expect(seen).toEqual(["get_case", "send_textline_message"]);
     const dispatched = send as SentDispatch | null;
     expect(dispatched?.tool).toBe("toee_case_manage");
     expect(dispatched?.action).toBe("send_textline_message");
