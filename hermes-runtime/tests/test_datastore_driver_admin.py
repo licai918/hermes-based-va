@@ -519,20 +519,35 @@ def test_authenticate_allows_login_once_the_lockout_expires(datastore) -> None:
 
 def test_lockout_state_is_a_row_not_process_memory(datastore) -> None:
     # Half the point of moving ADR-0018 server-side: the in-memory store lost every
-    # lockout on reload. A brand-new driver (a "restarted" process) still sees it.
+    # lockout on reload. A genuinely separate connection (its own Postgres backend
+    # process/session, standing in for a restarted driver process) still sees it --
+    # not just a new PostgresDriver wrapping the SAME connection, which would only
+    # prove the driver class itself is stateless.
+    import psycopg
+    from psycopg import sql
+
+    from hermes_runtime.datastore.config import database_url
     from hermes_runtime.datastore.driver import PostgresDriver
 
-    driver, conn, _ = datastore
+    driver, conn, schema = datastore
     _seed_account(driver, "survivor", "CorrectHorse9!")
     for _ in range(5):
         _bad_login(driver, "survivor")
 
-    restarted = PostgresDriver(connection=conn)
-    result = _run(
-        restarted, "toee_workbench_admin", "authenticate",
-        {"username": "survivor", "password": "CorrectHorse9!"},
-    )
-    assert result.error_class == "locked"
+    second_conn = psycopg.connect(database_url(), connect_timeout=2)
+    try:
+        with second_conn.cursor() as cur:
+            cur.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
+        second_conn.commit()
+
+        restarted = PostgresDriver(connection=second_conn)
+        result = _run(
+            restarted, "toee_workbench_admin", "authenticate",
+            {"username": "survivor", "password": "CorrectHorse9!"},
+        )
+        assert result.error_class == "locked"
+    finally:
+        second_conn.close()
 
 
 def test_authenticate_disabled_account_never_advances_the_ladder(datastore) -> None:
