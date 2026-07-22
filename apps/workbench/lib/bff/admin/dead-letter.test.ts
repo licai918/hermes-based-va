@@ -132,6 +132,45 @@ describe("handleListDeadLettersViaApi (0.0.4 S05, FR-13)", () => {
     expect((await handleListDeadLettersViaApi(client)).status).toBe(502);
   });
 
+  it("maps the replay audit tail, and tolerates a backend without one", async () => {
+    // Fix wave 1, finding 3: `job_replayed` is written with target_type='job'
+    // and every other workbench audit view is case- or record-scoped, so this
+    // list is the only place a replay's provenance can be seen.
+    const client = apiClient(async () =>
+      dispatchResponse({
+        jobs: [],
+        outbound: [],
+        recent_replays: [
+          {
+            job_id: "job_1",
+            type: "retention",
+            account_id: "acct_super",
+            actor_username: "super@toee",
+            created_at: "2026-07-21T09:00:00+00:00",
+          },
+        ],
+      }),
+    );
+    const body = (await (await handleListDeadLettersViaApi(client)).json()) as {
+      recentReplays: Record<string, unknown>[];
+    };
+    expect(body.recentReplays[0]).toEqual({
+      jobId: "job_1",
+      type: "retention",
+      accountId: "acct_super",
+      actorUsername: "super@toee",
+      createdAt: "2026-07-21T09:00:00+00:00",
+    });
+
+    // Unlike `replayable`, a missing provenance list is NOT a 502: it cannot
+    // re-open a blocked action, and the mock driver has no audit log at all.
+    const mock = apiClient(async () => dispatchResponse({ jobs: [], outbound: [] }));
+    const empty = (await (await handleListDeadLettersViaApi(mock)).json()) as {
+      recentReplays: unknown[];
+    };
+    expect(empty.recentReplays).toEqual([]);
+  });
+
   it("maps a governed denial to its per-class status (ADR-0104)", async () => {
     const client = apiClient(async () => deniedResponse("policy_blocked"));
     expect((await handleListDeadLettersViaApi(client)).status).toBe(403);

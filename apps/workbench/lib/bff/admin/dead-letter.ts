@@ -71,9 +71,23 @@ export interface StuckOutbound {
   updatedAt: string | null;
 }
 
+// One `job_replayed` audit row, named to an account. FR-13 asks for a VISIBLE
+// audit row; the handler writes it with target_type='job' and every other
+// workbench audit view is case- or record-scoped, so this short tail is where a
+// replay's provenance can actually be seen (and the only place it survives a
+// replay that SUCCEEDS and takes its job off the dead list).
+export interface RecentReplay {
+  jobId: string;
+  type: string | null;
+  accountId: string | null;
+  actorUsername: string | null;
+  createdAt: string | null;
+}
+
 export interface DeadLetterView {
   jobs: DeadJob[];
   outbound: StuckOutbound[];
+  recentReplays: RecentReplay[];
 }
 
 export interface ReplayReceipt {
@@ -81,10 +95,6 @@ export interface ReplayReceipt {
   type: string | null;
   status: string;
 }
-
-// Structurally correct "nothing is stuck" shape for an unconfigured backend,
-// mirroring admin/retention.ts's NEVER_RUN_RETENTION_STATUS.
-export const EMPTY_DEAD_LETTER_VIEW: DeadLetterView = { jobs: [], outbound: [] };
 
 function malformed(detail: string): never {
   throw new HermesApiError(
@@ -172,11 +182,33 @@ function mapStuckOutbound(raw: unknown): StuckOutbound {
   };
 }
 
+function mapRecentReplay(raw: unknown): RecentReplay {
+  const r = requireObject(raw, "recent_replays[]");
+  return {
+    jobId: requireString(r.job_id, "recent_replays[].job_id"),
+    type: requireNullableString(r.type, "recent_replays[].type"),
+    accountId: requireNullableString(r.account_id, "recent_replays[].account_id"),
+    actorUsername: requireNullableString(
+      r.actor_username,
+      "recent_replays[].actor_username",
+    ),
+    createdAt: requireNullableString(r.created_at, "recent_replays[].created_at"),
+  };
+}
+
 export function mapDeadLetterView(raw: unknown): DeadLetterView {
   const r = requireObject(raw, "root");
   return {
     jobs: requireArray(r.jobs, "jobs").map(mapDeadJob),
     outbound: requireArray(r.outbound, "outbound").map(mapStuckOutbound),
+    // Deliberately NOT strict like `replayable`: this list is provenance
+    // display, and a backend that omits it cannot re-open a blocked action --
+    // whereas a defaulted `replayable` would. A backend without the field (the
+    // mock driver) shows an empty log rather than 502-ing the whole panel.
+    recentReplays: requireArray(
+      r.recent_replays ?? [],
+      "recent_replays",
+    ).map(mapRecentReplay),
   };
 }
 

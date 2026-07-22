@@ -12,6 +12,9 @@
 //                        dead-letter row exists (S03/S04). The bucket says what
 //                        to do; re-sending is NEVER one of the options here, so
 //                        these rows carry no action button.
+//   "Recent replays"  -- the `job_replayed` audit tail. FR-13 asks for a visible
+//                        audit row and no other workbench audit view is global,
+//                        so this is where a replay's provenance can be seen.
 //
 // Loads on mount: a global panel, no id to key off (mirrors RetentionPanel).
 import { useEffect, useState } from "react";
@@ -41,6 +44,21 @@ const BUCKET_GUIDANCE: Record<string, string> = {
     "A process died mid-delivery, so the job succeeded but the send is unconfirmed. Assume the customer has it.",
 };
 
+// The most common dead turn is one whose send is already SPENT: an
+// `outbound_send` row that is `failed`, or carries any `last_error`, makes
+// deliver_once raise OutboundSendBurned on every re-run (outbound_send.py). A
+// Replay would re-run the model, burn all three attempts, re-dead-letter, and
+// text the customer nothing -- so the button is off and this says why, in the
+// same slot the per-type block already uses. (`outbound: null` is the state that
+// tells an operator a replay will genuinely send.)
+const BURNED_OUTBOUND_GUIDANCE =
+  "This send is already spent — the idempotency key is burned, so a replay would re-run the model, fail again, and text the customer nothing. Send this reply by hand.";
+
+function burnedOutbound(job: DeadJob): boolean {
+  if (!job.outbound) return false;
+  return job.outbound.status === "failed" || job.outbound.lastError !== null;
+}
+
 function formatTime(value: string | null): string {
   if (!value) return "—";
   const parsed = new Date(value);
@@ -56,6 +74,11 @@ function DeadJobRow({
   busy: boolean;
   onReplay: (job: DeadJob) => void;
 }) {
+  // Server policy first (it is the one the handler enforces), then the burned
+  // send -- both land in the same caption, so a disabled button is never
+  // unexplained.
+  const blockedReason =
+    job.replayBlockedReason ?? (burnedOutbound(job) ? BURNED_OUTBOUND_GUIDANCE : null);
   return (
     <tr>
       <td style={cell}>{job.type}</td>
@@ -78,15 +101,13 @@ function DeadJobRow({
       <td style={cell}>
         <button
           type="button"
-          disabled={!job.replayable || busy}
-          title={job.replayBlockedReason ?? undefined}
+          disabled={!job.replayable || blockedReason !== null || busy}
+          title={blockedReason ?? undefined}
           onClick={() => onReplay(job)}
         >
           {busy ? "Replaying…" : "Replay"}
         </button>
-        {job.replayBlockedReason ? (
-          <p style={caption}>{job.replayBlockedReason}</p>
-        ) : null}
+        {blockedReason ? <p style={caption}>{blockedReason}</p> : null}
       </td>
     </tr>
   );
@@ -149,6 +170,23 @@ export function DeadLetterPanel() {
 
   if (loading) return <p>Loading…</p>;
 
+  // Nothing loaded -> say so and stop. Printing "No dead jobs." next to an error
+  // banner is the same reassuring lie the unconfigured-backend 503 exists to
+  // prevent (fix wave 1, finding 4): this panel must never claim nothing is
+  // stuck on the strength of a request that failed.
+  if (!view) {
+    return (
+      <section aria-label="Dead letters">
+        <p role="alert" style={{ color: "#8a1c1c" }}>
+          {error ?? "Failed to load the dead-letter view"}
+        </p>
+        <button type="button" onClick={() => void load()}>
+          Retry
+        </button>
+      </section>
+    );
+  }
+
   return (
     <section
       aria-label="Dead letters"
@@ -168,7 +206,7 @@ export function DeadLetterPanel() {
       </div>
 
       <h2 style={{ fontSize: "1rem" }}>Dead jobs</h2>
-      {view && view.jobs.length > 0 ? (
+      {view.jobs.length > 0 ? (
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead>
             <tr>
@@ -197,7 +235,7 @@ export function DeadLetterPanel() {
       )}
 
       <h2 style={{ fontSize: "1rem" }}>Stuck sends</h2>
-      {view && view.outbound.length > 0 ? (
+      {view.outbound.length > 0 ? (
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <thead>
             <tr>
@@ -218,6 +256,27 @@ export function DeadLetterPanel() {
         </table>
       ) : (
         <p style={caption}>No stuck sends.</p>
+      )}
+
+      {/* FR-13 gate (2): the `job_replayed` audit row, where an operator can
+          actually see it. It is written with target_type='job' and every other
+          workbench audit view is case- or record-scoped, so this list is the
+          only UI that shows a replay's provenance -- and the only one that
+          still shows it after a successful replay takes the job off the list
+          above. */}
+      <h2 style={{ fontSize: "1rem" }}>Recent replays</h2>
+      {view.recentReplays.length > 0 ? (
+        <ul style={{ ...caption, paddingLeft: "1.1rem" }}>
+          {view.recentReplays.map((replay) => (
+            <li key={`${replay.jobId}-${replay.createdAt}`}>
+              {replay.type ?? "job"} <code>{replay.jobId}</code> replayed by{" "}
+              {replay.actorUsername ?? replay.accountId ?? "an unknown account"} at{" "}
+              {formatTime(replay.createdAt)}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p style={caption}>No replays recorded.</p>
       )}
     </section>
   );
