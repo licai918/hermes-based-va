@@ -59,6 +59,10 @@ export function RetentionPanel() {
     setError(null);
     try {
       setStatus(await getRetentionStatus());
+      // This read IS the "Refresh to see the result" the caption asks for, so the
+      // caption must not outlive it (S04 fix wave 1, finding 6). Cleared on
+      // success only: a failed refresh has not resolved anything.
+      setQueued(false);
     } catch (e) {
       setStatus(null);
       setError(e instanceof ApiError ? e.message : "Failed to load retention status");
