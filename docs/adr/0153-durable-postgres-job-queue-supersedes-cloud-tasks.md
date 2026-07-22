@@ -15,7 +15,16 @@
 > sweep, knowledge re-ingest) onto the queue, and **runs the schedule tick loop**
 > — so the recurring mechanism below is live rather than merely available.
 >
-> Remaining consumer: S05 (dead-letter view + governed replay).
+> **S05** (FR-13) added the dead-letter operator view + governed **Replay**
+> (`datastore/handlers/dead_letter.py`, `job_queue.replay_dead_job`,
+> `/admin/dead-letter`). Replay is the ONE operation that deliberately returns a
+> row to a claimable status; it is safe because it matches `status = 'dead'`
+> only (a dead row already carries `locked_at IS NULL`) and sets `run_at = now()`,
+> keeping the fencing invariant below true. Replay safety is **per job type** —
+> `job_queue.REPLAY_BLOCKED_JOB_TYPES` blocks `l6_review` until proposal dedupe
+> exists.
+>
+> The queue now has every consumer 0.0.4 planned for it.
 
 ## Context
 
@@ -92,7 +101,10 @@ queued ──claim──> running ──complete──> succeeded
   job type that warrants it.
 - **Dead is terminal.** An exhausted job moves to `dead` and is never claimed
   again — never silently dropped, never silently retried. It keeps its `run_at`
-  so the dead-letter view shows when it last ran. S05 owns replay.
+  so the dead-letter view shows when it last ran. **S05's replay** is the only
+  way out of `dead`: `status='queued'`, `attempts=0`, `run_at=now()` on the
+  EXISTING row (which is what keeps S03's derived idempotency key identical), and
+  only for a job type `REPLAY_BLOCKED_JOB_TYPES` does not name.
 - **Lease reclaim.** The lease is `locked_at`; its timeout is the *reclaimer's*
   policy (`reclaim_expired_leases(lease_seconds=...)`, default 300s), not a
   per-row column — one policy per worker pool is enough, and it can be changed

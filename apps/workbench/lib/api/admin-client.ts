@@ -4,6 +4,7 @@
 // whose 400 carries a policy `errors[]` we surface inline rather than throw.
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
+import type { DeadLetterView, ReplayReceipt } from "@/lib/bff/admin/dead-letter";
 import type { CorpusStatus, ProbeResult, ReingestQueued } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
@@ -216,4 +217,14 @@ export function getRetentionStatus(): Promise<RetentionStatus> {
 
 export function triggerRetentionSweep(): Promise<RetentionSweepQueued> {
   return sendJson<RetentionSweepQueued>("POST", "/api/admin/retention/sweep");
+}
+
+// --- Dead-letter view + governed Replay (0.0.4 S05, FR-13) -------------------
+
+export function getDeadLetterView(): Promise<DeadLetterView> {
+  return getJson<DeadLetterView>("/api/admin/dead-letter");
+}
+
+export function replayJob(jobId: string): Promise<ReplayReceipt> {
+  return sendJson<ReplayReceipt>("POST", "/api/admin/dead-letter/replay", { jobId });
 }
