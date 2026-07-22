@@ -309,8 +309,8 @@ on another.
 |---------|----------------------|------------------------------|
 | **gateway** | Ingress Phone Match falls back to a live Shopify customer lookup (`hermes_runtime/datastore/shopify_identity.py`) | `gateway` |
 | **turn worker** | Runs the customer's async agent turn — this is where `toee_shopify_read` / `toee_qbo_read` actually execute | `turn-worker` |
-| **dispatch server (copilot, 8091)** | The Copilot draft turn calls the same external reads | `dispatch-copilot` |
-| **dispatch server (admin, 8092)** | Same deterministic `tools:dispatch` surface, `supervisor_admin` profile | `dispatch-admin` |
+| **dispatch server (copilot, 8091)** | Its `agent:turn` LLM draft route boots a profile per turn, and THAT reaches Composio. Its `tools:dispatch` route does not — that one uses `select_tool_driver()` (the `TOOL_BACKEND` axis) | `dispatch-copilot` |
+| **dispatch server (admin, 8092)** | `tools:dispatch` only, so it never reaches Composio today. Set the variables anyway: the fleet must not go split-brain when a later slice mounts a turn route here, and a uniform env is what makes the rollback in §6.4 one action | `dispatch-admin` |
 | **background worker** | Shares the image and the `l6_review` fork's tool surface | `background-worker` |
 
 Locally all five inherit `hermes-runtime/.env` through the `x-hermes-runtime`
@@ -334,9 +334,16 @@ Required on **every** service in the table above:
 | `TOOL_BACKEND=datastore` | plain env | pre-existing boot requirement |
 
 The version-pin variables are keyed by **Composio's** toolkit slug, not ours:
-`COMPOSIO_TOOLKIT_VERSION_QBO` is silently ignored. A missing or `latest` pin now
-fails `build_composio_driver()` at boot naming the variable, rather than raising
-`ToolVersionRequiredError` from inside a customer's turn.
+`COMPOSIO_TOOLKIT_VERSION_QBO` is silently ignored.
+
+A missing or `latest` pin fails the process at **boot**, naming the variable.
+That is enforced by `require_composio_configuration()`, called from each of the
+four composition roots (`build_gateway_app`, `turn_worker.main`,
+`background_worker.main`, `build_tool_dispatch_app`) — 0.0.4 S12 fix wave 1.
+Before that call existed the driver was built per `boot_profile()`, i.e. per
+TURN, so a bad pin produced a clean boot followed by a raw exception on the
+first customer message. If you are on a revision that predates it, expect the
+failure on first traffic, not at startup.
 
 ### 6.3 PAC-6 test data (owner action)
 
@@ -346,20 +353,33 @@ Before a PAC drill runs against the live store:
    number that is not a real customer's.
 2. Give it a test order, and a matching test invoice in QuickBooks.
 3. Set `SMOKE_SHOPIFY_CUSTOMER_ID=gid://shopify/Customer/<id>` in the deployment
-   env (smoke happy path) and `NEXT_PUBLIC_SIM_VERIFIED_PHONE=<phone>` in
-   `apps/workbench/.env.local` (simulator "verified" preset).
+   env (smoke happy path).
+4. Set `NEXT_PUBLIC_SIM_VERIFIED_PHONE=<phone>` for the simulator's "verified"
+   preset. **Where depends on how the workbench runs** — `NEXT_PUBLIC_*` is
+   inlined by Next.js at **build** time, not read at runtime (0.0.4 S12 fix
+   wave 1):
+   - **local `next dev` / `pnpm dev`** — `apps/workbench/.env.local`, then
+     restart the dev server.
+   - **deployed workbench (Cloud Run)** — it must be present when the image is
+     BUILT. Setting it on the running service does nothing; the value is already
+     baked into the client bundle. Pass it as a build arg / build-time env in the
+     workbench image build and redeploy.
 
-Until step 3, the simulator's verified preset still points at the mock-seeded
-`+14165550101`, which resolves `unmatched_caller` against a live store — the PAC
-drill has no verified path.
+Until step 3, the smoke's happy-path checks SKIP. Until step 4, the simulator's
+verified preset still points at the mock-seeded `+14165550101`, which resolves
+`unmatched_caller` against a live store — the PAC drill has no verified path.
+The preset's LABEL tells you which value the running bundle carries: "Verified
+customer (seeded)" vs "(live test entity)".
 
 ### 6.4 Order of operations
 
 1. Link/verify all three connected accounts (§1.3) and confirm **active**.
 2. Set the variables in §6.2 on every service in §6.1.
 3. Run `python -m hermes_runtime.composio_smoke` from one of them; require PASS.
-4. Roll the services. Watch for `error_class=configuration_missing` at boot —
-   that is a missing pin, not a vendor outage.
+4. Roll the services. A misconfigured pin now fails the process at startup with
+   `configuration_missing` naming the variable, so a service that comes up
+   healthy has a valid Composio config — that is what step 2 buys. Watch the
+   startup logs, not the first turn.
 5. Roll back = `INTEGRATION_DRIVER=mock` on every service in §6.1, together.
 
 ### 6.5 Known gap: Square payment links

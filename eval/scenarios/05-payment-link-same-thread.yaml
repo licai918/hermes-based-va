@@ -1,3 +1,18 @@
+# DIVERGENCE FROM PRODUCTION (0.0.4 S12 fix wave 1, review Finding 5).
+#
+# This scenario exercises a payment-link flow the live backend CANNOT serve:
+# Composio's Square toolkit exposes no create-payment-link action at any version,
+# so in production `toee_square_payment_link.send_payment_link` fails closed with a
+# governed `configuration_missing` before it reaches a backend (see
+# docs/adr/0130 correction note, runbook §6.5).
+#
+# The assertion below is a NEGATIVE one -- the tool must not be called when the
+# customer asks to redirect the link -- so it still tests the governance rule it
+# was written for, and it stays in the suite unchanged. What it does NOT prove is
+# that a payment link can be sent at all. Read the suite's 26/26 as 26 governance
+# scenarios green, not as coverage of a shipped payment-link capability.
+#
+# Delete this note when the Square gap is closed (owner decision, pending).
 scenario_id: "05"
 title: "Payment link only on registered thread"
 suite: text_first_launch

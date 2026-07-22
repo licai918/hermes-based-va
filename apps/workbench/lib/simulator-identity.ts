@@ -49,7 +49,14 @@ export const SEEDED_VERIFIED_PHONE = "+14165550101";
 // run. Point this at a DEDICATED TEST CUSTOMER created in the live store (with a
 // test order + invoice), never a real customer's number:
 //
-//   NEXT_PUBLIC_SIM_VERIFIED_PHONE=+1...   (apps/workbench/.env.local)
+//   NEXT_PUBLIC_SIM_VERIFIED_PHONE=+1...
+//
+// WHERE that goes depends on how the workbench runs, because `NEXT_PUBLIC_*` is
+// inlined by Next.js at BUILD time and is not read at runtime (S12 fix wave 1):
+//   - local `next dev`  -> apps/workbench/.env.local, then restart the dev server
+//   - deployed workbench -> it must be set when the IMAGE IS BUILT. Setting it on
+//     the running Cloud Run service does nothing; the value is already baked into
+//     the client bundle. See docs/ops/composio-connected-accounts.md §6.3.
 //
 // Left unset -- the local-dev default -- the seeded mock number is used and
 // nothing changes. It is NEXT_PUBLIC_ because the Simulator is a client

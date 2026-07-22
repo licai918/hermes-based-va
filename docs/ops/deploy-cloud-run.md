@@ -64,7 +64,7 @@ missing.
 | `COMPOSIO_API_KEY` | Secret Manager | only with composio | |
 | `COMPOSIO_USER_ID`, `COMPOSIO_{SHOPIFY,QBO,SQUARE}_CONNECTED_ACCOUNT_ID` | plain env | only with composio | See the Composio runbook |
 | `COMPOSIO_TOOLKIT_VERSION_{SHOPIFY,QUICKBOOKS,SQUARE}` | plain env | **required** with composio | Exact version per configured toolkit; boot fails naming a missing one. Note `QUICKBOOKS`, not `QBO` |
-| `COMPOSIO_DEADLINE_MS` | plain env | no | Per-call backend deadline, default 8000 (NFR-8) |
+| `COMPOSIO_DEADLINE_MS` | plain env | no | Deadline for ONE tool call, default 8000, divided across the SDK's three HTTP requests (NFR-8) |
 
 Composio onboarding, link-time `*_AUTH_CONFIG_ID` vars, and per-toolkit smoke live in
 [`composio-connected-accounts.md`](./composio-connected-accounts.md). **The cutover

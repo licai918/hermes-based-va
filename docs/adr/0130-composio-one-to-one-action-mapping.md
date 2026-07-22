@@ -28,7 +28,23 @@ Pagination, field selection, and minor response normalization inside one Composi
 | `toee_shopify_read.get_order` | one Shopify order-read toolkit action |
 | `toee_shopify_read.search_products` | one Shopify product-search toolkit action |
 | `toee_qbo_read.get_invoice` | one QuickBooks invoice-read toolkit action |
-| `toee_square_payment_link.send_payment_link` | one Square payment-link toolkit action |
+| `toee_square_payment_link.send_payment_link` | one Square payment-link toolkit action — **does not exist, see the correction below** |
+
+> **Correction (0.0.4 S12, 2026-07-22).** The last row was never true. Composio's
+> Square toolkit exposes **no create-payment-link action at any version**: the live
+> surface probe found only `SQUARE_RETRIEVE_PAYMENT_LINK` at pin `20260616_00`, the
+> previously mapped `SQUARE_CREATE_PAYMENT_LINK` 404s at `latest` too, and a
+> catalog-wide search returns a create action for Flutterwave, Razorpay, Stripe and
+> Poof but not Square. `toee_square_payment_link.send_payment_link` therefore fails
+> closed on the Composio backend (`ActionSpec.unavailable`) rather than mapping to
+> anything.
+>
+> The mapping RULE this ADR decides is unaffected — this records a fact about the
+> vendor, not a change of decision. The ADR's own escape hatch ("if Composio does
+> not expose one toolkit action that can satisfy a required v1 `action`, that action
+> uses direct REST in the adapter implementation instead") is the path this gap
+> would take. **Which path to take is the owner's product decision and is still
+> pending**; nothing is decided here.
 
 ## Eval and mock stability
 
