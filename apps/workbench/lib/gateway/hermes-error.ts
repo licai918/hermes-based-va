@@ -6,6 +6,7 @@
 //
 //   policy_blocked        -> 403  Tool Gate denial / write without an attributed actor
 //   unauthenticated       -> 401  rejected credential on pre-auth login (ADR-0144)
+//   locked                -> 423  ADR-0018 lockout window open on pre-auth login
 //   not_found             -> 404  governed read/write of a row that does not exist
 //   conflict              -> 409  contended write (e.g. claim of an already-held case)
 //   unknown_tool/action   -> 500  BFF<->profile contract bug, not the user's fault
@@ -24,6 +25,7 @@ import { HermesApiError } from "./hermes-api-client";
 const STATUS_BY_CLASS: Record<string, number> = {
   policy_blocked: 403,
   unauthenticated: 401,
+  locked: 423,
   not_found: 404,
   conflict: 409,
   unknown_tool: 500,

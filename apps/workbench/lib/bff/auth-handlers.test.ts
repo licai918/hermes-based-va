@@ -252,6 +252,28 @@ describe("handleLoginViaApi", () => {
     expect(((await res.json()) as { error: string }).error).toBe("account disabled");
   });
 
+  it("maps the server-side ADR-0018 lockout onto 423 with no session", async () => {
+    // Parity with handleLogin's 423: the datastore now owns the lockout ladder
+    // (0.0.4 S08), and `locked` is the only signal that survives dispatch — the
+    // message is replaced upstream. LoginForm keys its lockout copy off 423, so
+    // collapsing this into 401/403/502 would silently change what the operator
+    // is told after five failures.
+    const client = loginClient(() => ({
+      ok: false,
+      error: { class: "locked", message: "account temporarily locked." },
+    }));
+    const res = await handleLoginViaApi(
+      loginReq({ username: "rep", password: DEV_SEED_PASSWORD }),
+      client,
+      viaApiDeps(),
+    );
+    expect(res.status).toBe(423);
+    expect(tokenFromSetCookie(res)).toBeNull();
+    expect(((await res.json()) as { error: string }).error).toBe(
+      "account temporarily locked",
+    );
+  });
+
   it("returns 400 when fields are missing before any dispatch", async () => {
     let dispatched = false;
     const client = loginClient(() => {

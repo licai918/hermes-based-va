@@ -370,6 +370,221 @@ def test_authenticate_never_writes_an_audit_row_or_leaks_the_hash(datastore) -> 
         assert cur.fetchone()[0] == 1
 
 
+# --- ADR-0018 lockout ladder (0.0.4 S08 server-side parity) ------------------
+#
+# These pin the policy that used to live ONLY in the workbench TS account store
+# (apps/workbench/lib/auth/account-store.ts: MAX_FAILED_ATTEMPTS=5,
+# LOCKOUT_MS=15min). 0.0.4 S09 deletes that file, so if the ladder is not
+# enforced here nothing fails loudly -- lockout would just silently stop
+# existing. Every assertion below mirrors one behaviour of that store.
+
+
+def _lock_state(conn, account_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT failed_attempts, locked_until FROM workbench_account WHERE id = %s",
+            (account_id,),
+        )
+        return cur.fetchone()
+
+
+def _bad_login(driver, username: str):
+    return _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": username, "password": "wrong-password"},
+    )
+
+
+def test_authenticate_locks_after_five_failed_attempts(datastore) -> None:
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "ladder", "CorrectHorse9!")
+
+    for attempt in range(1, 5):
+        result = _bad_login(driver, "ladder")
+        assert result.error_class == "unauthenticated"
+        # Below the threshold the counter advances and no window is set. The
+        # increment must SURVIVE the handler's raise (the driver rolls back on a
+        # ToolDriverError) or five wrong passwords would count as zero.
+        attempts, locked_until = _lock_state(conn, account_id)
+        assert attempts == attempt
+        assert locked_until is None
+
+    # The 5th failure crosses MAX_FAILED_ATTEMPTS: window opens, counter resets
+    # to 0 (exactly what recordFailedLogin does).
+    fifth = _bad_login(driver, "ladder")
+    assert fifth.error_class == "unauthenticated"
+    attempts, locked_until = _lock_state(conn, account_id)
+    assert attempts == 0
+    assert locked_until is not None
+
+
+def test_authenticate_locked_account_is_rejected_even_with_the_right_password(
+    datastore,
+) -> None:
+    # The single easiest behaviour to lose: lockout is checked BEFORE the password,
+    # so the correct password does not rescue a locked account. BFF -> 423.
+    driver, _, _ = datastore
+    _seed_account(driver, "locked1", "CorrectHorse9!")
+    for _ in range(5):
+        _bad_login(driver, "locked1")
+
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "locked1", "password": "CorrectHorse9!"},
+    )
+    assert not result.ok
+    assert result.error_class == "locked"
+
+
+def test_authenticate_lockout_window_is_fifteen_minutes(datastore) -> None:
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "window", "CorrectHorse9!")
+    for _ in range(5):
+        _bad_login(driver, "window")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT locked_until - now() FROM workbench_account WHERE id = %s",
+            (account_id,),
+        )
+        remaining = cur.fetchone()[0]
+    # LOCKOUT_MS = 15 * 60 * 1000. Allow a minute of clock/statement drift.
+    assert 14 * 60 <= remaining.total_seconds() <= 15 * 60
+
+
+def test_authenticate_locked_attempt_does_not_extend_the_window(datastore) -> None:
+    # A rejected attempt while locked returns before recordFailedLogin, so the
+    # window never slides forward (in-memory order parity).
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "noextend", "CorrectHorse9!")
+    for _ in range(5):
+        _bad_login(driver, "noextend")
+    before = _lock_state(conn, account_id)
+
+    _bad_login(driver, "noextend")
+    _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "noextend", "password": "CorrectHorse9!"},
+    )
+    assert _lock_state(conn, account_id) == before
+
+
+def test_authenticate_successful_login_resets_the_failure_counter(datastore) -> None:
+    # recordSuccessfulLogin zeroes failedAttempts, so 4 fails + 1 success + 4 fails
+    # must NOT lock: without the reset the 5th lifetime failure would.
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "resetme", "CorrectHorse9!")
+    for _ in range(4):
+        _bad_login(driver, "resetme")
+    assert _lock_state(conn, account_id)[0] == 4
+
+    assert _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "resetme", "password": "CorrectHorse9!"},
+    ).ok
+    assert _lock_state(conn, account_id) == (0, None)
+
+    for _ in range(4):
+        _bad_login(driver, "resetme")
+    assert _lock_state(conn, account_id)[1] is None
+    assert _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "resetme", "password": "CorrectHorse9!"},
+    ).ok
+
+
+def test_authenticate_allows_login_once_the_lockout_expires(datastore) -> None:
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "expiry", "CorrectHorse9!")
+    for _ in range(5):
+        _bad_login(driver, "expiry")
+
+    # Age the window past now() instead of sleeping 15 minutes.
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE workbench_account SET locked_until = now() - INTERVAL '1 second'"
+            " WHERE id = %s",
+            (account_id,),
+        )
+    conn.commit()
+
+    result = _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "expiry", "password": "CorrectHorse9!"},
+    )
+    assert result.ok
+    # A successful login clears the stale window (recordSuccessfulLogin parity).
+    assert _lock_state(conn, account_id) == (0, None)
+
+
+def test_lockout_state_is_a_row_not_process_memory(datastore) -> None:
+    # Half the point of moving ADR-0018 server-side: the in-memory store lost every
+    # lockout on reload. A brand-new driver (a "restarted" process) still sees it.
+    from hermes_runtime.datastore.driver import PostgresDriver
+
+    driver, conn, _ = datastore
+    _seed_account(driver, "survivor", "CorrectHorse9!")
+    for _ in range(5):
+        _bad_login(driver, "survivor")
+
+    restarted = PostgresDriver(connection=conn)
+    result = _run(
+        restarted, "toee_workbench_admin", "authenticate",
+        {"username": "survivor", "password": "CorrectHorse9!"},
+    )
+    assert result.error_class == "locked"
+
+
+def test_authenticate_disabled_account_never_advances_the_ladder(datastore) -> None:
+    # Disabled short-circuits before the password check, so a disabled account
+    # cannot be walked into a lockout (and cannot log in at all).
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "off", "CorrectHorse9!", disabled=True)
+    for _ in range(6):
+        _bad_login(driver, "off")
+    assert _lock_state(conn, account_id) == (0, None)
+    assert (
+        _run(
+            driver, "toee_workbench_admin", "authenticate",
+            {"username": "off", "password": "CorrectHorse9!"},
+        ).error_class
+        == "policy_blocked"
+    )
+
+
+def test_authenticate_unknown_user_cannot_lock_out_a_real_account(datastore) -> None:
+    driver, conn, _ = datastore
+    account_id = _seed_account(driver, "real", "CorrectHorse9!")
+    for _ in range(6):
+        _bad_login(driver, "ghost-user")
+    assert _lock_state(conn, account_id) == (0, None)
+
+
+def test_authenticate_lockout_is_per_account(datastore) -> None:
+    driver, conn, _ = datastore
+    _seed_account(driver, "victim", "CorrectHorse9!")
+    bystander_id = _seed_account(driver, "bystander", "CorrectHorse9!")
+    for _ in range(5):
+        _bad_login(driver, "victim")
+    assert _lock_state(conn, bystander_id) == (0, None)
+    assert _run(
+        driver, "toee_workbench_admin", "authenticate",
+        {"username": "bystander", "password": "CorrectHorse9!"},
+    ).ok
+
+
+def test_account_read_model_never_exposes_lockout_columns(datastore) -> None:
+    # The wire-safe projection stays wire-safe: the new columns are enforcement
+    # state, not part of PublicAccount.
+    driver, _, _ = datastore
+    _seed_account(driver, "projection", "CorrectHorse9!")
+    _bad_login(driver, "projection")
+    listed = _run(driver, "toee_workbench_admin", "list_accounts", {}).data["accounts"]
+    account = next(a for a in listed if a["username"] == "projection")
+    assert "failed_attempts" not in account
+    assert "locked_until" not in account
+
+
 # --- knowledge ops (ADR-0145 authoring table) ------------------------------
 
 

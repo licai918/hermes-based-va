@@ -24,6 +24,12 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _SCRYPT_MAXMEM = 64 * 1024 * 1024
 
+# ADR-0018 lockout ladder, moved here in 0.0.4 S08 (FR-2). These MUST stay equal to
+# MAX_FAILED_ATTEMPTS / LOCKOUT_MS in apps/workbench/lib/auth/account-store.ts until
+# S09 deletes that file, after which this is the only definition of the policy.
+_MAX_FAILED_ATTEMPTS = 5
+_LOCKOUT_MINUTES = 15
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
 
@@ -191,6 +197,40 @@ def _verify_password(plain: str, stored: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+def _record_failed_login(conn, account_id: str) -> None:
+    """Advance the ADR-0018 failure ladder and commit it before the caller raises.
+
+    Two things are load-bearing here:
+
+    * **The commit.** :meth:`PostgresDriver.execute` rolls back on a
+      ``ToolDriverError``, and a rejected login always raises — so an increment
+      left to the driver's commit would vanish and five wrong passwords would
+      count as zero, silently disabling lockout. This owns its unit of work; the
+      driver's subsequent rollback then finds an empty transaction.
+    * **The single statement.** ``failed_attempts + 1`` is evaluated by Postgres
+      against the row it locks, so concurrent wrong passwords cannot both read
+      the same count and write the same increment (a read-then-write in Python
+      would let an attacker outrun the ladder).
+
+    Crossing the threshold opens the window and resets the counter to 0, exactly
+    as ``account-store.ts`` ``recordFailedLogin`` does.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE workbench_account SET
+                failed_attempts = CASE WHEN failed_attempts + 1 >= %(max)s
+                                       THEN 0 ELSE failed_attempts + 1 END,
+                locked_until    = CASE WHEN failed_attempts + 1 >= %(max)s
+                                       THEN now() + make_interval(mins => %(mins)s)
+                                       ELSE locked_until END
+            WHERE id = %(id)s
+            """,
+            {"max": _MAX_FAILED_ATTEMPTS, "mins": _LOCKOUT_MINUTES, "id": account_id},
+        )
+    conn.commit()
+
+
 def _authenticate(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     """Pre-auth login verification for the workbench login path (ADR-0144).
 
@@ -202,6 +242,13 @@ def _authenticate(conn, params: dict[str, Any], context: "ToolExecutionContext")
     ``unauthenticated`` (BFF -> 401) so neither leaks which (in-memory parity); a
     disabled account is blocked *before* the password check (``policy_blocked`` ->
     403), matching the in-memory order. The handler never returns or logs the hash.
+
+    Since 0.0.4 S08 this is also the *only* enforcement point for the ADR-0018
+    lockout ladder (FR-2): disabled -> locked -> password, five consecutive
+    failures open a 15-minute window (``locked`` -> 423), and a success clears both
+    the counter and the window. The wall clock is always the database's ``now()``,
+    never a caller-supplied timestamp — a client-controlled clock would let an
+    attacker date their way out of a lockout.
     """
     username = read_string(params, "username")
     password = params.get("password")
@@ -211,7 +258,8 @@ def _authenticate(conn, params: dict[str, Any], context: "ToolExecutionContext")
         raise ToolDriverError("unauthenticated", "invalid credentials.")
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
-            "SELECT id, status, password_hash FROM workbench_account WHERE username = %s",
+            "SELECT id, status, password_hash, locked_until > now() AS locked"
+            " FROM workbench_account WHERE username = %s",
             (username,),
         )
         row = cur.fetchone()
@@ -219,11 +267,20 @@ def _authenticate(conn, params: dict[str, Any], context: "ToolExecutionContext")
         raise ToolDriverError("unauthenticated", "invalid credentials.")
     if row["status"] == "disabled":
         raise ToolDriverError("policy_blocked", "account disabled.")
+    if row["locked"]:
+        # Checked BEFORE the password, matching the in-memory order: the correct
+        # password does not rescue a locked account, and the attempt returns here
+        # without touching the ladder, so a locked-out attacker cannot slide the
+        # window forward. NULL locked_until compares to NULL -> falsy -> not locked,
+        # and so does an elapsed window, which is why expiry needs no sweep job.
+        raise ToolDriverError("locked", "account temporarily locked.")
     if not _verify_password(password, row["password_hash"]):
+        _record_failed_login(conn, row["id"])
         raise ToolDriverError("unauthenticated", "invalid credentials.")
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE workbench_account SET last_login_at = now() WHERE id = %s",
+            "UPDATE workbench_account SET last_login_at = now(), failed_attempts = 0,"
+            " locked_until = NULL WHERE id = %s",
             (row["id"],),
         )
     return {"account": _account_row(conn, row["id"])}

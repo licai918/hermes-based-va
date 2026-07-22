@@ -102,7 +102,11 @@ export async function handleLogin(req: Request, deps: AuthDeps): Promise<Respons
 // (read-style, no actor required), not dispatchWrite. On success the session is
 // issued exactly as handleLogin does (same body + signed cookie, ADR-0093); on a
 // rejected credential the responses match the in-memory path (generic 401 for both
-// bad password and unknown user — no enumeration; 403 for a disabled account).
+// bad password and unknown user — no enumeration; 403 for a disabled account;
+// 423 once the ADR-0018 lockout window is open). As of 0.0.4 S08 the lockout
+// ladder itself (5 failures -> 15 minutes, reset on success) is enforced by
+// toee_workbench_admin.authenticate against the account row, so it is durable
+// across a workbench restart and this handler only translates the verdict.
 export async function handleLoginViaApi(
   req: Request,
   client: HermesApiClient,
@@ -135,6 +139,9 @@ export async function handleLoginViaApi(
       }
       if (err.errorClass === "policy_blocked") {
         return problem(403, "account disabled");
+      }
+      if (err.errorClass === "locked") {
+        return problem(423, "account temporarily locked");
       }
     }
     return hermesErrorToProblem(err);
