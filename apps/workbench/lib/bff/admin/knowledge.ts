@@ -231,6 +231,24 @@ function mapIngestJob(raw: unknown): IngestJobStatus | null {
 
 export type ReingestQueued = { jobId: string | null; status: string };
 
+// Strict, matching mapRetentionSweepQueued in admin/retention.ts (S04 fix wave 1,
+// finding 5): the two sibling enqueue actions return the same receipt shape and
+// now police it the same way. Defaulting a missing `status` to "queued" would
+// have shown a plausible panel over a broken backend contract -- the house
+// malformed() pattern exists to make that loud. A NULL `job_id` is legitimate
+// (the mock twin has no `job` table) and stays accepted; a missing key is not.
+function malformedReingest(detail: string): never {
+  throw new HermesApiError("unexpected_error", `malformed reingest payload: ${detail}`);
+}
+
+export function mapReingestQueued(raw: unknown): ReingestQueued {
+  if (typeof raw !== "object" || raw === null) malformedReingest("root");
+  const r = raw as Record<string, unknown>;
+  if (typeof r.status !== "string") malformedReingest("status");
+  if (r.job_id !== null && typeof r.job_id !== "string") malformedReingest("job_id");
+  return { jobId: r.job_id as string | null, status: r.status };
+}
+
 // S04 (FR-11): the re-ingest trigger 0.0.3 S11 shipped as a display-only stub.
 // A governed dispatchWrite -- it TRUNCATEs and reloads the whole corpus, so it is
 // fail-closed on the acting supervisor and audited on the Hermes side; the panel
@@ -239,14 +257,8 @@ export async function handleTriggerReingestViaApi(
   client: HermesApiClient,
 ): Promise<Response> {
   try {
-    const data = (await client.dispatchWrite(
-      "toee_knowledge_ops",
-      "enqueue_corpus_reingest",
-      {},
-    )) as Record<string, unknown>;
-    const jobId = typeof data?.job_id === "string" ? data.job_id : null;
-    const status = typeof data?.status === "string" ? data.status : "queued";
-    return json({ jobId, status } satisfies ReingestQueued);
+    const data = await client.dispatchWrite("toee_knowledge_ops", "enqueue_corpus_reingest", {});
+    return json(mapReingestQueued(data) satisfies ReingestQueued);
   } catch (err) {
     return hermesErrorToProblem(err);
   }

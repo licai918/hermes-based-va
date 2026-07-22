@@ -522,6 +522,32 @@ describe("handleTriggerReingestViaApi", () => {
     const res = await handleTriggerReingestViaApi(client);
     expect(res.status).toBe(403);
   });
+
+  it("accepts the mock backend's null job id (there is no `job` table behind it)", async () => {
+    const client = apiClient(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: { job_id: null, status: "unavailable" } }), {
+          status: 200,
+        }),
+      WRITE_ACTOR,
+    );
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jobId: null, status: "unavailable" });
+  });
+
+  it("rejects a receipt with no status instead of defaulting it to 'queued'", async () => {
+    // S04 fix wave 1, finding 5: aligned with retention.ts's mapRetentionSweepQueued.
+    // A defaulted status would show a plausible "queued" panel over a backend that
+    // never queued anything.
+    const client = apiClient(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: { job_id: "job_x" } }), { status: 200 }),
+      WRITE_ACTOR,
+    );
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(502);
+  });
 });
 
 describe("get_corpus_status's last_ingest_job readback", () => {
