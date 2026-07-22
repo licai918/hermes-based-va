@@ -1,9 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import {
-  createInMemoryAccountStore,
-  DEV_SEED_PASSWORD,
-  type AccountStore,
-} from "../auth/account-store";
+import { describe, expect, it } from "vitest";
 import {
   SESSION_COOKIE_NAME,
   SESSION_IDLE_MS,
@@ -11,25 +6,15 @@ import {
   verifySessionToken,
 } from "../auth/session";
 import { HermesApiClient } from "../gateway/hermes-api-client";
-import {
-  handleLogin,
-  handleLoginViaApi,
-  handleLogout,
-  handleSession,
-} from "./auth-handlers";
+import { handleLoginViaApi, handleLogout, handleSession } from "./auth-handlers";
 
 const NOW = 1_700_000_000_000;
 const SECRET = "test-secret-please-change";
-
-let store: AccountStore;
-
-beforeEach(() => {
-  store = createInMemoryAccountStore(0);
-});
-
-function deps(now = NOW) {
-  return { store, now, secret: SECRET, secure: false };
-}
+// The dev-seed password. Its authoritative copy is the scrypt hash baked into
+// hermes-runtime/migrations/0005_dev_bootstrap.sql -- 0.0.4 S09 deleted the TS
+// account store that used to hold the plaintext, and the API path never verifies
+// it locally, so this is just a realistic non-empty credential.
+const PASSWORD = "Workbench123!";
 
 function loginReq(body: unknown): Request {
   return new Request("http://localhost/api/auth/login", {
@@ -46,79 +31,14 @@ function tokenFromSetCookie(res: Response): string | null {
   return match ? match[1]! : null;
 }
 
-describe("handleLogin", () => {
-  it("issues a session cookie on valid credentials", async () => {
-    const res = await handleLogin(
-      loginReq({ username: "rep", password: DEV_SEED_PASSWORD }),
-      deps(),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { user: { username: string; role: string } };
-    expect(body.user.username).toBe("rep");
-    expect(body.user.role).toBe("customer_service_rep");
-
-    const token = tokenFromSetCookie(res);
-    expect(token).toBeTruthy();
-    const session = await verifySessionToken(token!, SECRET);
-    expect(session).not.toBeNull();
-    expect(session!.accountId).toBe("seed-rep");
-    expect(session!.role).toBe("customer_service_rep");
-    expect(session!.lastActivityAt).toBe(NOW);
-  });
-
-  it("rejects a wrong password and records the failed attempt", async () => {
-    const res = await handleLogin(
-      loginReq({ username: "rep", password: "wrong-password" }),
-      deps(),
-    );
-    expect(res.status).toBe(401);
-    expect(tokenFromSetCookie(res)).toBeNull();
-    expect(store.getByUsername("rep")!.failedAttempts).toBe(1);
-  });
-
-  it("rejects an unknown username without leaking existence", async () => {
-    const res = await handleLogin(
-      loginReq({ username: "ghost", password: DEV_SEED_PASSWORD }),
-      deps(),
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("locks the account after the max failed attempts", async () => {
-    for (let i = 0; i < 5; i++) {
-      await handleLogin(loginReq({ username: "rep", password: "nope" }), deps());
-    }
-    const res = await handleLogin(
-      loginReq({ username: "rep", password: DEV_SEED_PASSWORD }),
-      deps(),
-    );
-    expect(res.status).toBe(423);
-    expect(tokenFromSetCookie(res)).toBeNull();
-  });
-
-  it("refuses a disabled account", async () => {
-    store.disable("seed-admin");
-    const res = await handleLogin(
-      loginReq({ username: "admin", password: DEV_SEED_PASSWORD }),
-      deps(),
-    );
-    expect(res.status).toBe(403);
-  });
-
-  it("returns 400 when fields are missing", async () => {
-    const res = await handleLogin(loginReq({ username: "rep" }), deps());
-    expect(res.status).toBe(400);
-  });
-});
-
-// --- Per-profile API cutover (ADR-0144 Increment 5) -------------------------
-// When the admin per-profile API is configured the login route authenticates
-// against Postgres via toee_workbench_admin.authenticate instead of the in-memory
-// store. These mirror the admin ViaApi tests: assert the dispatched envelope
-// (plaintext password sent, never a hash, no actor — authenticate is pre-auth),
-// the session issued on success, and parity error responses (401 generic for
-// bad/unknown, 403 for disabled) with no Set-Cookie.
-
+// --- Login over the per-profile API (ADR-0144 Increment 5) ------------------
+// 0.0.4 S09 deleted the in-memory `handleLogin`: the datastore is the only place a
+// credential is checked. These assert the dispatched envelope (plaintext password
+// sent, never a hash, no actor -- authenticate is pre-auth), the session issued on
+// success, and every rejection verdict (generic 401 for bad password AND unknown
+// user, 403 disabled, 423 locked) with no Set-Cookie. The ladder that PRODUCES the
+// 423 -- 5 failures, 15-minute window, reset on success -- is enforced and pinned
+// server-side (0.0.4 S08, hermes-runtime/tests/test_datastore_driver_admin.py).
 // A wire-safe authenticate success row from the datastore (never a password hash).
 const authAccountRow = {
   id: "acct_login",
@@ -169,7 +89,7 @@ describe("handleLoginViaApi", () => {
       },
     );
     await handleLoginViaApi(
-      loginReq({ username: "rep", password: DEV_SEED_PASSWORD }),
+      loginReq({ username: "rep", password: PASSWORD }),
       client,
       viaApiDeps(),
     );
@@ -177,7 +97,7 @@ describe("handleLoginViaApi", () => {
     expect(s?.tool).toBe("toee_workbench_admin");
     expect(s?.action).toBe("authenticate");
     expect(s?.params.username).toBe("rep");
-    expect(s?.params.password).toBe(DEV_SEED_PASSWORD);
+    expect(s?.params.password).toBe(PASSWORD);
     // The hash is computed server-side: the BFF sends NO password_hash, and being
     // pre-auth it attaches NO actor_account_id.
     expect(s?.params.password_hash).toBeUndefined();
@@ -187,7 +107,7 @@ describe("handleLoginViaApi", () => {
   it("issues a session cookie on valid credentials and never returns a hash", async () => {
     const client = loginClient(() => ({ ok: true, data: { account: authAccountRow } }));
     const res = await handleLoginViaApi(
-      loginReq({ username: "rep", password: DEV_SEED_PASSWORD }),
+      loginReq({ username: "rep", password: PASSWORD }),
       client,
       viaApiDeps(),
     );
@@ -229,7 +149,7 @@ describe("handleLoginViaApi", () => {
       error: { class: "unauthenticated", message: "invalid credentials." },
     }));
     const res = await handleLoginViaApi(
-      loginReq({ username: "ghost", password: DEV_SEED_PASSWORD }),
+      loginReq({ username: "ghost", password: PASSWORD }),
       client,
       viaApiDeps(),
     );
@@ -243,7 +163,7 @@ describe("handleLoginViaApi", () => {
       error: { class: "policy_blocked", message: "account disabled." },
     }));
     const res = await handleLoginViaApi(
-      loginReq({ username: "admin", password: DEV_SEED_PASSWORD }),
+      loginReq({ username: "admin", password: PASSWORD }),
       client,
       viaApiDeps(),
     );
@@ -263,7 +183,7 @@ describe("handleLoginViaApi", () => {
       error: { class: "locked", message: "account temporarily locked." },
     }));
     const res = await handleLoginViaApi(
-      loginReq({ username: "rep", password: DEV_SEED_PASSWORD }),
+      loginReq({ username: "rep", password: PASSWORD }),
       client,
       viaApiDeps(),
     );
@@ -300,7 +220,7 @@ describe("handleSession", () => {
     const req = new Request("http://localhost/api/auth/session", {
       headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
     });
-    const res = await handleSession(req, deps());
+    const res = await handleSession(req, { now: NOW, secret: SECRET });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       authenticated: boolean;
@@ -312,7 +232,7 @@ describe("handleSession", () => {
 
   it("reports unauthenticated when no cookie is present", async () => {
     const req = new Request("http://localhost/api/auth/session");
-    const res = await handleSession(req, deps());
+    const res = await handleSession(req, { now: NOW, secret: SECRET });
     const body = (await res.json()) as { authenticated: boolean };
     expect(body.authenticated).toBe(false);
   });
@@ -330,7 +250,10 @@ describe("handleSession", () => {
     const req = new Request("http://localhost/api/auth/session", {
       headers: { cookie: `${SESSION_COOKIE_NAME}=${token}` },
     });
-    const res = await handleSession(req, deps(NOW + SESSION_IDLE_MS + 1));
+    const res = await handleSession(req, {
+      now: NOW + SESSION_IDLE_MS + 1,
+      secret: SECRET,
+    });
     const body = (await res.json()) as { authenticated: boolean };
     expect(body.authenticated).toBe(false);
   });

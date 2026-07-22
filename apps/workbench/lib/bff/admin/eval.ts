@@ -1,63 +1,67 @@
 // Eval-review handlers for the Admin BFF (ADR-0088 run review; ADR-0040 Knowledge
 // Publish Eval Gate — failed_high blocks go-live/promotion, medium failures need
-// sign-off). Pure and dependency-injected; the thin app/api/admin/eval route files
-// wrap these with withSession and inject the real EvalStore singleton.
+// sign-off). API-only (0.0.4 S09): the thin app/api/admin/eval route files wrap
+// these with withSession and inject the Supervisor Admin Profile API client. The
+// gate itself is enforced by toee_eval_review server-side; this layer maps the
+// governed verdict onto HTTP.
 import {
   HermesApiClient,
   HermesApiError,
 } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
-import type {
-  EvalRunReport,
-  EvalRunSummary,
-  EvalScenarioResult,
-  EvalSummary,
-  ScenarioSeverity,
-} from "../../gateway/eval-store";
-import { json, problem } from "../respond";
-import type { AdminDeps } from "./deps";
+import { json } from "../respond";
 
-export function handleListRuns(deps: AdminDeps): Response {
-  return json({ runs: deps.evalStore.listRuns() });
+// The wire shapes of an eval run (ADR-0074 standard JSON eval report + the ADR-0088
+// list-pane row). Declared here, next to the mappers that produce them, since
+// 0.0.4 S09 deleted the in-memory EvalStore they used to live in.
+export type ScenarioSeverity = "high" | "medium" | "none";
+
+export interface EvalScenarioResult {
+  scenario_id: string;
+  passed: boolean;
+  failed_assertions: string[];
+  severity: ScenarioSeverity;
 }
 
-export function handleGetRun(runId: string, deps: AdminDeps): Response {
-  const run = deps.evalStore.getRun(runId);
-  if (!run) return problem(404, "run not found");
-  return json({ run });
+export interface EvalSummary {
+  total: number;
+  passed: number;
+  failed_high: number;
+  failed_medium: number;
 }
 
-export function handleSignOff(runId: string, deps: AdminDeps): Response {
-  const result = deps.evalStore.signOffMedium(runId, deps.session.accountId);
-  if (result.ok) return json({ run: result.report });
-  if (result.reason === "not_found") return problem(404, "run not found");
-  if (result.reason === "not_required") {
-    return problem(409, "no medium sign-off required");
-  }
-  return problem(409, "high-severity failures block sign-off");
+export interface EvalRunReport {
+  run_id: string;
+  suite: string;
+  model_slug: string;
+  prompt_version: string;
+  knowledge_version: string;
+  timestamp: string;
+  scenarios: EvalScenarioResult[];
+  summary: EvalSummary;
+  signoff_required: boolean;
+  // Governance overlay (not part of the on-disk report; merged in server-side).
+  signed_off?: boolean;
+  promoted?: boolean;
 }
 
-export function handlePromote(runId: string, deps: AdminDeps): Response {
-  const result = deps.evalStore.promotePending(runId);
-  if (result.ok) return json({ run: result.report });
-  if (result.reason === "not_found") return problem(404, "run not found");
-  if (result.reason === "not_promotable") {
-    return problem(409, "run is not a promotable policy_publish run");
-  }
-  if (result.reason === "failed_high") {
-    return problem(409, "high-severity failures block promotion");
-  }
-  return problem(409, "medium failures must be signed off first");
+// Compact row for the list pane (ADR-0088 left pane columns).
+export interface EvalRunSummary {
+  run_id: string;
+  suite: string;
+  timestamp: string;
+  passed: boolean;
+  failed_high: number;
+  failed_medium: number;
+  knowledge_version: string;
+  prompt_version: string;
 }
 
-// --- Per-profile API cutover (ADR-0141/0146 Increment 7) ---------------------
-// The Supervisor Admin eval routes dispatch toee_eval_review over the per-profile
-// Hermes API when HERMES_ADMIN_API_URL/TOKEN are configured (else the in-memory
-// EvalStore). The list/get reads use dispatch (fail-open); sign-off and promote
-// use dispatchWrite (fail-closed on the acting supervisor baked into the client),
-// so a write can never land a NULL-actor audit row — the datastore enforces the
-// same rule. Per-class error mapping turns a governed not_found/conflict into
-// 404/409, and the governed messages match the store path (status + body parity).
+// --- Per-profile API (ADR-0141/0146 Increment 7) ------------------------------
+// The list/get reads use dispatch (fail-open); sign-off and promote use
+// dispatchWrite (fail-closed on the acting supervisor baked into the client), so a
+// write can never land a NULL-actor audit row — the datastore enforces the same
+// rule. Per-class error mapping turns a governed not_found/conflict into 404/409.
 
 const SEVERITIES = new Set<ScenarioSeverity>(["high", "medium", "none"]);
 

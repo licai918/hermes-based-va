@@ -11,7 +11,7 @@ import { useErrorBanner } from "@/components/shell/error-banner";
 import { getRun, listRuns, promote, signOff } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
 import { formatRelativeTime } from "@/lib/format";
-import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
+import type { EvalRunReport, EvalRunSummary } from "@/lib/bff/admin/eval";
 
 function chipStyle(color: string) {
   return {

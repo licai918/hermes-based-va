@@ -1,24 +1,26 @@
 // Account-management handlers for the Admin BFF (ADR-0089 user admin; ADR-0018
-// password policy + lockout). Pure and dependency-injected; the thin
-// app/api/admin/accounts route files wrap these with withSession and inject the
-// real AccountStore singleton.
+// password policy + lockout). API-only (0.0.4 S09): the thin app/api/admin/accounts
+// route files wrap these with withSession and inject the Supervisor Admin Profile
+// API client. The account rows live in Postgres; the lockout ladder is enforced by
+// toee_workbench_admin.authenticate (0.0.4 S08).
 //
-// SECURITY: responses NEVER serialize passwordHash (or lockout internals). Every
-// account leaves the server through toPublicAccount, which whitelists fields —
-// do not spread a WorkbenchAccount onto the wire.
+// SECURITY: responses NEVER serialize password_hash (or lockout internals). Every
+// account leaves the server through mapPublicAccount, which whitelists fields —
+// do not spread a raw datastore row onto the wire.
 import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
-import type { WorkbenchAccount } from "../../auth/account-store";
 import { hashPassword, validatePassword } from "../../auth/password";
 import { HermesApiClient, HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { json, problem } from "../respond";
-import { type AdminDeps, readJsonBody } from "./deps";
+import { readJsonBody } from "./deps";
+
+export type AccountStatus = "active" | "disabled";
 
 export type PublicAccount = {
   accountId: string;
   username: string;
   role: WorkbenchRoleId;
-  status: WorkbenchAccount["status"];
+  status: AccountStatus;
   lastLoginAt: number | null;
   createdAt: number;
 };
@@ -27,18 +29,6 @@ const ROLE_VALUES = new Set<string>(Object.values(WORKBENCH_ROLES));
 
 function isValidRole(value: unknown): value is WorkbenchRoleId {
   return typeof value === "string" && ROLE_VALUES.has(value);
-}
-
-// Whitelist projection: the only shape safe to put on the wire.
-export function toPublicAccount(account: WorkbenchAccount): PublicAccount {
-  return {
-    accountId: account.accountId,
-    username: account.username,
-    role: account.role,
-    status: account.status,
-    lastLoginAt: account.lastLoginAt,
-    createdAt: account.createdAt,
-  };
 }
 
 const STATUS_VALUES = new Set<string>(["active", "disabled"]);
@@ -52,8 +42,8 @@ function isoToMs(value: unknown, label: string): number {
   throw new HermesApiError("unexpected_error", `malformed account ${label}`);
 }
 
-// workbench_account has no last-login column yet (login is not cut over); a value
-// is mapped if present, else null — the same null a freshly created store account has.
+// last_login_at is null until the account's first successful login; mapped if
+// present, else null.
 function optionalMs(value: unknown): number | null {
   if (typeof value === "number") return value;
   if (typeof value === "string" && value.length > 0) {
@@ -97,14 +87,10 @@ export function mapPublicAccount(raw: unknown): PublicAccount {
     accountId,
     username: r.username,
     role: r.role,
-    status: r.status as WorkbenchAccount["status"],
+    status: r.status as AccountStatus,
     lastLoginAt: optionalMs(r.last_login_at),
     createdAt: isoToMs(r.created_at, "created_at"),
   };
-}
-
-export function handleListAccounts(deps: AdminDeps): Response {
-  return json({ accounts: deps.accounts.list().map(toPublicAccount) });
 }
 
 type CreateAccountInput = {
@@ -113,9 +99,8 @@ type CreateAccountInput = {
   password: string;
 };
 
-// Body validation shared by the store and per-profile API create paths so they
-// can't drift: same required-field, role, and ADR-0018 password-policy gates, all
-// before any store write or dispatch. Returns the parsed input or the 400 to send.
+// Required-field, role, and ADR-0018 password-policy gates, all before any
+// dispatch. Returns the parsed input or the 400 to send.
 function parseCreateAccountInput(
   body: Record<string, unknown> | null,
 ): { ok: true; value: CreateAccountInput } | { ok: false; res: Response } {
@@ -143,52 +128,14 @@ function parseCreateAccountInput(
   return { ok: true, value: { username, role, password } };
 }
 
-export async function handleCreateAccount(
-  req: Request,
-  deps: AdminDeps,
-): Promise<Response> {
-  const parsed = parseCreateAccountInput(await readJsonBody(req));
-  if (!parsed.ok) return parsed.res;
-
-  try {
-    const created = deps.accounts.create(parsed.value, deps.now);
-    return json({ account: toPublicAccount(created) }, { status: 201 });
-  } catch {
-    return problem(409, "username already exists");
-  }
-}
-
-export async function handleUpdateRole(
-  req: Request,
-  accountId: string,
-  deps: AdminDeps,
-): Promise<Response> {
-  const body = await readJsonBody(req);
-  const role = body?.role;
-  if (!isValidRole(role)) return problem(400, "invalid role");
-
-  const updated = deps.accounts.updateRole(accountId, role);
-  if (!updated) return problem(404, "account not found");
-  return json({ account: toPublicAccount(updated) });
-}
-
-export function handleDisableAccount(
-  accountId: string,
-  deps: AdminDeps,
-): Response {
-  const disabled = deps.accounts.disable(accountId);
-  if (!disabled) return problem(404, "account not found");
-  return json({ account: toPublicAccount(disabled) });
-}
-
-// --- Per-profile API cutover (ADR-0141 Increment 4) --------------------------
+// --- Per-profile API (ADR-0141 Increment 4) ----------------------------------
 // The Supervisor Admin account routes dispatch toee_workbench_admin over the
-// per-profile Hermes API when HERMES_ADMIN_API_URL/TOKEN are configured. Reads use
-// dispatch (fail-open); the governed mutations use dispatchWrite, which is
-// fail-closed on the acting account baked into the client — so a write can never
-// land a NULL-actor audit row (the datastore enforces the same rule). Each
-// mutation returns the fresh account read model, mapped onto PublicAccount; the
-// per-class error mapping turns a governed conflict/not_found into 409/404.
+// per-profile Hermes API. Reads use dispatch (fail-open); the governed mutations
+// use dispatchWrite, which is fail-closed on the acting account baked into the
+// client — so a write can never land a NULL-actor audit row (the datastore
+// enforces the same rule). Each mutation returns the fresh account read model,
+// mapped onto PublicAccount; the per-class error mapping turns a governed
+// conflict/not_found into 409/404.
 
 export async function handleListAccountsViaApi(
   client: HermesApiClient,

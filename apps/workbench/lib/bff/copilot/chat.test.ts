@@ -1,37 +1,14 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { createDefaultMockDriver, type ToolDriver } from "@toee/domain-adapters";
-import { WORKBENCH_ROLES } from "@toee/shared";
-import type { WorkbenchSession } from "../../auth/session";
-import { createInMemoryGatewayStore, type GatewayStore } from "../../gateway/store";
-import { createSeed } from "../../gateway/seed";
+import { describe, expect, it } from "vitest";
 import { HermesAgentClient } from "../../gateway/hermes-agent-client";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
-import type { CopilotDeps } from "./deps";
-import { handleChat, handleChatViaApi } from "./chat";
+import { handleChatViaApi } from "./chat";
 
-const NOW = 1_800_000_000_000;
+// 0.0.4 S09 deleted the deterministic in-memory `handleChat` stub: chat is only
+// ever a real unbound internal_copilot agent turn. The turn itself is driven from
+// the dispatch server's `scripted_completions` seam in the runtime suite; here the
+// HermesAgentClient is the seam, so the BFF contract (400 / needs_case / 404 /
+// draftCard gating / ADR-0104 error mapping) is asserted without a model.
 
-let store: GatewayStore;
-let driver: ToolDriver;
-
-beforeEach(() => {
-  store = createInMemoryGatewayStore(createSeed());
-  driver = createDefaultMockDriver();
-});
-
-function deps(): CopilotDeps {
-  return {
-    store,
-    driver,
-    session: {
-      accountId: "seed-rep",
-      username: "rep",
-      role: WORKBENCH_ROLES.rep,
-      lastActivityAt: NOW,
-    },
-    now: NOW,
-  };
-}
 
 function chatReq(body: unknown): Request {
   return new Request("http://localhost/api/copilot/chat", {
@@ -47,73 +24,6 @@ type ChatResponse = {
   draftCard?: { channel: string; body: string };
 };
 
-describe("handleChat", () => {
-  it("400s an empty message", async () => {
-    const res = await handleChat(chatReq({ message: "   " }), deps());
-    expect(res.status).toBe(400);
-  });
-
-  it("returns needs_case when no case is selected", async () => {
-    const res = await handleChat(chatReq({ message: "help me" }), deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as ChatResponse;
-    expect(body.state).toBe("needs_case");
-    expect(body.reply).toMatch(/select/i);
-    expect(body.draftCard).toBeUndefined();
-  });
-
-  it("404s when the selected case is missing", async () => {
-    const res = await handleChat(
-      chatReq({ caseId: "nope", message: "hi" }),
-      deps(),
-    );
-    expect(res.status).toBe(404);
-  });
-
-  it("returns a ready reply referencing the case for a plain message", async () => {
-    const res = await handleChat(
-      chatReq({ caseId: "case_ar_urgent", message: "what's going on here?" }),
-      deps(),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as ChatResponse;
-    expect(body.state).toBe("ready");
-    expect(body.reply).toContain("order_status"); // contactReason of case_ar_urgent
-    expect(body.draftCard).toBeUndefined();
-  });
-
-  it("attaches an SMS draftCard when asked to draft on an SMS case", async () => {
-    const res = await handleChat(
-      chatReq({ caseId: "case_ar_urgent", message: "please draft a reply" }),
-      deps(),
-    );
-    const body = (await res.json()) as ChatResponse;
-    expect(body.state).toBe("ready");
-    expect(body.draftCard?.channel).toBe("sms");
-    expect(typeof body.draftCard?.body).toBe("string");
-    expect(body.draftCard?.body.length).toBeGreaterThan(0);
-  });
-
-  it("does not attach a draftCard on a non-SMS case", async () => {
-    const res = await handleChat(
-      chatReq({ caseId: "case_billing_email", message: "draft an sms please" }),
-      deps(),
-    );
-    const body = (await res.json()) as ChatResponse;
-    expect(body.state).toBe("ready");
-    expect(body.draftCard).toBeUndefined();
-  });
-});
-
-// ADR-0147 Slice 4 (#39): /api/copilot/chat cut over onto the per-profile agent-turn
-// API (the LLM seam) instead of the deterministic stub, env-gated. It MUST preserve
-// the in-memory handleChat surface byte-for-byte: 400 empty message, the needs_case
-// (200, no network) idle state, 404 unknown case via a get_case pre-read, the
-// { state, reply, draftCard? } body, the /draft|sms/i + sms-channel draftCard gating,
-// and the ADR-0104 error->HTTP mapping. Chat is SINGLE-SHOT (the contract is one
-// message + case context -> one reply, no history), so the cutover mirrors
-// handleDraftViaApi. Crucially it writes NO audit (parity: handleChat audits nothing;
-// the conversational `chat` turn-mode records none server-side either).
 describe("handleChatViaApi (chat over the agent-turn API)", () => {
   type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
   const CHAT_REPLY =

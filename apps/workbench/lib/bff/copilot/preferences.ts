@@ -3,10 +3,8 @@
 // from `case_id` (S16), so these handlers only ever pass `case_id` through —
 // never a binding key — and the response never carries the `binding_key` the
 // dispatch server returns, since that is the customer's raw identity key and
-// must not reach the browser. API-path-only: there is no in-memory-store
-// fallback (the GatewayStore has no preferences concept), so unlike cases.ts
-// there are no non-`ViaApi` handlers here; the route decides what to do when the
-// per-profile API isn't configured.
+// must not reach the browser. Like every other BFF handler since 0.0.4 S09, this
+// is API-only.
 import { json, problem } from "../respond";
 import { readJsonBody, readNonEmptyString } from "./deps";
 import type { HermesApiClient } from "../../gateway/hermes-api-client";

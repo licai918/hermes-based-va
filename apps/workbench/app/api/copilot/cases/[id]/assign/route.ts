@@ -1,26 +1,11 @@
-import { handleAssign, handleAssignViaApi } from "@/lib/bff/copilot/cases";
-import { createCopilotDeps } from "@/lib/bff/copilot/deps";
+import { handleAssignViaApi } from "@/lib/bff/copilot/cases";
+import { createCopilotApiClient } from "@/lib/bff/copilot/deps";
 import { withSession } from "@/lib/bff/with-session";
-import { HermesApiClient } from "@/lib/gateway/hermes-api-client";
-import { resolveProfileApiConfig } from "@/lib/gateway/hermes-api-config";
 
 export const runtime = "nodejs";
 
-export const POST = withSession((req, { session, params }) => {
-  const caseId = params?.id ?? "";
-  const deps = createCopilotDeps(session);
-  // ADR-0141: dispatch the governed assignment over the Internal Copilot Profile
-  // API when configured; otherwise fall back to the in-memory store.
-  const apiConfig = resolveProfileApiConfig(
-    process.env.HERMES_COPILOT_API_URL,
-    process.env.HERMES_COPILOT_API_TOKEN,
-  );
-  if (apiConfig) {
-    const client = new HermesApiClient({
-      ...apiConfig,
-      actorAccountId: session.accountId,
-    });
-    return handleAssignViaApi(req, client, caseId, deps);
-  }
-  return handleAssign(req, caseId, deps);
-});
+// ADR-0141: a governed dispatchWrite with actor-attributed audit. Supervisor/admin
+// only (ADR-0082) -- the handler checks the session role before dispatching.
+export const POST = withSession((req, { session, params }) =>
+  handleAssignViaApi(req, createCopilotApiClient(session), params?.id ?? "", session),
+);

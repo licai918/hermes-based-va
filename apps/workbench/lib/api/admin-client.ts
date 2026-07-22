@@ -5,11 +5,15 @@
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { DeadLetterView, ReplayReceipt } from "@/lib/bff/admin/dead-letter";
-import type { CorpusStatus, ProbeResult, ReingestQueued } from "@/lib/bff/admin/knowledge";
+import type { EvalRunReport, EvalRunSummary } from "@/lib/bff/admin/eval";
+import type {
+  CorpusStatus,
+  PolicySlot,
+  ProbeResult,
+  ReingestQueued,
+} from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
-import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
-import type { PolicySlot } from "@/lib/gateway/knowledge-store";
 import type {
   AgentExperienceEntry,
   MemoryAuditView,

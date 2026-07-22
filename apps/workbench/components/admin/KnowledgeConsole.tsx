@@ -14,7 +14,7 @@ import {
   submitSlot,
 } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
-import type { PolicySlot, SlotStatus } from "@/lib/gateway/knowledge-store";
+import type { PolicySlot, SlotStatus } from "@/lib/bff/admin/knowledge";
 
 type Editor = { draftText: string; owner: string; reviewDate: string };
 

@@ -1,42 +1,26 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { createDefaultMockDriver, type ToolDriver } from "@toee/domain-adapters";
+import { describe, expect, it } from "vitest";
 import { WORKBENCH_ROLES, type WorkbenchRoleId } from "@toee/shared";
 import type { WorkbenchSession } from "../../auth/session";
-import { createInMemoryGatewayStore, type GatewayStore } from "../../gateway/store";
-import { createSeed } from "../../gateway/seed";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
-import type { AuditAction, WorkbenchCase } from "../../gateway/types";
-import type { CopilotDeps } from "./deps";
+import type { WorkbenchCase } from "../../gateway/types";
 import {
-  handleAssign,
   handleAssignViaApi,
-  handleClaim,
   handleClaimViaApi,
-  handleContactReason,
   handleContactReasonViaApi,
-  handleGetAuditLog,
   handleGetAuditLogViaApi,
-  handleGetCase,
   handleGetCaseViaApi,
-  handleGetThread,
   handleGetThreadViaApi,
-  handleListCases,
   handleListCasesViaApi,
-  handlePriority,
   handlePriorityViaApi,
-  handleResolve,
   handleResolveViaApi,
 } from "./cases";
 
+// 0.0.4 S09: the in-memory GatewayStore is gone, so every case behavior is asserted
+// at the HTTP-client seam -- the dispatched `{ tool, action, params }` envelope and
+// the mapped response. What the datastore does with that envelope (queue ordering,
+// the case_view audit row, claim atomicity) is pinned by the runtime suite.
+
 const NOW = 1_700_000_000_000;
-
-let store: GatewayStore;
-let driver: ToolDriver;
-
-beforeEach(() => {
-  store = createInMemoryGatewayStore(createSeed());
-  driver = createDefaultMockDriver();
-});
 
 function session(
   role: WorkbenchRoleId = WORKBENCH_ROLES.rep,
@@ -44,10 +28,6 @@ function session(
   username = "rep",
 ): WorkbenchSession {
   return { accountId, username, role, lastActivityAt: NOW };
-}
-
-function deps(s: WorkbenchSession = session()): CopilotDeps {
-  return { store, driver, session: s, now: NOW };
 }
 
 function listReq(query = ""): Request {
@@ -60,10 +40,6 @@ function jsonReq(body: unknown): Request {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-function actions(caseId: string): AuditAction[] {
-  return store.getCaseAuditLog(caseId).map((e) => e.action);
 }
 
 // A realistic snake_case datastore read-model row (ADR-0064/0141) for the
@@ -104,253 +80,7 @@ function apiClient(
   });
 }
 
-describe("handleListCases", () => {
-  it("defaults a rep to mine_or_unassigned over open/in_progress", async () => {
-    const res = handleListCases(listReq(), deps());
-    expect(res.status).toBe(200);
-    const ids = ((await res.json()) as { cases: WorkbenchCase[] }).cases.map(
-      (c) => c.caseId,
-    );
-    // unassigned open cases + the rep's own in_progress case; resolved + sales hidden.
-    expect(ids).toContain("case_ar_urgent");
-    expect(ids).toContain("case_billing_email");
-    expect(ids).not.toContain("case_resolved");
-    expect(ids).not.toContain("case_sales");
-    expect(ids[0]).toBe("case_ar_urgent"); // urgent sorts first
-  });
-
-  it("hides another account's case from a rep but shows it to a supervisor", async () => {
-    store.assignCase("case_unmatched", "seed-supervisor");
-
-    const repIds = (
-      (await handleListCases(listReq(), deps()).json()) as {
-        cases: WorkbenchCase[];
-      }
-    ).cases.map((c) => c.caseId);
-    expect(repIds).not.toContain("case_unmatched");
-
-    const supIds = (
-      (await handleListCases(
-        listReq(),
-        deps(session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor")),
-      ).json()) as { cases: WorkbenchCase[] }
-    ).cases.map((c) => c.caseId);
-    expect(supIds).toContain("case_unmatched");
-  });
-
-  it("honours assignee=mine", async () => {
-    const ids = (
-      (await handleListCases(listReq("?assignee=mine"), deps()).json()) as {
-        cases: WorkbenchCase[];
-      }
-    ).cases.map((c) => c.caseId);
-    expect(ids).toEqual(["case_billing_email"]);
-  });
-
-  it("parses an explicit status filter (csv)", async () => {
-    const ids = (
-      (await handleListCases(
-        listReq("?assignee=mine&status=resolved"),
-        deps(),
-      ).json()) as { cases: WorkbenchCase[] }
-    ).cases.map((c) => c.caseId);
-    expect(ids).toEqual(["case_resolved"]);
-  });
-});
-
-describe("handleGetCase", () => {
-  it("returns the case", async () => {
-    const res = handleGetCase("case_ar_urgent", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { case: WorkbenchCase };
-    expect(body.case.caseId).toBe("case_ar_urgent");
-  });
-
-  it("404s an unknown case", () => {
-    expect(handleGetCase("nope", deps()).status).toBe(404);
-  });
-});
-
-describe("handleGetThread", () => {
-  it("returns case + sorted messages and writes a case_view audit", async () => {
-    const res = handleGetThread("case_ar_urgent", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      case: WorkbenchCase;
-      messages: { at: number }[];
-    };
-    expect(body.case.caseId).toBe("case_ar_urgent");
-    expect(body.messages.length).toBeGreaterThan(0);
-    const ats = body.messages.map((m) => m.at);
-    expect([...ats].sort((a, b) => a - b)).toEqual(ats);
-    expect(actions("case_ar_urgent")).toContain("case_view");
-  });
-
-  it("404s an unknown case without writing audit", () => {
-    expect(handleGetThread("nope", deps()).status).toBe(404);
-    expect(actions("nope")).toEqual([]);
-  });
-});
-
-describe("handleGetAuditLog", () => {
-  it("returns the case audit entries", async () => {
-    const res = handleGetAuditLog("case_billing_email", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { entries: { action: string }[] };
-    expect(body.entries.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("404s an unknown case", () => {
-    expect(handleGetAuditLog("nope", deps()).status).toBe(404);
-  });
-});
-
-describe("handleClaim", () => {
-  it("claims an unassigned case and writes an audit", async () => {
-    const res = handleClaim("case_ar_urgent", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { case: WorkbenchCase };
-    expect(body.case.assigneeAccountId).toBe("seed-rep");
-    expect(body.case.status).toBe("in_progress");
-    expect(actions("case_ar_urgent")).toContain("claim_case");
-  });
-
-  it("is idempotent when the actor already holds the case", () => {
-    expect(handleClaim("case_billing_email", deps()).status).toBe(200);
-  });
-
-  it("409s when another account holds the case", () => {
-    const sup = session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-    expect(handleClaim("case_billing_email", deps(sup)).status).toBe(409);
-  });
-
-  it("404s an unknown case", () => {
-    expect(handleClaim("nope", deps()).status).toBe(404);
-  });
-});
-
-describe("handleAssign (supervisor/admin only)", () => {
-  it("403s a rep", async () => {
-    const res = await handleAssign(
-      jsonReq({ assigneeAccountId: "seed-rep" }),
-      "case_ar_urgent",
-      deps(),
-    );
-    expect(res.status).toBe(403);
-  });
-
-  it("assigns as a supervisor and writes an audit", async () => {
-    const sup = session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-    const res = await handleAssign(
-      jsonReq({ assigneeAccountId: "seed-rep" }),
-      "case_ar_urgent",
-      deps(sup),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { case: WorkbenchCase };
-    expect(body.case.assigneeAccountId).toBe("seed-rep");
-    expect(actions("case_ar_urgent")).toContain("assign_case");
-  });
-
-  it("400s a missing assigneeAccountId", async () => {
-    const admin = session(WORKBENCH_ROLES.admin, "seed-admin", "admin");
-    const res = await handleAssign(jsonReq({}), "case_ar_urgent", deps(admin));
-    expect(res.status).toBe(400);
-  });
-
-  it("404s an unknown case", async () => {
-    const sup = session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-    const res = await handleAssign(
-      jsonReq({ assigneeAccountId: "seed-rep" }),
-      "nope",
-      deps(sup),
-    );
-    expect(res.status).toBe(404);
-  });
-});
-
-describe("handleResolve", () => {
-  it("resolves a case for any authorized user and writes an audit", async () => {
-    const res = handleResolve("case_ar_urgent", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { case: WorkbenchCase };
-    expect(body.case.status).toBe("resolved");
-    expect(body.case.resolvedByAccountId).toBe("seed-rep");
-    expect(actions("case_ar_urgent")).toContain("resolve_case");
-  });
-
-  it("404s an unknown case", () => {
-    expect(handleResolve("nope", deps()).status).toBe(404);
-  });
-});
-
-describe("handlePriority (supervisor/admin only)", () => {
-  it("403s a rep", async () => {
-    const res = await handlePriority(jsonReq({ urgent: false }), "case_ar_urgent", deps());
-    expect(res.status).toBe(403);
-  });
-
-  it("updates priority as a supervisor and writes an audit", async () => {
-    const sup = session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-    const res = await handlePriority(
-      jsonReq({ urgent: false }),
-      "case_ar_urgent",
-      deps(sup),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { case: WorkbenchCase };
-    expect(body.case.urgent).toBe(false);
-    expect(actions("case_ar_urgent")).toContain("update_priority");
-  });
-
-  it("400s a non-boolean urgent", async () => {
-    const sup = session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-    const res = await handlePriority(
-      jsonReq({ urgent: "yes" }),
-      "case_ar_urgent",
-      deps(sup),
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it("404s an unknown case", async () => {
-    const sup = session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-    const res = await handlePriority(jsonReq({ urgent: true }), "nope", deps(sup));
-    expect(res.status).toBe(404);
-  });
-});
-
-describe("handleContactReason", () => {
-  it("updates the contact reason and writes an audit", async () => {
-    const res = await handleContactReason(
-      jsonReq({ contactReason: "warranty" }),
-      "case_ar_urgent",
-      deps(),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { case: WorkbenchCase };
-    expect(body.case.contactReason).toBe("warranty");
-    expect(actions("case_ar_urgent")).toContain("update_contact_reason");
-  });
-
-  it("400s an empty contact reason", async () => {
-    const res = await handleContactReason(
-      jsonReq({ contactReason: "  " }),
-      "case_ar_urgent",
-      deps(),
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it("404s an unknown case", async () => {
-    const res = await handleContactReason(
-      jsonReq({ contactReason: "warranty" }),
-      "nope",
-      deps(),
-    );
-    expect(res.status).toBe(404);
-  });
-});
+const sup = () => session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
 
 describe("handleListCasesViaApi", () => {
   function client(
@@ -371,7 +101,7 @@ describe("handleListCasesViaApi", () => {
           status: 200,
         }),
       ),
-      deps(),
+      session(),
     );
 
     expect(res.status).toBe(200);
@@ -383,21 +113,32 @@ describe("handleListCasesViaApi", () => {
     expect(body.cases[0]?.urgent).toBe(true);
   });
 
-  it("derives the same role filter and sends it as dispatch params", async () => {
+  // The ADR-0079 queue filter is the one piece of queue logic that stayed in the
+  // BFF: the role default is decided here and the datastore applies it. These pin
+  // the derived params on the wire -- the store-seam assertions they replace
+  // ("defaults a rep to mine_or_unassigned", "shows another account's case to a
+  // supervisor", "honours assignee=mine", "parses a csv status filter") observed
+  // the same decisions through createInMemoryGatewayStore's filtering.
+  async function sentFilterFor(
+    query: string,
+    who: WorkbenchSession,
+  ): Promise<{ tool: string; action: string; params: unknown }> {
     let sent: { tool: string; action: string; params: unknown } | null = null;
     await handleListCasesViaApi(
-      listReq(),
+      listReq(query),
       client(async (_url, init) => {
         sent = JSON.parse(init.body as string);
         return new Response(JSON.stringify({ ok: true, data: { cases: [] } }), {
           status: 200,
         });
       }),
-      // A rep defaults to mine_or_unassigned over open/in_progress (ADR-0079).
-      deps(session(WORKBENCH_ROLES.rep, "seed-rep")),
+      who,
     );
+    return sent as unknown as { tool: string; action: string; params: unknown };
+  }
 
-    expect(sent).toEqual({
+  it("defaults a rep to mine_or_unassigned over open/in_progress", async () => {
+    expect(await sentFilterFor("", session(WORKBENCH_ROLES.rep, "seed-rep"))).toEqual({
       tool: "toee_workbench_read",
       action: "list_cases",
       params: {
@@ -407,11 +148,47 @@ describe("handleListCasesViaApi", () => {
     });
   });
 
+  it("defaults a supervisor to the whole queue (mode all, no accountId)", async () => {
+    const sent = await sentFilterFor("", sup());
+    expect(sent.params).toEqual({
+      statuses: ["open", "in_progress"],
+      assignee: { mode: "all" },
+    });
+  });
+
+  it("honours an explicit assignee=mine and scopes it to the caller", async () => {
+    const sent = await sentFilterFor("?assignee=mine", sup());
+    expect(sent.params).toEqual({
+      statuses: ["open", "in_progress"],
+      // Even a supervisor asking for "mine" gets their OWN account id, never a
+      // client-supplied one.
+      assignee: { mode: "mine", accountId: "seed-supervisor" },
+    });
+  });
+
+  it("honours assignee=unassigned without attaching an account id", async () => {
+    const sent = await sentFilterFor("?assignee=unassigned", session());
+    expect(sent.params).toEqual({
+      statuses: ["open", "in_progress"],
+      assignee: { mode: "unassigned" },
+    });
+  });
+
+  it("parses an explicit status filter (csv) and drops unknown values", async () => {
+    const sent = await sentFilterFor("?status=resolved,bogus", session());
+    expect(sent.params).toMatchObject({ statuses: ["resolved"] });
+  });
+
+  it("falls back to the default statuses when every value is unknown", async () => {
+    const sent = await sentFilterFor("?status=bogus", session());
+    expect(sent.params).toMatchObject({ statuses: ["open", "in_progress"] });
+  });
+
   it("maps an upstream failure to a 502 (ADR-0090 error banner)", async () => {
     const res = await handleListCasesViaApi(
       listReq(),
       client(async () => new Response("boom", { status: 500 })),
-      deps(),
+      session(),
     );
 
     expect(res.status).toBe(502);
@@ -429,7 +206,7 @@ describe("handleListCasesViaApi", () => {
           { status: 200 },
         ),
       ),
-      deps(),
+      session(),
     );
 
     expect(res.status).toBe(403);
@@ -631,8 +408,6 @@ function denyOn(action: string, errorClass: string): HermesApiClient {
   }, WRITE_ACTOR);
 }
 
-const sup = () => session(WORKBENCH_ROLES.supervisor, "seed-supervisor", "supervisor");
-
 describe("handleClaimViaApi", () => {
   it("claims an unassigned case and returns the mapped fresh case", async () => {
     let claim: SentDispatch | null = null;
@@ -646,7 +421,7 @@ describe("handleClaimViaApi", () => {
         if (sent.action === "claim_case") claim = sent;
       },
     );
-    const res = await handleClaimViaApi(client, "case_api", deps());
+    const res = await handleClaimViaApi(client, "case_api", session());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { case: WorkbenchCase };
     expect(body.case.assigneeAccountId).toBe("seed-rep");
@@ -663,7 +438,7 @@ describe("handleClaimViaApi", () => {
     const res = await handleClaimViaApi(
       writeClient(mine, { case: mine, claimed: true }),
       "case_api",
-      deps(),
+      session(),
     );
     expect(res.status).toBe(200);
   });
@@ -673,18 +448,18 @@ describe("handleClaimViaApi", () => {
     const res = await handleClaimViaApi(
       writeClient(held, { case: held, claimed: true }),
       "case_api",
-      deps(),
+      session(),
     );
     expect(res.status).toBe(409);
   });
 
   it("404s an unknown case (null pre-read)", async () => {
-    const res = await handleClaimViaApi(writeClient(null, {}), "missing", deps());
+    const res = await handleClaimViaApi(writeClient(null, {}), "missing", session());
     expect(res.status).toBe(404);
   });
 
   it("maps a governed denial to its per-class status", async () => {
-    const res = await handleClaimViaApi(denyOn("claim_case", "policy_blocked"), "case_api", deps());
+    const res = await handleClaimViaApi(denyOn("claim_case", "policy_blocked"), "case_api", session());
     expect(res.status).toBe(403);
   });
 
@@ -692,12 +467,12 @@ describe("handleClaimViaApi", () => {
     // The BFF pre-read is no longer the sole conflict guard (I2): a concurrent
     // claim that slips past it is denied atomically by the datastore with a
     // governed `conflict`, which must surface as 409 — not a silent 200 steal.
-    const res = await handleClaimViaApi(denyOn("claim_case", "conflict"), "case_api", deps());
+    const res = await handleClaimViaApi(denyOn("claim_case", "conflict"), "case_api", session());
     expect(res.status).toBe(409);
   });
 
   it("maps a datastore not_found (delete race) to 404", async () => {
-    const res = await handleClaimViaApi(denyOn("claim_case", "not_found"), "case_api", deps());
+    const res = await handleClaimViaApi(denyOn("claim_case", "not_found"), "case_api", session());
     expect(res.status).toBe(404);
   });
 });
@@ -715,7 +490,7 @@ describe("handleAssignViaApi (supervisor/admin only)", () => {
       jsonReq({ assigneeAccountId: "seed-rep" }),
       client,
       "case_api",
-      deps(),
+      session(),
     );
     expect(res.status).toBe(403);
     expect(dispatched).toBe(false);
@@ -734,7 +509,7 @@ describe("handleAssignViaApi (supervisor/admin only)", () => {
       jsonReq({ assigneeAccountId: "seed-rep" }),
       client,
       "case_api",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { case: WorkbenchCase };
@@ -749,7 +524,7 @@ describe("handleAssignViaApi (supervisor/admin only)", () => {
       jsonReq({}),
       writeClient(apiCaseRow, {}),
       "case_api",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(400);
   });
@@ -759,7 +534,7 @@ describe("handleAssignViaApi (supervisor/admin only)", () => {
       jsonReq({ assigneeAccountId: "seed-rep" }),
       writeClient(null, {}),
       "missing",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(404);
   });
@@ -804,7 +579,7 @@ describe("handlePriorityViaApi (supervisor/admin only)", () => {
       jsonReq({ urgent: true }),
       writeClient(apiCaseRow, {}),
       "case_api",
-      deps(),
+      session(),
     );
     expect(res.status).toBe(403);
   });
@@ -822,7 +597,7 @@ describe("handlePriorityViaApi (supervisor/admin only)", () => {
       jsonReq({ urgent: false }),
       client,
       "case_api",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { case: WorkbenchCase };
@@ -837,7 +612,7 @@ describe("handlePriorityViaApi (supervisor/admin only)", () => {
       jsonReq({ urgent: "yes" }),
       writeClient(apiCaseRow, {}),
       "case_api",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(400);
   });
@@ -847,7 +622,7 @@ describe("handlePriorityViaApi (supervisor/admin only)", () => {
       jsonReq({ urgent: true }),
       writeClient(null, {}),
       "missing",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(404);
   });
@@ -916,7 +691,7 @@ describe("governed case writes require an actor (BFF defense-in-depth)", () => {
 
   it("rejects a claim and never dispatches the mutation", async () => {
     const seen: string[] = [];
-    const res = await handleClaimViaApi(actorlessClient(seen), "case_api", deps());
+    const res = await handleClaimViaApi(actorlessClient(seen), "case_api", session());
     expect(res.status).toBe(403);
     expect(((await res.json()) as { errorClass?: string }).errorClass).toBe(
       "policy_blocked",
@@ -930,7 +705,7 @@ describe("governed case writes require an actor (BFF defense-in-depth)", () => {
       jsonReq({ assigneeAccountId: "seed-rep" }),
       actorlessClient(seen),
       "case_api",
-      deps(sup()),
+      sup(),
     );
     expect(res.status).toBe(403);
     expect(seen).not.toContain("assign_case");

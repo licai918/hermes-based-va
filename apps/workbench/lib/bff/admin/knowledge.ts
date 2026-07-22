@@ -1,55 +1,35 @@
 // KnowledgeOps slot handlers for the Admin BFF (ADR-0087 master-detail policy
-// authoring over the six Required Operational Policy Slots, ADR-0003). Pure and
-// dependency-injected; the thin app/api/admin/knowledge route files wrap these
-// with withSession and inject the real KnowledgeStore singleton.
+// authoring over the six Required Operational Policy Slots, ADR-0003). API-only
+// (0.0.4 S09): the thin app/api/admin/knowledge route files wrap these with
+// withSession and inject the Supervisor Admin Profile API client.
 import { HermesApiClient, HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
-import type { PolicySlot, SlotStatus } from "../../gateway/knowledge-store";
 import { json, problem } from "../respond";
-import { type AdminDeps, readJsonBody } from "./deps";
+import { readJsonBody } from "./deps";
 
-export function handleListSlots(deps: AdminDeps): Response {
-  return json({ slots: deps.knowledge.listSlots() });
+// The wire shape of one of the six Required Operational Policy Slots (ADR-0003).
+// Declared here, next to the mapper that produces it, since 0.0.4 S09 deleted the
+// in-memory KnowledgeStore this used to live in.
+export type SlotStatus = "empty" | "draft" | "pending_eval" | "published" | "gap";
+
+export interface PolicySlot {
+  slotId: string;
+  title: string;
+  status: SlotStatus;
+  draftText: string | null;
+  publishedText: string | null;
+  owner: string | null;
+  reviewDate: string | null;
+  hasGapPrompt: boolean;
 }
 
-export async function handleSaveDraft(
-  req: Request,
-  slotId: string,
-  deps: AdminDeps,
-): Promise<Response> {
-  const body = await readJsonBody(req);
-  const patch: { draftText?: string; owner?: string; reviewDate?: string } = {};
-  if (typeof body?.draftText === "string") patch.draftText = body.draftText;
-  if (typeof body?.owner === "string") patch.owner = body.owner;
-  if (typeof body?.reviewDate === "string") patch.reviewDate = body.reviewDate;
-
-  const slot = deps.knowledge.saveDraft(slotId, patch);
-  if (!slot) return problem(404, "slot not found");
-  return json({ slot });
-}
-
-export function handleSubmitSlot(slotId: string, deps: AdminDeps): Response {
-  const result = deps.knowledge.submitForEval(slotId);
-  if (result.ok) return json({ slot: result.slot });
-  if (result.reason === "not_found") return problem(404, "slot not found");
-  return problem(409, "slot has no draft to submit");
-}
-
-export function handleRollbackSlot(slotId: string, deps: AdminDeps): Response {
-  const result = deps.knowledge.rollbackPublished(slotId);
-  if (result.ok) return json({ slot: result.slot });
-  if (result.reason === "not_found") return problem(404, "slot not found");
-  return problem(409, "slot has no previous published version");
-}
-
-// --- Per-profile API cutover (ADR-0141/0145 Increment 6) ---------------------
+// --- Per-profile API (ADR-0141/0145 Increment 6) ------------------------------
 // The Supervisor Admin knowledge-slot routes dispatch toee_knowledge_ops over the
-// per-profile Hermes API when HERMES_ADMIN_API_URL/TOKEN are configured (else the
-// in-memory KnowledgeStore). The list read uses dispatch (fail-open); the three
+// per-profile Hermes API. The list read uses dispatch (fail-open); the three
 // governed mutations use dispatchWrite (fail-closed on the acting supervisor baked
 // into the client), so a write can never land a NULL-actor audit row — the
 // datastore enforces the same rule. The per-class error mapping turns a governed
-// not_found/conflict into 404/409 (store-path status parity).
+// not_found/conflict into 404/409.
 
 const SLOT_STATUSES = new Set<SlotStatus>([
   "empty",

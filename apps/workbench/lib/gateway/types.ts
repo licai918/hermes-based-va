@@ -1,8 +1,8 @@
 // Workbench Gateway domain types (ADR-0027 Copilot Gateway, ADR-0029 assignment +
 // audit, ADR-0079 case queue, ADR-0082 thread context, ADR-0037 auto-handled,
-// ADR-0085/0086 audit views). These back the in-memory GatewayStore that is the
-// Slice-2 source of truth; Slice 3 swaps the store for Postgres without changing
-// these shapes.
+// ADR-0085/0086 audit views). These are the workbench's WIRE shapes: hermes-map.ts
+// validates each snake_case datastore row onto them (0.0.4 S09 deleted the
+// in-memory store they were originally written for; the shapes did not change).
 import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/shared";
 
 // Re-exported so the rest of the BFF/gateway layer imports the slot union from
