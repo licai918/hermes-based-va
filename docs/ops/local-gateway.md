@@ -1,74 +1,30 @@
 # Local Textline Gateway — inbound SMS simulation
 
-Simulate **customer inbound SMS** on your machine: Textline webhook → Python Gateway →
-ingress match → in-memory persist → async **External Customer Service Profile** agent turn.
-This is **not** the Workbench copilot chat path (`pnpm dev:workbench`).
+Simulate **customer inbound SMS** on your machine: signed webhook → Python Gateway →
+ingress match → Postgres persist + one durable `job` row → **turn worker** runs the
+async **External Customer Service Profile** agent turn. This is **not** the
+Workbench copilot chat path.
 
 Cloud Run / Cloud Tasks wiring (Slice 37, issue #40) is out of scope here.
 
-See also: [`local-e2e.md`](local-e2e.md) (Workbench Tier B), [`deploy-cloud-run.md`](deploy-cloud-run.md) (production smoke).
-
----
-
-## Why `pnpm dev:gateway` is a stub
-
-Root `package.json` runs `pnpm --filter @toee/hermes-gateway dev`, which prints a placeholder
-(`services/hermes-gateway/package.json`). The live gateway is the **Python FastAPI app** in
-`hermes-runtime/` (ADR-0095). Boot it with **uvicorn** (below), not pnpm.
-
----
-
-## Prerequisites
-
-One-time from repo root:
-
-```powershell
-cd hermes-runtime; uv sync; cd ..
-```
-
-Create `hermes-runtime/.env` (gitignored). **`build_gateway_app` fails closed** if any
-required variable is missing. Copy names from repo-root [`.env.example`](../../.env.example);
-use your own values — never commit secrets.
-
-| Variable | Required | Purpose |
-| --- | --- | --- |
-| `TEXTLINE_WEBHOOK_SECRET` | yes | HMAC key for inbound `/webhooks/textline` (ADR-0021) |
-| `INTERNAL_JOB_SECRET` | yes | Shared secret for `/internal/jobs/agent-turn` (ADR-0106) |
-| `TEXTLINE_ACCESS_TOKEN` | yes | Outbound Textline replies (opt-out + agent turn, ADR-0083) |
-| `OPENROUTER_API_KEY` | yes | Live LLM for the async agent turn (ADR-0009) |
-| `TOOL_BACKEND` | for Workbench queue | Set to `datastore` so inbound SMS persists to Postgres and appears in the Workbench copilot queue (same DB as Tier B). Requires `docker compose up -d postgres` + migrations. |
-| `DATABASE_URL` | with `datastore` | Defaults to `postgresql://toee:toee@localhost:5432/toee_va` when unset. |
-| `TEXTLINE_MAX_SIGNATURE_AGE_SECONDS` | recommended in prod | Opt-in TGP replay window. The live TGP signature covers only `event_type + event_time + secret` (not the body, no expiry), so a leaked `(signature, time, type)` triple can be replayed. Set to reject events whose `X-Tgp-Event-Time` is outside ±N seconds of now. Suggested: `900` (15 min — covers Textline retries without leaving an open replay window). Unset = no freshness check. |
-
-Optional overrides (defaults are fine locally): `TEXTLINE_API_BASE_URL`, `OPENROUTER_BASE_URL`,
-`OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODEL`.
-
----
-
-## Terminal layout
-
-The gateway is a **separate process** from Workbench and dispatch servers. Typical local layout:
-
-| Terminal | Service | Port (example) |
-| --- | --- | --- |
-| A | Postgres (`docker compose up -d postgres`) | 5432 — optional for gateway smoke |
-| B | **Gateway** (this runbook) | **8080** |
-| C | Workbench (`pnpm dev:workbench`) | 3000 — unrelated to inbound SMS sim |
-| D–E | Tool-dispatch servers (`scripts/run-dispatch-server.ps1`) | 8081 / 8082 — not used by default gateway boot |
-
-The gateway uses the **mock integration driver** by default (`MockDriver` in `create_app`).
-Identity ingress resolves against mock fixtures (verified test phone `+14165550101`).
+See also: [`apps/workbench/README.md`](../../apps/workbench/README.md) (the
+`pnpm dev` stack this runs inside), [`local-e2e.md`](local-e2e.md) (verification
+checklist), [`deploy-cloud-run.md`](deploy-cloud-run.md) (production smoke).
 
 ---
 
 ## Boot the gateway
 
-From repo root (PowerShell):
-
-```powershell
-cd hermes-runtime
-uv run uvicorn hermes_runtime.gateway_composition:build_gateway_app --factory --host 127.0.0.1 --port 8080
+```bash
+pnpm dev
 ```
+
+As of 0.0.4 S10 the gateway is a `docker compose` service (`gateway`, port 8080)
+and comes up with the rest of the stack — together with the **turn worker**, which
+is the process that actually runs the inbound turn. Nothing here needs a
+hand-started uvicorn or a spare terminal. (`pnpm dev:gateway` is a leftover stub
+that prints a placeholder; the live gateway is the Python FastAPI app in
+`hermes-runtime/`, ADR-0095.)
 
 Smoke the liveness route (no auth):
 
@@ -79,6 +35,44 @@ Invoke-RestMethod http://127.0.0.1:8080/healthz
 
 Production uses the same factory; Cloud Run sets `--host 0.0.0.0` and `$PORT` (see
 `hermes-runtime/Dockerfile`).
+
+To iterate on gateway code against the host venv instead, stop the container
+(`docker compose stop gateway`) and run `pwsh scripts/run-gateway.ps1`.
+
+---
+
+## Environment
+
+`build_gateway_app` **fails closed**: a missing required variable raises at boot
+rather than acking a webhook it can never answer. Compose supplies the first three
+rows; the rest come from `hermes-runtime/.env` (gitignored — copy names from
+repo-root [`.env.example`](../../.env.example), never commit secrets).
+
+| Variable | Supplied by | Purpose |
+| --- | --- | --- |
+| `TOOL_BACKEND=datastore` | compose | Boot requirement (0.0.4 S02). The gateway persists the turn context and a *separate* worker reloads it; no other backend can cross that gap. |
+| `DATABASE_URL` / `KNOWLEDGE_DATABASE_URL` | compose | In-network DSNs for the two databases. |
+| `REPLY_SENDER` | compose (`simulated`) | Skips the real provider POST — no `TEXTLINE_ACCESS_TOKEN` needed and a dev box can never text a real customer — while still mirroring the reply into `message_turn`. Set `textline` in `hermes-runtime/.env` (plus a token) to send for real. |
+| `TEXTLINE_WEBHOOK_SECRET` | `apps/workbench/.env.local`, passed through by `pnpm dev` | HMAC key for inbound `/webhooks/textline` (ADR-0021). Must match whatever signs the request, or every inbound is a 401. |
+| `INTERNAL_JOB_SECRET` | `hermes-runtime/.env` | Shared secret for `/internal/jobs/agent-turn` (ADR-0106). |
+| `OPENROUTER_API_KEY` | `hermes-runtime/.env` | Live LLM for the async agent turn (ADR-0009). |
+| `TEXTLINE_ACCESS_TOKEN` | `hermes-runtime/.env` | Only with `REPLY_SENDER=textline`. |
+| `TEXTLINE_MAX_SIGNATURE_AGE_SECONDS` | `hermes-runtime/.env` | Recommended in prod. Opt-in TGP replay window: the live TGP signature covers only `event_type + event_time + secret` (not the body, no expiry), so a leaked triple can be replayed. Suggested `900`. Unset = no freshness check. |
+
+Optional overrides (defaults are fine locally): `TEXTLINE_API_BASE_URL`,
+`OPENROUTER_BASE_URL`, `OPENROUTER_MODEL`, `OPENROUTER_FALLBACK_MODEL`.
+
+Identity ingress resolves against mock fixtures with the mock driver (verified test
+phone `+14165550101`); with `INTEGRATION_DRIVER=composio` it reads `identity_link`
+in Postgres first and falls back to a Shopify phone lookup.
+
+### The easy way in: the workbench simulator
+
+`/copilot/simulator` posts a signed webhook to this gateway
+(`SIMULATOR_GATEWAY_URL`), so the whole inbound path runs without any curl or
+signing by hand — and it reads the reply back out of `message_turn`. That is the
+recommended local exercise; the raw signing recipes below are for debugging the
+webhook contract itself.
 
 ---
 
@@ -137,7 +131,7 @@ Use a **compact JSON body** for signing; whitespace changes invalidate the signa
 
 After a **200 enqueue** the gateway has written one row to the durable `job` table and
 returned (fast-ack, ADR-0103/ADR-0155). **The turn does not run in the gateway process
-any more** — you must also be running the turn worker:
+any more** — the turn worker must also be running. `pnpm dev` starts it; on its own:
 
 ```bash
 docker compose up -d postgres turn-worker
@@ -207,30 +201,20 @@ When ``TOOL_BACKEND`` is unset or ``mock``, ``build_gateway_app()`` **raises at 
 - With `TOOL_BACKEND` unset the production gateway does not boot at all: it fails
   closed rather than acking webhooks it can never reply to.
 
-### Tier B: gateway + Workbench on the same Postgres
+### Gateway + Workbench on the same Postgres
 
-1. Start Postgres and migrate (see [`local-e2e.md`](local-e2e.md) Terminal 1).
-2. Start dispatch servers + Workbench (Terminals 2–4) with `TOOL_BACKEND=datastore`.
-3. In `hermes-runtime/.env`, set:
+`pnpm dev` already puts the gateway, both dispatch servers, both workers and the
+workbench on one Postgres with `TOOL_BACKEND=datastore` everywhere. Nothing to
+wire.
 
-   ```bash
-   TOOL_BACKEND=datastore
-   # DATABASE_URL=postgresql://toee:toee@localhost:5432/toee_va
-   ```
+For Shopify ingress phone match, set `COMPOSIO_TOOLKIT_VERSION_SHOPIFY=20260506_00`
+(or newer) in `hermes-runtime/.env` so Composio exposes
+`SHOPIFY_GET_CUSTOMERS_SEARCH`. The placeholder `00000000_00` toolkit only lists
+customers and cannot search by phone.
 
-4. Boot the gateway (same env as dispatch):
-
-   ```powershell
-   cd hermes-runtime
-   uv run uvicorn hermes_runtime.gateway_composition:build_gateway_app --factory --host 127.0.0.1 --port 8080
-   ```
-
-   For Shopify ingress phone match, set
-   `COMPOSIO_TOOLKIT_VERSION_SHOPIFY=20260506_00` (or newer) in `hermes-runtime/.env`
-   so Composio exposes `SHOPIFY_GET_CUSTOMERS_SEARCH`. The placeholder `00000000_00`
-   toolkit only lists customers and cannot search by phone.
-
-5. Simulate or receive inbound SMS (below). Open Workbench copilot queue — a new case with the inbound preview should appear (alongside any `0005_dev_bootstrap` demo cases unless you delete them).
+Send an inbound (simulator or a real webhook) and a new case with the inbound
+preview appears in the Workbench copilot queue, alongside the `0005_dev_bootstrap`
+demo cases.
 
 #### Optional: real customer identity (Postgres)
 
@@ -265,17 +249,6 @@ Textline must reach your machine on `/webhooks/textline`:
 4. Set `TEXTLINE_WEBHOOK_SECRET` in `hermes-runtime/.env` to the **same secret** Textline uses to sign payloads.
 
 Production: deploy gateway to Cloud Run and point Textline at the service URL (see [`deploy-cloud-run.md`](deploy-cloud-run.md)). The old Cloud Run URL returning 404 is a different (legacy) service — update Textline to the new gateway URL.
-
----
-
-## Previous in-memory-only note (superseded when TOOL_BACKEND=datastore)
-
-When using the default mock backend, `build_gateway_app` wired **`InMemoryGatewayStore`** only:
-
-**Honest limits:**
-
-- Inbound SMS simulation **did not** appear in the Workbench Postgres copilot queue.
-- Restarting the gateway **dropped** in-memory context.
 
 ---
 

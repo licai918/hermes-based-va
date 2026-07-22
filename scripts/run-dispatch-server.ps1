@@ -1,13 +1,15 @@
-# Runs one per-profile Hermes tool-dispatch server locally (ADR-0141, Slice 34 / #37).
-# Each profile is its own process with its own bearer token and port; run this once
-# per profile (two terminals) to bring up the copilot + admin servers the workbench
-# BFF calls. Cloud Run packaging is deferred to Slice 37 (ADR-0142 local-first).
+# Runs ONE per-profile Hermes tool-dispatch server on the host (ADR-0141).
+#
+# NOT the normal dev path any more. `pnpm dev` (scripts/dev-up.mjs) runs both
+# servers as docker compose services on 8091/8092 with the rest of the stack --
+# see apps/workbench/README.md. This script survives for the narrow case of
+# debugging one server against host-side code; stop the composed one first
+# (`docker compose stop dispatch-copilot`) so the port is free, and remember a
+# server left running here is exactly the stale process that runbook warns about.
 #
 # Examples (from repo root):
-#   pwsh scripts/run-dispatch-server.ps1 -Profile internal_copilot -Port 8081 -Token dev-copilot-token
-#   pwsh scripts/run-dispatch-server.ps1 -Profile supervisor_admin -Port 8082 -Token dev-admin-token
-#   # Back the system-of-record tools with local Postgres (see docs/ops/local-datastore.md):
-#   pwsh scripts/run-dispatch-server.ps1 -Profile internal_copilot -Port 8081 -Token dev-copilot-token -ToolBackend datastore
+#   pwsh scripts/run-dispatch-server.ps1 -Profile internal_copilot -Port 8091 -Token dev-copilot-token -ToolBackend datastore
+#   pwsh scripts/run-dispatch-server.ps1 -Profile supervisor_admin -Port 8092 -Token dev-admin-token -ToolBackend datastore
 
 [CmdletBinding()]
 param(

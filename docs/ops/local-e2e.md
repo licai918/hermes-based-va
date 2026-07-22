@@ -1,8 +1,6 @@
 # Local end-to-end runbook
 
-This runbook chains the local-first paths (ADR-0142) so a new developer can reach a
-working Workbench in about 30 minutes: the full Postgres + dual dispatch +
-Workbench API path.
+The one command, what it brings up, and how to check it worked.
 
 > **There is no in-memory tier any more.** 0.0.4 S09 deleted the workbench's
 > in-memory stores, so Postgres + both dispatch servers are the only way to run the
@@ -10,120 +8,67 @@ Workbench API path.
 > `HERMES_ADMIN_API_URL/TOKEN` — it names the missing variables and exits rather
 > than starting on a fake backend. (The old "Tier A" quick demo is gone; what this
 > file used to call "Tier B" is now just "local".)
+>
+> **The four-terminal hand-start is gone too** (0.0.4 S10). If you still have
+> dispatch servers running from a pre-S10 session, stop them — see
+> [Stale hand-started servers](../../apps/workbench/README.md#stale-hand-started-servers).
 
-See also: [`local-datastore.md`](local-datastore.md), [`local-dispatch-servers.md`](local-dispatch-servers.md), repo-root [`.env.example`](../../.env.example).
+See also: [`apps/workbench/README.md`](../../apps/workbench/README.md) (the dev
+path itself), [`local-datastore.md`](local-datastore.md),
+[`local-dispatch-servers.md`](local-dispatch-servers.md), repo-root
+[`.env.example`](../../.env.example).
 
 ## Prerequisites
 
 | Tool | Purpose |
 | --- | --- |
-| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Local Postgres (`docker compose`) |
-| [pnpm](https://pnpm.io/) | Workbench + monorepo scripts (`pnpm dev:workbench`) |
-| [uv](https://docs.astral.sh/uv/) | Hermes runtime, migrations, dispatch servers |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | Postgres + every Python service |
+| [pnpm](https://pnpm.io/) | Workbench + monorepo scripts |
+| Node ≥ 20 | `scripts/dev-up.mjs` |
+| [uv](https://docs.astral.sh/uv/) | *only* for running `pytest` / Python tooling on the host |
 
 From the repo root once:
 
 ```bash
 pnpm install
-cd hermes-runtime && uv sync
 ```
 
 ---
 
-## Full local API path (~30 min)
-
-Four terminals after one-time setup. All commands assume repo root unless noted.
-
-### Terminal 1 — Postgres + schema
+## The local path
 
 ```bash
-docker compose up -d postgres
+pnpm dev
 ```
 
-Wait until healthy:
+`scripts/dev-up.mjs` brings up Postgres (+ the separate `toee_knowledge`
+database), applies every migration with the dev seed, starts both dispatch
+servers, the gateway and both workers in `docker compose`, then starts the
+workbench dev server on the host — waiting for a real readiness signal at each
+step (`pg_isready`, then `/healthz` per server).
 
-```bash
-docker inspect -f '{{.State.Health.Status}}' toee-va-postgres
-# -> healthy
-```
+| Service | Where | Port |
+| --- | --- | --- |
+| Postgres (`toee_va`, `toee_knowledge`) | container | 5432 |
+| `internal_copilot` dispatch | container | 8091 |
+| `supervisor_admin` dispatch | container | 8092 |
+| Gateway (inbound SMS) | container | 8080 |
+| `turn_worker`, `background_worker` | containers | — |
+| Workbench dev server | host | 3000 |
 
-Apply migrations. The dev bootstrap accounts + demo cases are LOCAL DEV ONLY and
-must be **opted in** with `HERMES_APPLY_DEV_SEED=1` -- a plain migrate applies
-schema only, so a cloud/prod migrate never seeds demo data:
+Open [http://localhost:3000](http://localhost:3000). Ctrl-C stops the workbench;
+`docker compose down` stops the containers.
 
-```bash
-cd hermes-runtime
-HERMES_APPLY_DEV_SEED=1 uv run python -m hermes_runtime.datastore.migrate
-```
+`pnpm dev:stack` does the same without the workbench dev server.
 
-First run prints `applied migrations: 0005_dev_bootstrap`. Re-runs print
-`no pending migrations` (bootstrap inserts are idempotent).
+The full option table (env files, prerequisites, troubleshooting) lives in
+[`apps/workbench/README.md`](../../apps/workbench/README.md); it is not repeated
+here.
 
-Details: [`local-datastore.md`](local-datastore.md).
-
-### Terminal 2 — Internal Copilot dispatch (port 8081)
-
-PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-dispatch-server.ps1 `
-    -Profile internal_copilot -Port 8081 -Token dev-copilot-token -ToolBackend datastore
-```
-
-Cross-platform (from `hermes-runtime/`):
-
-```bash
-TOEE_HERMES_PROFILE=internal_copilot DISPATCH_API_TOKEN=dev-copilot-token \
-  TOOL_BACKEND=datastore \
-  uv run uvicorn hermes_runtime.tool_dispatch_composition:build_tool_dispatch_app \
-  --factory --host 127.0.0.1 --port 8081
-```
-
-### Terminal 3 — Supervisor Admin dispatch (port 8082)
-
-PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-dispatch-server.ps1 `
-    -Profile supervisor_admin -Port 8082 -Token dev-admin-token -ToolBackend datastore
-```
-
-Cross-platform (from `hermes-runtime/`):
-
-```bash
-TOEE_HERMES_PROFILE=supervisor_admin DISPATCH_API_TOKEN=dev-admin-token \
-  TOOL_BACKEND=datastore \
-  uv run uvicorn hermes_runtime.tool_dispatch_composition:build_tool_dispatch_app \
-  --factory --host 127.0.0.1 --port 8082
-```
-
-Details: [`local-dispatch-servers.md`](local-dispatch-servers.md).
-
-### Terminal 4 — Workbench BFF
-
-Create `apps/workbench/.env.local`:
-
-```bash
-# Session cookie signing (optional locally — same value as the dev fallback in
-# apps/workbench/lib/auth/session-secret.ts when unset).
-WORKBENCH_SESSION_SECRET=workbench-dev-session-secret-change-me
-
-# Per-profile Hermes dispatch servers (tokens must match DISPATCH_API_TOKEN above).
-# REQUIRED: all four. The workbench is API-only (0.0.4 S09) and refuses to boot
-# without them, naming whichever are missing.
-HERMES_COPILOT_API_URL=http://127.0.0.1:8081
-HERMES_COPILOT_API_TOKEN=dev-copilot-token
-HERMES_ADMIN_API_URL=http://127.0.0.1:8082
-HERMES_ADMIN_API_TOKEN=dev-admin-token
-```
-
-Start the app:
-
-```bash
-pnpm dev:workbench
-```
-
-Open [http://localhost:3000](http://localhost:3000).
+Schema detail: [`local-datastore.md`](local-datastore.md). The dev bootstrap
+accounts + demo cases are LOCAL DEV ONLY and are opted in by `pnpm dev` setting
+`HERMES_APPLY_DEV_SEED=1` on the migrate step — a cloud/prod migrate omits it and
+never seeds demo data.
 
 ---
 
@@ -163,14 +108,18 @@ Thread previews and identity summaries follow migration `0005_dev_bootstrap`.
 
 ## Verification checklist
 
-Run these once the four terminals are up.
+Run these once `pnpm dev` has printed its login banner.
 
-### 1. Dispatch health
+### 1. Dispatch + gateway health
 
 ```bash
-curl http://127.0.0.1:8081/healthz   # -> {"status":"ok"}
-curl http://127.0.0.1:8082/healthz   # -> {"status":"ok"}
+curl http://127.0.0.1:8091/healthz   # -> {"status":"ok"}   internal_copilot
+curl http://127.0.0.1:8092/healthz   # -> {"status":"ok"}   supervisor_admin
+curl http://127.0.0.1:8080/healthz   # -> {"status":"ok"}   gateway
+docker compose ps                     # both workers `running`
 ```
+
+`pnpm dev` already polls all three; this is for checking a stack you left up.
 
 ### 2. Login
 
@@ -225,14 +174,14 @@ Governed writes append rows in the same transaction (ADR-0029/0085).
 
 | Symptom | Fix |
 | --- | --- |
+| `port is already allocated` (8080/8091/8092) | A hand-started server from a pre-S10 session still owns it — [stop it](../../apps/workbench/README.md#stale-hand-started-servers). |
 | Port **5432** in use | Stop other Postgres or remap the host port in `docker-compose.yml`. |
-| Docker **not healthy** | Start Docker Desktop; `docker inspect -f '{{.State.Health.Status}}' toee-va-postgres` should be `healthy`. |
 | `error during connect ... dockerDesktopLinuxEngine` | Docker engine not running — start Docker Desktop. |
-| `dial tcp [::1]:2375 ... refused` | Stale `DOCKER_HOST` — unset it or set `DOCKER_CONTEXT=desktop-linux`. |
-| Workbench exits at startup with `Hermes API configuration missing: ...` | Expected fail-closed boot (0.0.4 S09). Set the variables it names in `apps/workbench/.env.local` — there is no in-memory fallback to run without them. |
-| Login fails | Confirm Terminal 3 (admin dispatch) is up with `TOOL_BACKEND=datastore` and `HERMES_ADMIN_API_*` matches it in `.env.local`. |
-| Empty copilot queue | Re-run migrate **with `HERMES_APPLY_DEV_SEED=1`**; confirm `0005_dev_bootstrap` applied and the copilot server uses `TOOL_BACKEND=datastore`. |
-| Dispatch **401** | Bearer token mismatch — `HERMES_*_API_TOKEN` must equal that server's `DISPATCH_API_TOKEN`. |
+| `dial tcp [::1]:2375 ... refused` | Stale `DOCKER_HOST`. `pnpm dev` already ignores it; a raw `docker compose` call needs it unset (or `DOCKER_CONTEXT=desktop-linux`). |
+| Workbench exits at startup with `Hermes API configuration missing: ...` | Expected fail-closed boot (0.0.4 S09). Delete `apps/workbench/.env.local` and re-run `pnpm dev` to regenerate it. |
+| Login fails | `docker compose logs dispatch-admin`; the admin server is what authenticates. |
+| Empty copilot queue | `docker compose logs migrate` — phase 2 applies `0005_dev_bootstrap` with `HERMES_APPLY_DEV_SEED=1`. |
+| Dispatch **401** | Bearer mismatch — `HERMES_*_API_TOKEN` in `apps/workbench/.env.local` is the source of truth; re-run `pnpm dev` after editing so compose picks it up. |
 
 More detail: [`local-datastore.md`](local-datastore.md) (Postgres), [`local-dispatch-servers.md`](local-dispatch-servers.md) (dispatch).
 
@@ -244,9 +193,9 @@ These are deferred or optional locally:
 
 | Topic | Notes |
 | --- | --- |
-| **OpenRouter** | Drafts and copilot chat are real agent turns; a *live model* needs `OPENROUTER_API_KEY` on the dispatch server. Without it the runtime uses its deterministic keyless completion, so the panels still work — the replies are just canned. Automated tests drive the turn through `scripted_completions` instead. |
-| **Live Textline** | Outbound SMS uses the mock Textline capture in local dev; `TEXTLINE_ACCESS_TOKEN` is for production/live integration. |
-| **Gateway** | Inbound Textline webhook + async agent turn — see [`local-gateway.md`](local-gateway.md) (`pnpm dev:gateway` is a stub; use uvicorn). |
+| **OpenRouter** | Drafts and copilot chat are real agent turns; a *live model* needs `OPENROUTER_API_KEY` in `hermes-runtime/.env`, which compose mounts into the dispatch servers. Without it the Python runtime uses its deterministic keyless completion, so the panels still work — the replies are just canned. (The TypeScript stub is gone as of 0.0.4 S09.) Automated tests drive the turn through `scripted_completions` instead. |
+| **Live outbound SMS** | `pnpm dev` sets `REPLY_SENDER=simulated`, so a dev box never posts to the real provider; the reply still mirrors into `message_turn`. Set `REPLY_SENDER=textline` + a token in `hermes-runtime/.env` only if you mean it. |
+| **Gateway** | Already up on :8080 as part of `pnpm dev`. Webhook signing and the inbound path: [`local-gateway.md`](local-gateway.md). |
 
 Cloud SQL, Cloud Run, and Secret Manager wiring remain Slice 37 (#40).
 
