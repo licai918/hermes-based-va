@@ -20,7 +20,7 @@ integrations ADR (ADR-0133 follow-up) ships here.
   link (Composio SDK), browser redirects to the provider, callback route
   lands back on `/admin/integrations` and re-probes; acting admin recorded
   in the audit log.
-- EasyRoutes / Textline / OpenRouter (static tokens — no OAuth): the
+- EasyRoutes / SimpleTexting / OpenRouter (static tokens — no OAuth): the
   "reconnect" here is **instructions + re-probe, not self-service token
   replacement** (gap-review fix P3 — the workbench cannot edit deployment
   env vars): a guided panel names the env var and where it lives, the

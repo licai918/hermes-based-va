@@ -10,7 +10,7 @@
 ## Goal
 
 FR-23: an admin-only page showing, per integration (Composio
-Shopify/QBO/Square toolkits, EasyRoutes, **Textline, OpenRouter** — owner
+Shopify/QBO/Square toolkits, EasyRoutes, **SimpleTexting, OpenRouter** — owner
 decision, gap-review P1), connection status, pinned version where
 applicable, last successful call, and last probe result — health visible
 before a customer feels it.
@@ -19,7 +19,7 @@ before a customer feels it.
 
 - Governed admin read (dispatch path, supervisor_admin profile) aggregating:
   Composio connected-account status via the SDK, EasyRoutes token check,
-  **Textline token check and OpenRouter key check**, last-successful-call
+  **SimpleTexting token check and OpenRouter key check**, last-successful-call
   timestamps (recorded by the drivers/senders), last probe row (S16 fills
   this; renders "never probed" until then).
 - **New governed tool registered end-to-end (gap-review fix T3): tool

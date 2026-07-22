@@ -10,7 +10,7 @@
 ## Goal
 
 FR-24: a scheduled `integration_probe` job (background worker) runs a cheap
-read per integration — **Composio toolkits, EasyRoutes, Textline token,
+read per integration — **Composio toolkits, EasyRoutes, SimpleTexting token,
 OpenRouter key** (owner decision, gap-review P1); failure surfaces as a page
 badge + structured log alert — closing ADR-0136's "lazy discovery only" gap
 for every credential that can break service.
@@ -20,7 +20,7 @@ for every credential that can break service.
 - Typed job on the **S01 recurring-schedule mechanism** (`(type, window)`
   dedupe-key ticks — no external cron exists); one cheap authenticated read
   per integration: Composio connected-account check, EasyRoutes status
-  read, Textline token validation call, OpenRouter key check (models
+  read, SimpleTexting token validation call, OpenRouter key check (models
   endpoint — no completion cost).
 - Probe result rows retained under the existing retention classes; page
   reads the latest per integration (S15 seam).

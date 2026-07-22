@@ -101,7 +101,7 @@ US 1–22 ✓ · 4 ADRs assigned ✓. **No requirement is unslotted; no slice
 delivers nothing.** Gap-review (2026-07-21) fixes folded in: T1 scheduler
 (S01/S04), T2 email-mirror idempotency (S03), T3 tool registration
 (S15/S17), T4 cutover checklist (S12), T5 replay-safety table (S05), P1
-Textline/OpenRouter probes (S15/S16, owner-approved), P2 test-customer data
+SimpleTexting/OpenRouter probes (S15/S16, owner-approved), P2 test-customer data
 (S12), P3 reconnect wording (S17), P4 role rationale (S15), Q1 CI topology
 (S25), Q2 latency-snapshot labeling (S02), Q3 secret-scan single owner
 (S12).

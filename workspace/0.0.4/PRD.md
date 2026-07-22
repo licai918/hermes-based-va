@@ -185,7 +185,7 @@ stance until a future promotion ADR).
 - **FR-12** **Outbound idempotency (grilled decision 8):** an outbound-send
   record keyed by a deterministic idempotency key (derived from job id +
   turn/reply identity) is written around **every outbound/mirror action** —
-  the Textline POST, the email reply mirror, and the simulated sender all go
+  the SimpleTexting POST, the email reply mirror, and the simulated sender all go
   through the same wrap (gap-review fix T2). A replayed or retried job whose
   send already happened skips the action and records the skip: no duplicate
   text to a customer, no duplicate reply row in `message_turn`. This closes
@@ -243,7 +243,7 @@ stance until a future promotion ADR).
   page is deliberately admin-only while the dead-letter view is
   supervisor+admin: integrations touch credentials, dead letters touch
   operations): per integration — Composio toolkits (Shopify/QBO/Square),
-  EasyRoutes, **Textline, and OpenRouter** (owner decision, gap-review P1) —
+  EasyRoutes, **SimpleTexting, and OpenRouter** (owner decision, gap-review P1) —
   connection status, pinned version where applicable, last successful call,
   last probe result. Served by a governed admin read (workbench stays
   API-only per T1). New governed tool(s) registered end-to-end: tool
@@ -251,7 +251,7 @@ stance until a future promotion ADR).
   param conventions.
 - **FR-24** Scheduled health probes as a typed background job on the T2
   queue's recurring-schedule mechanism (FR-8): one cheap authenticated read
-  per integration — Composio toolkits, EasyRoutes, **Textline token check,
+  per integration — Composio toolkits, EasyRoutes, **SimpleTexting token check,
   OpenRouter key check**; failure surfaces as a page badge + structured log
   alert; probe history retained per the retention classes.
 - **FR-25** In-app reconnect: for Composio-managed connections, an OAuth
@@ -357,7 +357,7 @@ Technical CI + browser E2E + owner PAC in the simulator:
   (cross-checked against the source systems); with one backend deliberately
   broken, the agent fails closed instead of inventing.
 - **PAC-7 (T5):** the integrations page shows all connections healthy
-  (Composio Shopify/QBO/Square, EasyRoutes, Textline, OpenRouter); the owner
+  (Composio Shopify/QBO/Square, EasyRoutes, SimpleTexting, OpenRouter); the owner
   breaks one (revoke/expire), the scheduled probe badges it within one probe
   cycle, and the in-app reconnect flow restores it (audit row shows the
   acting admin).
