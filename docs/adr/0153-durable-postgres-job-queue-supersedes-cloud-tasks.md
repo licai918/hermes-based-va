@@ -222,6 +222,14 @@ requires a managed service.
   retention sweep, knowledge re-ingest, health probes and the honored-rate run all
   become a `type` string on one table, with one retry policy, one dead-letter
   state, and one place to look when something did not happen.
+- **A job payload can now be the source of an audit attribution.** S04's
+  `retention` job carries the clicking supervisor's `actor_account_id` and
+  `retention_sweep.run_sweep` rebuilds a `ToolExecutionContext` from it, which makes
+  the queue a SECOND source of `context.user_id` — an invariant
+  [ADR-0148](0148-copilot-agent-source-actor-attribution-and-context-only-binding.md)
+  had recorded as single-sourced. Safe today and bounded by specific properties;
+  **the constraints a future job type must preserve are in that ADR's addendum**,
+  not here. Read it before rebuilding a context from any other payload.
 - **A dead job is now a visible object.** Today a failed async turn is a log line
   in a dead thread. After S05 it is a row a supervisor can see and replay.
 - **Cost:** the queue shares Postgres connections with the request path. At this

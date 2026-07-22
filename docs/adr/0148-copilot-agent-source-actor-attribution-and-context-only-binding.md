@@ -185,6 +185,81 @@ this test, not just a code review (RK-4).
   against it; it is not itself an enforcement mechanism beyond the tests cited
   below.
 
+## Addendum — a SECOND source of `context.user_id` (0.0.4 S04, FR-11)
+
+> Added 2026-07-21 (0.0.4 S04 fix wave 1). Decision 1's invariant above is
+> **amended, not repealed**: `context.user_id` no longer has exactly one source.
+> Recorded here rather than in [ADR-0153](0153-durable-postgres-job-queue-supersedes-cloud-tasks.md)
+> because it is *this* ADR's invariant that moved — anyone who touches
+> `resolve_memory_write_source`, the `actor_account_id` column, or the
+> `context.user_id` contract reads this file, and none of them would think to
+> read a queue ADR. ADR-0153 carries a one-line pointer back here.
+
+### What changed
+
+0.0.4 S04 moved the Customer Memory retention sweep off the request thread: the
+admin panel's button now enqueues a `retention` job (`datastore/handlers/
+retention.py::_enqueue_retention_sweep`) and the background worker runs it. To
+keep the sweep's `workbench_audit_log` row attributed to the supervisor who
+clicked, the enqueue writes `{"profile": …, "actor_account_id": context.user_id}`
+into the job's JSONB payload, and `hermes_runtime/retention_sweep.py::run_sweep`
+rebuilds a `ToolExecutionContext(profile=…, user_id=payload["actor_account_id"])`
+before calling `execute_tool`.
+
+So the invariant's true statement is now:
+
+> `context.user_id` is set in **two** places: the deterministic
+> `POST /v1/tools:dispatch` route, from the request body's `actor_account_id`;
+> and `retention_sweep.run_sweep`, from a `job.payload` field that the dispatch
+> route itself wrote one hop earlier.
+
+An audit attribution now flows from **data** (a queue row) rather than only from
+an authenticated request. That is the property to keep an eye on — it is not
+weaker attribution today, but it is a different *kind* of attribution.
+
+### Why it is safe today — the specific properties that bound it
+
+1. **The payload's writer is the dispatch route.** The only two ways a
+   `retention` job exists are `_enqueue_retention_sweep` (reached only through
+   `tools:dispatch`, where `context.user_id` came from an authenticated request)
+   and `PostgresJobQueue.tick_schedules`, whose payload has no
+   `actor_account_id` at all — an unattended run is `None`, exactly like the CLI
+   entrypoint always was. There is no third writer: `insert_job` is Python-only,
+   the `job` table has no external write path, and both enqueue actions are in
+   `_AGENT_EXCLUDED_ACTIONS` so no model can reach them.
+2. **The reconstructed context never reaches the discriminator.** `run_sweep`
+   dispatches `toee_retention.trigger_retention_sweep`, which touches
+   `customer_memory_slot` only through a DELETE-by-age. It never calls
+   `resolve_memory_write_source`, never writes `source`, and never writes
+   `actor_account_id` — the one field it feeds is `workbench_audit_log.account_id`
+   on its own `retention_sweep` row, whose semantics ("who asked for this sweep")
+   are exactly what the payload carries.
+3. **Absent means unattended, and that is already a legal value.** A payload with
+   no actor produces `user_id=None`, the same "no attributed actor" the cron-shaped
+   CLI entrypoint has had since 0.0.3 S28 — not a fallback that invents one.
+
+### What a future slice must preserve
+
+- **Do not reconstruct a `ToolExecutionContext` from a job payload for anything
+  that reaches `resolve_memory_write_source`.** A payload-derived `user_id` on a
+  Customer Memory write path would let the *queue* decide `employee_confirmed`
+  vs `copilot_agent` — the forgery decision 1 exists to prevent, one indirection
+  further away. If a memory write ever has to run asynchronously, carry the
+  resolved `source` in the payload as a framework-derived fact, or re-resolve it
+  from something authenticated; do not re-derive it from a rebuilt context.
+- **Keep `job.payload` writable only from Python enqueue sites.** The safety of
+  (1) is entirely "the only writer is the authenticated route". A replay/redrive
+  feature (S05) that lets an operator *edit* a payload before re-running it would
+  break that; a replay that re-runs the payload verbatim does not, but its own
+  audit must name the replaying admin (FR-13) so the trail stays honest about who
+  asked twice.
+- **Any new job type that rebuilds a context must be listed here.** Today there is
+  exactly one: `retention`. `ingest` *carries* an `actor_account_id` in its payload
+  but never reads it (`background_worker._run_ingest` reads only the corpus path),
+  and `l6_review`'s payload carries no actor at all. A second rebuilder added
+  without an entry here makes this an unwritten pattern rather than a documented
+  exception, which is how invariants rot.
+
 ## Considered options
 
 - **Keep the profile-only source mapping and rely on the FR-1 prompt guard alone
