@@ -267,6 +267,7 @@ def test_fast_call_under_the_deadline_succeeds() -> None:
 
 
 def test_missing_credentials_build_a_driver_that_fails_closed_per_call(monkeypatch) -> None:
+    monkeypatch.delenv("EASYROUTES_SECRET", raising=False)
     monkeypatch.delenv("EASYROUTES_API_TOKEN", raising=False)
     monkeypatch.delenv("EASYROUTES_CLIENT_ID", raising=False)
     driver = build_easyroutes_driver()  # total — must not raise
@@ -277,8 +278,10 @@ def test_missing_credentials_build_a_driver_that_fails_closed_per_call(monkeypat
     assert result.error_class == "configuration_missing"
 
 
-def test_build_with_credentials_yields_a_live_client_driver(monkeypatch) -> None:
-    monkeypatch.setenv("EASYROUTES_API_TOKEN", "tok-123")
+def test_build_with_secret_yields_a_live_client_driver(monkeypatch) -> None:
+    # EASYROUTES_SECRET is the owner's primary naming (S29).
+    monkeypatch.delenv("EASYROUTES_API_TOKEN", raising=False)
+    monkeypatch.setenv("EASYROUTES_SECRET", "secret-123")
     monkeypatch.setenv("EASYROUTES_CLIENT_ID", "client-123")
     driver = build_easyroutes_driver()
     assert driver.kind == "easyroutes"
@@ -286,14 +289,21 @@ def test_build_with_credentials_yields_a_live_client_driver(monkeypatch) -> None
     assert driver._client is not None
 
 
-# --- live client body-shape parsing (S26 empty-vs-error trap) ---------------
+def test_build_falls_back_to_api_token_when_secret_absent(monkeypatch) -> None:
+    monkeypatch.delenv("EASYROUTES_SECRET", raising=False)
+    monkeypatch.setenv("EASYROUTES_API_TOKEN", "tok-123")
+    monkeypatch.setenv("EASYROUTES_CLIENT_ID", "client-123")
+    driver = build_easyroutes_driver()
+    assert driver._config_error is None
+    assert driver._client is not None
+
+
+# --- live client: real token-exchange wire (S29), urlopen faked ---------------
 #
-# Unlike the FakeClient tests above (which inject already-parsed records and
-# never touch the wire-shape parsing), these exercise the real
-# ``_HttpEasyroutesClient.fetch_deliveries`` -- specifically the branch that
-# decides whether a 200 body is a recognized-empty result or a fault. That
-# decision is the one this fix wave changed; ``urlopen`` is faked at the
-# module level so no network runs.
+# These exercise the REAL ``_HttpEasyroutesClient`` against the owner's verified
+# wire: the OAuth2 token exchange at ``POST /authenticate`` and the ``GET /routes``
+# health read. ``urlopen`` is faked per-URL so no network runs. fetch_deliveries is
+# the S29 owner-blocked path and must fail closed.
 
 
 class _FakeHttpResponse:
@@ -314,49 +324,78 @@ class _FakeHttpResponse:
 
 def _http_client() -> _HttpEasyroutesClient:
     return _HttpEasyroutesClient(
-        base="https://example.test/api", token="tok", client_id="cid"
+        base="https://example.test/api/2024-07", client_id="cid", secret="sek"
     )
 
 
-def _patch_urlopen(monkeypatch: pytest.MonkeyPatch, body: Any) -> None:
-    payload = json.dumps(body).encode()
+def _patch_urlopen_by_url(monkeypatch: pytest.MonkeyPatch, bodies: dict[str, Any]) -> list[str]:
+    """Fake urlopen: match the request URL by substring, return the mapped body.
+
+    Records each requested URL so a test can assert the token exchange ran once and
+    the read reused the cached token.
+    """
+    seen: list[str] = []
+
+    def fake_urlopen(req: Any, *a: Any, **kw: Any) -> _FakeHttpResponse:
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        seen.append(url)
+        for needle, body in bodies.items():
+            if needle in url:
+                return _FakeHttpResponse(json.dumps(body).encode())
+        raise AssertionError(f"unexpected URL {url}")
+
     monkeypatch.setattr(
-        "toee_hermes.drivers.easyroutes.driver.urllib.request.urlopen",
-        lambda *a, **kw: _FakeHttpResponse(payload),
+        "toee_hermes.drivers.easyroutes.driver.urllib.request.urlopen", fake_urlopen
     )
+    return seen
 
 
-def test_recognized_empty_deliveries_list_is_an_honest_no_delivery(monkeypatch) -> None:
-    # A present-but-empty wrapper list is a RECOGNIZED shape -- a genuine
-    # 2xx-empty, not a fault. The client must return [], and end-to-end that
-    # is the governed "no delivery" policy block, never Tool Unavailable.
-    _patch_urlopen(monkeypatch, {"deliveries": []})
+def test_ping_authenticates_then_reads_routes_and_caches_the_token(monkeypatch) -> None:
+    # The real wire: POST /authenticate -> {accessToken, expiresInSeconds}, then
+    # GET /routes with the Bearer token. A recognized {"routes": []} is healthy.
+    seen = _patch_urlopen_by_url(
+        monkeypatch,
+        {
+            "/authenticate": {"accessToken": "at-1", "expiresInSeconds": 500},
+            "/routes": {"routes": []},
+        },
+    )
     client = _http_client()
-    assert client.fetch_deliveries(order_number="1042") == []
+    client.ping()  # must not raise
+    # A second read reuses the cached token (still one /authenticate call total).
+    client._get("/routes?query.limit=1")
+    assert sum("/authenticate" in u for u in seen) == 1
+    assert any("/routes" in u for u in seen)
 
-    result = _call(
-        _driver(client),
-        "get_delivery_status",
-        {"order_number": "1042"},
-        identity=_verified(),
+
+def test_ping_missing_access_token_fails_closed_as_auth(monkeypatch) -> None:
+    _patch_urlopen_by_url(monkeypatch, {"/authenticate": {"organization": "x"}})
+    client = _http_client()
+    with pytest.raises(ToolDriverError) as excinfo:
+        client.ping()
+    assert excinfo.value.error_class == "auth_expired"
+
+
+def test_ping_unrecognized_routes_shape_fails_closed_not_false_ok(monkeypatch) -> None:
+    # A 200 body that is not {"routes": [...]} is a FAULT, never a false healthy
+    # (do NOT lie on a health surface -- the empty-vs-error lesson).
+    _patch_urlopen_by_url(
+        monkeypatch,
+        {
+            "/authenticate": {"accessToken": "at-1", "expiresInSeconds": 500},
+            "/routes": {"unexpected": "shape"},
+        },
     )
-    assert result.ok is False
-    assert result.error_class == "policy_blocked"
+    client = _http_client()
+    with pytest.raises(ToolDriverError) as excinfo:
+        client.ping()
+    assert excinfo.value.error_class == "configuration_missing"
 
 
-def test_unrecognized_dict_body_fails_closed_not_a_silent_empty(monkeypatch) -> None:
-    # A 200 body the parser does not affirmatively recognize as a delivery
-    # list (no top-level list, no deliveries/data/results list, no single
-    # delivery object) must NOT fall through to `return []` -- that would
-    # become a governed "no delivery" the persona narrates to the customer as
-    # fact, exactly the QBO `list_customer_invoices`/Composio `successful:
-    # true` S26 trap this module's docstring warns about. It must raise and
-    # surface as governed unavailable instead.
-    #
-    # Before the fix: this body reached the old `return []` catch-all and the
-    # test below failed (result.ok was True / error_class was "policy_blocked"
-    # instead of "configuration_missing"). After the fix it raises.
-    _patch_urlopen(monkeypatch, {"unexpected": "shape", "meta": {"page": 1}})
+def test_fetch_deliveries_fails_closed_pending_owner_lookup_decision(monkeypatch) -> None:
+    # S29: no per-order lookup exists; the client must fail closed, never scan or
+    # fabricate. End-to-end this surfaces as governed Tool Unavailable.
+    _patch_urlopen_by_url(monkeypatch, {})  # no network should be touched
     client = _http_client()
     with pytest.raises(ToolDriverError) as excinfo:
         client.fetch_deliveries(order_number="1042")

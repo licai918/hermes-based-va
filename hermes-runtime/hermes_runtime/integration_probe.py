@@ -143,7 +143,7 @@ PROBES: tuple[Probe, ...] = (
         key="easyroutes",
         configured=easyroutes_configured,
         check=lambda: build_easyroutes_driver().health(),
-        not_configured_reason="not configured: EASYROUTES_API_TOKEN + EASYROUTES_CLIENT_ID",
+        not_configured_reason="not configured: EASYROUTES_SECRET + EASYROUTES_CLIENT_ID",
     ),
     Probe(
         key="simpletexting",
