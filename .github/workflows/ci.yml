@@ -150,3 +150,64 @@ jobs:
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1
           fi
+
+  # NFR-9 (0.0.4 S25): boots the FULL turn-path topology in CI -- gateway + both
+  # dispatch servers + turn worker + background worker + Postgres -- so the
+  # scripted-mode live-eval suites (S18/S19) have a real turn path here, not just
+  # the `runtime` job's in-process embedding. This job owns ONLY the CI-infra lift;
+  # the scenario-level scripted harness is S18 and runs ON this topology.
+  #
+  # It reuses `scripts/dev-up.mjs --stack-only` verbatim (the S10 orchestration that
+  # already carries the pg_isready + per-server /healthz + worker "polling for"
+  # readiness waits) rather than re-implementing compose steps in YAML -- one place
+  # owns "the stack is actually up".
+  #
+  # Determinism / no real model: REPLY_SENDER=simulated (no provider POST) and no
+  # INTEGRATION_DRIVER (the mock tool driver) are the defaults. OPENROUTER_API_KEY
+  # is set to a PLACEHOLDER, not a secret: gateway_composition.resolve_openrouter_config
+  # fails closed on a blank key, so the topology needs *a* value to boot, but the
+  # smoke never asserts a model reply -- it proves the durable turn-path seam that
+  # needs no LLM (gateway fast-ack writes a `job` row; the turn worker claims it).
+  # The scenario-level "scripted determinism proof" is DEFERRED to S18, whose own
+  # acceptance already says it runs "in CI on the S25 topology".
+  harness-topology:
+    name: Harness topology (full turn-path stack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # docker + compose v2 are preinstalled on ubuntu-latest; dev-up.mjs and the
+      # smoke are pure Node, so no pnpm/uv install is needed on the host (the uv
+      # sync happens inside the hermes-runtime image build, phase 2 below).
+      #
+      # The compose services read OPENROUTER_API_KEY / the webhook token only from
+      # hermes-runtime/.env (env_file, gitignored). CI has no such file, so write a
+      # throwaway one with the placeholder key + the dev webhook token the smoke
+      # posts with. Absent this, the fail-closed boot rejects every turn-path server.
+      - name: Write CI harness env (placeholder key; no secret)
+        run: |
+          cat > hermes-runtime/.env <<'EOF'
+          OPENROUTER_API_KEY=ci-placeholder-no-real-model
+          SIMPLETEXTING_WEBHOOK_TOKEN=dev-webhook-token
+          REPLY_SENDER=simulated
+          EOF
+      - name: Selfcheck the smoke's parser
+        run: node scripts/ci-harness-smoke.mjs --selfcheck
+      # `time` records the boot budget the spec asks to document. The cold cost is
+      # the hermes-runtime image build (uv sync, ~3-4 min); a warm local boot is
+      # ~20s. No docker layer caching wired here on purpose -- it needs buildx +
+      # a cache backend, which is more machinery than one CI job's boot warrants.
+      - name: Boot full topology (dev-up --stack-only)
+        run: |
+          time node scripts/dev-up.mjs --stack-only
+          docker compose ps
+      - name: Harness-topology smoke (inbound turn claimed, twice)
+        env:
+          SIMPLETEXTING_WEBHOOK_TOKEN: dev-webhook-token
+        run: node scripts/ci-harness-smoke.mjs
+      # "teardown leaves no orphan services" (spec) -- always, even on smoke failure.
+      - name: Tear down (no orphans)
+        if: always()
+        run: docker compose down -v
