@@ -385,6 +385,233 @@ def test_qbo_list_customer_invoices_drops_other_customers() -> None:
     assert [inv["invoice_number"] for inv in out] == ["INV-MINE"]
 
 
+# --- qbo LIVE attribution via the Gadget bridge (0.0.4 S27) -------------------
+#
+# Live QBO invoices carry only ``CustomerRef.value`` (a QBO customer id), NOT a
+# Shopify id. Attribution then requires the Gadget qboCustomerMapping join under the
+# owner's trust rule. The pre-S27 bug returned an empty SUCCESS ("you have no
+# invoices") to every verified customer because it compared an absent
+# shopify_customer_id field; these tests pin the fail-closed replacement.
+
+QBO_CUSTOMER_ID = "QBO-77"
+
+
+class FakeAttributor:
+    """Stand-in for QboAttribution: maps one QBO customer id to the verified GID."""
+
+    def __init__(self, *, qbo_id: str | None, error: Exception | None = None) -> None:
+        self._qbo_id = qbo_id
+        self._error = error
+
+    def qbo_customer_id_for(self, verified_gid: str) -> str:
+        if self._error is not None:
+            raise self._error
+        if self._qbo_id is None:
+            raise ToolDriverError("configuration_missing", "no trusted mapping")
+        return self._qbo_id
+
+    def invoice_owned_by(self, qbo_customer_id: str, verified_gid: str) -> bool:
+        if self._error is not None:
+            raise self._error
+        if self._qbo_id is None:
+            raise ToolDriverError("configuration_missing", "no trusted mapping")
+        return qbo_customer_id == self._qbo_id
+
+
+def _driver_with_attr(client: FakeComposioClient, attributor: Any) -> ComposioDriver:
+    return ComposioDriver(
+        client,
+        user_id=USER_ID,
+        connected_accounts=CONNECTED_ACCOUNTS,
+        attributor=attributor,
+    )
+
+
+def _live_list_raw() -> dict[str, Any]:
+    # QBO QueryResponse shape: no shopify_customer_id, CustomerRef carries the QBO id.
+    return {
+        "QueryResponse": {
+            "Invoice": [
+                {
+                    "DocNumber": "OL49942",
+                    "CustomerRef": {"value": QBO_CUSTOMER_ID, "name": "Acme"},
+                    "BillEmail": {"Address": "acme@example.com"},
+                    "Balance": 804.56,
+                },
+                {
+                    "DocNumber": "OTHER-1",
+                    "CustomerRef": {"value": "QBO-OTHER", "name": "Someone"},
+                    "Balance": 10.0,
+                },
+            ]
+        }
+    }
+
+
+def test_qbo_list_live_attributes_owned_invoice_via_gadget() -> None:
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=QBO_CUSTOMER_ID))
+    out = driver.execute(
+        ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+        _ctx(identity=_verified()),
+    )
+    assert [inv["invoice_number"] for inv in out] == ["OL49942"]
+    # The private qbo_customer_id never leaks into the public contract.
+    assert set(out[0].keys()) == {
+        "invoice_number",
+        "shopify_customer_id",
+        "customer_email",
+        "balance",
+    }
+
+
+def test_qbo_list_live_fails_closed_when_unattributable() -> None:
+    # The S27 regression: a live customer whose mapping is missing/unconfirmed must
+    # get a governed unavailable, NEVER an empty "you have no invoices" success.
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=None))
+    with pytest.raises(ToolDriverError):
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+            _ctx(identity=_verified()),
+        )
+
+
+def test_qbo_list_live_fails_closed_on_gadget_fault() -> None:
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(
+        client, FakeAttributor(qbo_id=None, error=ToolDriverError("vendor_timeout", "slow"))
+    )
+    with pytest.raises(ToolDriverError) as excinfo:
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+            _ctx(identity=_verified()),
+        )
+    assert excinfo.value.error_class == "vendor_timeout"
+
+
+def test_qbo_list_live_empty_page_fails_closed_when_unattributable() -> None:
+    # Even a genuinely empty vendor page must fail closed for an unattributable
+    # customer, so "you have none" is never narrated without a trusted mapping.
+    client = FakeComposioClient({"QueryResponse": {"Invoice": []}})
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=None))
+    with pytest.raises(ToolDriverError):
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+            _ctx(identity=_verified()),
+        )
+
+
+def test_qbo_list_live_default_driver_fails_closed_without_gadget_key() -> None:
+    # A ComposioDriver built without an attributor (no Gadget key) fails closed on a
+    # live QBO read rather than returning an empty success.
+    client = FakeComposioClient(_live_list_raw())
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(client, "toee_qbo_read", "list_customer_invoices", {}, _ctx(identity=_verified()))
+    assert excinfo.value.error_class == "configuration_missing"
+
+
+def test_qbo_get_invoice_live_attributes_via_gadget() -> None:
+    raw = {
+        "QueryResponse": {
+            "Invoice": [
+                {
+                    "DocNumber": "OL49942",
+                    "CustomerRef": {"value": QBO_CUSTOMER_ID},
+                    "Balance": 804.56,
+                }
+            ]
+        }
+    }
+    client = FakeComposioClient(raw)
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=QBO_CUSTOMER_ID))
+    out = driver.execute(
+        ToolRequest(
+            tool="toee_qbo_read", action="get_invoice", params={"invoice_number": "OL49942"}
+        ),
+        _ctx(identity=_verified()),
+    )
+    assert out["invoice_number"] == "OL49942"
+    assert out["balance"] == 804.56
+
+
+def test_qbo_get_invoice_live_fails_closed_when_not_owned() -> None:
+    raw = {
+        "QueryResponse": {
+            "Invoice": [{"DocNumber": "X", "CustomerRef": {"value": "QBO-OTHER"}, "Balance": 5.0}]
+        }
+    }
+    client = FakeComposioClient(raw)
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=QBO_CUSTOMER_ID))
+    with pytest.raises(ToolDriverError) as excinfo:
+        driver.execute(
+            ToolRequest(
+                tool="toee_qbo_read", action="get_invoice", params={"invoice_number": "X"}
+            ),
+            _ctx(identity=_verified()),
+        )
+    assert excinfo.value.error_class == "not_found"
+
+
+def test_qbo_reads_require_a_verified_customer() -> None:
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=QBO_CUSTOMER_ID))
+    with pytest.raises(ToolDriverError) as excinfo:
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+            _ctx(identity=None),
+        )
+    assert excinfo.value.error_class == "policy_blocked"
+
+
+# --- composio errors-in-success guard (0.0.4 S27 fold-in) --------------------
+
+
+def test_composio_sdk_client_fails_closed_on_vendor_error_in_success() -> None:
+    # Composio can report a VENDOR error as transport success: successful=true with
+    # data carrying an errors array. The SDK adapter must fail closed, not pass it to
+    # a mapper that would shape an all-None result (ADR-0020, the S26 Square shape).
+    from toee_hermes.drivers.composio.driver import _ComposioSdkClient
+
+    class FakeSdk:
+        class tools:  # noqa: N801 - mirrors the SDK attribute path
+            @staticmethod
+            def execute(action, params, *, connected_account_id, user_id):  # noqa: ANN001
+                return {
+                    "successful": True,
+                    "error": None,
+                    "data": {"errors": [{"message": "missing scope"}], "payment_link": None},
+                }
+
+    client = _ComposioSdkClient(FakeSdk())
+    with pytest.raises(ToolDriverError) as excinfo:
+        client.execute_action(
+            action="SQUARE_RETRIEVE_PAYMENT_LINK",
+            params={"id": "x"},
+            connected_account_id="ca_square",
+            user_id=USER_ID,
+        )
+    assert excinfo.value.error_class == "composio_api_error"
+
+
+def test_composio_sdk_client_passes_clean_success() -> None:
+    from toee_hermes.drivers.composio.driver import _ComposioSdkClient
+
+    class FakeSdk:
+        class tools:  # noqa: N801
+            @staticmethod
+            def execute(action, params, *, connected_account_id, user_id):  # noqa: ANN001
+                return {"successful": True, "error": None, "data": {"order": {"id": "1"}}}
+
+    client = _ComposioSdkClient(FakeSdk())
+    assert client.execute_action(
+        action="SHOPIFY_GET_ORDERSBY_ID",
+        params={},
+        connected_account_id="ca_shopify",
+        user_id=USER_ID,
+    ) == {"order": {"id": "1"}}
+
+
 # --- square ------------------------------------------------------------------
 
 

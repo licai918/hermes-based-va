@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from ...errors import ToolDriverError
 from ..base import resolve_integration_driver
+from ..gadget import QboAttribution, build_qbo_attribution
 
 if TYPE_CHECKING:
     from ...execute import ToolRequest
@@ -127,6 +128,12 @@ class ActionSpec:
     action_slug: str  # Composio toolkit action; slugs verified live (0.0.4 S12)
     request_mapper: RequestMapper | None = None
     response_mapper: ResponseMapper | None = None
+    # QBO customer-scoped attribution mode (0.0.4 S27). ``"single"`` / ``"list"``
+    # tell the driver to enforce ownership via the Gadget bridge AFTER the pure
+    # response mapper shapes the payload — the two are the only actions that
+    # disclose per-customer financial data, and the shaped invoice carries the
+    # private ``qbo_customer_id`` the join needs.
+    ownership: str | None = None
     # Set when the live toolkit cannot serve this action. The driver raises it
     # INSTEAD of calling the backend, so the tool fails closed with a message
     # naming the reason rather than a vendor 404 (or worse, a mock payload) —
@@ -305,12 +312,53 @@ def _shopify_get_product_response(raw: dict[str, Any], context: "ToolExecutionCo
 # --- qbo mappers -------------------------------------------------------------
 
 
+# A normalized invoice carries the 4 public contract fields PLUS a private
+# ``qbo_customer_id`` (the invoice's ``CustomerRef.value``) used only for
+# attribution; :func:`_public_invoice` drops it before the result leaves the driver.
+_PUBLIC_INVOICE_KEYS = (
+    "invoice_number",
+    "shopify_customer_id",
+    "customer_email",
+    "balance",
+)
+
+
+def _public_invoice(invoice: dict[str, Any]) -> dict[str, Any]:
+    return {key: invoice.get(key) for key in _PUBLIC_INVOICE_KEYS}
+
+
+def _qbo_customer_id_of(invoice: dict[str, Any]) -> str | None:
+    """The QBO customer id an invoice is billed to (``CustomerRef.value`` live), or None."""
+    ref = invoice.get("CustomerRef")
+    if isinstance(ref, dict) and ref.get("value"):
+        return str(ref["value"])
+    for key in ("qbo_customer_id", "customer_ref_value"):
+        value = invoice.get(key)
+        if isinstance(value, (str, int)) and str(value):
+            return str(value)
+    return None
+
+
+def _direct_owner_gid(invoice: dict[str, Any]) -> str | None:
+    """The invoice's Shopify owner in canonical gid form, when carried DIRECTLY.
+
+    Present on mock/recorded/eval invoices (the mock sets ``shopify_customer_id``);
+    absent on live QBO invoices, which carry only a QBO ``CustomerRef`` — those need
+    the Gadget join instead. ``None`` here means "not directly attributable".
+    """
+    value = invoice.get("shopify_customer_id")
+    if not isinstance(value, str) or not value:
+        return None
+    return value if value.startswith("gid://") else f"gid://shopify/Customer/{value}"
+
+
 def _shape_invoice(invoice: dict[str, Any]) -> dict[str, Any]:
     return {
         "invoice_number": invoice.get("invoice_number"),
         "shopify_customer_id": invoice.get("shopify_customer_id"),
         "customer_email": invoice.get("customer_email"),
         "balance": invoice.get("balance"),
+        "qbo_customer_id": _qbo_customer_id_of(invoice),
     }
 
 
@@ -326,6 +374,7 @@ def _qbo_invoice_from_raw(invoice: dict[str, Any]) -> dict[str, Any]:
         "shopify_customer_id": invoice.get("shopify_customer_id"),
         "customer_email": email,
         "balance": invoice.get("Balance", invoice.get("balance")),
+        "qbo_customer_id": _qbo_customer_id_of(invoice),
     }
 
 
@@ -339,16 +388,82 @@ def _qbo_invoices_from_raw(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return [_qbo_invoice_from_raw(invoice) for invoice in invoices]
 
 
-# The Composio QBO list actions are not customer-scoped at the vendor (no
-# Shopify->QBO CustomerRef bridge yet), so a verified customer could otherwise be
-# handed another customer's invoices. Scope the *response* to the authorized owner
-# by matching shopify_customer_id, and drop any invoice we cannot attribute to them
-# (fail-safe: never return unattributable financial data to a customer).
-def _invoice_owned_by_verified(
-    invoice: dict[str, Any], context: "ToolExecutionContext"
-) -> bool:
-    verified_id = _verified_customer_id(context)
-    return bool(verified_id) and invoice.get("shopify_customer_id") == verified_id
+def _require_verified_customer_id(context: "ToolExecutionContext") -> str:
+    """Verified customer's Shopify id (canonical gid), or a governed policy block.
+
+    QBO customer-scoped reads must never run unscoped; an unverified caller owns no
+    invoices, so refuse rather than disclose or fabricate (ADR-0043, FR-21).
+    """
+    verified = _verified_customer_id(context)
+    if not verified:
+        raise ToolDriverError(
+            "policy_blocked", "QuickBooks invoice reads require a verified customer."
+        )
+    return verified if verified.startswith("gid://") else f"gid://shopify/Customer/{verified}"
+
+
+# --- QBO ownership (0.0.4 S27) -----------------------------------------------
+#
+# Live QBO invoices carry NO Shopify id — only ``CustomerRef.value`` (a QBO customer
+# id). So ownership cannot be read off the invoice; it needs the authoritative
+# Shopify<->QBO join in the owner's Gadget ``qboCustomerMapping`` model, under the
+# owner's trust rule (CONFIRMED/AUTO_MATCHED only). Two paths, both fail closed:
+#   - DIRECT linkage (mock/recorded/eval): compare ``shopify_customer_id`` — no
+#     Gadget call, keeps the mock parity and existing recordings correct.
+#   - LIVE (no direct linkage): join through the Gadget bridge. If it cannot
+#     positively attribute (no trusted mapping / ambiguous / Gadget fault) it RAISES
+#     -> governed unavailable, NEVER an empty "you have no invoices" (the S27 bug was
+#     exactly that empty-success door).
+
+
+def _qbo_owned_invoice(
+    invoice: dict[str, Any],
+    context: "ToolExecutionContext",
+    attributor: "QboAttribution",
+) -> dict[str, Any]:
+    """Return the invoice's public shape if the verified customer owns it, else fail closed."""
+    verified = _require_verified_customer_id(context)
+    direct = _direct_owner_gid(invoice)
+    if direct is not None:
+        if direct == verified:
+            return _public_invoice(invoice)
+        raise ToolDriverError("not_found", "No matching invoice for this customer.")
+    qbo_id = invoice.get("qbo_customer_id")
+    if not qbo_id:
+        # No Shopify linkage and no QBO customer ref: unattributable -> never disclose.
+        raise ToolDriverError("not_found", "Invoice ownership could not be verified.")
+    # Reverse join under the trust rule; raises on fault/missing/ambiguous mapping.
+    if attributor.invoice_owned_by(str(qbo_id), verified):
+        return _public_invoice(invoice)
+    raise ToolDriverError("not_found", "No matching invoice for this customer.")
+
+
+def _qbo_owned_invoices(
+    invoices: list[dict[str, Any]],
+    context: "ToolExecutionContext",
+    attributor: "QboAttribution",
+) -> list[dict[str, Any]]:
+    """The subset the verified customer owns, or fail closed if it cannot be attributed."""
+    verified = _require_verified_customer_id(context)
+    # Fast path: every invoice is directly attributable -> pure compare, no Gadget.
+    if invoices and all(_direct_owner_gid(inv) is not None for inv in invoices):
+        return [
+            _public_invoice(inv) for inv in invoices if _direct_owner_gid(inv) == verified
+        ]
+    # Live path (incl. an empty vendor page): resolve the verified customer's QBO id
+    # via the Gadget bridge and scope by it. Unresolvable -> RAISE (fail closed);
+    # returning [] here would be the empty-success bug narrated as "you have none".
+    qbo_id = attributor.qbo_customer_id_for(verified)
+    owned: list[dict[str, Any]] = []
+    for inv in invoices:
+        direct = _direct_owner_gid(inv)
+        if direct is not None:
+            if direct == verified:
+                owned.append(inv)
+            continue
+        if inv.get("qbo_customer_id") and str(inv["qbo_customer_id"]) == qbo_id:
+            owned.append(inv)
+    return [_public_invoice(inv) for inv in owned]
 
 
 def _qbo_get_invoice_request(
@@ -365,39 +480,36 @@ def _qbo_get_invoice_request(
 
 
 def _qbo_get_invoice_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    # Shaping only (returns a normalized invoice); ownership is enforced by the driver
+    # via the Gadget attributor (spec.ownership == "single").
     if "invoice" in raw:
-        invoice = _shape_invoice(raw["invoice"])
-    else:
-        invoices = _qbo_invoices_from_raw(raw)
-        if invoices:
-            invoice = invoices[0]
-        elif raw.get("DocNumber") or raw.get("invoice_number"):
-            invoice = _qbo_invoice_from_raw(raw)
-        else:
-            invoice = _shape_invoice(raw.get("invoice", raw))
-    if not _invoice_owned_by_verified(invoice, context):
-        raise ToolDriverError("not_found", "No matching invoice for this customer.")
-    return invoice
+        return _shape_invoice(raw["invoice"])
+    invoices = _qbo_invoices_from_raw(raw)
+    if invoices:
+        return invoices[0]
+    if raw.get("DocNumber") or raw.get("invoice_number"):
+        return _qbo_invoice_from_raw(raw)
+    return _shape_invoice(raw.get("invoice", raw))
 
 
 def _qbo_list_invoices_request(
     _params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    # Response is scoped to the verified owner (see _qbo_list_invoices_response); the
-    # capped fetch just bounds the page the vendor returns.
+    # Response is scoped to the verified owner via the Gadget bridge (see
+    # _qbo_owned_invoices); the capped fetch just bounds the page the vendor returns.
     _verified_customer_id(context)
     return {"max_results": 50}
 
 
 def _qbo_list_invoices_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    # Shaping only (returns normalized invoices); ownership is enforced by the driver
+    # via the Gadget attributor (spec.ownership == "list").
     if "invoices" in raw and all(
         isinstance(invoice, dict) and "invoice_number" in invoice
         for invoice in raw["invoices"]
     ):
-        invoices = [_shape_invoice(invoice) for invoice in raw["invoices"]]
-    else:
-        invoices = _qbo_invoices_from_raw(raw)
-    return [inv for inv in invoices if _invoice_owned_by_verified(inv, context)]
+        return [_shape_invoice(invoice) for invoice in raw["invoices"]]
+    return _qbo_invoices_from_raw(raw)
 
 
 # Fail-closed: the QBO Aged Receivables report is an all-customer aggregate, so a
@@ -486,13 +598,18 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
         SHOPIFY, "SHOPIFY_GET_PRODUCT", _shopify_get_product_request, _shopify_get_product_response
     ),
     ("toee_qbo_read", "get_invoice"): ActionSpec(
-        QBO, "QUICKBOOKS_QUERY_INVOICES", _qbo_get_invoice_request, _qbo_get_invoice_response
+        QBO,
+        "QUICKBOOKS_QUERY_INVOICES",
+        _qbo_get_invoice_request,
+        _qbo_get_invoice_response,
+        ownership="single",
     ),
     ("toee_qbo_read", "list_customer_invoices"): ActionSpec(
         QBO,
         "QUICKBOOKS_LIST_INVOICES",
         _qbo_list_invoices_request,
         _qbo_list_invoices_response,
+        ownership="list",
     ),
     ("toee_qbo_read", "get_ar_summary"): ActionSpec(
         QBO,
@@ -521,11 +638,17 @@ class ComposioDriver:
         *,
         user_id: str | None,
         connected_accounts: dict[str, str],
+        attributor: "QboAttribution | None" = None,
     ) -> None:
         self._client = client
         self._user_id = user_id
         # toolkit key (shopify/qbo/square) -> connected_account_id
         self._connected_accounts = dict(connected_accounts)
+        # QBO Shopify<->QBO attribution bridge (0.0.4 S27). Defaults to an
+        # unconfigured attributor that fails closed per call, so a driver built
+        # without a Gadget key still serves Shopify/Square and only QBO
+        # customer-scoped reads that need the live join fail closed.
+        self._attributor = attributor or _UNCONFIGURED_ATTRIBUTION
 
     def execute(self, request: "ToolRequest", context: "ToolExecutionContext") -> Any:
         spec = ACTION_MAPPING.get((request.tool, request.action))
@@ -569,7 +692,29 @@ class ComposioDriver:
                 f"Composio action '{spec.action_slug}' failed: {err}",
             ) from err
 
-        return spec.response_mapper(raw, context)
+        shaped = spec.response_mapper(raw, context)
+        # QBO customer-scoped attribution runs AFTER shaping (0.0.4 S27): the shaped
+        # invoice carries the private qbo_customer_id the Gadget join needs. Both
+        # arms fail closed on an unattributable read rather than disclosing or
+        # emitting an empty success.
+        if spec.ownership == "single":
+            return _qbo_owned_invoice(shaped, context, self._attributor)
+        if spec.ownership == "list":
+            return _qbo_owned_invoices(shaped, context, self._attributor)
+        return shaped
+
+
+# Default attributor for a driver built without a Gadget key (unit tests, or a
+# deployment where the owner-blocked Gadget key is not yet set). Any live-path QBO
+# attribution through it fails closed; direct-linkage (mock/recorded) never reaches it.
+_UNCONFIGURED_ATTRIBUTION = QboAttribution(
+    None,
+    config_error=ToolDriverError(
+        "configuration_missing",
+        "Gadget attribution is not configured; QuickBooks customer-scoped reads are "
+        "unavailable until GADGET_API_KEY is set.",
+    ),
+)
 
 
 def build_composio_driver() -> ComposioDriver:
@@ -613,6 +758,10 @@ def build_composio_driver() -> ComposioDriver:
         client,
         user_id=user_id,
         connected_accounts=connected_accounts,
+        # Total build (never raises): a missing Gadget key yields an attributor that
+        # fails QBO customer-scoped reads closed per call, not a boot failure (S27,
+        # mirrors the EasyRoutes owner-blocked token, S14).
+        attributor=build_qbo_attribution(),
     )
 
 
@@ -757,4 +906,37 @@ class _ComposioSdkClient:
                 "composio_api_error",
                 f"Composio returned no data object for '{action}'.",
             )
+        # Composio calls a VENDOR-level error a transport success: the S26 Square
+        # probe returned ``successful: true`` with ``data = {"errors": [...],
+        # "payment_link": null}`` (missing scope). ``successful`` and a dict ``data``
+        # both pass the checks above, so without this guard a vendor fault would flow
+        # to the mapper and be shaped into an all-``None`` result narrated as fact
+        # (ADR-0020). Inspect both ``data`` and any nested ``response_data`` for a
+        # non-empty ``errors``/``error``/``Fault`` and fail closed. Today only Square
+        # emits this shape (and it is gated off), so this is latent — but it stops the
+        # class at the single chokepoint both ``execute`` and the ack path route through.
+        vendor_error = _vendor_error_in_payload(data)
+        if vendor_error is not None:
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio reported a vendor error for '{action}': {vendor_error}",
+            )
         return data
+
+
+def _vendor_error_in_payload(data: dict[str, Any]) -> Any | None:
+    """A non-empty ``errors``/``error``/``Fault`` in ``data`` or nested ``response_data``.
+
+    Returns the offending value (for the audit message) or ``None`` when the payload
+    carries no vendor-level error.
+    """
+    nested = data.get("response_data")
+    containers = [data]
+    if isinstance(nested, dict):
+        containers.append(nested)
+    for container in containers:
+        for key in ("errors", "error", "Fault"):
+            value = container.get(key)
+            if value:  # non-empty list / dict / string
+                return value
+    return None
