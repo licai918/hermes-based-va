@@ -886,11 +886,46 @@ def probe_composio_toolkit(toolkit_key: str) -> None:
             "composio_api_error",
             f"Composio connected-account read failed for '{toolkit_key}': {err}",
         ) from err
-    # An empty/absent account is a FAULT, not a healthy read (empty-vs-error).
+    _assert_connected_account_active(account, toolkit_key)
+
+
+# CUTOVER ITEM (owner-blocked, no live Composio): the EXACT active-status string is
+# UNVERIFIED. Composio still returns the account record — with a status like INACTIVE/
+# EXPIRED/INITIATED — after a grant is revoked, so checking EXISTENCE would read a dead
+# connection as "Healthy" (the FR-24 expired-credential case, a fail-OPEN the track
+# forbids). So default FAIL-CLOSED: only a status we affirmatively recognize as active
+# passes; anything else (unknown/inactive/None) -> failed. Confirm the real value against
+# a live connected account and widen this set at cutover.
+_ACTIVE_ACCOUNT_STATUSES: frozenset[str] = frozenset({"ACTIVE"})
+
+
+def _connected_account_status(account: Any) -> str:
+    """The account's status as an upper-cased string, or '' if absent/unreadable."""
+    if account is None:
+        return ""
+    status = getattr(account, "status", None)
+    if status is None and isinstance(account, dict):
+        status = account.get("status")
+    return str(status or "").strip().upper()
+
+
+def _assert_connected_account_active(account: Any, toolkit_key: str) -> None:
+    """Fail closed unless the connected account reports an affirmatively-active status.
+
+    An absent account, or one whose status we don't recognize as active (revoked/
+    expired/inactive/unknown), is a FAULT, not a healthy read — never ``ok`` (FR-24).
+    """
     if account is None:
         raise ToolDriverError(
             "composio_api_error",
             f"Composio returned no connected account for '{toolkit_key}'.",
+        )
+    status = _connected_account_status(account)
+    if status not in _ACTIVE_ACCOUNT_STATUSES:
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio connected account for '{toolkit_key}' is not active "
+            f"(status={status or 'unknown'}).",
         )
 
 
