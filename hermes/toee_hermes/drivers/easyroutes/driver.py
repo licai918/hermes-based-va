@@ -264,6 +264,25 @@ class EasyroutesDriver:
             f"No EasyRoutes mapping for action '{request.action}'.",
         )
 
+    # A sentinel order reference that matches no real delivery, so the probe below
+    # reads the authenticated endpoint WITHOUT ever pulling a real customer's data.
+    _HEALTH_SENTINEL = "__integration_probe__"
+
+    def health(self) -> None:
+        """S16 probe: a bounded authenticated read that must not fault (FR-24).
+
+        Fetches deliveries for a sentinel order reference; an empty list is a
+        healthy "reachable + authorized" (the client raises on any fault, so an
+        empty list is never a masked error -- the S26 empty-vs-error trap). Raises
+        the governed :class:`ToolDriverError` when unconfigured, unreachable, or
+        unauthorized. Deadline-bounded via ``_fetch_bounded`` like every other call.
+        """
+        if self._config_error is not None or self._client is None:
+            raise self._config_error or ToolDriverError(
+                "configuration_missing", "EasyRoutes driver is not configured."
+            )
+        self._fetch_bounded(self._HEALTH_SENTINEL)
+
     def _fetch_bounded(self, order_number: Optional[str]) -> list[dict[str, Any]]:
         """Run the whole client call under one wall-clock deadline (NFR-8).
 

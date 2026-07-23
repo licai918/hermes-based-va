@@ -45,6 +45,7 @@ from typing import Any, Callable, Mapping, Optional
 from .job_queue import (
     DEFAULT_LEASE_SECONDS,
     INGEST_JOB_TYPE,
+    INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
     RETENTION_JOB_TYPE,
     Job,
@@ -58,7 +59,12 @@ logger = logging.getLogger(__name__)
 # FR-9 isolation IS this tuple. `agent_turn` is absent and must stay absent.
 # Never pass None (that claims ANY type, customer turns included) and never ()
 # (S01 fix #3: an empty allowlist claims nothing at all).
-BACKGROUND_JOB_TYPES = (L6_REVIEW_JOB_TYPE, RETENTION_JOB_TYPE, INGEST_JOB_TYPE)
+BACKGROUND_JOB_TYPES = (
+    L6_REVIEW_JOB_TYPE,
+    RETENTION_JOB_TYPE,
+    INGEST_JOB_TYPE,
+    INTEGRATION_PROBE_JOB_TYPE,
+)
 
 # ponytail: 5 s, against the turn worker's 250 ms. Nothing here has a latency
 # budget -- NFR-2 is about a customer waiting on a reply, and no customer waits
@@ -92,8 +98,25 @@ WORKER_POOL_MAX_SIZE = "4"
 # Ingest and l6_review are deliberately NOT scheduled: ingest needs an operator's
 # fresh corpus artifact and TRUNCATEs the corpus, and l6_review is per-turn.
 RETENTION_INTERVAL_SECONDS = 24 * 60 * 60
+
+# ponytail: 15-minute integration-probe cadence (S16, FR-24). Unlike retention's
+# 24 h, a health probe wants to catch an expired credential quickly -- 15 min bounds
+# the /admin/integrations badge's staleness to a quarter-hour while writing ~96
+# `job` rows/day (vs retention's 1). Cost of a SHORTER interval is linear `job`-row
+# growth on a table whose retention is still blocked on replacing the dedupe
+# guarantee (ADR-0153 fix #5), so shorten toward 5 min only if faster detection is
+# worth that growth. The window is floor(epoch/900): every tick inside one 15-min
+# window derives the SAME `schedule:integration_probe:<window>` dedupe key, so a
+# duplicate tick -- or a worker restart mid-window -- is a no-op, exactly one probe
+# per window. POLL_SECONDS (5 s) << the window, so the dedupe holds with wide margin.
+INTEGRATION_PROBE_INTERVAL_SECONDS = 15 * 60
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule(job_type=RETENTION_JOB_TYPE, interval_seconds=RETENTION_INTERVAL_SECONDS),
+    Schedule(
+        job_type=INTEGRATION_PROBE_JOB_TYPE,
+        interval_seconds=INTEGRATION_PROBE_INTERVAL_SECONDS,
+    ),
 )
 
 # Where the corpus pull artifact (Stage A's output) lives for a queued re-ingest.
@@ -188,6 +211,7 @@ def job_bodies() -> dict[str, JobBody]:
     subtree (the agent stack, the tool-dispatch stack, fastembed) and a worker
     should pay for them once at startup, not on import of this module."""
     from .copilot_turn import run_l6_review_job
+    from .integration_probe import run_integration_probe_job
     from .retention_sweep import run_retention_sweep_job
 
     def l6_review(payload: Mapping[str, Any]) -> None:
@@ -204,6 +228,7 @@ def job_bodies() -> dict[str, JobBody]:
         L6_REVIEW_JOB_TYPE: l6_review,
         RETENTION_JOB_TYPE: run_retention_sweep_job,
         INGEST_JOB_TYPE: _run_ingest,
+        INTEGRATION_PROBE_JOB_TYPE: run_integration_probe_job,
     }
 
 

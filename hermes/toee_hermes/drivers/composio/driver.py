@@ -845,6 +845,55 @@ def composio_config_status() -> dict[str, dict[str, Any]]:
     return result
 
 
+def probe_composio_toolkit(toolkit_key: str) -> None:
+    """S16 health probe for one Composio Layer-1 toolkit (FR-24).
+
+    A cheap AUTHENTICATED connected-account status read -- NOT an action execution,
+    so no vendor cost and no customer data crosses. Raises the governed
+    :class:`ToolDriverError` on any fault (missing key/account, SDK absent, vendor
+    error, or a connected account the vendor no longer reports). ``toolkit_key`` is
+    one of ``shopify``/``qbo``/``square``.
+
+    Owner-blocked today (needs ``COMPOSIO_API_KEY`` + the toolkit's connected
+    account). UNVERIFIED wire: the SDK connected-account read surface
+    (``client.connected_accounts.get``) must be confirmed against the live API at
+    cutover -- isolated here, exactly like the ``_ComposioSdkClient`` execute path.
+    The per-call deadline is applied by the S16 probe runner's ThreadPool wrapper.
+    """
+    account_env = CONNECTED_ACCOUNT_ENV[toolkit_key]
+    connected_account_id = os.environ.get(account_env)
+    if not connected_account_id:
+        raise ToolDriverError(
+            "configuration_missing",
+            f"No Composio connected account for '{toolkit_key}': set {account_env}.",
+        )
+    api_key = os.environ.get("COMPOSIO_API_KEY")
+    if not api_key:
+        raise ToolDriverError(
+            "configuration_missing", "COMPOSIO_API_KEY is not set."
+        )
+    try:
+        from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
+    except ImportError as err:
+        raise ToolDriverError(
+            "configuration_missing",
+            "The composio SDK is not installed in this environment.",
+        ) from err
+    try:
+        account = Composio(api_key=api_key).connected_accounts.get(connected_account_id)
+    except Exception as err:  # noqa: BLE001 - convert ANY vendor/SDK error to governed
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio connected-account read failed for '{toolkit_key}': {err}",
+        ) from err
+    # An empty/absent account is a FAULT, not a healthy read (empty-vs-error).
+    if account is None:
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio returned no connected account for '{toolkit_key}'.",
+        )
+
+
 def require_composio_configuration() -> None:
     """Boot gate: refuse to start a tool-executing process on a broken Composio config.
 

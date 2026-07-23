@@ -38,6 +38,7 @@ from hermes_runtime.background_worker import (
 from hermes_runtime.job_queue import (
     AGENT_TURN_JOB_TYPE,
     INGEST_JOB_TYPE,
+    INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
     RETENTION_JOB_TYPE,
     PostgresJobQueue,
@@ -251,9 +252,12 @@ def test_a_worker_that_died_mid_job_has_its_lease_reclaimed(datastore, queue):
 # --------------------------------------------------------------------------
 
 
-def test_the_shipped_schedule_is_a_daily_retention_sweep():
+def test_the_shipped_schedules_are_daily_retention_and_15min_integration_probe():
+    # Retention is a daily cadence (730/90-DAY windows); the integration probe
+    # (S16, FR-24) is a 15-min cadence so an expired credential is caught quickly.
     assert [(s.job_type, s.interval_seconds) for s in SCHEDULES] == [
-        (RETENTION_JOB_TYPE, 86400)
+        (RETENTION_JOB_TYPE, 86400),
+        (INTEGRATION_PROBE_JOB_TYPE, 900),
     ]
 
 

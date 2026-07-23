@@ -15,8 +15,11 @@ key is a deploy misconfiguration, never a silent fall-through to an unauthed cal
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
@@ -292,6 +295,52 @@ def openrouter_configured() -> bool:
     key value ever returned. The S16 probe reuses this before spending a real call.
     """
     return bool((os.environ.get(_API_KEY_ENV) or "").strip())
+
+
+# S16 health probe: an authenticated, zero-cost read that validates the API key.
+#
+# The gap-review P1 note suggested the *models* endpoint, but GET /models does NOT
+# require auth on OpenRouter -- it returns the public catalogue for a missing or
+# expired key alike, so it cannot tell a live key from a dead one and would paint a
+# rotated key "healthy" (a false healthy is exactly the lie this track's spine
+# forbids). GET /key returns THIS key's own metadata, requires the key, and costs no
+# tokens -- so it actually detects an expired/revoked key. UNVERIFIED against the
+# live API (owner-blocked: no key in the env yet); the endpoint is a wire detail to
+# confirm at cutover, isolated here.
+_KEY_PROBE_PATH = "/key"
+_PROBE_TIMEOUT_SECONDS = 8.0
+
+
+def probe_openrouter() -> None:
+    """S16 probe: authenticated key check (no completion cost). Raises on any fault.
+
+    An empty or unrecognized body is a FAILURE, never a false healthy (the
+    empty-vs-error lesson this track has paid for repeatedly): only an affirmatively
+    recognized ``{"data": {...}}`` envelope is "ok".
+    """
+    config = resolve_openrouter_config()  # raises ValueError when the key is absent
+    url = config.base_url.rstrip("/") + _KEY_PROBE_PATH
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {config.api_key}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_PROBE_TIMEOUT_SECONDS) as resp:
+            body = resp.read()
+    except urllib.error.HTTPError as err:
+        raise RuntimeError(f"OpenRouter HTTP {err.code} for {url}") from err
+    except urllib.error.URLError as err:
+        raise RuntimeError(f"OpenRouter request failed: {err.reason}") from err
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError) as err:
+        raise RuntimeError("OpenRouter returned an unparseable body") from err
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("data"), dict):
+        raise RuntimeError("OpenRouter key response shape not recognized")
 
 
 def resolve_openrouter_config() -> OpenRouterConfig:

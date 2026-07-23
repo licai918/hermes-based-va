@@ -21,20 +21,25 @@ never a fabricated ``healthy`` (the track's spine).
 not a credential), and env-var NAMES are returned -- never a token/key/account-id
 value. The repo secret-scan gate stays green (NFR-6).
 
-**Honest until S16/S17.**
+**Honest until S17.**
 - ``last_successful_call`` is ``None`` everywhere: nothing in the drivers records one
   yet, so the panel shows "unknown" rather than a fabricated timestamp.
-- ``last_probe`` is ``None`` everywhere: S16's scheduled probes fill it; the BFF/panel
-  render "never probed" until then.
+- ``last_probe`` (S16, FR-24): the LATEST ``integration_probe`` row per integration,
+  ``{status, reason, checked_at}`` or ``None`` when no probe has run yet (the panel
+  renders "never probed"). ``status`` is one of ``ok`` / ``failed`` /
+  ``not_configured`` -- the three honest states the scheduled probe records; the page
+  badges off it. A probe result is a status + reason string only, never a secret.
 
-``conn`` is unused today -- the read needs no SQL. S16 adds a SELECT of the newest
-probe row per integration here (this one handler is the deliberate seam), and S17's
-reconnect reads the same per-integration ``key`` this shape already carries.
+``conn`` is the deliberate S15 seam S16 fills: :func:`_latest_probes` SELECTs the
+newest probe row per integration here. S17's reconnect reads the same
+per-integration ``key`` this shape already carries.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+
+from psycopg.rows import dict_row
 
 from toee_hermes.drivers.base import resolve_integration_driver
 from toee_hermes.drivers.composio.driver import composio_config_status
@@ -69,12 +74,14 @@ def _entry(
     kind: str,
     configured: bool,
     detail: str,
+    last_probe: dict[str, Any] | None = None,
     pinned_version: str | None = None,
 ) -> dict[str, Any]:
     """One integration row in the uniform status shape.
 
-    ``last_successful_call``/``last_probe`` are always ``None`` in S15 (see module
-    docstring): the panel renders "unknown"/"never probed" -- never a fabrication.
+    ``last_successful_call`` is always ``None`` (nothing records it yet -> "unknown").
+    ``last_probe`` is the newest scheduled-probe row for this integration (S16) or
+    ``None`` when none has run yet ("never probed") -- never a fabrication.
     """
     return {
         "key": key,
@@ -84,7 +91,7 @@ def _entry(
         "status": "configured" if configured else "not_configured",
         "pinned_version": pinned_version,
         "last_successful_call": None,
-        "last_probe": None,
+        "last_probe": last_probe,
         "detail": detail,
     }
 
@@ -93,15 +100,44 @@ def _missing(env_name: str) -> str:
     return f"Not configured: set {env_name} in the deployment env."
 
 
+def _latest_probes(conn) -> dict[str, dict[str, Any]]:
+    """Newest ``integration_probe`` row per integration key (S16 seam, FR-24).
+
+    Returns ``{key: {status, reason, checked_at}}``. ``conn`` is ``None`` only in the
+    pure config-presence unit tests (which pass no DB); there the page has no probe
+    history to show, so every ``last_probe`` stays ``None`` ("never probed").
+    """
+    if conn is None:
+        return {}
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (integration_key)
+                   integration_key, status, reason, checked_at
+            FROM integration_probe
+            ORDER BY integration_key, checked_at DESC
+            """
+        )
+        rows = cur.fetchall()
+    return {
+        row["integration_key"]: {
+            "status": row["status"],
+            "reason": row["reason"],
+            "checked_at": row["checked_at"].isoformat(),
+        }
+        for row in rows
+    }
+
+
 def _get_integrations_status(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
-    # A read -> no actor required, no audit (parity with get_retention_status). No
-    # SQL yet (S16 adds the probe SELECT); conn is accepted and ignored.
-    del conn, params, context
+    # A read -> no actor required, no audit (parity with get_retention_status).
+    del params, context
 
     active_driver = resolve_integration_driver()
     composio = composio_config_status()
+    probes = _latest_probes(conn)
 
     integrations: list[dict[str, Any]] = []
 
@@ -127,6 +163,7 @@ def _get_integrations_status(
                 configured=configured,
                 pinned_version=status["pinned_version"],  # type: ignore[arg-type]
                 detail=detail,
+                last_probe=probes.get(key),
             )
         )
 
@@ -142,6 +179,7 @@ def _get_integrations_status(
                 if er_configured
                 else _missing(f"{EASYROUTES_TOKEN_ENV} and EASYROUTES_CLIENT_ID")
             ),
+            last_probe=probes.get("easyroutes"),
         )
     )
 
@@ -157,6 +195,7 @@ def _get_integrations_status(
                 if st_configured
                 else _missing(_SIMPLETEXTING_TOKEN_ENV)
             ),
+            last_probe=probes.get("simpletexting"),
         )
     )
 
@@ -172,6 +211,7 @@ def _get_integrations_status(
                 if or_configured
                 else _missing(_OPENROUTER_KEY_ENV)
             ),
+            last_probe=probes.get("openrouter"),
         )
     )
 
@@ -187,6 +227,7 @@ def _get_integrations_status(
                 if gadget_ok
                 else _missing(GADGET_KEY_ENV)
             ),
+            last_probe=probes.get("gadget"),
         )
     )
 

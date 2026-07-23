@@ -17,19 +17,31 @@
 //
 // READ, fail-open (dispatch, not dispatchWrite): a view needs no actor attribution.
 // The handler NEVER fabricates a "healthy" -- the backend reports config presence
-// honestly, and last_successful_call / last_probe stay null until S16 (the panel
-// renders "unknown" / "never probed").
+// honestly, last_successful_call stays null (nothing records it), and last_probe is
+// the latest scheduled-probe result (S16, FR-24) or null when none has run yet (the
+// panel renders "unknown" / "never probed" / the probe badge).
 import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { json } from "../respond";
 
+// The latest scheduled health-probe result for one integration (S16, FR-24). The
+// three honest states the probe records: "ok" (reachable + authorized), "failed"
+// (credential present but the read errored/was ambiguous -- `reason` explains), and
+// "not_configured" (no credential, so the probe was SKIPPED). `reason` is a short,
+// secret-free string, non-null only on "failed". `checkedAt` is when it ran.
+export interface ProbeResult {
+  status: string;
+  reason: string | null;
+  checkedAt: string;
+}
+
 // One integration's uniform status. `configured` is the honest credential-presence
 // signal (green only when the credential is actually set, not merely that the code
 // path exists). `pinnedVersion` is a version string (Composio toolkits only), never
 // a secret. `lastSuccessfulCall` is null everywhere in S15 (nothing records it yet)
-// and `lastProbe` is null until S16 fills it -- the panel shows "unknown"/"never
-// probed" rather than a fabrication.
+// and `lastProbe` is the newest probe result (S16) or null when none has run yet --
+// the panel shows "unknown"/"never probed"/the probe badge rather than a fabrication.
 export interface IntegrationStatus {
   key: string;
   label: string;
@@ -38,7 +50,7 @@ export interface IntegrationStatus {
   status: string;
   pinnedVersion: string | null;
   lastSuccessfulCall: string | null;
-  lastProbe: string | null;
+  lastProbe: ProbeResult | null;
   detail: string;
 }
 
@@ -85,6 +97,19 @@ function requireArray(value: unknown, field: string): unknown[] {
   return value as unknown[];
 }
 
+// Strict, like mapIntegration: a null last_probe is a legitimate "never probed",
+// but a present-but-malformed one throws (502) rather than being silently dropped
+// or painted as a fabricated state.
+function mapProbe(raw: unknown): ProbeResult | null {
+  if (raw === null || raw === undefined) return null;
+  const r = requireObject(raw, "last_probe");
+  return {
+    status: requireString(r.status, "last_probe.status"),
+    reason: requireNullableString(r.reason, "last_probe.reason"),
+    checkedAt: requireString(r.checked_at, "last_probe.checked_at"),
+  };
+}
+
 function mapIntegration(raw: unknown): IntegrationStatus {
   const r = requireObject(raw, "integrations[]");
   return {
@@ -100,7 +125,7 @@ function mapIntegration(raw: unknown): IntegrationStatus {
       r.last_successful_call,
       "last_successful_call",
     ),
-    lastProbe: requireNullableString(r.last_probe, "last_probe"),
+    lastProbe: mapProbe(r.last_probe),
     detail: requireString(r.detail, "detail"),
   };
 }

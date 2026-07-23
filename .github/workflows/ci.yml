@@ -136,12 +136,16 @@ jobs:
       # from the lock would make the ENTIRE pin gate vanish while CI stayed green --
       # the one gate whose job is to notice an SDK surface change (fix wave 1,
       # review Finding 8).
+      #
+      # test_integration_probe.py (0.0.4 S16) carries the live-Postgres evidence
+      # for the FR-24 probe result STORAGE + the page's last_probe fill; a silent
+      # skip there is a green build proving nothing about the health surface.
       - name: Runtime + gateway tests
         working-directory: hermes-runtime
         run: |
           set -o pipefail
           uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
-          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin)' /tmp/pytest-runtime.log \
+          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin|integration_probe)' /tmp/pytest-runtime.log \
               | grep -v 'fastembed not installed'; then
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1

@@ -84,6 +84,10 @@ AGENT_TURN_JOB_TYPE = "agent_turn"
 L6_REVIEW_JOB_TYPE = "l6_review"
 RETENTION_JOB_TYPE = "retention"
 INGEST_JOB_TYPE = "ingest"
+# S16 (FR-24): the scheduled integration health probe. A NEW recurring type on the
+# SAME schedule mechanism retention uses -- claimed by the background worker, never
+# the turn worker. Still just a string here; the queue imports nothing type-specific.
+INTEGRATION_PROBE_JOB_TYPE = "integration_probe"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

@@ -8,14 +8,19 @@
 //
 // HONEST BY CONSTRUCTION: "configured" is green only when the credential is actually
 // present (the backend never fabricates a "healthy"); last successful call is
-// "unknown" because nothing records it yet; last probe is "never probed" until S16's
-// scheduled probes fill it. No secret is ever shown -- only booleans, version pins,
-// and human detail. Loads on mount: a global panel, no id to key off (mirrors
+// "unknown" because nothing records it yet; last probe is the newest scheduled-probe
+// result (S16, FR-24) -- "never probed" until one runs, then an ok/failed/skipped
+// badge. No secret is ever shown -- only booleans, version pins, probe reasons, and
+// human detail. Loads on mount: a global panel, no id to key off (mirrors
 // MetricsPanel / DeadLetterPanel).
 import { useEffect, useState } from "react";
 import { getIntegrationsStatus } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
-import type { IntegrationStatus, IntegrationsView } from "@/lib/bff/admin/integrations";
+import type {
+  IntegrationStatus,
+  IntegrationsView,
+  ProbeResult,
+} from "@/lib/bff/admin/integrations";
 
 const caption: React.CSSProperties = { fontSize: "0.75rem", opacity: 0.65, margin: 0 };
 const cell: React.CSSProperties = {
@@ -49,11 +54,37 @@ function lastCall(value: string | null): string {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
-// last_probe is null until S16's scheduled probes land -> "never probed".
-function lastProbe(value: string | null): string {
-  if (!value) return "never probed";
+function formatWhen(value: string): string {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+// The scheduled-probe badge (S16, FR-24). null -> "never probed" (no probe yet);
+// ok -> green "Healthy"; failed -> red "Failed" + the secret-free reason; the
+// owner-blocked "not_configured" -> muted "Skipped" (the probe couldn't run). The
+// three states are never conflated -- the health surface must not lie.
+function ProbeBadge({ probe }: { probe: ProbeResult | null }) {
+  if (!probe) return <span style={{ opacity: 0.65 }}>never probed</span>;
+  const styles: Record<string, React.CSSProperties> = {
+    ok: { ...badgeBase, color: "#0a7", border: "1px solid #0a7" },
+    failed: { ...badgeBase, color: "#c0392b", border: "1px solid #c0392b" },
+    not_configured: { ...badgeBase, color: "#9a6700", border: "1px solid #9a6700" },
+  };
+  const labels: Record<string, string> = {
+    ok: "Healthy",
+    failed: "Failed",
+    not_configured: "Skipped",
+  };
+  const style = styles[probe.status] ?? badgeBase;
+  return (
+    <span>
+      <span style={style}>{labels[probe.status] ?? probe.status}</span>
+      <p style={caption}>
+        {formatWhen(probe.checkedAt)}
+        {probe.status === "failed" && probe.reason ? ` — ${probe.reason}` : ""}
+      </p>
+    </span>
+  );
 }
 
 function IntegrationRow({ row }: { row: IntegrationStatus }) {
@@ -68,7 +99,9 @@ function IntegrationRow({ row }: { row: IntegrationStatus }) {
       </td>
       <td style={cell}>{row.pinnedVersion ?? "—"}</td>
       <td style={cell}>{lastCall(row.lastSuccessfulCall)}</td>
-      <td style={cell}>{lastProbe(row.lastProbe)}</td>
+      <td style={cell}>
+        <ProbeBadge probe={row.lastProbe} />
+      </td>
     </tr>
   );
 }
@@ -98,7 +131,8 @@ export function IntegrationsPanel() {
     <div>
       <p style={caption}>
         Active integration backend: <strong>{view.activeDriver}</strong>. Green means
-        the credential is present and calls would route live; probes arrive in S16.
+        the credential is present and calls would route live; the Last probe badge is
+        the newest scheduled health check.
       </p>
       <table style={{ borderCollapse: "collapse", width: "100%", marginTop: "0.5rem" }}>
         <thead>

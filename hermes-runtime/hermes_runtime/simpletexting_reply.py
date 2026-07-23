@@ -70,6 +70,49 @@ def simpletexting_configured() -> bool:
     return bool((os.environ.get(_API_TOKEN_ENV) or "").strip())
 
 
+# S16 health probe: an authenticated READ that validates the token WITHOUT sending
+# a message (never an outbound send on the health surface). UNVERIFIED against the
+# live API (owner-blocked: the token is not in the env yet) -- the exact account/
+# read endpoint is a wire detail to confirm at cutover, isolated here. A non-2xx
+# (esp. 401/403 for a rotated token) or a transport error is a FAILURE.
+_TOKEN_PROBE_PATH = "api/account"
+_PROBE_TIMEOUT_SECONDS = 8.0
+
+
+def probe_simpletexting_token() -> None:
+    """S16 probe: validate the SimpleTexting token via an authenticated read.
+
+    Raises on any fault. Reads only -- never a send, never a customer's data.
+    """
+    config = resolve_simpletexting_config()  # raises ValueError when token absent
+    url = config.base_url.rstrip("/") + "/" + _TOKEN_PROBE_PATH
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {config.api_token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(  # noqa: S310 (https host from config)
+            request, timeout=_PROBE_TIMEOUT_SECONDS
+        ) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        raise SimpleTextingSendError(
+            f"SimpleTexting token check returned HTTP {exc.code}"
+        ) from exc
+    except (urllib.error.URLError, OSError) as exc:
+        raise SimpleTextingSendError(
+            f"SimpleTexting token check failed: {exc}"
+        ) from exc
+    if not 200 <= status < 300:
+        raise SimpleTextingSendError(
+            f"SimpleTexting token check returned HTTP {status}"
+        )
+
+
 def resolve_simpletexting_config() -> SimpleTextingConfig:
     """Resolve the SimpleTexting connection from the environment (fail-closed).
 

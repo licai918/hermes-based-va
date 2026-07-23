@@ -105,6 +105,33 @@ describe("handleGetIntegrationsStatusViaApi", () => {
     expect(qbo.pinnedVersion).toBe("20250101");
   });
 
+  it("maps a structured last_probe result through, and rejects a malformed one", () => {
+    const view = mapIntegrationsView(
+      rawView({
+        integrations: [
+          rawEntry({
+            last_probe: {
+              status: "failed",
+              reason: "auth_expired: HTTP 401",
+              checked_at: "2026-07-23T12:00:00+00:00",
+            },
+          }),
+        ],
+      }),
+    );
+    const probe = view.integrations[0]!.lastProbe!;
+    expect(probe.status).toBe("failed");
+    expect(probe.reason).toBe("auth_expired: HTTP 401");
+    expect(probe.checkedAt).toBe("2026-07-23T12:00:00+00:00");
+
+    // A present-but-malformed probe (missing checked_at) is a 502, not silently dropped.
+    expect(() =>
+      mapIntegrationsView(
+        rawView({ integrations: [rawEntry({ last_probe: { status: "ok" } })] }),
+      ),
+    ).toThrow(/checked_at/);
+  });
+
   it("does NOT default a missing `configured` to true (owner-blocked stays not-green)", () => {
     const bad = rawView({
       integrations: [rawEntry({ configured: undefined })],
