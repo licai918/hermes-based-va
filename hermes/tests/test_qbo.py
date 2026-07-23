@@ -158,6 +158,27 @@ def test_get_ar_summary_zero_for_other_owner() -> None:
     assert result.data["total_balance"] == 0
 
 
+def test_get_ar_summary_excludes_paid_invoices() -> None:
+    # Parity with the live path (0.0.4 S13): "open" = balance > 0, so a fully-paid
+    # owned invoice is not counted. Locks the shared ``qbo_ar.ar_summary`` semantics.
+    data = QboMockData(
+        invoices=[
+            {"invoice_number": "INV-OPEN", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 400.0},
+            {"invoice_number": "INV-PAID", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 0},
+        ]
+    )
+    result = _call("get_ar_summary", identity=VERIFIED_IDENTITY, data=data)
+
+    assert result.ok is True
+    assert result.data == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 1,
+        "total_balance": 400.0,
+    }
+
+
 def test_get_ar_summary_is_deterministic_across_calls() -> None:
     first = _call("get_ar_summary", identity=VERIFIED_IDENTITY)
     second = _call("get_ar_summary", identity=VERIFIED_IDENTITY)

@@ -329,14 +329,15 @@ def test_qbo_list_customer_invoices_maps_each_item() -> None:
     _assert_one_to_one(client, "toee_qbo_read", "list_customer_invoices", "ca_qbo")
 
 
-def test_qbo_get_ar_summary_fails_closed_on_composio() -> None:
-    # The QBO Aged Receivables report is all-customer; a per-customer summary can't
-    # be derived without misattributing balances, so the live path is gated off.
-    client = FakeComposioClient({})
+def test_qbo_get_ar_summary_fails_closed_without_gadget_key() -> None:
+    # 0.0.4 S13: the AR summary is now computed from the customer's OWN attributed
+    # invoices (S27 list path), NOT the all-customer aged-receivables report. With no
+    # attributor (no Gadget key) the live path cannot positively attribute, so it
+    # fails closed (configuration_missing) rather than fabricating an empty "$0".
+    client = FakeComposioClient(_live_list_raw())
     with pytest.raises(ToolDriverError) as excinfo:
         _run(client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified()))
     assert excinfo.value.error_class == "configuration_missing"
-    assert client.calls == []  # never reached the backend
 
 
 def test_qbo_get_invoice_hides_another_customers_invoice() -> None:
@@ -558,6 +559,144 @@ def test_qbo_list_live_default_driver_fails_closed_without_gadget_key() -> None:
     with pytest.raises(ToolDriverError) as excinfo:
         _run(client, "toee_qbo_read", "list_customer_invoices", {}, _ctx(identity=_verified()))
     assert excinfo.value.error_class == "configuration_missing"
+
+
+# --- qbo get_ar_summary (0.0.4 S13, FR-19) -----------------------------------
+#
+# The AR summary is computed from the verified customer's OWN attributed invoices
+# (the S27 list path), NOT the all-customer aged-receivables report. So it inherits
+# every S27 fail-closed arm, and an unattributable summary is a governed unavailable
+# -- never a fabricated/empty "$0". A positively-attributed customer with zero open
+# invoices is an honest $0 (empty-vs-error distinction on the success side).
+
+VERIFIED_AR_SHAPE = {"shopify_customer_id", "open_invoice_count", "total_balance"}
+
+
+def test_qbo_ar_summary_aggregates_owned_via_gadget() -> None:
+    # Live shape: only OL49942 (QBO_CUSTOMER_ID) is owned; OTHER-1 (QBO-OTHER) is not.
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=QBO_CUSTOMER_ID))
+    out = driver.execute(
+        ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
+        _ctx(identity=_verified()),
+    )
+    assert out == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 1,
+        "total_balance": 804.56,
+    }
+    # No invoice list, no private qbo_customer_id -- only the 3 public summary keys.
+    assert set(out.keys()) == VERIFIED_AR_SHAPE
+
+
+def test_qbo_ar_summary_direct_linkage_drops_other_customers() -> None:
+    raw = {
+        "invoices": [
+            {"invoice_number": "INV-MINE", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 100.0},
+            {"invoice_number": "INV-ALSO-MINE", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 50.0},
+            {"invoice_number": "INV-THEIRS", "shopify_customer_id": "gid://shopify/Customer/9999",
+             "customer_email": "other@example.com", "balance": 999.0},
+        ]
+    }
+    client = FakeComposioClient(raw)
+    out = _run(client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified()))
+    assert out == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 2,
+        "total_balance": 150.0,
+    }
+
+
+def test_qbo_ar_summary_honest_zero_when_attributed_but_no_open_invoices() -> None:
+    # Positively attributed (qbo id resolves) but NONE of the listed invoices are
+    # theirs -> honest $0, NOT an error. This is the empty-vs-error success side.
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id="QBO-NOBODY"))
+    out = driver.execute(
+        ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
+        _ctx(identity=_verified()),
+    )
+    assert out == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 0,
+        "total_balance": 0,
+    }
+
+
+def test_qbo_ar_summary_excludes_paid_invoices() -> None:
+    # "open" = balance > 0. A fully-paid (balance 0) owned invoice is not receivable.
+    raw = {
+        "invoices": [
+            {"invoice_number": "INV-OPEN", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 300.0},
+            {"invoice_number": "INV-PAID", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 0},
+        ]
+    }
+    client = FakeComposioClient(raw)
+    out = _run(client, "toee_qbo_read", "get_ar_summary", {}, _ctx(identity=_verified()))
+    assert out["open_invoice_count"] == 1
+    assert out["total_balance"] == 300.0
+
+
+def test_qbo_ar_summary_fails_closed_when_unattributable() -> None:
+    # No trusted mapping -> RAISE, never an empty/fabricated "$0 owing".
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=None))
+    with pytest.raises(ToolDriverError):
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
+            _ctx(identity=_verified()),
+        )
+
+
+def test_qbo_ar_summary_fails_closed_on_gadget_fault() -> None:
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(
+        client, FakeAttributor(qbo_id=None, error=ToolDriverError("vendor_timeout", "slow"))
+    )
+    with pytest.raises(ToolDriverError) as excinfo:
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
+            _ctx(identity=_verified()),
+        )
+    assert excinfo.value.error_class == "vendor_timeout"
+
+
+def test_qbo_ar_summary_fails_closed_on_qbo_id_collision_does_not_leak() -> None:
+    # Same A1 cross-customer guard as listing: two trusted Shopify customers sharing
+    # one QBO id must fail closed -- the AR summary must not become a way around it.
+    from toee_hermes.drivers.gadget import QboAttribution
+
+    class _CollidingGadget:
+        def query_customer_mappings(self, **_: Any) -> list[dict[str, Any]]:
+            return [
+                {"id": "a", "qboCustomerId": QBO_CUSTOMER_ID,
+                 "shopifyCustomerGid": VERIFIED_CUSTOMER_ID, "status": "AUTO_MATCHED"},
+                {"id": "b", "qboCustomerId": QBO_CUSTOMER_ID,
+                 "shopifyCustomerGid": "gid://shopify/Customer/2002", "status": "AUTO_MATCHED"},
+            ]
+
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, QboAttribution(_CollidingGadget()))
+    with pytest.raises(ToolDriverError):
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
+            _ctx(identity=_verified()),
+        )
+
+
+def test_qbo_ar_summary_requires_verified_customer() -> None:
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id=QBO_CUSTOMER_ID))
+    with pytest.raises(ToolDriverError) as excinfo:
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
+            _ctx(identity=None),
+        )
+    assert excinfo.value.error_class == "policy_blocked"
 
 
 def test_qbo_get_invoice_live_attributes_via_gadget() -> None:

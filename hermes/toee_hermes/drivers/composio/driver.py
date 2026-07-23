@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 from ...errors import ToolDriverError
 from ..base import resolve_integration_driver
 from ..gadget import QboAttribution, _canonical_qbo_id, build_qbo_attribution
+from ..qbo_ar import ar_summary
 
 if TYPE_CHECKING:
     from ...execute import ToolRequest
@@ -128,11 +129,12 @@ class ActionSpec:
     action_slug: str  # Composio toolkit action; slugs verified live (0.0.4 S12)
     request_mapper: RequestMapper | None = None
     response_mapper: ResponseMapper | None = None
-    # QBO customer-scoped attribution mode (0.0.4 S27). ``"single"`` / ``"list"``
-    # tell the driver to enforce ownership via the Gadget bridge AFTER the pure
-    # response mapper shapes the payload — the two are the only actions that
-    # disclose per-customer financial data, and the shaped invoice carries the
-    # private ``qbo_customer_id`` the join needs.
+    # QBO customer-scoped attribution mode (0.0.4 S27/S13). ``"single"`` / ``"list"``
+    # / ``"ar_summary"`` tell the driver to enforce ownership via the Gadget bridge
+    # AFTER the pure response mapper shapes the payload — these are the only actions
+    # that disclose per-customer financial data, and the shaped invoice carries the
+    # private ``qbo_customer_id`` the join needs. ``"ar_summary"`` scopes the list the
+    # same way, then aggregates the owned invoices into the AR summary shape.
     ownership: str | None = None
     # Set when the live toolkit cannot serve this action. The driver raises it
     # INSTEAD of calling the backend, so the tool fails closed with a message
@@ -513,16 +515,16 @@ def _qbo_list_invoices_response(raw: dict[str, Any], context: "ToolExecutionCont
     return _qbo_invoices_from_raw(raw)
 
 
-# Fail-closed: the QBO Aged Receivables report is an all-customer aggregate, so a
-# per-customer AR summary cannot be derived from it without misattributing other
-# customers' balances. Gate the Composio path off until a customer-scoped QBO
-# report (or an invoice-level Shopify->QBO bridge) exists; the mock driver still
-# serves a correctly scoped summary for dev/eval.
-_AR_SUMMARY_UNAVAILABLE = ToolDriverError(
-    "configuration_missing",
-    "Customer-scoped QuickBooks AR summary is unavailable on the live backend "
-    "until a per-customer QBO report is wired.",
-)
+# AR summary (0.0.4 S13, FR-19) is NOT derived from
+# QUICKBOOKS_GET_AGED_RECEIVABLES_REPORT: that report is an ALL-customer aggregate
+# and cannot be scoped to one customer without misattributing another customer's
+# balance -- the exact disclosure S27 exists to prevent. Instead it reuses the S27
+# per-customer list path (QUICKBOOKS_LIST_INVOICES + the Gadget attribution
+# primitive) and aggregates the verified customer's OWN owned invoices via
+# ``ar_summary``. All of S27's fail-closed arms (no mapping / unconfirmed /
+# ambiguous / collision / Gadget fault or timeout) are inherited unchanged, so an
+# unattributable summary is a governed unavailable, never a fabricated/empty "$0".
+# See the ``ownership == "ar_summary"`` branch in ``ComposioDriver.execute``.
 
 # Still fail-closed, but for a DIFFERENT reason than S12's (0.0.4 S26).
 #
@@ -614,8 +616,14 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ),
     ("toee_qbo_read", "get_ar_summary"): ActionSpec(
         QBO,
-        "QUICKBOOKS_GET_AGED_RECEIVABLES_REPORT",
-        unavailable=_AR_SUMMARY_UNAVAILABLE,
+        # NOT the all-customer aged-receivables report (see note above): compute the
+        # per-customer summary from the SAME list action + attribution S27 built, then
+        # aggregate. Same slug, request mapper, and response mapper as
+        # list_customer_invoices; ownership="ar_summary" scopes + aggregates.
+        "QUICKBOOKS_LIST_INVOICES",
+        _qbo_list_invoices_request,
+        _qbo_list_invoices_response,
+        ownership="ar_summary",
     ),
     ("toee_square_payment_link", "send_payment_link"): ActionSpec(
         SQUARE,
@@ -702,6 +710,15 @@ class ComposioDriver:
             return _qbo_owned_invoice(shaped, context, self._attributor)
         if spec.ownership == "list":
             return _qbo_owned_invoices(shaped, context, self._attributor)
+        if spec.ownership == "ar_summary":
+            # Compute the AR summary from the verified customer's OWN owned invoices
+            # (0.0.4 S13). _qbo_owned_invoices reuses S27's attribution and RAISES on
+            # any unattributable read, so the summary fails closed exactly as listing
+            # does -- never a fabricated/empty "$0". A positively-attributed customer
+            # with zero open invoices yields an honest $0 (empty is not error here).
+            verified = _require_verified_customer_id(context)
+            owned = _qbo_owned_invoices(shaped, context, self._attributor)
+            return ar_summary(verified, owned)
         return shaped
 
 
