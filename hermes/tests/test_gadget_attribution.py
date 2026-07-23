@@ -40,27 +40,46 @@ def _mapping(**over: Any) -> dict[str, Any]:
 
 
 class FakeGadgetClient:
-    """Returns canned mapping records, or raises to simulate a Gadget fault."""
+    """Mimics the owner's endpoint over a flat record list, or raises to simulate a fault.
+
+    Built from the same flat ``qboCustomerMapping`` rows the S27 tests use; ``fetch_mapping``
+    derives ``(mappings, reverse)`` exactly as the server does — forward rows for the input
+    GID, plus for each canonical qbo id in them ALL rows sharing that canonical id — so the
+    single-call contract and the collision guard are exercised without the network.
+    """
 
     def __init__(
         self, records: Optional[list[dict[str, Any]]] = None, *, error: Exception | None = None
     ) -> None:
         self._records = records or []
         self._error = error
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[str] = []
 
-    def query_customer_mappings(
-        self,
-        *,
-        shopify_customer_gid: Optional[str] = None,
-        qbo_customer_id: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
-        self.calls.append(
-            {"shopify_customer_gid": shopify_customer_gid, "qbo_customer_id": qbo_customer_id}
-        )
+    def fetch_mapping(
+        self, shopify_gid: str
+    ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+        from toee_hermes.drivers.gadget import _canonical_qbo_id, _normalize_gid
+
+        self.calls.append(shopify_gid)
         if self._error is not None:
             raise self._error
-        return list(self._records)
+        target = _normalize_gid(shopify_gid)
+        forward = [
+            {"qboCustomerId": _canonical_qbo_id(r.get("qboCustomerId")), "status": r.get("status")}
+            for r in self._records
+            if _normalize_gid(r.get("shopifyCustomerGid")) == target
+        ]
+        reverse: dict[str, list[dict[str, Any]]] = {}
+        for row in forward:
+            qid = row["qboCustomerId"]
+            if qid is None or qid in reverse:
+                continue
+            reverse[qid] = [
+                {"shopifyGid": r.get("shopifyCustomerGid"), "status": r.get("status")}
+                for r in self._records
+                if _canonical_qbo_id(r.get("qboCustomerId")) == qid
+            ]
+        return forward, reverse
 
 
 def _attr(client: FakeGadgetClient) -> QboAttribution:
@@ -112,17 +131,39 @@ def test_qbo_customer_id_for_ambiguous_fails_closed() -> None:
         attr.qbo_customer_id_for(VERIFIED)
 
 
-def test_qbo_customer_id_for_prefers_locked_over_ambiguous() -> None:
-    # lockedByUser breaks the tie: the locked mapping wins, no ambiguity error.
+def test_qbo_customer_id_for_two_distinct_trusted_ids_fails_closed() -> None:
+    # OWNER DECISION 2026-07-23: two DISTINCT trusted qbo ids for one GID -> FAIL CLOSED,
+    # regardless of status preference. The old lockedByUser/CONFIRMED tie-break is gone.
     attr = _attr(
         FakeGadgetClient(
             [
-                _mapping(id="a", qboCustomerId="QBO-A", lockedByUser=False),
-                _mapping(id="b", qboCustomerId="QBO-B", lockedByUser=True),
+                _mapping(id="a", qboCustomerId="QBO-A", lockedByUser=True),
+                _mapping(id="b", qboCustomerId="QBO-B", lockedByUser=False),
             ]
         )
     )
-    assert attr.qbo_customer_id_for(VERIFIED) == "QBO-B"
+    with pytest.raises(ToolDriverError):
+        attr.qbo_customer_id_for(VERIFIED)
+
+
+def test_qbo_customer_id_for_si_li_shape_fails_closed() -> None:
+    # The real Si Li shape from the live endpoint: ONE Shopify GID with {4902, CONFIRMED}
+    # AND {3690, AUTO_MATCHED} — two distinct TRUSTED qbo ids. Before the owner decision
+    # this resolved to 4902 (CONFIRMED outranks AUTO_MATCHED); now it FAILS CLOSED.
+    attr = _attr(
+        FakeGadgetClient(
+            [
+                _mapping(id="c", qboCustomerId="4902", status="CONFIRMED"),
+                _mapping(id="am", qboCustomerId="3690", status="AUTO_MATCHED"),
+            ]
+        )
+    )
+    with pytest.raises(ToolDriverError):
+        attr.qbo_customer_id_for(VERIFIED)
+    # invoice_owned_by routes through the SAME forward resolution -> also fails closed,
+    # so a single-invoice lookup for a Si-Li-shaped customer discloses nothing either.
+    with pytest.raises(ToolDriverError):
+        attr.invoice_owned_by("4902", VERIFIED)
 
 
 def test_qbo_customer_id_for_gadget_fault_fails_closed() -> None:
@@ -197,9 +238,19 @@ def test_invoice_owned_by_true_for_matching_confirmed() -> None:
     assert attr.__class__ is QboAttribution  # sanity
 
 
-def test_invoice_owned_by_false_for_other_customer() -> None:
-    attr = _attr(FakeGadgetClient([_mapping(shopifyCustomerGid=OTHER)]))
+def test_invoice_owned_by_false_when_verified_maps_to_a_different_qbo_id() -> None:
+    # Verified customer HAS a trusted mapping, but to a DIFFERENT qbo id than the
+    # invoice's -> positively not theirs -> False (clean not-found, no disclosure).
+    attr = _attr(FakeGadgetClient([_mapping(qboCustomerId="QBO-OTHER")]))
     assert attr.invoice_owned_by(QBO_ID, VERIFIED) is False
+
+
+def test_invoice_owned_by_unattributable_verified_fails_closed() -> None:
+    # Verified customer has NO trusted mapping of their own -> fail closed (raise),
+    # never a False that could be narrated as a clean answer.
+    attr = _attr(FakeGadgetClient([_mapping(shopifyCustomerGid=OTHER)]))
+    with pytest.raises(ToolDriverError):
+        attr.invoice_owned_by(QBO_ID, VERIFIED)
 
 
 def test_invoice_owned_by_unconfirmed_fails_closed() -> None:
@@ -238,9 +289,9 @@ def test_invoice_owned_by_tolerates_bare_numeric_gid() -> None:
 
 def test_query_is_bounded_by_the_per_call_deadline() -> None:
     class SlowClient:
-        def query_customer_mappings(self, **_: Any) -> list[dict[str, Any]]:
+        def fetch_mapping(self, _: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
             time.sleep(0.5)
-            return []
+            return [], {}
 
     attr = QboAttribution(SlowClient(), deadline_ms=20)
     with pytest.raises(ToolDriverError) as excinfo:
@@ -269,30 +320,36 @@ def test_build_is_total_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(attr, QboAttribution)
 
 
-def test_records_envelope_fails_closed_on_graphql_errors() -> None:
-    from toee_hermes.drivers.gadget import _records_from_envelope
+def test_mappings_and_reverse_fails_closed_on_error_body() -> None:
+    from toee_hermes.drivers.gadget import _mappings_and_reverse
 
+    # A 200 carrying an ``error`` field is a fault, not "no mapping" -> raise.
     with pytest.raises(ToolDriverError):
-        _records_from_envelope({"errors": [{"message": "denied"}]})
+        _mappings_and_reverse({"error": "unauthorized"})
 
 
-def test_records_envelope_reads_connection_nodes() -> None:
-    from toee_hermes.drivers.gadget import _records_from_envelope
+def test_mappings_and_reverse_reads_endpoint_body() -> None:
+    from toee_hermes.drivers.gadget import _mappings_and_reverse
 
     parsed = {
-        "data": {"qboCustomerMappings": {"edges": [{"node": _mapping()}]}}
+        "shopifyGid": VERIFIED,
+        "mappings": [{"qboCustomerId": "4902", "status": "CONFIRMED"}],
+        "reverse": {"4902": [{"shopifyGid": VERIFIED, "status": "CONFIRMED"}]},
     }
-    assert _records_from_envelope(parsed) == [_mapping()]
+    assert _mappings_and_reverse(parsed) == (
+        [{"qboCustomerId": "4902", "status": "CONFIRMED"}],
+        {"4902": [{"shopifyGid": VERIFIED, "status": "CONFIRMED"}]},
+    )
 
 
-def test_records_envelope_empty_connection_is_clean_empty() -> None:
-    from toee_hermes.drivers.gadget import _records_from_envelope
+def test_mappings_and_reverse_empty_is_clean_empty() -> None:
+    from toee_hermes.drivers.gadget import _mappings_and_reverse
 
-    assert _records_from_envelope({"data": {"qboCustomerMappings": {"edges": []}}}) == []
+    assert _mappings_and_reverse({"mappings": [], "reverse": {}}) == ([], {})
 
 
-def test_records_envelope_unrecognized_shape_fails_closed() -> None:
-    from toee_hermes.drivers.gadget import _records_from_envelope
+def test_mappings_and_reverse_unrecognized_shape_fails_closed() -> None:
+    from toee_hermes.drivers.gadget import _mappings_and_reverse
 
     with pytest.raises(ToolDriverError):
-        _records_from_envelope({"data": {"somethingElse": {}}})
+        _mappings_and_reverse({"somethingElse": {}})

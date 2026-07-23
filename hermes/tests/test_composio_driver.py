@@ -419,6 +419,32 @@ class FakeAttributor:
         return qbo_customer_id == self._qbo_id
 
 
+def _colliding_gadget() -> Any:
+    """Fake endpoint client for the A1 collision: two trusted Shopify GIDs share one QBO id.
+
+    Mirrors the real ``/internal/hermes/qbo-customer-mapping`` response: the forward
+    ``mappings`` are the queried GID's rows; ``reverse[qbo_id]`` is EVERY row sharing that
+    canonical qbo id, including the second (colliding) customer. The guard reads it off this
+    one response and fails closed. (Revert the guard and OL49942 leaks to gid 1001.)
+    """
+
+    class _CollidingGadget:
+        def fetch_mapping(
+            self, shopify_gid: str
+        ) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+            return (
+                [{"qboCustomerId": QBO_CUSTOMER_ID, "status": "AUTO_MATCHED"}],
+                {
+                    QBO_CUSTOMER_ID: [
+                        {"shopifyGid": VERIFIED_CUSTOMER_ID, "status": "AUTO_MATCHED"},
+                        {"shopifyGid": "gid://shopify/Customer/2002", "status": "AUTO_MATCHED"},
+                    ]
+                },
+            )
+
+    return _CollidingGadget()
+
+
 def _driver_with_attr(client: FakeComposioClient, attributor: Any) -> ComposioDriver:
     return ComposioDriver(
         client,
@@ -475,17 +501,8 @@ def test_qbo_list_live_fails_closed_on_qbo_id_collision_does_not_leak() -> None:
     # gadget.qbo_customer_id_for and this leaks OL49942 to gid 1001.)
     from toee_hermes.drivers.gadget import QboAttribution
 
-    class _CollidingGadget:
-        def query_customer_mappings(self, **_: Any) -> list[dict[str, Any]]:
-            return [
-                {"id": "a", "qboCustomerId": QBO_CUSTOMER_ID,
-                 "shopifyCustomerGid": VERIFIED_CUSTOMER_ID, "status": "AUTO_MATCHED"},
-                {"id": "b", "qboCustomerId": QBO_CUSTOMER_ID,
-                 "shopifyCustomerGid": "gid://shopify/Customer/2002", "status": "AUTO_MATCHED"},
-            ]
-
     client = FakeComposioClient(_live_list_raw())
-    driver = _driver_with_attr(client, QboAttribution(_CollidingGadget()))
+    driver = _driver_with_attr(client, QboAttribution(_colliding_gadget()))
     with pytest.raises(ToolDriverError):
         driver.execute(
             ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
@@ -670,17 +687,8 @@ def test_qbo_ar_summary_fails_closed_on_qbo_id_collision_does_not_leak() -> None
     # one QBO id must fail closed -- the AR summary must not become a way around it.
     from toee_hermes.drivers.gadget import QboAttribution
 
-    class _CollidingGadget:
-        def query_customer_mappings(self, **_: Any) -> list[dict[str, Any]]:
-            return [
-                {"id": "a", "qboCustomerId": QBO_CUSTOMER_ID,
-                 "shopifyCustomerGid": VERIFIED_CUSTOMER_ID, "status": "AUTO_MATCHED"},
-                {"id": "b", "qboCustomerId": QBO_CUSTOMER_ID,
-                 "shopifyCustomerGid": "gid://shopify/Customer/2002", "status": "AUTO_MATCHED"},
-            ]
-
     client = FakeComposioClient(_live_list_raw())
-    driver = _driver_with_attr(client, QboAttribution(_CollidingGadget()))
+    driver = _driver_with_attr(client, QboAttribution(_colliding_gadget()))
     with pytest.raises(ToolDriverError):
         driver.execute(
             ToolRequest(tool="toee_qbo_read", action="get_ar_summary", params={}),
@@ -905,3 +913,41 @@ def test_action_mapping_covers_exactly_the_layer1_actions() -> None:
         assert spec.app in {"shopify", "qbo", "square"}
         callable_spec = spec.request_mapper is not None and spec.response_mapper is not None
         assert callable_spec != (spec.unavailable is not None), key
+
+
+# --- S16 probe: connected-account STATUS honesty (0.0.4 S28 fold-in, FR-24) ---
+
+
+def test_probe_rejects_present_but_inactive_account() -> None:
+    # Composio returns the account record even after a revoked grant, with a dead
+    # status. Checking EXISTENCE would read "Healthy"; the probe must require an
+    # affirmatively-active status and record `failed`, not `ok`.
+    from toee_hermes.drivers.composio.driver import _assert_connected_account_active
+
+    class _Inactive:
+        status = "INACTIVE"
+
+    with pytest.raises(ToolDriverError):
+        _assert_connected_account_active(_Inactive(), "qbo")
+
+
+def test_probe_rejects_unknown_status_fails_closed() -> None:
+    from toee_hermes.drivers.composio.driver import _assert_connected_account_active
+
+    class _Mystery:
+        status = "SOMETHING_NEW"
+
+    with pytest.raises(ToolDriverError):
+        _assert_connected_account_active(_Mystery(), "shopify")
+    # A missing status attribute is also fail-closed, never ok.
+    with pytest.raises(ToolDriverError):
+        _assert_connected_account_active(object(), "shopify")
+
+
+def test_probe_accepts_affirmatively_active_account() -> None:
+    from toee_hermes.drivers.composio.driver import _assert_connected_account_active
+
+    class _Active:
+        status = "ACTIVE"
+
+    _assert_connected_account_active(_Active(), "qbo")  # must not raise
