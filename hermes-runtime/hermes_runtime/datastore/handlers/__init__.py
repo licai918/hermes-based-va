@@ -16,6 +16,7 @@ from .cases import case_handlers
 from .dead_letter import dead_letter_handlers
 from .eval_review import eval_review_handlers
 from .identity import identity_handlers
+from .integrations import integrations_handlers
 from .knowledge import knowledge_handlers
 from .memory import memory_handlers
 from .metrics import metrics_handlers
@@ -50,6 +51,7 @@ def build_datastore_registry() -> DatastoreRegistry:
         metrics_handlers(),
         retention_handlers(),
         dead_letter_handlers(),
+        integrations_handlers(),
     )
 
 

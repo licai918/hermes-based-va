@@ -119,6 +119,10 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_knowledge_ops", "enqueue_corpus_reingest"),
         ("toee_job_queue", "list_dead_letters"),
         ("toee_job_queue", "replay_job"),
+        # 0.0.4 S15 (FR-23): the /admin/integrations status read exposes the
+        # credential-configuration surface of every external backend -- not a
+        # primitive any live turn may reach. Admin BFF deterministic dispatch only.
+        ("toee_integrations", "get_integrations_status"),
     }
 )
 

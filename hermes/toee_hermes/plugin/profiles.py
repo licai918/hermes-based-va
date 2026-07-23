@@ -80,6 +80,14 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # nothing to a live agent's tool loop; it is what lets the admin BFF's
             # deterministic tools:dispatch reach it over this profile's API.
             "toee_job_queue",
+            # 0.0.4 S15 (FR-23): the /admin/integrations status read. A CREDENTIAL
+            # surface, so the workbench gates it to admin-only (lib/auth/access.ts),
+            # deliberately NARROWER than the supervisor+admin dead-letter operations
+            # view above -- integrations touch credentials, dead letters touch
+            # operations (gap-review P4). Allowlisted here because the admin BFF
+            # dispatches it over this profile's API, mirroring toee_job_queue; the
+            # single action is agent-excluded, so nothing reaches a model tool loop.
+            "toee_integrations",
         }
     ),
 }

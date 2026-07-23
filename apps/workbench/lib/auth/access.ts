@@ -21,11 +21,30 @@ function isAdminPath(pathname: string): boolean {
   return pathname.startsWith("/admin") || pathname.startsWith("/api/admin");
 }
 
+// The integrations status page + its BFF are ADMIN-ONLY (0.0.4 S15, FR-23,
+// gap-review P4): integrations are a CREDENTIAL surface, deliberately narrower
+// than the rest of /admin/* (supervisor+admin, an OPERATIONS surface like the
+// dead-letter view). A supervisor triaging stuck work needs the dead-letter view;
+// only an admin should see the credential-configuration status of every backend.
+function isAdminOnlyPath(pathname: string): boolean {
+  return (
+    pathname.startsWith("/admin/integrations") ||
+    pathname.startsWith("/api/admin/integrations")
+  );
+}
+
 export function requiresSupervisorOrAdmin(pathname: string): boolean {
   return isAuditPath(pathname) || isAdminPath(pathname);
 }
 
+export function requiresAdmin(pathname: string): boolean {
+  return isAdminOnlyPath(pathname);
+}
+
 export function canAccess(role: WorkbenchRoleId, pathname: string): boolean {
+  if (requiresAdmin(pathname)) {
+    return role === WORKBENCH_ROLES.admin;
+  }
   if (requiresSupervisorOrAdmin(pathname)) {
     return (
       role === WORKBENCH_ROLES.supervisor || role === WORKBENCH_ROLES.admin

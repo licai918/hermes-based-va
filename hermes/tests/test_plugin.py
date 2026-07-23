@@ -316,7 +316,9 @@ def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
             (tool, action) in _AGENT_EXCLUDED_ACTIONS for action in TOOL_CATALOG[tool]
         )
     }
-    assert fully_excluded == {"toee_job_queue"}
+    # 0.0.4 S15 adds toee_integrations -- also fully agent-excluded (its single
+    # status read is admin-BFF-only, never a model tool loop).
+    assert fully_excluded == {"toee_job_queue", "toee_integrations"}
     assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"]) - fully_excluded
     assert "toee_sms_reply" not in toolsets
     assert "toee_square_payment_link" not in toolsets

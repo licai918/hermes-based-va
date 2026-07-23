@@ -61,6 +61,9 @@ ADR_0038_SUPERVISOR = {
     # surface reached over this profile's API by the admin BFF. Both actions are
     # agent-excluded, so nothing here reaches a model's tool loop.
     "toee_job_queue",
+    # 0.0.4 S15 (FR-23): the /admin/integrations status read -- a CREDENTIAL
+    # surface reached over this profile's API by the admin BFF. Agent-excluded.
+    "toee_integrations",
 }
 
 

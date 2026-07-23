@@ -132,6 +132,15 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # call. Replay in particular re-runs arbitrary queued work, which is not a
     # primitive any live turn may reach.
     "toee_job_queue": ("list_dead_letters", "replay_job"),
+    # 0.0.4 S15 (FR-23): the /admin/integrations status-page read. One read-only
+    # action reporting, per integration (Composio Shopify/QBO/Square toolkits,
+    # EasyRoutes, SimpleTexting, OpenRouter, and the Gadget mapping endpoint),
+    # config presence + pinned version + last successful call + last probe result.
+    # Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
+    # precedent) -- reached only via the admin BFF's deterministic tools:dispatch
+    # call on the supervisor_admin profile, never a live agent's tool loop. It
+    # returns only status booleans + version pins, never a secret value (NFR-6).
+    "toee_integrations": ("get_integrations_status",),
 }
 
 

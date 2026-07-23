@@ -285,6 +285,15 @@ class OpenRouterConfig:
     fallback_model: str = OPENROUTER_FALLBACK_MODEL
 
 
+def openrouter_configured() -> bool:
+    """Whether ``OPENROUTER_API_KEY`` is present (for the S15/S16 health surface).
+
+    Mirrors ``easyroutes_configured``/``gadget_configured``: env-presence only, no
+    key value ever returned. The S16 probe reuses this before spending a real call.
+    """
+    return bool((os.environ.get(_API_KEY_ENV) or "").strip())
+
+
 def resolve_openrouter_config() -> OpenRouterConfig:
     """Resolve the OpenRouter connection from the environment (fail-closed).
 

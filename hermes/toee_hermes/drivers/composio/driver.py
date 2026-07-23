@@ -811,6 +811,40 @@ def pinned_toolkit_versions(connected_accounts: dict[str, str]) -> dict[str, str
     return versions
 
 
+def composio_config_status() -> dict[str, dict[str, Any]]:
+    """Per-toolkit config presence for the S15/S16 status surface. TOTAL, no secrets.
+
+    Returns ``{toolkit_key: {configured, pinned_version, connected, api_key_present,
+    account_env, version_env}}`` for each Layer-1 toolkit. Reports ONLY booleans and
+    the version-pin STRING (a Composio toolkit version like ``"20250101"`` — a
+    version, not a credential); it NEVER returns the API key or the connected-account
+    id value (NFR-6, secret-scan gate).
+
+    Deliberately never raises (unlike :func:`pinned_toolkit_versions`): a status read
+    must SHOW a half-configured toolkit, not fail closed on it. ``configured`` mirrors
+    exactly what a live call needs — the API key, that toolkit's connected account,
+    and a real (non-``latest``) version pin — so green here means the tool would
+    actually run, not merely that the code path exists.
+    """
+    api_key_present = bool(os.environ.get("COMPOSIO_API_KEY"))
+    result: dict[str, dict[str, Any]] = {}
+    for toolkit in TOOLKIT_SLUG:
+        account_env = CONNECTED_ACCOUNT_ENV[toolkit]
+        version_env = TOOLKIT_VERSION_ENV[toolkit]
+        connected = bool(os.environ.get(account_env))
+        pin = (os.environ.get(version_env) or "").strip()
+        has_pin = bool(pin) and pin != "latest"
+        result[toolkit] = {
+            "configured": api_key_present and connected and has_pin,
+            "pinned_version": pin if has_pin else None,
+            "connected": connected,
+            "api_key_present": api_key_present,
+            "account_env": account_env,
+            "version_env": version_env,
+        }
+    return result
+
+
 def require_composio_configuration() -> None:
     """Boot gate: refuse to start a tool-executing process on a broken Composio config.
 

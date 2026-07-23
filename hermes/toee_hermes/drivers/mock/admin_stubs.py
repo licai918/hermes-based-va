@@ -191,6 +191,43 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 "status": "unavailable",
             },
         },
+        # 0.0.4 S15 (FR-23): the /admin/integrations status read. Config presence is
+        # a live, env-backed question the datastore handler (hermes-runtime) answers;
+        # the mock backend makes no live external calls (INTEGRATION_DRIVER is not
+        # `composio` under a mock run), so it reports every integration as
+        # not_configured with an honest reason rather than a fabricated "healthy" --
+        # same discipline as enqueue_corpus_reingest returning "unavailable".
+        "toee_integrations": {
+            "get_integrations_status": lambda params, context: {
+                "active_driver": "mock",
+                "integrations": [
+                    {
+                        "key": key,
+                        "label": label,
+                        "kind": kind,
+                        "configured": False,
+                        "status": "not_configured",
+                        "pinned_version": None,
+                        "last_successful_call": None,
+                        "last_probe": None,
+                        "detail": "Mock backend: no live integration view.",
+                    }
+                    for key, label, kind in (
+                        ("shopify", "Shopify (Composio)", "composio_toolkit"),
+                        ("qbo", "QuickBooks (Composio)", "composio_toolkit"),
+                        ("square", "Square (Composio)", "composio_toolkit"),
+                        ("easyroutes", "EasyRoutes", "easyroutes"),
+                        ("simpletexting", "SimpleTexting", "simpletexting"),
+                        ("openrouter", "OpenRouter", "openrouter"),
+                        (
+                            "gadget",
+                            "Gadget mapping endpoint (paymentstatussync)",
+                            "gadget",
+                        ),
+                    )
+                ],
+            },
+        },
         "toee_eval_review": {
             "list_eval_runs": lambda params, context: {"runs": []},
             "get_eval_run": lambda params, context: {

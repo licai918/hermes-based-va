@@ -61,6 +61,15 @@ class SimpleTextingConfig:
     account_phone: str = ""
 
 
+def simpletexting_configured() -> bool:
+    """Whether ``SIMPLETEXTING_API_TOKEN`` is present (for the S15/S16 health surface).
+
+    Mirrors ``easyroutes_configured``/``gadget_configured``: env-presence only, no
+    token value ever returned. The S16 probe reuses this before a live token check.
+    """
+    return bool((os.environ.get(_API_TOKEN_ENV) or "").strip())
+
+
 def resolve_simpletexting_config() -> SimpleTextingConfig:
     """Resolve the SimpleTexting connection from the environment (fail-closed).
 

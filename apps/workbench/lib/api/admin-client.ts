@@ -6,6 +6,7 @@ import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { DeadLetterView, ReplayReceipt } from "@/lib/bff/admin/dead-letter";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/bff/admin/eval";
+import type { IntegrationsView } from "@/lib/bff/admin/integrations";
 import type {
   CorpusStatus,
   PolicySlot,
@@ -231,4 +232,10 @@ export function getDeadLetterView(): Promise<DeadLetterView> {
 
 export function replayJob(jobId: string): Promise<ReplayReceipt> {
   return sendJson<ReplayReceipt>("POST", "/api/admin/dead-letter/replay", { jobId });
+}
+
+// --- Integrations status page (0.0.4 S15, FR-23) -----------------------------
+
+export function getIntegrationsStatus(): Promise<IntegrationsView> {
+  return getJson<IntegrationsView>("/api/admin/integrations");
 }

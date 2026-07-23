@@ -14,6 +14,10 @@ export const ROUTES = {
   adminAgentExperience: "/admin/agent-experience",
   // Aggregate-metrics admin panel (0.0.3 S26, FR-28).
   adminMetrics: "/admin/metrics",
+  // Integrations status page (0.0.4 S15, FR-23). Admin-ONLY (a credential
+  // surface), deliberately narrower than the rest of /admin/* -- see
+  // lib/auth/access.ts.
+  adminIntegrations: "/admin/integrations",
 } as const;
 
 export function profileForApiPrefix(

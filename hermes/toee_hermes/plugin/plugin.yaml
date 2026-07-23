@@ -74,5 +74,6 @@ provides_tools:
   - toee_retention__get_retention_status
   - toee_job_queue__list_dead_letters
   - toee_job_queue__replay_job
+  - toee_integrations__get_integrations_status
 provides_hooks:
   - pre_llm_call

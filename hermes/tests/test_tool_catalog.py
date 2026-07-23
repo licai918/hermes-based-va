@@ -35,6 +35,8 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_retention",
         # 0.0.4 S05 (FR-13): dead-letter view + governed Replay.
         "toee_job_queue",
+        # 0.0.4 S15 (FR-23): the /admin/integrations status-page read.
+        "toee_integrations",
     }
 
 
