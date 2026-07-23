@@ -13,6 +13,7 @@ results, never raises that escape dispatch.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any, Optional
 
@@ -21,6 +22,7 @@ import pytest
 from toee_hermes.drivers.easyroutes.driver import (
     EasyroutesClient,
     EasyroutesDriver,
+    _HttpEasyroutesClient,
     _shopify_customer_gid,
     build_easyroutes_driver,
 )
@@ -282,6 +284,92 @@ def test_build_with_credentials_yields_a_live_client_driver(monkeypatch) -> None
     assert driver.kind == "easyroutes"
     assert driver._config_error is None
     assert driver._client is not None
+
+
+# --- live client body-shape parsing (S26 empty-vs-error trap) ---------------
+#
+# Unlike the FakeClient tests above (which inject already-parsed records and
+# never touch the wire-shape parsing), these exercise the real
+# ``_HttpEasyroutesClient.fetch_deliveries`` -- specifically the branch that
+# decides whether a 200 body is a recognized-empty result or a fault. That
+# decision is the one this fix wave changed; ``urlopen`` is faked at the
+# module level so no network runs.
+
+
+class _FakeHttpResponse:
+    """Minimal context-manager stand-in for ``http.client.HTTPResponse``."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _http_client() -> _HttpEasyroutesClient:
+    return _HttpEasyroutesClient(
+        base="https://example.test/api", token="tok", client_id="cid"
+    )
+
+
+def _patch_urlopen(monkeypatch: pytest.MonkeyPatch, body: Any) -> None:
+    payload = json.dumps(body).encode()
+    monkeypatch.setattr(
+        "toee_hermes.drivers.easyroutes.driver.urllib.request.urlopen",
+        lambda *a, **kw: _FakeHttpResponse(payload),
+    )
+
+
+def test_recognized_empty_deliveries_list_is_an_honest_no_delivery(monkeypatch) -> None:
+    # A present-but-empty wrapper list is a RECOGNIZED shape -- a genuine
+    # 2xx-empty, not a fault. The client must return [], and end-to-end that
+    # is the governed "no delivery" policy block, never Tool Unavailable.
+    _patch_urlopen(monkeypatch, {"deliveries": []})
+    client = _http_client()
+    assert client.fetch_deliveries(order_number="1042") == []
+
+    result = _call(
+        _driver(client),
+        "get_delivery_status",
+        {"order_number": "1042"},
+        identity=_verified(),
+    )
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_unrecognized_dict_body_fails_closed_not_a_silent_empty(monkeypatch) -> None:
+    # A 200 body the parser does not affirmatively recognize as a delivery
+    # list (no top-level list, no deliveries/data/results list, no single
+    # delivery object) must NOT fall through to `return []` -- that would
+    # become a governed "no delivery" the persona narrates to the customer as
+    # fact, exactly the QBO `list_customer_invoices`/Composio `successful:
+    # true` S26 trap this module's docstring warns about. It must raise and
+    # surface as governed unavailable instead.
+    #
+    # Before the fix: this body reached the old `return []` catch-all and the
+    # test below failed (result.ok was True / error_class was "policy_blocked"
+    # instead of "configuration_missing"). After the fix it raises.
+    _patch_urlopen(monkeypatch, {"unexpected": "shape", "meta": {"page": 1}})
+    client = _http_client()
+    with pytest.raises(ToolDriverError) as excinfo:
+        client.fetch_deliveries(order_number="1042")
+    assert excinfo.value.error_class == "configuration_missing"
+
+    result = _call(
+        _driver(client),
+        "get_delivery_status",
+        {"order_number": "1042"},
+        identity=_verified(),
+    )
+    assert result.ok is False
+    assert result.error_class == "configuration_missing"
 
 
 if __name__ == "__main__":  # pragma: no cover

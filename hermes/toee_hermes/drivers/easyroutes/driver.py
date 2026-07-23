@@ -379,6 +379,15 @@ class _HttpEasyroutesClient:
         )
         url = f"{self._base}/deliveries" + (f"?{query}" if query else "")
         req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        # ponytail: the socket timeout is the FULL per-call deadline, which is
+        # correct as long as this method makes exactly ONE request (the
+        # ThreadPool wall-clock in EasyroutesDriver._fetch_bounded is the
+        # authoritative per-CALL bound either way). If fetch_deliveries ever
+        # fans out to N requests, an abandoned socket per request could linger
+        # up to (N-1)x the deadline past the governed timeout -- divide this
+        # by the expected request count, or track remaining wall-clock across
+        # requests, before adding a second request here (the S12 per-request-
+        # vs-per-call lesson).
         socket_timeout = _deadline_ms() / 1000
         try:
             with urllib.request.urlopen(req, timeout=socket_timeout) as resp:
@@ -406,15 +415,36 @@ class _HttpEasyroutesClient:
 
         # UNVERIFIED: the records may be top-level or under a wrapper key.
         if isinstance(parsed, list):
+            # Recognized shape (including a genuinely empty list): honest
+            # "no delivery", never a masked error.
             return parsed
         if isinstance(parsed, dict):
-            records = parsed.get("deliveries") or parsed.get("data") or parsed.get("results")
-            if isinstance(records, list):
-                return records
+            for key in ("deliveries", "data", "results"):
+                records = parsed.get(key)
+                if isinstance(records, list):
+                    # Recognized shape, honest empty included. Deliberately
+                    # `isinstance(..., list)` and NOT `parsed.get(key) or ...`:
+                    # an `or` chain treats `{"deliveries": []}` (a real,
+                    # recognized empty result) as falsy and falls through to
+                    # the unrecognized-shape branch below -- which used to
+                    # `return []` there too, silently narrating a fault as
+                    # "no delivery" (the exact QBO/Composio S26 trap this
+                    # module's docstring warns about).
+                    return records
             # A single object is one record.
             if any(k in parsed for k in ("order_number", "orderNumber", "status")):
                 return [parsed]
-            return []
+            # Recognized-empty is ONLY a present list (top-level, or under
+            # deliveries/data/results) or a single delivery object. Any other
+            # dict shape is NOT a shape this parser affirmatively recognizes
+            # as a delivery list -- it's a FAULT, not "no delivery". Fail
+            # closed (governed unavailable) rather than fabricate an empty
+            # result the persona would narrate as fact (FR-21). The live wire
+            # shape is still UNVERIFIED, so lean conservative here.
+            raise ToolDriverError(
+                "configuration_missing",
+                "EasyRoutes returned a body shape the parser does not recognize.",
+            )
         raise ToolDriverError(
             "configuration_missing", "EasyRoutes returned an unexpected shape."
         )
