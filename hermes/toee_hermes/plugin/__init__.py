@@ -16,6 +16,7 @@ from typing import Callable, Optional
 
 from ..drivers.base import resolve_integration_driver
 from ..drivers.composio import COMPOSIO_LAYER1_TOOLS, build_composio_driver
+from ..drivers.easyroutes import EASYROUTES_READ_TOOL, build_easyroutes_driver
 from ..drivers.mock import MockDriver, create_all_mock_handlers
 from ..execute import ToolDriver
 from ..gates import create_turn_binding_gate
@@ -131,8 +132,13 @@ def _build_driver_selector(
     An ``injected`` driver (the eval recording path, :func:`register_eval`)
     overrides ALL tools and short-circuits backend resolution, so eval/replay never
     builds a live driver. Otherwise ``INTEGRATION_DRIVER`` selects the backend:
-    ``mock`` (default) serves every tool, while ``composio`` routes only the three
-    Layer 1 tools to the Composio driver and leaves the rest on mock (ADR-0128).
+    ``mock`` (default) serves every tool, while ``composio`` routes the three
+    Layer 1 tools to the Composio driver AND ``toee_easyroutes_read`` to the direct
+    EasyRoutes REST driver (FR-20 — a per-tool overlay beside Composio, NOT a new
+    ``INTEGRATION_DRIVER`` axis), leaving the rest on mock. So a live deployment
+    answers delivery questions from EasyRoutes and never falls back to the mock
+    (FR-21); ``build_easyroutes_driver`` is total (a missing token yields a driver
+    that fails closed per call, so Shopify/QBO/Square stay live regardless).
 
     ``extra_drivers`` is a per-tool override the embedding layer supplies for the
     live async turn (S04): precedence is ``extra_drivers[tool]`` -> composio ->
@@ -152,11 +158,16 @@ def _build_driver_selector(
     kind = resolve_integration_driver()
     mock_driver = MockDriver(create_all_mock_handlers())
     composio_driver = build_composio_driver() if kind == "composio" else None
+    # Built eagerly like composio, but total (never raises here — see
+    # build_easyroutes_driver), so a missing token can't escape registration.
+    easyroutes_driver = build_easyroutes_driver() if kind == "composio" else None
     overrides = dict(extra_drivers or {})
 
     def select(tool: str) -> ToolDriver:
         if tool in overrides:
             return overrides[tool]
+        if easyroutes_driver is not None and tool == EASYROUTES_READ_TOOL:
+            return easyroutes_driver
         if composio_driver is not None and tool in COMPOSIO_LAYER1_TOOLS:
             return composio_driver
         return mock_driver
