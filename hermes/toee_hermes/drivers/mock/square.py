@@ -12,6 +12,12 @@ than deriving one, and an invoice with no stored link is refused — the same
 answer the live path owes when no link has been set up. Outputs stay
 deterministic, with no external Square call.
 
+ponytail: the mock still returns an ``amount``; the live SQUARE_RETRIEVE_PAYMENT_LINK
+response carries no money field (only ``orderId``), so dev/tests see a value prod
+cannot supply in one call. Inert while the tool is fully gated (unavailable in
+prod). Resolve when the amount source is wired — owner decision 2026-07-23: amount
+comes from QBO invoice data, which is itself blocked on the QBO ownership fix (S27).
+
 Handlers receive ``(params, context)`` (faithful to the TS handlers). The Session
 Identity Snapshot lives at ``context.identity`` (ADR-0043): ``None`` for an
 unmatched caller, otherwise a dict carrying ``outcome`` and, when verified, the
