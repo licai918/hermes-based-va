@@ -131,6 +131,63 @@ def test_qbo_customer_id_for_gadget_fault_fails_closed() -> None:
         attr.qbo_customer_id_for(VERIFIED)
 
 
+# --- A1 collision guard: many-GID -> one-QBO-id must fail closed on LIST -------
+
+
+def test_qbo_customer_id_for_fails_closed_on_gid_collision() -> None:
+    # The real cross-customer-disclosure scenario: two DIFFERENT trusted Shopify
+    # customers both map to the SAME QBO id. Forward-resolving A's QBO id succeeds
+    # (both rows agree on it), but listing every invoice billed to that QBO id would
+    # hand B's invoices to A. The guard round-trips through the reverse direction and
+    # fails closed. FakeGadgetClient returns both rows for BOTH the forward and the
+    # reverse query, which is exactly the live collision.
+    gid_a = VERIFIED
+    gid_b = OTHER
+    attr = _attr(
+        FakeGadgetClient(
+            [
+                _mapping(id="a", shopifyCustomerGid=gid_a, status="AUTO_MATCHED"),
+                _mapping(id="b", shopifyCustomerGid=gid_b, status="AUTO_MATCHED"),
+            ]
+        )
+    )
+    with pytest.raises(ToolDriverError):
+        attr.qbo_customer_id_for(gid_a)
+
+
+def test_qbo_customer_id_for_single_owner_still_lists() -> None:
+    # No over-tightening: the normal one-GID-one-QBO-id case still resolves.
+    attr = _attr(FakeGadgetClient([_mapping()]))
+    assert attr.qbo_customer_id_for(VERIFIED) == QBO_ID
+
+
+# --- canonical QBO id: representational variants must not deny a legit customer
+
+
+def test_canonical_qbo_id_matches_app_normalization() -> None:
+    from toee_hermes.drivers.gadget import _canonical_qbo_id
+
+    # Mirrors the app's canonicalQboCustomerIdKey: "4902", 4902, " 4902 ", "004902"
+    # all collapse to one key so a legit customer is never denied their own invoices.
+    assert (
+        _canonical_qbo_id("4902")
+        == _canonical_qbo_id(4902)
+        == _canonical_qbo_id(" 4902 ")
+        == _canonical_qbo_id("004902")
+        == "4902"
+    )
+    # Non-numeric ids are preserved (trimmed); empty/None -> None.
+    assert _canonical_qbo_id(" QBO-77 ") == "QBO-77"
+    assert _canonical_qbo_id("") is None
+    assert _canonical_qbo_id(None) is None
+
+
+def test_qbo_customer_id_for_returns_canonical_id() -> None:
+    # A mapping storing the numeric QBO id resolves to its canonical string form.
+    attr = _attr(FakeGadgetClient([_mapping(qboCustomerId=4902)]))
+    assert attr.qbo_customer_id_for(VERIFIED) == "4902"
+
+
 # --- reverse: invoice QBO customer -> owned by this GID? ----------------------
 
 

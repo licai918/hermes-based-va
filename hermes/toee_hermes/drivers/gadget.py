@@ -115,6 +115,35 @@ def _clean(value: Any) -> Optional[str]:
     return value or None
 
 
+def _canonical_qbo_id(value: Any) -> Optional[str]:
+    """A QBO customer id in the owner app's canonical form, or None.
+
+    Mirrors the app's ``canonicalQboCustomerIdKey``
+    (``api/utils/qboCustomerMappingIndex.ts``): trim, and collapse a numeric string
+    to its integer form so ``"4902"``, ``4902``, ``" 4902 "`` and ``"004902"`` all
+    compare equal. A non-numeric id is returned trimmed as-is. This only aligns
+    REPRESENTATION — it never maps two genuinely different ids together, so it
+    cannot turn a non-match into a match (no disclosure risk); it only stops a
+    legitimate customer being denied their OWN invoices over ``"4902"`` vs ``4902``.
+
+    ponytail: integer ids only (QBO customer ids are integers). A non-integer
+    numeric like ``"4902.0"`` falls through to the string branch rather than being
+    truncated the way the app's ``Number()`` would — safe (fails toward non-match),
+    upgrade to float-trunc parity only if such ids ever appear.
+    """
+    if isinstance(value, bool):  # bool is an int subclass but never a customer id
+        return None
+    if isinstance(value, int):
+        return str(value)
+    text = _clean(value)
+    if text is None:
+        return None
+    try:
+        return str(int(text))
+    except ValueError:
+        return text
+
+
 def _normalize_gid(value: Any) -> Optional[str]:
     """A Shopify customer id in canonical gid form, or None.
 
@@ -211,13 +240,44 @@ class QboAttribution:
         records = self._query(shopify_customer_gid=verified_gid)
         trusted = [r for r in records if _is_trusted(r)]
         chosen = _resolve_single(trusted, "qboCustomerId")
-        qbo_id = _clean(chosen.get("qboCustomerId"))
+        qbo_id = _canonical_qbo_id(chosen.get("qboCustomerId"))
         if qbo_id is None:
             raise ToolDriverError(
                 "configuration_missing",
                 "Trusted qboCustomerMapping has an empty qboCustomerId.",
             )
+        # A1 collision guard (cross-customer disclosure). Listing EVERY invoice
+        # billed to ``qbo_id`` is only safe if ``qbo_id`` belongs to exactly this
+        # verified customer. The forward query above cannot see a many-GID ->
+        # one-qbo_id collision (two trusted Shopify customers sharing a QBO id) —
+        # it would hand customer B's invoices to A. Round-trip through the reverse
+        # direction and FAIL CLOSED if more than one trusted Shopify GID maps back
+        # to ``qbo_id``. This makes the forward/list path as fail-closed as the
+        # reverse/single path already is.
+        self._assert_sole_trusted_owner(qbo_id, verified_gid)
         return qbo_id
+
+    def _assert_sole_trusted_owner(self, qbo_id: str, verified_gid: str) -> None:
+        """Fail closed unless ``qbo_id`` maps back to exactly this one verified GID.
+
+        One extra Gadget query (the reverse direction), deadline-bounded like every
+        other ``_query``; a fault in it also fails closed. ponytail: worst case is
+        2x the per-call deadline for a list — acceptable for a financial-disclosure
+        guard; move to a single shared budget only if list latency ever bites.
+        """
+        reverse = self._query(qbo_customer_id=qbo_id)
+        trusted_gids = {
+            _normalize_gid(r.get("shopifyCustomerGid"))
+            for r in reverse
+            if _is_trusted(r)
+        }
+        trusted_gids.discard(None)
+        if trusted_gids != {_normalize_gid(verified_gid)}:
+            raise ToolDriverError(
+                "configuration_missing",
+                "qboCustomerId maps to more than one trusted Shopify customer; "
+                "refusing to list to avoid cross-customer disclosure.",
+            )
 
     def invoice_owned_by(self, qbo_customer_id: str, verified_gid: str) -> bool:
         """Whether the QBO customer behind an invoice maps to this verified GID.

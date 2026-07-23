@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from ...errors import ToolDriverError
 from ..base import resolve_integration_driver
-from ..gadget import QboAttribution, build_qbo_attribution
+from ..gadget import QboAttribution, _canonical_qbo_id, build_qbo_attribution
 
 if TYPE_CHECKING:
     from ...execute import ToolRequest
@@ -428,12 +428,12 @@ def _qbo_owned_invoice(
         if direct == verified:
             return _public_invoice(invoice)
         raise ToolDriverError("not_found", "No matching invoice for this customer.")
-    qbo_id = invoice.get("qbo_customer_id")
-    if not qbo_id:
+    qbo_id = _canonical_qbo_id(invoice.get("qbo_customer_id"))
+    if qbo_id is None:
         # No Shopify linkage and no QBO customer ref: unattributable -> never disclose.
         raise ToolDriverError("not_found", "Invoice ownership could not be verified.")
     # Reverse join under the trust rule; raises on fault/missing/ambiguous mapping.
-    if attributor.invoice_owned_by(str(qbo_id), verified):
+    if attributor.invoice_owned_by(qbo_id, verified):
         return _public_invoice(invoice)
     raise ToolDriverError("not_found", "No matching invoice for this customer.")
 
@@ -461,7 +461,8 @@ def _qbo_owned_invoices(
             if direct == verified:
                 owned.append(inv)
             continue
-        if inv.get("qbo_customer_id") and str(inv["qbo_customer_id"]) == qbo_id:
+        inv_qbo = _canonical_qbo_id(inv.get("qbo_customer_id"))
+        if inv_qbo is not None and inv_qbo == qbo_id:
             owned.append(inv)
     return [_public_invoice(inv) for inv in owned]
 

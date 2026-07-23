@@ -465,6 +465,55 @@ def test_qbo_list_live_attributes_owned_invoice_via_gadget() -> None:
     }
 
 
+def test_qbo_list_live_fails_closed_on_qbo_id_collision_does_not_leak() -> None:
+    # A1 cross-customer disclosure: two DIFFERENT trusted Shopify customers both map
+    # to the SAME QBO id. Listing every invoice billed to that QBO id would hand the
+    # other customer's invoices to this one. Wired against a REAL QboAttribution over
+    # a fake Gadget client returning both trusted mappings, list_customer_invoices
+    # must fail closed and NOT return the qbo_X invoice. (Revert the guard in
+    # gadget.qbo_customer_id_for and this leaks OL49942 to gid 1001.)
+    from toee_hermes.drivers.gadget import QboAttribution
+
+    class _CollidingGadget:
+        def query_customer_mappings(self, **_: Any) -> list[dict[str, Any]]:
+            return [
+                {"id": "a", "qboCustomerId": QBO_CUSTOMER_ID,
+                 "shopifyCustomerGid": VERIFIED_CUSTOMER_ID, "status": "AUTO_MATCHED"},
+                {"id": "b", "qboCustomerId": QBO_CUSTOMER_ID,
+                 "shopifyCustomerGid": "gid://shopify/Customer/2002", "status": "AUTO_MATCHED"},
+            ]
+
+    client = FakeComposioClient(_live_list_raw())
+    driver = _driver_with_attr(client, QboAttribution(_CollidingGadget()))
+    with pytest.raises(ToolDriverError):
+        driver.execute(
+            ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+            _ctx(identity=_verified()),
+        )
+
+
+def test_qbo_list_live_matches_across_qbo_id_representations() -> None:
+    # Canonicalization: the mapping resolves QBO id "4902" but the invoice carries the
+    # int 4902 (and a leading-zero sibling). Raw-string compare would deny the legit
+    # customer their own invoice; canonical compare matches both.
+    raw = {
+        "QueryResponse": {
+            "Invoice": [
+                {"DocNumber": "N-1", "CustomerRef": {"value": 4902}, "Balance": 1.0},
+                {"DocNumber": "N-2", "CustomerRef": {"value": "004902"}, "Balance": 2.0},
+                {"DocNumber": "N-3", "CustomerRef": {"value": "5000"}, "Balance": 3.0},
+            ]
+        }
+    }
+    client = FakeComposioClient(raw)
+    driver = _driver_with_attr(client, FakeAttributor(qbo_id="4902"))
+    out = driver.execute(
+        ToolRequest(tool="toee_qbo_read", action="list_customer_invoices", params={}),
+        _ctx(identity=_verified()),
+    )
+    assert sorted(inv["invoice_number"] for inv in out) == ["N-1", "N-2"]
+
+
 def test_qbo_list_live_fails_closed_when_unattributable() -> None:
     # The S27 regression: a live customer whose mapping is missing/unconfirmed must
     # get a governed unavailable, NEVER an empty "you have no invoices" success.
