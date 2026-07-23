@@ -12,19 +12,51 @@ per-customer list path) and call this ONE aggregator. One definition, no drift.
 receivable, so it is not counted. This is the judgement the slice makes explicit:
 count + total are over invoices with ``balance > 0`` only.
 
-ponytail: v1 contract is count + total, no due-date aging buckets. Add 30/60/90
-buckets HERE if the persona ever reports ages -- that needs the invoice ``DueDate``
-field, an UNVERIFIED live probe (S27's list path extracts only ``Balance`` today).
+ponytail: v1 ceiling, two gaps, both safe-direction (never a disclosure risk):
+(1) no due-date aging buckets -- add 30/60/90 buckets HERE if the persona ever
+reports ages, which needs the invoice ``DueDate`` field, an UNVERIFIED live probe
+(S27's list path extracts only ``Balance`` today). (2) a negative balance (a
+credit memo) is excluded by ``balance > 0`` rather than netted against what's
+owed -- so a customer holding a credit sees their AR OVERSTATED, never understated.
+Add credit netting HERE (subtract negative balances from the total, or a separate
+``credit_balance`` field) if the persona ever needs to disclose credits.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from ..errors import ToolDriverError
+
 
 def _balance(invoice: dict[str, Any]) -> float:
+    """Parse one invoice's outstanding balance -- a money path, fails closed.
+
+    - ``None``/absent: a genuinely-absent balance is legitimately "not owed" --
+      excluded, not an error.
+    - ``int``/``float``: used directly.
+    - a numeric STRING (QBO's ``Balance`` may arrive JSON-stringified, e.g.
+      ``"804.56"``): parsed. This is the first arithmetic on ``balance`` in the
+      codebase (S27 only passed it through for display, so type never mattered),
+      and a silent str -> 0.0 coercion here would drop the invoice from both the
+      count and the total -- understating the customer's debt.
+    - anything else un-parseable (``"N/A"``, ``{}``, a bool): NOT a legitimate
+      zero. Raise a governed failure instead of guessing -- "can't total your
+      balance accurately" beats a confident wrong-low number (the same
+      silently-becomes-0 trap already hit by QBO empty-success, Composio
+      errors-in-success, and EasyRoutes dict->[]).
+    """
     value = invoice.get("balance")
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError) as err:
+        raise ToolDriverError(
+            "unexpected_error", f"Invoice balance is not a number: {value!r}."
+        ) from err
 
 
 def ar_summary(
@@ -58,4 +90,19 @@ if __name__ == "__main__":  # ponytail self-check: the open-filter + shape invar
     _out = ar_summary(_me, _mixed)
     assert _out["open_invoice_count"] == 2, "paid (balance 0) invoice must not count as open"
     assert _out["total_balance"] == 1292.0, _out
+
+    # string balances sum correctly (QBO may send Balance JSON-stringified)
+    _str_out = ar_summary(_me, [{"balance": "804.56"}, {"balance": " 1250 "}])
+    assert _str_out["total_balance"] == 2054.56, _str_out
+
+    # None/absent balance is a genuine non-owed exclusion, not an error
+    assert ar_summary(_me, [{"balance": None}, {}])["open_invoice_count"] == 0
+
+    # un-parseable balance fails closed rather than silently zeroing
+    for _bad in ("N/A", {}, True):
+        try:
+            ar_summary(_me, [{"balance": _bad}])
+            raise AssertionError(f"expected ToolDriverError for balance={_bad!r}")
+        except ToolDriverError:
+            pass
     print("qbo_ar self-check ok")

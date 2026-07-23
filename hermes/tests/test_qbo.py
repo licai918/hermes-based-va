@@ -186,6 +186,77 @@ def test_get_ar_summary_is_deterministic_across_calls() -> None:
     assert first.data == second.data
 
 
+def test_get_ar_summary_sums_a_numeric_string_balance() -> None:
+    # QBO's Balance may arrive as a JSON string. A string balance must sum like a
+    # number, not silently drop to 0 (the exact "malformed value -> silent 0" trap
+    # this track has hit before). Whitespace must not break the parse either.
+    data = QboMockData(
+        invoices=[
+            {"invoice_number": "INV-STR", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": "804.56"},
+            {"invoice_number": "INV-STR-WS", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": " 1250 "},
+        ]
+    )
+    result = _call("get_ar_summary", identity=VERIFIED_IDENTITY, data=data)
+
+    assert result.ok is True
+    assert result.data == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 2,
+        "total_balance": 2054.56,
+    }
+
+
+def test_get_ar_summary_excludes_none_balance_as_not_owed() -> None:
+    # A genuinely-absent balance (None) is legitimately "not owed" -- distinct
+    # from an un-parseable one -- so it stays excluded, not a governed failure.
+    data = QboMockData(
+        invoices=[
+            {"invoice_number": "INV-OPEN", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": 400.0},
+            {"invoice_number": "INV-NONE", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": None},
+        ]
+    )
+    result = _call("get_ar_summary", identity=VERIFIED_IDENTITY, data=data)
+
+    assert result.ok is True
+    assert result.data == {
+        "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+        "open_invoice_count": 1,
+        "total_balance": 400.0,
+    }
+
+
+def test_get_ar_summary_unparseable_string_balance_fails_closed() -> None:
+    # Neither a number nor a numeric string -- fail closed rather than silently
+    # zero the balance and understate what the customer owes.
+    data = QboMockData(
+        invoices=[
+            {"invoice_number": "INV-BAD", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": "N/A"},
+        ]
+    )
+    result = _call("get_ar_summary", identity=VERIFIED_IDENTITY, data=data)
+
+    assert result.ok is False
+    assert result.data is None
+
+
+def test_get_ar_summary_unparseable_dict_balance_fails_closed() -> None:
+    data = QboMockData(
+        invoices=[
+            {"invoice_number": "INV-BAD", "shopify_customer_id": VERIFIED_CUSTOMER_ID,
+             "customer_email": "me@example.com", "balance": {}},
+        ]
+    )
+    result = _call("get_ar_summary", identity=VERIFIED_IDENTITY, data=data)
+
+    assert result.ok is False
+    assert result.data is None
+
+
 # --- injectable data (Launch Eval fixture loader, ADR-0137) ----------------
 
 
