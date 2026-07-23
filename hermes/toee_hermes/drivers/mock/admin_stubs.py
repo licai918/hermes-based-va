@@ -227,6 +227,25 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                     )
                 ],
             },
+            # 0.0.4 S17 (FR-25): the two reconnect actions. The mock backend makes no
+            # live external calls, so it can neither generate a real Composio re-auth
+            # link nor run a live probe -- it returns a deterministic "unavailable"
+            # receipt, never a fabricated redirect URL or a fake "ok" (same discipline
+            # as replay_job / enqueue_corpus_reingest returning "unavailable").
+            "initiate_reconnect": lambda params, context: {
+                "integration_key": _read_string(
+                    params, "integration_key", "integrationKey", default=""
+                ),
+                "redirect_url": None,
+                "status": "unavailable",
+            },
+            "reprobe_now": lambda params, context: {
+                "integration_key": _read_string(
+                    params, "integration_key", "integrationKey", default=""
+                ),
+                "status": "unavailable",
+                "reason": "Mock backend: no live probe.",
+            },
         },
         "toee_eval_review": {
             "list_eval_runs": lambda params, context: {"runs": []},

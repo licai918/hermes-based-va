@@ -40,9 +40,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from psycopg.rows import dict_row
+from toee_hermes.errors import ToolDriverError
 
 from toee_hermes.drivers.base import resolve_integration_driver
-from toee_hermes.drivers.composio.driver import composio_config_status
+from toee_hermes.drivers.composio.driver import (
+    composio_config_status,
+    initiate_composio_reconnect,
+)
 from toee_hermes.drivers.easyroutes.driver import (
     API_TOKEN_ENV as EASYROUTES_TOKEN_ENV,
     easyroutes_configured,
@@ -52,8 +56,15 @@ from toee_hermes.drivers.gadget import API_KEY_ENV as GADGET_KEY_ENV, gadget_con
 from hermes_runtime.openrouter import openrouter_configured
 from hermes_runtime.simpletexting_reply import simpletexting_configured
 
+from ._common import insert_audit, read_string
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
+
+# The three Composio-managed connections -- the only ones with an OAuth reconnect
+# (FR-25). The static-token integrations (easyroutes/simpletexting/openrouter/gadget)
+# have no OAuth: their "reconnect" is guided env rotation + re-probe, never a link.
+_COMPOSIO_KEYS = frozenset({"shopify", "qbo", "square"})
 
 _OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 _SIMPLETEXTING_TOKEN_ENV = "SIMPLETEXTING_API_TOKEN"
@@ -234,9 +245,112 @@ def _get_integrations_status(
     return {"active_driver": active_driver, "integrations": integrations}
 
 
+def _require_actor(context: "ToolExecutionContext") -> str:
+    """The acting admin for a governed reconnect action, or a denial (ADR-0148).
+
+    The actor rides ``ToolExecutionContext.user_id``, asserted by the admin BFF from
+    the signed-in session under the shared bearer -- NEVER a request param. Fail
+    closed: an unattributed reconnect would act on a credential surface and write a
+    NULL-actor audit row while reporting success. (Mirrors ``dead_letter._require_actor``.)
+    """
+    actor = context.user_id
+    if not actor:
+        raise ToolDriverError(
+            "policy_blocked", "A governed reconnect requires an attributed actor."
+        )
+    return actor
+
+
+def _initiate_reconnect(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Composio OAuth reconnect (FR-25): generate the re-auth link, attributed + audited.
+
+    Order: actor first (fail closed), then key validation, then the live SDK call --
+    so an unattributed or invalid request leaves the audit log untouched. The link
+    generation and the audit row share the handler's single transaction (the driver
+    commits around the whole call), so a reconnect is never audited without the link
+    actually being issued, and a failed SDK call (owner-blocked / wrong guess) rolls
+    back with no audit row and a governed error.
+
+    The ``callback_url`` is built server-side by the workbench route from its OWN
+    origin + a state bound to the admin session; it is NOT client-controlled. No token
+    is handled here -- Composio holds the credentials; this returns only a redirect URL.
+    """
+    actor = _require_actor(context)
+    key = read_string(params, "integration_key", "integrationKey")
+    if not key:
+        raise ToolDriverError("unexpected_error", "integration_key is required.")
+    if key not in _COMPOSIO_KEYS:
+        raise ToolDriverError(
+            "unexpected_error",
+            f"'{key}' has no OAuth reconnect (static-token integrations rotate via env + re-probe).",
+        )
+    callback_url = read_string(params, "callback_url", "callbackUrl")
+    if not callback_url:
+        raise ToolDriverError("unexpected_error", "callback_url is required.")
+
+    redirect_url = initiate_composio_reconnect(key, callback_url=callback_url)
+
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=actor,
+        action="integration_reconnect_initiated",
+        target_type="integration",
+        target_id=key,
+        details={"toolkit": key},
+    )
+    return {"integration_key": key, "redirect_url": redirect_url}
+
+
+def _reprobe_now(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """On-demand health re-probe of ONE integration (FR-25), attributed + audited.
+
+    Both reconnect shapes end here: the Composio OAuth return and the static-token env
+    rotation both want a fresh badge NOW rather than on the next scheduled cycle. Runs
+    the SAME per-integration probe wiring the scheduled job uses (same configured gate,
+    same authenticated read, same three honest states) and records the row on the
+    handler's own cursor -- so the probe row and the audit row commit together in the
+    driver's single unit of work. A re-probe cannot report anything the scheduled probe
+    wouldn't: an owner-blocked integration still records ``not_configured``, a live
+    fault still records ``failed``, never a fabricated ``ok``.
+    """
+    from hermes_runtime.integration_probe import probe_one, write_probe_rows
+
+    actor = _require_actor(context)
+    key = read_string(params, "integration_key", "integrationKey")
+    if not key:
+        raise ToolDriverError("unexpected_error", "integration_key is required.")
+    try:
+        result = probe_one(key)
+    except KeyError as err:
+        raise ToolDriverError("unexpected_error", f"unknown integration '{key}'.") from err
+
+    with conn.cursor() as cur:
+        write_probe_rows(cur, [result])
+
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=actor,
+        action="integration_reprobed",
+        target_type="integration",
+        target_id=key,
+        details={"status": result.status},
+    )
+    return {"integration_key": key, "status": result.status, "reason": result.reason}
+
+
 def integrations_handlers() -> dict[str, dict[str, Any]]:
-    """Registry fragment for the integrations status-page read."""
-    return {"toee_integrations": {"get_integrations_status": _get_integrations_status}}
+    """Registry fragment for the integrations status-page read + S17 reconnect actions."""
+    return {
+        "toee_integrations": {
+            "get_integrations_status": _get_integrations_status,
+            "initiate_reconnect": _initiate_reconnect,
+            "reprobe_now": _reprobe_now,
+        }
+    }
 
 
 __all__ = ["integrations_handlers"]

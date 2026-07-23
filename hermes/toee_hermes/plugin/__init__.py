@@ -123,6 +123,12 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         # credential-configuration surface of every external backend -- not a
         # primitive any live turn may reach. Admin BFF deterministic dispatch only.
         ("toee_integrations", "get_integrations_status"),
+        # 0.0.4 S17 (FR-25): the two in-app reconnect actions. initiate_reconnect
+        # generates a Composio OAuth re-auth link and reprobe_now runs an on-demand
+        # health probe -- both act on a credential surface and are admin-only
+        # governed writes, never a primitive a live agent's tool loop may reach.
+        ("toee_integrations", "initiate_reconnect"),
+        ("toee_integrations", "reprobe_now"),
     }
 )
 

@@ -47,6 +47,20 @@ describe("canAccess", () => {
     expect(canAccess(admin, "/api/admin/integrations")).toBe(true);
   });
 
+  it("keeps the S17 reconnect + callback subpaths admin-only (FR-25)", () => {
+    // The reconnect/reprobe routes and the externally-reachable OAuth callback all
+    // sit under /api/admin/integrations, so they inherit the admin-only gate -- a
+    // supervisor cannot start a reconnect or drive the callback.
+    for (const path of [
+      "/api/admin/integrations/reconnect",
+      "/api/admin/integrations/reprobe",
+      "/api/admin/integrations/callback",
+    ]) {
+      expect(canAccess(supervisor, path)).toBe(false);
+      expect(canAccess(admin, path)).toBe(true);
+    }
+  });
+
   it("allows everyone on ungated paths", () => {
     for (const role of [rep, supervisor, admin]) {
       expect(canAccess(role, "/login")).toBe(true);

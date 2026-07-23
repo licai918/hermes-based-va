@@ -53,9 +53,15 @@ def _by_key(result):
 
 
 def test_registry_exposes_the_action():
-    assert integrations_handlers() == {
-        "toee_integrations": {"get_integrations_status": _get_integrations_status}
+    # S15 read + the two S17 reconnect actions (FR-25).
+    registry = integrations_handlers()
+    assert set(registry) == {"toee_integrations"}
+    assert set(registry["toee_integrations"]) == {
+        "get_integrations_status",
+        "initiate_reconnect",
+        "reprobe_now",
     }
+    assert registry["toee_integrations"]["get_integrations_status"] is _get_integrations_status
 
 
 def test_all_unset_is_not_configured_never_healthy(monkeypatch):

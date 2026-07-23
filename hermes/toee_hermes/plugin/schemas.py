@@ -103,6 +103,36 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         },
         "required": ["id"],
     },
+    # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
+    # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still
+    # goes through this schema/param validation, so params are declared explicitly.
+    ("toee_integrations", "initiate_reconnect"): {
+        "properties": {
+            "integration_key": {
+                "type": "string",
+                "enum": ["shopify", "qbo", "square"],
+                "description": "The Composio-managed connection to reconnect.",
+            },
+            "callback_url": {
+                "type": "string",
+                "description": (
+                    "Workbench callback URL (carries the session-bound state) the "
+                    "provider returns to after re-auth. Built server-side, never "
+                    "client-supplied."
+                ),
+            },
+        },
+        "required": ["integration_key", "callback_url"],
+    },
+    ("toee_integrations", "reprobe_now"): {
+        "properties": {
+            "integration_key": {
+                "type": "string",
+                "description": "The integration to run an on-demand health probe for.",
+            },
+        },
+        "required": ["integration_key"],
+    },
 }
 
 

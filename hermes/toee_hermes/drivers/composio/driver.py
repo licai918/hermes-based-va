@@ -929,6 +929,94 @@ def _assert_connected_account_active(account: Any, toolkit_key: str) -> None:
         )
 
 
+def initiate_composio_reconnect(toolkit_key: str, *, callback_url: str) -> str:
+    """S17 OAuth reconnect (FR-25): generate the connected-account re-auth link.
+
+    A governed admin action (attributed + audited by the datastore handler) asks
+    Composio for a fresh provider authorization URL for THIS toolkit's connected
+    account; the browser is redirected there, re-grants, and the provider returns to
+    ``callback_url`` (which carries the state bound to the admin session). No token
+    ever touches the workbench -- Composio holds the credentials; we only hand the
+    admin a link and get one back (the track's spine).
+
+    Fails closed: a missing key/account, an absent SDK, a vendor error, or a response
+    without a usable redirect URL raises the governed :class:`ToolDriverError` -- the
+    admin sees "couldn't start reconnect", never a fabricated success. ``toolkit_key``
+    is one of ``shopify``/``qbo``/``square`` (only Composio-managed connections have an
+    OAuth flow; the static-token integrations reconnect via guided env rotation +
+    re-probe, S17's other shape).
+
+    UNVERIFIED live wire (owner-blocked, no live Composio): the EXACT SDK re-auth
+    surface is confirmed at cutover -- isolated in :func:`_reauth_redirect_url`,
+    exactly like the ``_ComposioSdkClient`` execute path and ``probe_composio_toolkit``.
+    A wrong guess raises here and fails closed; it can never invent a link.
+    """
+    if toolkit_key not in CONNECTED_ACCOUNT_ENV:
+        raise ToolDriverError(
+            "unexpected_error",
+            f"'{toolkit_key}' is not a Composio-managed connection.",
+        )
+    account_env = CONNECTED_ACCOUNT_ENV[toolkit_key]
+    connected_account_id = os.environ.get(account_env)
+    if not connected_account_id:
+        raise ToolDriverError(
+            "configuration_missing",
+            f"No Composio connected account for '{toolkit_key}': set {account_env}.",
+        )
+    api_key = os.environ.get("COMPOSIO_API_KEY")
+    if not api_key:
+        raise ToolDriverError("configuration_missing", "COMPOSIO_API_KEY is not set.")
+    try:
+        from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
+    except ImportError as err:
+        raise ToolDriverError(
+            "configuration_missing",
+            "The composio SDK is not installed in this environment.",
+        ) from err
+    try:
+        redirect_url = _reauth_redirect_url(
+            Composio(api_key=api_key), connected_account_id, callback_url
+        )
+    except Exception as err:  # noqa: BLE001 - any vendor/SDK/attribute fault -> governed
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio re-auth link generation failed for '{toolkit_key}': {err}",
+        ) from err
+    if not isinstance(redirect_url, str) or not redirect_url:
+        # Fail closed: no usable URL means the reconnect cannot proceed. Never
+        # return the callback_url itself (that would land the admin back on the page
+        # as if reconnected without ever re-granting).
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio returned no re-auth redirect URL for '{toolkit_key}'.",
+        )
+    return redirect_url
+
+
+# CUTOVER ITEM (owner-blocked, no live Composio): the EXACT re-auth SDK surface is
+# UNVERIFIED. Composio's connected-account re-authorization returns a hosted provider
+# authorization URL; the attribute/method spelling below is a best guess against the
+# 0.15.0 SDK and MUST be confirmed against a live connected account at cutover. Any
+# mismatch raises (caught by the caller -> governed composio_api_error), so a wrong
+# guess fails closed and never fabricates a link.
+def _reauth_redirect_url(
+    client: Any, connected_account_id: str, callback_url: str
+) -> str | None:
+    """Best-guess SDK call for a connected-account re-auth URL. UNVERIFIED."""
+    request = client.connected_accounts.initiate(
+        connected_account_id=connected_account_id,
+        callback_url=callback_url,
+    )
+    # Defensive extraction: the SDK envelope may be a model or a dict.
+    for attr in ("redirect_url", "redirectUrl"):
+        value = getattr(request, attr, None)
+        if value is None and isinstance(request, dict):
+            value = request.get(attr)
+        if value:
+            return str(value)
+    return None
+
+
 def require_composio_configuration() -> None:
     """Boot gate: refuse to start a tool-executing process on a broken Composio config.
 

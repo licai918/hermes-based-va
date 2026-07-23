@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
-import { handleGetIntegrationsStatusViaApi, mapIntegrationsView } from "./integrations";
+import {
+  handleGetIntegrationsStatusViaApi,
+  handleInitiateReconnectViaApi,
+  handleReprobeNowViaApi,
+  mapIntegrationsView,
+} from "./integrations";
 
 function apiClient(
   fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
@@ -156,5 +161,70 @@ describe("handleGetIntegrationsStatusViaApi", () => {
     const client = apiClient(async () => dispatchResponse({ active_driver: 42 }));
     const res = await handleGetIntegrationsStatusViaApi(client);
     expect(res.status).toBe(502);
+  });
+});
+
+describe("S17 reconnect (FR-25)", () => {
+  it("rejects a non-Composio key before any dispatch (static tokens have no OAuth)", async () => {
+    let called = false;
+    const client = apiClient(async () => {
+      called = true;
+      return dispatchResponse({});
+    });
+    const res = await handleInitiateReconnectViaApi(
+      client,
+      "easyroutes",
+      "https://wb/cb",
+    );
+    expect(res.status).not.toBe(200);
+    expect(called).toBe(false);
+  });
+
+  it("returns the provider redirect URL on a successful link generation", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse({
+        integration_key: "shopify",
+        redirect_url: "https://provider.example/oauth?x=1",
+      }),
+    );
+    const res = await handleInitiateReconnectViaApi(client, "shopify", "https://wb/cb");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      integrationKey: "shopify",
+      redirectUrl: "https://provider.example/oauth?x=1",
+    });
+  });
+
+  it("fails closed (502) when the backend returns no redirect URL, never a fake link", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse({ integration_key: "shopify", redirect_url: null }),
+    );
+    const res = await handleInitiateReconnectViaApi(client, "shopify", "https://wb/cb");
+    expect(res.status).toBe(502);
+  });
+
+  it("re-probe requires an integration key", async () => {
+    const client = apiClient(async () => dispatchResponse({}));
+    const res = await handleReprobeNowViaApi(client, "");
+    expect(res.status).not.toBe(200);
+  });
+
+  it("re-probe maps the honest probe receipt", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse({
+        integration_key: "openrouter",
+        status: "not_configured",
+        reason: "not configured: OPENROUTER_API_KEY",
+      }),
+    );
+    const res = await handleReprobeNowViaApi(client, "openrouter");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      integrationKey: "openrouter",
+      status: "not_configured",
+      reason: "not configured: OPENROUTER_API_KEY",
+    });
   });
 });

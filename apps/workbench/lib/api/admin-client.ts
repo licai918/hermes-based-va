@@ -6,7 +6,11 @@ import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
 import type { DeadLetterView, ReplayReceipt } from "@/lib/bff/admin/dead-letter";
 import type { EvalRunReport, EvalRunSummary } from "@/lib/bff/admin/eval";
-import type { IntegrationsView } from "@/lib/bff/admin/integrations";
+import type {
+  IntegrationsView,
+  ReconnectLink,
+  ReprobeReceipt,
+} from "@/lib/bff/admin/integrations";
 import type {
   CorpusStatus,
   PolicySlot,
@@ -238,4 +242,21 @@ export function replayJob(jobId: string): Promise<ReplayReceipt> {
 
 export function getIntegrationsStatus(): Promise<IntegrationsView> {
   return getJson<IntegrationsView>("/api/admin/integrations");
+}
+
+// S17 (FR-25): start a Composio OAuth reconnect. Returns the provider redirect URL
+// the browser should navigate to; the state cookie is set on the response by the
+// route. A fail-closed backend raises ApiError (no URL) rather than returning a link.
+export function initiateReconnect(integrationKey: string): Promise<ReconnectLink> {
+  return sendJson<ReconnectLink>("POST", "/api/admin/integrations/reconnect", {
+    integrationKey,
+  });
+}
+
+// S17 (FR-25): run an on-demand health re-probe of one integration -- the completion
+// step for both reconnect shapes. The page reloads status afterward to show the badge.
+export function reprobeIntegration(integrationKey: string): Promise<ReprobeReceipt> {
+  return sendJson<ReprobeReceipt>("POST", "/api/admin/integrations/reprobe", {
+    integrationKey,
+  });
 }

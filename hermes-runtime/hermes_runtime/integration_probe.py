@@ -202,6 +202,34 @@ def run_probes(
     return [_run_one(probe, deadline_ms=deadline_ms) for probe in probes]
 
 
+def probe_one(key: str, *, deadline_ms: float = PROBE_DEADLINE_MS) -> ProbeResult:
+    """Run the single probe for ``key`` (S17 on-demand re-probe, FR-25).
+
+    The reconnect flows (both the Composio OAuth return and the static-token env
+    rotation) want a FRESH badge now, not on the next 15-min scheduled cycle. Reuses
+    the exact same per-integration wiring the scheduled job runs -- same
+    ``configured`` gate, same authenticated ``check``, same three honest states -- so
+    a manual re-probe cannot report anything the scheduled one wouldn't.
+    """
+    for probe in PROBES:
+        if probe.key == key:
+            return _run_one(probe, deadline_ms=deadline_ms)
+    raise KeyError(f"no integration probe for '{key}'")
+
+
+def write_probe_rows(
+    cur, results: Sequence[ProbeResult], retention_days: int = PROBE_RETENTION_DAYS
+) -> None:
+    """Insert probe rows + prune history on a CALLER-OWNED cursor (no commit).
+
+    The S17 re-probe handler writes through the datastore driver's single unit of
+    work (which commits once, around the whole handler), so it needs the cursor-level
+    write WITHOUT :func:`record_probe_results`' own connection + commit -- otherwise
+    the probe row would land in a separate transaction from its audit row.
+    """
+    _write_probe_results(cur, results, retention_days)
+
+
 def _write_probe_results(
     cur, results: Sequence[ProbeResult], retention_days: int
 ) -> None:

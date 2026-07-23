@@ -152,3 +152,86 @@ export async function handleGetIntegrationsStatusViaApi(
     return hermesErrorToProblem(err);
   }
 }
+
+// --- S17 in-app reconnect (FR-25) --------------------------------------------
+// Two shapes: Composio OAuth (initiate_reconnect -> a provider re-auth URL) and,
+// for BOTH shapes' completion, an on-demand re-probe (reprobe_now). Both are
+// governed WRITES: dispatchWrite, fail-closed on a missing actor. The acting admin
+// rides HermesApiClient.actorAccountId from the signed-in session (ADR-0148) -- it
+// is never a request param, and the routes never read one.
+
+export interface ReconnectLink {
+  integrationKey: string;
+  redirectUrl: string;
+}
+
+export interface ReprobeReceipt {
+  integrationKey: string;
+  status: string;
+  reason: string | null;
+}
+
+function mapReconnectLink(raw: unknown): ReconnectLink {
+  const r = requireObject(raw, "root");
+  // Strict: a null/absent redirect_url is a fail-closed backend (owner-blocked or a
+  // wrong SDK guess), NOT a usable link -- surface it as an error, never navigate.
+  return {
+    integrationKey: requireString(r.integration_key, "integration_key"),
+    redirectUrl: requireString(r.redirect_url, "redirect_url"),
+  };
+}
+
+function mapReprobeReceipt(raw: unknown): ReprobeReceipt {
+  const r = requireObject(raw, "root");
+  return {
+    integrationKey: requireString(r.integration_key, "integration_key"),
+    status: requireString(r.status, "status"),
+    reason: requireNullableString(r.reason, "reason"),
+  };
+}
+
+// Only the three Composio-managed connections have an OAuth reconnect. Guarded here
+// AND server-side (the handler rejects a non-Composio key), so a crafted body cannot
+// coax a link for a static-token integration.
+const COMPOSIO_KEYS = new Set(["shopify", "qbo", "square"]);
+
+export async function handleInitiateReconnectViaApi(
+  client: HermesApiClient,
+  integrationKey: unknown,
+  callbackUrl: string,
+): Promise<Response> {
+  if (typeof integrationKey !== "string" || !COMPOSIO_KEYS.has(integrationKey)) {
+    return hermesErrorToProblem(
+      new HermesApiError("not_found", "unknown Composio integration"),
+    );
+  }
+  try {
+    const data = await client.dispatchWrite(
+      "toee_integrations",
+      "initiate_reconnect",
+      { integration_key: integrationKey, callback_url: callbackUrl },
+    );
+    return json(mapReconnectLink(data));
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+export async function handleReprobeNowViaApi(
+  client: HermesApiClient,
+  integrationKey: unknown,
+): Promise<Response> {
+  if (typeof integrationKey !== "string" || integrationKey === "") {
+    return hermesErrorToProblem(
+      new HermesApiError("not_found", "integrationKey is required"),
+    );
+  }
+  try {
+    const data = await client.dispatchWrite("toee_integrations", "reprobe_now", {
+      integration_key: integrationKey,
+    });
+    return json(mapReprobeReceipt(data));
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}

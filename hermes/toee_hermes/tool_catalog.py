@@ -140,7 +140,18 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # precedent) -- reached only via the admin BFF's deterministic tools:dispatch
     # call on the supervisor_admin profile, never a live agent's tool loop. It
     # returns only status booleans + version pins, never a secret value (NFR-6).
-    "toee_integrations": ("get_integrations_status",),
+    # 0.0.4 S17 (FR-25) adds the two in-app reconnect actions, both admin-only
+    # (_AGENT_EXCLUDED_ACTIONS), reached only via the admin BFF's deterministic
+    # tools:dispatch on supervisor_admin: initiate_reconnect generates a Composio
+    # OAuth re-auth link (no token ever touches the workbench -- Composio holds the
+    # credentials), and reprobe_now runs one on-demand health probe so a reconnected
+    # integration's badge refreshes now rather than on the next scheduled cycle. Both
+    # are governed WRITES, attributed to the acting admin and audited.
+    "toee_integrations": (
+        "get_integrations_status",
+        "initiate_reconnect",
+        "reprobe_now",
+    ),
 }
 
 
