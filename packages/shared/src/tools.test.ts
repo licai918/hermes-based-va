@@ -54,7 +54,7 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
   });
 
-  it("contains exactly the 16 v1 tool names", () => {
+  it("contains exactly the 17 v1 tool names", () => {
     expect([...TOOL_NAMES].sort()).toEqual(
       [
         "toee_agent_experience",
@@ -64,6 +64,7 @@ describe("TOOL_CATALOG", () => {
         "toee_customer_memory",
         "toee_easyroutes_read",
         "toee_eval_review",
+        "toee_feedback",
         "toee_identity_lookup",
         "toee_knowledge_ops",
         "toee_knowledge_search",
@@ -75,6 +76,21 @@ describe("TOOL_CATALOG", () => {
         "toee_workbench_read",
       ].sort(),
     );
+  });
+
+  it("exposes the toee_feedback tool shell actions (0.0.4 S02, ADR-0154)", () => {
+    expect(TOOL_CATALOG.toee_feedback).toEqual([
+      "submit_interaction_review",
+      "record_draft_outcome",
+      "submit_draft_rating",
+      "list_feedback",
+    ]);
+    expect(isToolAction("toee_feedback", "submit_interaction_review")).toBe(true);
+    expect(isToolAction("toee_feedback", "record_draft_outcome")).toBe(true);
+    expect(isToolAction("toee_feedback", "submit_draft_rating")).toBe(true);
+    expect(isToolAction("toee_feedback", "list_feedback")).toBe(true);
+    // Schema test (S02 acceptance): a foreign action name is rejected.
+    expect(isToolAction("toee_feedback", "delete_feedback")).toBe(false);
   });
 
   it("exposes the L6 Agent-experience store actions (0.0.3 S22/S24, FR-23/FR-24)", () => {

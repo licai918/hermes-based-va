@@ -106,6 +106,16 @@ DriverSelector = Callable[[str], ToolDriver]
 # arbitrary stuck work -- including the retention and ingest jobs the exclusions
 # above exist to withhold -- and the list read exposes other customers' job
 # payloads, so neither belongs in a live turn's tool loop.
+#
+# 0.0.4 S02 (ADR-0154) adds all four toee_feedback actions. This is the load-
+# bearing governance guarantee of the manual-scoring-feedback module: the tool
+# is allowlisted (internal_copilot for the three writes, supervisor_admin for
+# list_feedback) so the deterministic tools:dispatch route can reach it, but
+# every action is agent-excluded here so it NEVER reaches a live agent's own
+# tool-calling loop -- the AI structurally cannot score itself. (A second,
+# independent reason holds regardless of this list: the copilot draft turn's
+# boot path carries no acting employee, so a feedback write attempted from it
+# fails closed on the actor check -- see ADR-0154 decision 3.)
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
@@ -130,6 +140,12 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         # governed writes, never a primitive a live agent's tool loop may reach.
         ("toee_integrations", "initiate_reconnect"),
         ("toee_integrations", "reprobe_now"),
+        # 0.0.4 S02 (ADR-0154): all four toee_feedback actions -- see the
+        # header comment above this set for the governance rationale.
+        ("toee_feedback", "submit_interaction_review"),
+        ("toee_feedback", "record_draft_outcome"),
+        ("toee_feedback", "submit_draft_rating"),
+        ("toee_feedback", "list_feedback"),
     }
 )
 
