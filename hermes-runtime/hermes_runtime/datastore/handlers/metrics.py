@@ -12,8 +12,11 @@ in-transaction at their governed sites (``handlers/memory.py`` customer clear,
 ``handlers/agent_experience.py`` confirm) -- no longer the pre-S21 audit-log/
 status-count proxies. Honored rate is judge-sampled (S27) and advisory -- NEVER
 gating -- and genuinely cannot be computed inline here (it requires an LLM judge
-call over sampled live turns), so it ships as an honestly-labeled non-live
-placeholder rather than a silent zero.
+call over sampled live turns), so a scheduled ``honored_rate`` background job
+(0.0.4 S22, FR-31) runs the judge and persists an aggregate this handler reads
+the LATEST of (``hermes_runtime.honored_rate.honored_rate_metric``). With no
+aggregate yet it returns the honest ``live=False`` "not yet computed" state --
+never a silent zero, never a fabricated rate.
 
 Read-only, admin-only: never registered as an LLM-callable tool (see
 ``_AGENT_EXCLUDED_ACTIONS``) -- reached only from the admin BFF's
@@ -25,18 +28,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
+from ...honored_rate import honored_rate_metric
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
-
-# Advisory, judge-sampled (S27, C7 core question, audit finding 6) -- this
-# panel never computes it inline (that would mean an LLM judge call on every
-# admin page load) and never gates on it. Honestly labeled non-live rather
-# than a silent zero (S26 brief discipline).
-_HONORED_RATE_LABEL = (
-    "Honored rate is advisory and judge-sampled (S27, C7 core question) -- "
-    "never gating. Run `python -m eval_runner.judge_measure` (or a "
-    "live-traffic sampler) against recorded turns to populate it."
-)
 
 def _rate(hits: int, total: int) -> Optional[float]:
     """``hits / total``, rounded, or ``None`` when there is no denominator."""
@@ -112,6 +107,11 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         )
         dismissed_count = cur.fetchone()[0]
 
+        # --- honored rate: latest honored_rate_aggregate (S22, FR-31) ---------
+        # Read the LATEST aggregate the scheduled honored_rate job persisted; an
+        # empty table returns the honest "not yet computed" state, never a zero.
+        honored_rate = honored_rate_metric(cur)
+
     accepted_total = correction_count + dismissed_count
 
     return {
@@ -126,7 +126,7 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
             "rate": _rate(know_hits, know_total),
         },
         "slots_populated_distribution": distribution,
-        "honored_rate": {"live": False, "rate": None, "label": _HONORED_RATE_LABEL},
+        "honored_rate": honored_rate,
         "merge_count": merge_count,
         "correction_count": correction_count,
         "proposal_outcomes": {

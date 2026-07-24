@@ -8,8 +8,10 @@
 // knowledge found, slots distribution, merge count, correction count, proposal
 // outcomes, and -- since 0.0.4 S21 (FR-30) -- self-service usage and L6
 // confirmed entries, now real once-per-action counters (metric_event) rather
-// than the earlier proxies. Only honored rate stays honestly labeled non-live
-// (advisory, judge-sampled). Loads on mount: a global panel, no case_id to key
+// than the earlier proxies. Honored rate is now live too (0.0.4 S22, FR-31): the
+// scheduled honored_rate judge job persists an aggregate this tile shows with
+// "as of" provenance -- or an honest "Not yet computed" before the first run,
+// never a fabricated number. Loads on mount: a global panel, no case_id to key
 // off (mirrors AgentExperienceConsole).
 import { useEffect, useState } from "react";
 import { getAggregateMetrics } from "@/lib/api/admin-client";
@@ -30,37 +32,24 @@ const grid: React.CSSProperties = {
 const label: React.CSSProperties = { fontSize: "0.8125rem", opacity: 0.7, margin: 0 };
 const value: React.CSSProperties = { fontSize: "1.5rem", fontWeight: 600, margin: "0.125rem 0" };
 const caption: React.CSSProperties = { fontSize: "0.75rem", opacity: 0.65, margin: 0 };
-const proxyBadge: React.CSSProperties = {
-  fontSize: "0.625rem",
-  fontWeight: 600,
-  color: "#9a6700",
-  border: "1px solid #9a6700",
-  borderRadius: "999px",
-  padding: "0.05rem 0.4rem",
-  marginLeft: "0.4rem",
-};
 
 function pct(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 1000) / 10}%`;
 }
 
-function Tile({
-  title,
-  main,
-  sub,
-  proxy,
-}: {
-  title: string;
-  main: string;
-  sub?: string;
-  proxy?: boolean;
-}) {
+// Honored-rate provenance line. When live, make the partial sample legible (rate
+// is over `sampleSize` of `candidateTotal`, not the whole population) plus the
+// "as of" run time; when not yet computed, the honest label from the BFF.
+function honoredSub(h: AggregateMetrics["honoredRate"]): string {
+  if (!h.live) return h.label;
+  const asOf = h.asOf ? new Date(h.asOf).toLocaleDateString() : "unknown date";
+  return `${h.sampleSize} / ${h.candidateTotal} recent turns sampled · as of ${asOf}`;
+}
+
+function Tile({ title, main, sub }: { title: string; main: string; sub?: string }) {
   return (
     <div style={tile}>
-      <p style={label}>
-        {title}
-        {proxy ? <span style={proxyBadge}>PROXY</span> : null}
-      </p>
+      <p style={label}>{title}</p>
       <p style={value}>{main}</p>
       {sub ? <p style={caption}>{sub}</p> : null}
     </div>
@@ -120,9 +109,8 @@ export function MetricsPanel() {
         />
         <Tile
           title="Honored rate"
-          main={metrics.honoredRate.live ? pct(metrics.honoredRate.rate) : "Not yet sampled"}
-          sub={metrics.honoredRate.label}
-          proxy={!metrics.honoredRate.live}
+          main={metrics.honoredRate.live ? pct(metrics.honoredRate.rate) : "Not yet computed"}
+          sub={honoredSub(metrics.honoredRate)}
         />
         <Tile title="Merge count" main={String(metrics.mergeCount)} sub="customer_memory_merge_audit" />
         <Tile title="Correction count" main={String(metrics.correctionCount)} sub="employee_confirmed writes" />

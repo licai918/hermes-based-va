@@ -88,6 +88,12 @@ INGEST_JOB_TYPE = "ingest"
 # SAME schedule mechanism retention uses -- claimed by the background worker, never
 # the turn worker. Still just a string here; the queue imports nothing type-specific.
 INTEGRATION_PROBE_JOB_TYPE = "integration_probe"
+# S22 (FR-31): the scheduled honored-rate judge run. Another recurring type on the
+# same tick -- samples recent turns, runs the judge's honored leg, persists the
+# aggregate the metrics panel reads. Plain default retry/dead-letter (not in the
+# replay/concurrency dicts below): a judge/API fault should retry then dead-letter,
+# never silently produce a wrong rate.
+HONORED_RATE_JOB_TYPE = "honored_rate"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

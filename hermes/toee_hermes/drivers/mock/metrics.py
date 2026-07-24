@@ -18,12 +18,28 @@ from .driver import MockHandlerRegistry
 if TYPE_CHECKING:
     from ...tool_gate import ToolExecutionContext
 
-# Same advisory label the Postgres twin uses -- honored rate is judge-sampled
-# (S27) and never computed inline here or there.
+# The honored rate comes from a scheduled judge job that persists an aggregate
+# (0.0.4 S22, FR-31) -- there is no store behind the mock, so it always reports the
+# honest "not yet computed" state, the same shape the Postgres twin returns before
+# the first run (hermes_runtime.honored_rate.honored_rate_metric). A zero would be a
+# fabricated rate; None over live=False is the truth on a storeless deployment.
 _HONORED_RATE_LABEL = (
-    "Honored rate is advisory and judge-sampled (S27, C7 core question) -- "
-    "never gating. Run the judge harness against recorded turns to populate it."
+    "Honored rate is advisory and judge-sampled (S22/S27, C7 core question) -- "
+    "never gating. Not yet computed on this deployment (no persisted aggregate)."
 )
+
+# Not-computed shape, kept in one place so it stays byte-identical to the Postgres
+# twin's never-run branch (both feed the same BFF mapper, which requires the keys).
+_HONORED_RATE_NOT_COMPUTED = {
+    "live": False,
+    "rate": None,
+    "sample_size": None,
+    "candidate_total": None,
+    "undetermined_count": None,
+    "window_seconds": None,
+    "as_of": None,
+    "label": _HONORED_RATE_LABEL,
+}
 
 
 def create_metrics_mock_handlers() -> MockHandlerRegistry:
@@ -34,7 +50,7 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             "memory_injection": {"injected": 0, "total": 0, "rate": None},
             "knowledge_search": {"found": 0, "total": 0, "rate": None},
             "slots_populated_distribution": {"1": 0, "2": 0, "3": 0, "4": 0},
-            "honored_rate": {"live": False, "rate": None, "label": _HONORED_RATE_LABEL},
+            "honored_rate": dict(_HONORED_RATE_NOT_COMPUTED),
             "merge_count": 0,
             "correction_count": 0,
             "proposal_outcomes": {"accepted": 0, "dismissed": 0, "rate": None},
