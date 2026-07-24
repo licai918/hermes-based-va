@@ -79,6 +79,17 @@ services:
       # Local dev never posts to a real SMS provider. Also unlocks the simulator's
       # simulated-only actions (tool_dispatch_composition._SIMULATED_ONLY_ACTIONS).
       REPLY_SENDER: ${REPLY_SENDER:-simulated}
+      # 0.0.4 S18 (FR-26): EVAL_SCRIPTED_MODE arms the scripted-eval harness seam
+      # (hermes_runtime/scripted_eval.py). It is read from env_file (.env) via the
+      # *hermes-runtime anchor -- NOT declared here, because a compose `environment:`
+      # entry with an unset shell var would set it to "" and WIN over the .env value,
+      # silently disarming it. Off by default (empty .env); the CI harness job sets
+      # EVAL_SCRIPTED_MODE=1 in .env, and the arming guard refuses a prod config.
+    volumes:
+      # The scripted run_turn loads the scenario fixtures + recorded transcripts, which
+      # are NOT copied into the image (they stay out of the prod image on purpose --
+      # a mis-armed prod worker has nothing to run). Mounted read-only, local/CI only.
+      - ./eval:/app/eval:ro
     depends_on:
       postgres:
         condition: service_healthy

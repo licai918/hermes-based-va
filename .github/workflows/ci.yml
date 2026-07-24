@@ -192,6 +192,7 @@ jobs:
           OPENROUTER_API_KEY=ci-placeholder-no-real-model
           SIMPLETEXTING_WEBHOOK_TOKEN=dev-webhook-token
           REPLY_SENDER=simulated
+          EVAL_SCRIPTED_MODE=1
           EOF
       - name: Selfcheck the smoke's parser
         run: node scripts/ci-harness-smoke.mjs --selfcheck
@@ -207,6 +208,17 @@ jobs:
         env:
           SIMPLETEXTING_WEBHOOK_TOKEN: dev-webhook-token
         run: node scripts/ci-harness-smoke.mjs
+      # S18 (FR-26): the scenario-level scripted-determinism proof S25 deferred. Drives
+      # the text_first_launch suite through the SAME running gateway/queue/turn-worker
+      # topology (EVAL_SCRIPTED_MODE=1 armed the worker above), scripted -> no OpenRouter,
+      # and fails on any high-severity scenario or any assertion drift between two runs.
+      # Runs in the hermes-runtime image (turn-worker service: has the package, the eval
+      # mount, DATABASE_URL, and the compose network to reach the gateway).
+      - name: Scripted eval harness (text_first_launch, deterministic twice)
+        run: |
+          docker compose run --rm --no-deps turn-worker \
+            uv run --frozen python -m hermes_runtime.scripted_gateway_harness \
+              --suite text_first_launch --gateway-url http://gateway:8080 --runs 2
       # "teardown leaves no orphan services" (spec) -- always, even on smoke failure.
       - name: Tear down (no orphans)
         if: always()

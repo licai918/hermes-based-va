@@ -48,6 +48,11 @@ from hermes_runtime.gateway_store import InMemoryGatewayStore
 from hermes_runtime.openrouter import make_openrouter_run_turn, resolve_openrouter_config
 from hermes_runtime.outbound_send import OutboundSendLog
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+from hermes_runtime.scripted_eval import (
+    make_scripted_eval_run_turn,
+    require_scripted_eval_prod_inert,
+    scripted_eval_armed,
+)
 from hermes_runtime.simpletexting_reply import (
     make_simpletexting_reply_sender,
     resolve_simpletexting_config,
@@ -199,7 +204,15 @@ def resolve_turn_collaborators() -> TurnCollaborators:
     warm_knowledge_embedder()
 
     reply_sender = resolve_reply_sender()
-    run_turn = make_openrouter_run_turn(config=resolve_openrouter_config())
+    # S18 (FR-26): the scripted-eval seam is the ONLY other thing that fills the model
+    # boundary. Off by default (production is unchanged); when armed it refuses a prod
+    # config (require_scripted_eval_prod_inert) and runs the turn against pre-seeded,
+    # deterministic completions with NO OpenRouter call. See hermes_runtime/scripted_eval.py.
+    if scripted_eval_armed():
+        require_scripted_eval_prod_inert()
+        run_turn = make_scripted_eval_run_turn()
+    else:
+        run_turn = make_openrouter_run_turn(config=resolve_openrouter_config())
 
     # The store is the source of truth (ADR-0107): the turn worker reloads the
     # context the gateway persisted. When TOOL_BACKEND=datastore that is the same
