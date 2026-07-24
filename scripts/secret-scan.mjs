@@ -111,6 +111,9 @@ const NOT_A_SECRET = [
   /^<.*>$/, //          <your-token>
   /\.{3}/, //           ca_..., sk-or-...
   /^\$\{?[A-Za-z_]/, // ${VAR} / $VAR interpolation
+  /^\$\{\{/, //         ${{ secrets.X }} GitHub Actions expression -- the literal
+  //                    text injects a secret at runtime, it is never the secret
+  //                    itself (and a real token never starts with "${{").
   /^-/, //              ${VAR:-default} shell substitution
   /^[A-Za-z_$][\w$]*\./, // code reference: rt.INTERNAL_JOB_SECRET, webhookToken.value
   // Obvious placeholders, regardless of length -- added fix wave 2 so narrowing
@@ -303,6 +306,19 @@ function selfcheck() {
       checkLine("x", 1, "WORKBENCH_SESSION_SECRET=ZZ99YY88XX77WW66VV55UU44TT33SS22"),
       true,
       "a real-looking all-caps token past the cap is still caught -- placeholder allowlist did not reopen it",
+    ],
+    // S20: the advisory-judge CI job injects the OpenRouter key via a GitHub
+    // Actions expression -- the literal text is not the secret, and widening for
+    // it must not reopen the real-token shape.
+    [
+      checkLine("x", 1, "          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}"),
+      false,
+      "a ${{ secrets.X }} Actions expression is not a secret literal",
+    ],
+    [
+      checkLine("x", 1, "OPENROUTER_API_KEY=ZZ99YY88XX77WW66VV55UU44TT33SS22"),
+      true,
+      "a real all-caps token is still caught -- the ${{ }} widening did not reopen it",
     ],
   ];
   let failed = 0;

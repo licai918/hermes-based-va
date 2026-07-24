@@ -235,3 +235,71 @@ jobs:
       - name: Tear down (no orphans)
         if: always()
         run: docker compose down -v
+
+  # S20 (FR-28/FR-29): the ADVISORY live-model judge. Every PR runs the S27-tuned judge
+  # (real OpenRouter model) over the labelled scenario set and attaches a report as a CI
+  # artifact + one upserted PR comment. It is NON-REQUIRED and CANNOT block merge:
+  #   * nothing `needs:` it and it is not in any branch-protection required-status set
+  #     (the required wall stays the `eval-gate` scripted replay gate -- NFR-7);
+  #   * the runnable exits 0 on judge misses AND flakes (advisory = report what happened,
+  #     no retry theater -- FR-29). Only a genuine "cannot run at all" infra fault fails
+  #     this job, and even then, being non-required, it blocks nothing.
+  # Owner-key handling: OPENROUTER_API_KEY is an owner-provided repo secret. When ABSENT
+  # (empty) the job SKIPS gracefully (skipped report, exit 0) -- so PRs are never blocked
+  # before the owner configures it, and it lights up the moment they do. pull_request only.
+  advisory-judge:
+    name: Advisory live-model judge (non-blocking)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      # The runnable owns the graceful-skip: openrouter_configured() reads this env; an
+      # empty secret -> skipped report + exit 0. The key is NEVER printed or committed.
+      - name: Run advisory judge over the scenario set
+        working-directory: hermes-runtime
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          uv run --frozen python -m hermes_runtime.advisory_judge_report \
+            --out "$GITHUB_WORKSPACE/advisory-judge-report.md"
+      - name: Upload advisory report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: advisory-judge-report
+          path: advisory-judge-report.md
+          if-no-files-found: warn
+      # Upsert ONE PR comment (marker-keyed) so re-runs edit it in place, not spam.
+      - name: Upsert advisory PR comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'advisory-judge-report.md';
+            const marker = '<!-- s20-advisory-judge-report -->';
+            let body;
+            if (fs.existsSync(path)) {
+              body = fs.readFileSync(path, 'utf8');
+            } else {
+              // Infra fault before the report was written -- still non-blocking, just say so.
+              body = `${marker}\n## Advisory judge report\n\n_The advisory judge job could not produce a report this run (infra fault). This is advisory only and never blocks merge (NFR-7)._\n`;
+            }
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number,
+            });
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
