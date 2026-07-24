@@ -5,7 +5,7 @@
 - **Size:** M
 - **Depends on:** S02
 - **Delivers:** FR-1, FR-2, FR-4, NFR-2, NFR-5
-- **Surface:** migration (next free after S03's `0016`); mock + Postgres handlers
+- **Surface:** migration (next free after S03's, re-checked at PR time); mock + Postgres handlers
   for `submit_draft_rating`; no UI
 
 ## Goal

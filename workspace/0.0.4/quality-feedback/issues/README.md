@@ -76,7 +76,7 @@ slice rather than left as a note.
 |------|---------|-------------|
 | Structural | "registered in no allowlist" makes the tool **unreachable** — the dispatch gate *is* the allowlist. Correct pattern: allowlist **+** agent-excluded set | S01 |
 | Structural | Allowlisting is per **tool**, not per action — an action's profile restriction is enforced by which BFF route exists | S10 |
-| Technical | Migration number is **0016** (0012 taken; branch at 0015); ADR-0154 already landed | S01 |
+| Technical | Migration number keeps rotting: 0012→0016→**0017**, re-check at PR time; ADR-0154 already landed | S01 |
 | Technical | TS and Python tool catalogs are dual-source and must move together | S02 |
 | Technical | Implicit capture must swallow its own errors, mirroring the existing metric emitter | S09 |
 | Product | The status column needs a **new list-read field** — a real backend dependency, not a UI bolt-on | S05 (split out for this) |

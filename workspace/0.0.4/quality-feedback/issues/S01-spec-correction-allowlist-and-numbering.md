@@ -31,9 +31,13 @@ holds, and holds for a second independent reason: the copilot draft turn's boot
 path carries no acting employee, so a feedback write attempted from it fails
 closed on the actor check regardless of registration.
 
-**2. The reserved migration number is stale.** `0012` is taken
-(`0012_outbound_send.sql`); the branch is at `0015`. The feedback migration is
-**`0016`**. ADR-0154 itself already landed and needs no renumber.
+**2. The reserved migration number keeps rotting — stop hardcoding it.** This
+module has now lost `0012` → `0016` → `0017` to concurrent landings
+(`0012_outbound_send`, then `0016_scripted_eval_turn`). Migrations are landing on
+this branch faster than this module ships, so **the migration slices (S03, S06)
+take "the next free number, re-checked immediately before the migration PR"**,
+not a fixed value. At the time of writing the next free number is **`0017`**;
+treat that as provisional. ADR-0154 already landed and needs no renumber.
 
 ## Approach
 
