@@ -33,13 +33,16 @@ profiles.PROFILE_TOOL_ALLOWLIST``). That means ``list_feedback`` is
 *technically* dispatchable under the internal_copilot profile too, same as
 the three writes are technically dispatchable under supervisor_admin -- the
 allowlist alone does not separate them. It is not reachable in practice for
-two independent reasons: (1) no copilot BFF route maps to ``list_feedback``
-(only the admin BFF's ``/admin`` surface calls it) and no admin BFF route
-maps to the three writes (only the copilot/review-fork surfaces call those);
-and (2) every one of the four actions is in ``_AGENT_EXCLUDED_ACTIONS``
-(``toee_hermes.plugin``), so none of them ever reaches a live agent's own
-tool-calling loop regardless of profile. The real restriction is which BFF
-route exists, not which profile's allowlist a tool name sits in.
+the allowlist alone does not separate them. Today the ONLY enforced boundary
+is ``_AGENT_EXCLUDED_ACTIONS`` (``toee_hermes.plugin``): all four actions are
+in it, so none ever reaches a live agent's own tool-calling loop regardless of
+profile. The per-profile ROUTE separation that will make each action reachable
+from exactly one surface -- a copilot BFF route for the writes (S04/S07), the
+admin BFF's ``/admin`` surface for ``list_feedback`` -- is NOT yet built: as of
+this slice no BFF route dispatches any ``toee_feedback`` action at all. Once
+those routes land, the real restriction becomes which BFF route exists, not
+which profile's allowlist a tool name sits in -- so a future reader must check
+the routes, never the allowlist, to reason about who can reach an action.
 """
 
 from __future__ import annotations
