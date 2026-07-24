@@ -488,6 +488,27 @@ def _build_auto_handled_record(
     return record
 
 
+def _reviewed_subject_ids(
+    conn, subject_kind: str, subject_ids: list[str]
+) -> set[str]:
+    """Which of these subjects have ANY ``interaction_review`` row (S05, FR-6).
+
+    Any reviewer, any verdict -- this answers "has this been sampled", not "did
+    *I* review it" (the badge semantics settled in the S05 brief). One batched
+    query per list call (not one per row) keeps both audit list reads from
+    N+1ing against ``interaction_review``.
+    """
+    if not subject_ids:
+        return set()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT subject_id FROM interaction_review "
+            "WHERE subject_kind = %s AND subject_id = ANY(%s)",
+            (subject_kind, subject_ids),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
 def _list_auto_handled(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
@@ -512,8 +533,11 @@ def _list_auto_handled(
             """
         )
         thread_ids = [row[0] for row in cur.fetchall()]
+    # S05 (FR-6): a per-row "reviewed" flag for the audit list's status column,
+    # resolved in ONE query for the whole page rather than per record.
+    reviewed_ids = _reviewed_subject_ids(conn, "auto_handled_record", thread_ids)
     records = [
-        r
+        {**r, "reviewed": tid in reviewed_ids}
         for tid in thread_ids
         if (r := _build_auto_handled_record(conn, tid, include_timeline=False))
         is not None
@@ -553,7 +577,19 @@ def _list_sales_outreach(
             """
         )
         rows = cur.fetchall()
-    return {"cases": [_read_model(conn, row) for row in rows]}
+    # S05 (FR-6): same "reviewed" flag as _list_auto_handled, one batched query
+    # keyed on subject_kind='sales_outreach_case' -- kept OUT of _read_model so
+    # the general case queue's _list_cases (which shares _read_model) never
+    # pays for this join.
+    reviewed_ids = _reviewed_subject_ids(
+        conn, "sales_outreach_case", [row["id"] for row in rows]
+    )
+    cases = []
+    for row in rows:
+        case = _read_model(conn, row)
+        case["reviewed"] = row["id"] in reviewed_ids
+        cases.append(case)
+    return {"cases": cases}
 
 
 def _get_sales_outreach(

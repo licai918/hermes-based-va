@@ -98,6 +98,7 @@ export function mapWorkbenchCase(raw: unknown): WorkbenchCase {
     smsSessionActive: r.sms_session_active === true,
     openedAt: isoToMs(r.opened_at, "opened_at"),
     lastActivityAt: isoToMs(r.last_activity_at, "last_activity_at"),
+    reviewed: r.reviewed === true,
   };
 }
 
@@ -280,6 +281,7 @@ export function mapAutoHandledRecord(raw: unknown): AutoHandledRecord {
     toolFailure: r.tool_failure === true || r.toolFailure === true,
     timeline: timelineRaw.map(mapThreadMessage),
     toolCalls: toolCallsRaw.map(mapToolCallEvidence),
+    reviewed: r.reviewed === true,
   };
 }
 

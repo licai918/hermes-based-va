@@ -75,6 +75,76 @@ def test_list_auto_handled_returns_fully_auto_threads(datastore) -> None:
     assert thread_id in ids
 
 
+# --- S05 (FR-6): the list read surfaces a per-row "reviewed" flag ------------
+
+
+def _submit_review(driver, *, subject_kind: str, subject_id: str, verdict: str = "pass", **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="submit_interaction_review",
+        params={
+            "subject_kind": subject_kind,
+            "subject_id": subject_id,
+            "verdict": verdict,
+            **params,
+        },
+        context=ToolExecutionContext(profile="internal_copilot", user_id="acct_super_1"),
+        driver=driver,
+    )
+
+
+def test_list_auto_handled_marks_a_never_reviewed_record_not_reviewed(datastore) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_unreviewed"
+    _seed_auto_thread(conn, thread_id)
+
+    result = _run(driver, "list_auto_handled")
+    assert result.ok
+    row = next(r for r in result.data["records"] if r["record_id"] == thread_id)
+    assert row["reviewed"] is False
+
+
+def test_list_auto_handled_marks_a_reviewed_record_reviewed(datastore) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_reviewed"
+    _seed_auto_thread(conn, thread_id)
+
+    review = _submit_review(
+        driver, subject_kind="auto_handled_record", subject_id=thread_id
+    )
+    assert review.ok
+
+    result = _run(driver, "list_auto_handled")
+    assert result.ok
+    row = next(r for r in result.data["records"] if r["record_id"] == thread_id)
+    assert row["reviewed"] is True
+
+
+def test_list_auto_handled_stays_reviewed_after_a_second_appended_review(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_re_reviewed"
+    _seed_auto_thread(conn, thread_id)
+
+    first = _submit_review(
+        driver, subject_kind="auto_handled_record", subject_id=thread_id, verdict="pass"
+    )
+    second = _submit_review(
+        driver,
+        subject_kind="auto_handled_record",
+        subject_id=thread_id,
+        verdict="fail",
+        reason_tags=["factual_error"],
+    )
+    assert first.ok and second.ok
+
+    result = _run(driver, "list_auto_handled")
+    assert result.ok
+    row = next(r for r in result.data["records"] if r["record_id"] == thread_id)
+    assert row["reviewed"] is True
+
+
 def test_get_auto_handled_returns_detail_and_audit_view(datastore) -> None:
     driver, conn, _ = datastore
     thread_id = "thr_auto_detail"
@@ -118,6 +188,83 @@ def test_list_sales_outreach_filters_contact_reason(datastore) -> None:
     ids = [c["case_id"] for c in result.data["cases"]]
     assert case_id in ids
     assert all(c.get("contact_reason") == "sales_outreach" for c in result.data["cases"])
+
+
+def test_list_sales_outreach_marks_a_never_reviewed_case_not_reviewed(datastore) -> None:
+    driver, conn, _ = datastore
+    case_id = "case_sales_unreviewed"
+    _seed_sales_case(conn, case_id)
+
+    result = _run(driver, "list_sales_outreach")
+    assert result.ok
+    row = next(c for c in result.data["cases"] if c["case_id"] == case_id)
+    assert row["reviewed"] is False
+
+
+def test_list_sales_outreach_marks_a_reviewed_case_reviewed(datastore) -> None:
+    driver, conn, _ = datastore
+    case_id = "case_sales_reviewed"
+    _seed_sales_case(conn, case_id)
+
+    review = _submit_review(
+        driver, subject_kind="sales_outreach_case", subject_id=case_id
+    )
+    assert review.ok
+
+    result = _run(driver, "list_sales_outreach")
+    assert result.ok
+    row = next(c for c in result.data["cases"] if c["case_id"] == case_id)
+    assert row["reviewed"] is True
+
+
+def test_list_sales_outreach_stays_reviewed_after_a_second_appended_review(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    case_id = "case_sales_re_reviewed"
+    _seed_sales_case(conn, case_id)
+
+    first = _submit_review(
+        driver, subject_kind="sales_outreach_case", subject_id=case_id, verdict="pass"
+    )
+    second = _submit_review(
+        driver,
+        subject_kind="sales_outreach_case",
+        subject_id=case_id,
+        verdict="fail",
+        reason_tags=["factual_error"],
+    )
+    assert first.ok and second.ok
+
+    result = _run(driver, "list_sales_outreach")
+    assert result.ok
+    row = next(c for c in result.data["cases"] if c["case_id"] == case_id)
+    assert row["reviewed"] is True
+
+
+def test_list_sales_outreach_does_not_leak_review_across_unrelated_sibling(
+    datastore,
+) -> None:
+    """An unsampled sibling case stays Not reviewed even when another case in the
+    same list has been reviewed (PAC-2, S05 brief) -- proves the join is keyed
+    per subject_id, not a blanket "any review exists anywhere" flag.
+    """
+    driver, conn, _ = datastore
+    reviewed_case = "case_sales_sibling_reviewed"
+    sibling_case = "case_sales_sibling_untouched"
+    _seed_sales_case(conn, reviewed_case)
+    _seed_sales_case(conn, sibling_case)
+
+    review = _submit_review(
+        driver, subject_kind="sales_outreach_case", subject_id=reviewed_case
+    )
+    assert review.ok
+
+    result = _run(driver, "list_sales_outreach")
+    assert result.ok
+    by_id = {c["case_id"]: c["reviewed"] for c in result.data["cases"]}
+    assert by_id[reviewed_case] is True
+    assert by_id[sibling_case] is False
 
 
 def test_get_sales_outreach_rejects_non_sales_case(datastore) -> None:

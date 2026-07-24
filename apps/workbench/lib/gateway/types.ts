@@ -45,6 +45,12 @@ export interface WorkbenchCase {
   smsSessionActive: boolean;
   openedAt: number;
   lastActivityAt: number;
+  // Sampling coverage (0.0.4 S05, FR-6): ANY interaction_review row exists for
+  // this case, by any reviewer -- "has this been sampled", not "did I review
+  // it". Only `list_sales_outreach` populates this (a single batched join, not
+  // per-row); optional because the general case queue read (`list_cases`)
+  // never sets it -- absent reads as not-reviewed, same as `false`.
+  reviewed?: boolean;
 }
 
 export type ThreadAuthor = "customer" | "hermes" | "workbench";
@@ -112,6 +118,11 @@ export interface AutoHandledRecord {
   toolFailure: boolean;
   timeline: ThreadMessage[];
   toolCalls: ToolCallEvidence[];
+  // Sampling coverage (0.0.4 S05, FR-6): ANY interaction_review row exists for
+  // this record, by any reviewer -- see WorkbenchCase.reviewed for the same
+  // semantics. Only `list_auto_handled` populates this; `get_auto_handled`
+  // (detail) never sets it -- absent reads as not-reviewed, same as `false`.
+  reviewed?: boolean;
 }
 
 // The EXTERNAL mechanism's subject: one Auto-Handled Interaction record or one

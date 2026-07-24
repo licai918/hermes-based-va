@@ -8,6 +8,8 @@ import { formatChannel, formatRelativeTime } from "@/lib/format";
 import {
   Notice,
   failureStyle,
+  mutedStyle,
+  reviewedStyle,
   tableStyle,
   tdStyle,
   thStyle,
@@ -45,6 +47,7 @@ export function AutoHandledList() {
           <th style={thStyle}>Tool summary</th>
           <th style={thStyle}>Tool failure</th>
           <th style={thStyle}>Last activity</th>
+          <th style={thStyle}>Review status</th>
         </tr>
       </thead>
       <tbody>
@@ -69,6 +72,13 @@ export function AutoHandledList() {
               )}
             </td>
             <td style={tdStyle}>{formatRelativeTime(r.lastActivityAt, now)}</td>
+            <td style={tdStyle}>
+              {r.reviewed ? (
+                <span style={reviewedStyle}>Reviewed</span>
+              ) : (
+                <span style={mutedStyle}>Not reviewed</span>
+              )}
+            </td>
           </tr>
         ))}
       </tbody>
