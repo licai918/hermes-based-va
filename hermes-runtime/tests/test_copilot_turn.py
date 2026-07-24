@@ -92,6 +92,14 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         # purely so the allowlist gate lets the admin BFF's deterministic
         # tools:dispatch call (and the schedulable CLI entrypoint) reach it.
         "toee_retention",
+        # 0.0.4 S31/S32 (delivery): reviewed addition. toee_delivery_promise's
+        # three actions (get_delivery_quote, get_order_delivery,
+        # get_product_promise) are delivery-timing READS -- never contacts the
+        # customer and never moves money, so it does not weaken the no-auto-send
+        # invariant this tripwire guards. It is a copilot read tool (a rep
+        # drafting a reply about delivery needs it), registered like the other
+        # read toolsets, not a send toolset.
+        "toee_delivery_promise",
     }
 )
 
