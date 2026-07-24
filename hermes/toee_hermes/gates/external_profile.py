@@ -42,6 +42,16 @@ def create_external_profile_gate(*, email_links: Mapping[str, str]) -> ToolGate:
     links = dict(email_links)
 
     def gate(request: Any, context: ToolExecutionContext) -> GateDecision:
+        # DELIVERY verified-vs-public asymmetry (0.0.4 S32, role-asymmetry-as-intent,
+        # mirrors the S15 note): the External gate ALLOWS the whole toee_delivery_promise
+        # tool for every caller — including an unmatched/unverified prospect — on purpose.
+        # get_delivery_quote (Tier 3b) is a PUBLIC area-level estimate (postal + sku, NO
+        # customer id, no PII), so a prospect must be able to call it. The two account
+        # actions (get_order_delivery / get_product_promise) are NOT weakened by this: the
+        # DRIVER enforces verified-only on them (fails closed for an unverified caller
+        # before any HTTP call, and sends the verified snapshot id, never a model-supplied
+        # one). The per-action verified requirement lives at that single enforcement point,
+        # not here, so this gate intentionally does not special-case delivery.
         if request.tool != QBO_READ_TOOL:
             return GateDecision(allow=True)
 

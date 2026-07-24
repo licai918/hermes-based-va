@@ -19,6 +19,7 @@ Data is injectable so the eval fixture loader can override the baseline.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,10 @@ class DeliveryMockData:
     # simulate the same-day engine; it proves relay parity).
     product_promise: dict[str, Any] = field(
         default_factory=lambda: dict(_BASELINE_PROMISE)
+    )
+    # The canned Tier 3b public-quote block (an honest, non-committal area estimate).
+    quote_promise: dict[str, Any] = field(
+        default_factory=lambda: dict(_BASELINE_QUOTE)
     )
     timezone: str = "America/Toronto"
     business_date: str = "2026-07-24"
@@ -88,6 +93,24 @@ _BASELINE_PROMISE = {
     "learningPhase": "cold_start",
     "matchMode": None,
 }
+
+# Public quote (Tier 3b): an honest, non-committal area-level estimate — never a
+# fabricated date. Relayed via the endpoint's own displayLine/disclaimer.
+_BASELINE_QUOTE = {
+    "status": "route_unavailable",
+    "deliveryTiming": "unknown",
+    "displayLine": "We don't have a same-day route to that area yet — standard shipping applies.",
+    "disclaimer": "Delivery availability depends on your area.",
+    "marketingCutoffLocal": None,
+    "countdownSeconds": None,
+    "orderByDeadline": None,
+    "servingWarehouseLabel": None,
+    "serviceZoneLabel": None,
+}
+
+# Minimal Canadian postal-code shape (A1A 1A1). The live endpoint 400s a malformed
+# postal; the mock rejects the same shape so it is not more permissive.
+_CA_POSTAL = re.compile(r"^[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$")
 
 delivery_baseline_data = DeliveryMockData(
     orders=[
@@ -172,6 +195,39 @@ def _get_product_promise(
     }
 
 
+def _get_delivery_quote(
+    data: DeliveryMockData, params: dict[str, Any], context: "ToolExecutionContext"
+) -> dict[str, Any]:
+    # PUBLIC (Tier 3b): NO verified-customer requirement and NO customer id — a prospect
+    # may call it. Resolves the same way the endpoint does: malformed postal -> 400
+    # (configuration_missing), unknown sku -> 404 (not_found), unserved -> honest 200.
+    postal = _read_string(params, "postal_code", "postalCode")
+    if not postal:
+        raise ToolDriverError("policy_blocked", "get_delivery_quote requires a postal code.")
+    if not _CA_POSTAL.match(postal):
+        # Mirror the endpoint's 400 -> the live HTTP client maps 400 to configuration_missing.
+        raise ToolDriverError("configuration_missing", "Malformed postal code.")
+    sku = _read_string(params, "sku")
+    variant_id = _read_string(params, "variant_id", "variantId")
+    if sku:
+        resolved = data.variant_by_sku.get(sku)
+        if resolved is None:
+            raise ToolDriverError("not_found", "Unknown sku.")
+        variant_id = resolved
+    elif not variant_id:
+        raise ToolDriverError("policy_blocked", "get_delivery_quote requires a sku.")
+    quantity = params.get("quantity")
+    quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) else None
+    return {
+        "postal_code": postal,
+        "fsa": postal.replace(" ", "")[:3].upper(),
+        "variant_id": variant_id,
+        "sku": sku,
+        "quantity": quantity,
+        "product_delivery_promise": dict(data.quote_promise),
+    }
+
+
 def create_delivery_mock_handlers(
     data: DeliveryMockData = delivery_baseline_data,
 ) -> MockHandlerRegistry:
@@ -182,6 +238,9 @@ def create_delivery_mock_handlers(
                 data, params, context
             ),
             "get_product_promise": lambda params, context: _get_product_promise(
+                data, params, context
+            ),
+            "get_delivery_quote": lambda params, context: _get_delivery_quote(
                 data, params, context
             ),
         }

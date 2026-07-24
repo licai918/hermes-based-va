@@ -31,7 +31,14 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # S30's Shopify-fulfillment Tier 1); get_product_promise is Tier 3a (a pre-/
     # just-delivery promise by verified customer + variant). Both verified-customer
     # scoped; the endpoint enforces order ownership (404, no leak).
-    "toee_delivery_promise": ("get_order_delivery", "get_product_promise"),
+    # 0.0.4 S32 adds get_delivery_quote (Tier 3b): a PUBLIC pre-purchase area-level
+    # quote by postal code + sku with NO customer id — callable by an unmatched/
+    # unverified prospect (the driver enforces the verified-vs-public asymmetry).
+    "toee_delivery_promise": (
+        "get_order_delivery",
+        "get_product_promise",
+        "get_delivery_quote",
+    ),
     "toee_square_payment_link": ("send_payment_link",),
     "toee_sms_reply": ("send_message",),
     "toee_case": ("create_case", "update_case"),

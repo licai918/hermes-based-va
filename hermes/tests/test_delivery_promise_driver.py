@@ -40,6 +40,7 @@ ORDER_ID = "7189924970579"
 ORDER_NAME = "OL49597"
 VARIANT_ID = "39379581042771"
 SKU = "TRIM00014"
+POSTAL = "M3J 1P3"
 
 # Tier 2 200 body shape (S31a confirmed contract).
 TIER2_BODY = {
@@ -88,6 +89,29 @@ TIER3A_ADDRESS_MISSING = {
         "confidence": None,
         "learningPhase": "cold_start",
         "matchMode": None,
+    },
+}
+
+# Tier 3b 200 body — a PUBLIC quote by postal code, NO customer id. Dev returns an
+# honest non-committal status (here variant_unavailable), relayed verbatim.
+TIER3B_QUOTE = {
+    "tier": "product_promise_quote",
+    "operation": "hermes_delivery_quote",
+    "postalCode": POSTAL,
+    "fsa": "M3J",
+    "variantId": VARIANT_ID,
+    "sku": SKU,
+    "quantity": 1,
+    "productDeliveryPromise": {
+        "status": "variant_unavailable",
+        "deliveryTiming": "unknown",
+        "displayLine": "We can't confirm delivery timing for this item to that area.",
+        "disclaimer": "Delivery availability depends on your area.",
+        "marketingCutoffLocal": "12:00",
+        "countdownSeconds": None,
+        "orderByDeadline": None,
+        "servingWarehouseLabel": None,
+        "serviceZoneLabel": None,
     },
 }
 
@@ -397,6 +421,141 @@ def test_build_with_secret_yields_a_live_client_driver(monkeypatch) -> None:
     assert driver.kind == "delivery_promise"
     assert driver._config_error is None
     assert driver._client is not None
+
+
+# --- Tier 3b: PUBLIC quote by postal, unverified-allowed (S32) ---------------
+
+
+def test_quote_reachable_by_unverified_caller_and_sends_no_customer_id() -> None:
+    # THE key S32 test: the same UNVERIFIED caller who is failed closed for the two
+    # account actions can successfully get a public area-level quote. And the payload
+    # carries NO shopifyCustomerId — it can never disclose a specific customer's data.
+    client = FakeClient(TIER3B_QUOTE)
+    result = _call(
+        _driver(client),
+        "get_delivery_quote",
+        {"sku": SKU, "postal_code": POSTAL},
+        identity=None,  # unmatched / unverified prospect
+    )
+    assert result.ok is True
+    assert result.data["postal_code"] == POSTAL
+    assert result.data["fsa"] == "M3J"
+    assert result.data["sku"] == SKU
+    assert result.data["variant_id"] == VARIANT_ID
+    # No customer id anywhere in the payload sent to the endpoint.
+    assert client.payloads[0] == {"postalCode": POSTAL, "sku": SKU}
+    assert "shopifyCustomerId" not in client.payloads[0]
+
+
+def test_quote_public_where_account_actions_fail_closed_for_same_unverified_caller() -> None:
+    # The asymmetry, side by side: order/promise fail closed for an unverified caller,
+    # the quote succeeds — same caller, same driver, same turn.
+    order = _call(_driver(FakeClient(TIER2_BODY)), "get_order_delivery", {"order_name": ORDER_NAME})
+    promise = _call(_driver(FakeClient(TIER3A_ADDRESS_MISSING)), "get_product_promise", {"sku": SKU})
+    quote = _call(
+        _driver(FakeClient(TIER3B_QUOTE)), "get_delivery_quote", {"sku": SKU, "postal_code": POSTAL}
+    )
+    assert (order.ok, order.error_class) == (False, "policy_blocked")
+    assert (promise.ok, promise.error_class) == (False, "policy_blocked")
+    assert quote.ok is True
+
+
+def test_quote_by_variant_id_still_works_and_sends_no_customer_id() -> None:
+    client = FakeClient(TIER3B_QUOTE)
+    result = _call(
+        _driver(client),
+        "get_delivery_quote",
+        {"variant_id": VARIANT_ID, "postal_code": POSTAL, "quantity": 2},
+        identity=None,
+    )
+    assert result.ok is True
+    assert client.payloads[0] == {"postalCode": POSTAL, "variantId": VARIANT_ID, "quantity": 2}
+
+
+def test_quote_without_postal_fails_closed_before_http() -> None:
+    client = FakeClient(TIER3B_QUOTE)
+    result = _call(_driver(client), "get_delivery_quote", {"sku": SKU}, identity=None)
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert client.payloads == []
+
+
+def test_quote_without_sku_fails_closed_before_http() -> None:
+    client = FakeClient(TIER3B_QUOTE)
+    result = _call(_driver(client), "get_delivery_quote", {"postal_code": POSTAL}, identity=None)
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert client.payloads == []
+
+
+def test_quote_malformed_postal_400_fails_closed() -> None:
+    # The endpoint 400s a malformed postal -> the HTTP client maps 400 to
+    # configuration_missing; a bad postal is a governed failure, never a fabricated ETA.
+    fault = ToolDriverError("configuration_missing", "Delivery HTTP 400.")
+    result = _call(
+        _driver(FakeClient(raises=fault)),
+        "get_delivery_quote",
+        {"sku": SKU, "postal_code": "NOTAPOSTAL"},
+        identity=None,
+    )
+    assert result.ok is False
+    assert result.error_class == "configuration_missing"
+
+
+def test_quote_unknown_sku_404_fails_closed() -> None:
+    fault = ToolDriverError("not_found", "Delivery HTTP 404.")
+    result = _call(
+        _driver(FakeClient(raises=fault)),
+        "get_delivery_quote",
+        {"sku": "NOPE-000", "postal_code": POSTAL},
+        identity=None,
+    )
+    assert result.ok is False
+    assert result.error_class == "not_found"
+
+
+def test_quote_unserved_area_is_relayed_honestly_not_fabricated() -> None:
+    # A 200 with route_unavailable/variant_unavailable is a REAL answer relayed via the
+    # endpoint's own displayLine — ok=True, never upgraded to a positive date.
+    result = _call(
+        _driver(FakeClient(TIER3B_QUOTE)),
+        "get_delivery_quote",
+        {"sku": SKU, "postal_code": POSTAL},
+        identity=None,
+    )
+    assert result.ok is True
+    promise = result.data["product_delivery_promise"]
+    assert promise["status"] == "variant_unavailable"
+    assert promise["displayLine"] == "We can't confirm delivery timing for this item to that area."
+
+
+# --- Tier 3b mock parity + resolution ----------------------------------------
+
+
+def test_quote_mock_reachable_by_unverified_and_matches_contract() -> None:
+    mock = MockDriver(create_delivery_mock_handlers())
+    real = _driver(FakeClient(TIER3B_QUOTE))
+    real_out = _call(real, "get_delivery_quote", {"sku": SKU, "postal_code": POSTAL}, identity=None)
+    mock_out = _call(mock, "get_delivery_quote", {"sku": SKU, "postal_code": POSTAL}, identity=None)
+    assert mock_out.ok is True  # unverified caller succeeds against the mock too
+    assert set(real_out.data) == set(mock_out.data)
+    assert set(real_out.data["product_delivery_promise"]) == set(
+        mock_out.data["product_delivery_promise"]
+    )
+
+
+def test_quote_mock_unknown_sku_fails_closed_like_404() -> None:
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(mock, "get_delivery_quote", {"sku": "NOPE-000", "postal_code": POSTAL}, identity=None)
+    assert out.ok is False
+    assert out.error_class == "not_found"
+
+
+def test_quote_mock_malformed_postal_fails_closed_like_400() -> None:
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(mock, "get_delivery_quote", {"sku": SKU, "postal_code": "NOPE"}, identity=None)
+    assert out.ok is False
+    assert out.error_class == "configuration_missing"
 
 
 if __name__ == "__main__":  # pragma: no cover

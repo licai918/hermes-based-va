@@ -7,19 +7,33 @@ driver and QBO share one config (``GADGET_API_URL`` + ``GADGET_API_KEY``). Wired
 per-tool overlay beside Composio (``_build_driver_selector``), exactly like the
 EasyRoutes driver — no new ``INTEGRATION_DRIVER`` axis.
 
-Two v1 actions map to the endpoint's 2-way dispatch:
+Three v1 actions map to the endpoint's dispatch:
 
 - ``get_order_delivery`` (Tier 2, by order): richer routed-order status than S30's
   Shopify-fulfillment Tier 1 — ``routeLabel``, ``estimatedReturnAt``, proof-of-delivery.
-  Request ``{orderId, shopifyCustomerId}``; the endpoint ENFORCES
+  Request ``{orderName, shopifyCustomerId}``; the endpoint ENFORCES
   ``order.customer.id === shopifyCustomerId`` and 404s a non-owned order without
   revealing existence.
 - ``get_product_promise`` (Tier 3a, by customer + variant): a pre-/just-delivery
-  PROMISE. Request ``{shopifyCustomerId, variantId, quantity?}``.
+  PROMISE. Request ``{shopifyCustomerId, sku|variantId, quantity?}``.
+- ``get_delivery_quote`` (Tier 3b, by postal code): a PUBLIC pre-purchase, area-level
+  quote for a prospect. Request ``{postalCode, sku|variantId, quantity?}`` — with NO
+  ``shopifyCustomerId``. See the verified-vs-public asymmetry below.
 
-Ownership (ADR-0043): ``shopifyCustomerId`` is ALWAYS the VERIFIED customer's Shopify
-id from the Session Identity Snapshot — never a model-supplied one. An unverified /
-unmatched caller fails closed (``policy_blocked``) before any HTTP call.
+VERIFIED-VS-PUBLIC ASYMMETRY (S32, the security-sensitive part — this is the
+enforcement point). ``shopifyCustomerId`` is the caller's identity and is ALWAYS the
+VERIFIED customer's Shopify id from the Session Identity Snapshot (ADR-0043), never a
+model-supplied one:
+- ``get_order_delivery`` / ``get_product_promise`` disclose a SPECIFIC customer's
+  order/account data, so they require a verified customer and fail closed
+  (``policy_blocked``) for any unverified/unmatched caller BEFORE any HTTP call.
+- ``get_delivery_quote`` is a PUBLIC area-level estimate: it carries NO customer id and
+  returns only timing for a caller-supplied postal + sku (no PII, no per-customer data),
+  so it is deliberately callable by an unmatched/unverified prospect. It NEVER sends a
+  customer id, so it cannot be coerced into disclosing a specific customer's data — the
+  worst an attacker gets is an area-level ETA for a postal they already typed. Do NOT
+  add a customer id to the quote payload. (The external Tool Gate allows the whole tool;
+  this per-action verified requirement is enforced HERE.)
 
 Fail-closed spine (FR-21, ADR-0020):
 - 4xx/5xx/timeout/None -> governed Tool Unavailable, never a fabricated delivery
@@ -163,7 +177,34 @@ class DeliveryPromiseDriver:
                 f"Delivery-promise driver does not serve '{request.tool}'.",
             )
 
-        # Verified-customer id (numeric) comes from the snapshot, never the model.
+        # PUBLIC action (Tier 3b) — handled BEFORE the verified requirement below, and
+        # deliberately WITHOUT one: an area-level quote carries no customer id and no PII,
+        # so a prospect (unmatched/unverified) may call it. NEVER add a customer id here.
+        if request.action == "get_delivery_quote":
+            postal_code = _read(request.params, "postal_code", "postalCode")
+            if not postal_code:
+                raise ToolDriverError(
+                    "policy_blocked", "get_delivery_quote requires a postal code."
+                )
+            payload: dict[str, Any] = {"postalCode": postal_code}
+            sku = _read(request.params, "sku")
+            variant_id = _read(request.params, "variant_id", "variantId")
+            if sku:
+                payload["sku"] = sku
+            elif variant_id:
+                payload["variantId"] = variant_id
+            else:
+                raise ToolDriverError(
+                    "policy_blocked", "get_delivery_quote requires a sku."
+                )
+            quantity = _quantity(request.params)
+            if quantity is not None:
+                payload["quantity"] = quantity
+            body = self._fetch(payload)
+            return _shape_delivery_quote(body, postal_code, variant_id or sku)
+
+        # VERIFIED-only actions below: the verified customer id (numeric) comes from the
+        # snapshot, never the model, and an unverified caller fails closed here.
         shopify_customer_id = _require_verified_numeric_id(context)
 
         if request.action == "get_order_delivery":
@@ -293,6 +334,30 @@ def _shape_product_promise(body: dict[str, Any], product_ref: str) -> dict[str, 
         "quantity": body.get("quantity"),
         "business_date": body.get("businessDate"),
         "timezone": body.get("timezone"),
+        "product_delivery_promise": promise,
+    }
+
+
+def _shape_delivery_quote(body: dict[str, Any], postal_code: str, product_ref: str) -> dict[str, Any]:
+    """Extract the Tier 3b public quote block, or FAIL CLOSED on an unexpected shape.
+
+    Same relay contract as Tier 3a but keyed by postal/fsa (area-level, no customer). A
+    ``route_unavailable`` / ``variant_unavailable`` / unserved status INSIDE the block is a
+    REAL 200 answer relayed verbatim (``displayLine``/``disclaimer``), never upgraded to a
+    positive date; only a missing/wrong-typed block or an ``error`` field fails closed.
+    """
+    promise = body.get("productDeliveryPromise") if isinstance(body, dict) else None
+    if not isinstance(body, dict) or body.get("error") or not isinstance(promise, dict):
+        raise ToolDriverError(
+            "configuration_missing",
+            "Delivery-promise returned an unexpected Tier 3b shape.",
+        )
+    return {
+        "postal_code": body.get("postalCode") or postal_code,
+        "fsa": body.get("fsa"),
+        "variant_id": body.get("variantId") or product_ref,
+        "sku": body.get("sku"),
+        "quantity": body.get("quantity"),
         "product_delivery_promise": promise,
     }
 

@@ -93,7 +93,10 @@ follow-up case. Calling the accounting read without a confirmed link is a policy
 violation even if it would fail.
 - toee_easyroutes_read — delivery:
   - `get_delivery_status {order_number}` — delivery for the verified customer's order.
-- toee_delivery_promise — same-day delivery status and promises (verified customer only):
+- toee_delivery_promise — same-day delivery status, promises, and public quotes. The \
+order and product-promise actions are for a VERIFIED customer's own account; the delivery \
+QUOTE is PUBLIC — anyone (even someone not yet a customer) can ask "how fast can you get \
+X to my postal code":
   - `get_order_delivery {order_name}` — RICH live same-day status for the customer's own \
 order (route, estimated-return window, proof-of-delivery). `order_name` is the order's \
 name/number (e.g. "OL49597"). SOURCE it from `toee_shopify_read__get_order` / \
@@ -112,6 +115,15 @@ for you: relay `product_delivery_promise.displayLine` and, when present, `.discl
 If the status is `address_missing`, `route_unavailable`, or similar, that displayLine IS \
 the honest answer (e.g. "add a delivery address to see when this arrives") — say exactly \
 that; do NOT invent a delivery date and do NOT call it an error.
+  - `get_delivery_quote {sku, postal_code}` (optional `{quantity}`) — PUBLIC pre-purchase \
+estimate: "if I order [product] to [postal], when could I get it?" / "how fast can you \
+deliver to [postal]?". This does NOT require the person to be a verified customer — use it \
+for prospects too. First find the exact variant with `search_products` / `get_product` and \
+take its `sku` from the `variants` list; the customer supplies their `postal_code` — if \
+they did not give one, ASK for it (say "postal code"). NEVER guess or fabricate a sku or a \
+postal code. Relay `product_delivery_promise.displayLine` and, when present, `.disclaimer` \
+verbatim; if the area is not served (`route_unavailable` / `variant_unavailable`), that \
+line IS the honest answer — do NOT invent a delivery date.
 - toee_square_payment_link — sends a payment link that ALREADY EXISTS. You cannot \
 create, generate, issue, or set up a payment link, and you cannot choose or change its \
 amount: every link is set up in advance by the team for one specific invoice, and this \

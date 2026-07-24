@@ -88,6 +88,33 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         },
         "required": ["sku"],
     },
+    # 0.0.4 S32 (Tier 3b): the PUBLIC pre-purchase quote by postal code. No customer id
+    # (it's a hypothetical for a prospect); sourced sku + a caller-supplied postal.
+    ("toee_delivery_promise", "get_delivery_quote"): {
+        "properties": {
+            "sku": {
+                "type": "string",
+                "description": (
+                    "The SKU of the specific product variant (size), taken from the "
+                    "variants list of toee_shopify_read.get_product / search_products. "
+                    "Never fabricate a sku."
+                ),
+            },
+            "postal_code": {
+                "type": "string",
+                "description": (
+                    'The Canadian postal code to quote delivery to (e.g. "M3J 1P3"), as '
+                    "the customer gave it. Ask the customer for it if not provided; never "
+                    "fabricate one."
+                ),
+            },
+            "quantity": {
+                "type": "integer",
+                "description": "Optional quantity being considered (defaults to 1).",
+            },
+        },
+        "required": ["sku", "postal_code"],
+    },
     # 0.0.3 S22 (FR-23): the governed L6 propose write -- kind/content name-
     # guessing would be exactly the S10 failure mode, so both are declared and
     # required rather than left to an open object.
