@@ -166,7 +166,7 @@ ADR-0154, the PRD, and the design spec now agree with each other on both correct
 
 ## Commit
 
-Commit hash: recorded after `git commit` below (see final message).
+Commit hash: `bda7481` — "docs(0.0.4/quality-feedback): S01 - correct dispatch-only pattern + migration 0018"
 
 ## Scope discipline
 
