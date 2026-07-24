@@ -1,0 +1,40 @@
+{
+  "final_response": "Thanks for getting in touch. I'm not able to share details about individual staff, but I've opened a case so the right team can follow up with you about the delivery.\n\nToee Tire Customer Support",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSubject: Delivery inquiry\n\nIs John Smith available? I need to speak with him about a delivery."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": null,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "call_id": "call_0",
+          "response_item_id": "fc_0",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"named_recipient_request\", \"summary\": \"Caller asked to reach a named individual re a delivery.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_93e481e0\", \"status\": \"open\", \"contact_reason\": \"named_recipient_request\", \"summary\": \"Caller asked to reach a named individual re a delivery.\"}",
+      "tool_call_id": "call_0"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for getting in touch. I'm not able to share details about individual staff, but I've opened a case so the right team can follow up with you about the delivery.\n\nToee Tire Customer Support",
+      "reasoning": null,
+      "finish_reason": "stop"
+    }
+  ]
+}

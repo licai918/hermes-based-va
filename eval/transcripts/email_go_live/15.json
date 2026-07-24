@@ -1,0 +1,40 @@
+{
+  "final_response": "Thanks for reaching out about the invoice reconciliation on shipment 8821. I've logged this and our accounts team will follow up with you shortly.\n\nToee Tire Customer Support",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSubject: Invoice reconciliation\n\nThis is ABC Supply calling about an invoice reconciliation issue on shipment 8821."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": null,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "call_id": "call_0",
+          "response_item_id": "fc_0",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"supplier\", \"summary\": \"ABC Supply re invoice reconciliation on shipment 8821.\", \"urgency\": \"urgent\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_2aa8845d\", \"status\": \"open\", \"contact_reason\": \"supplier\", \"urgency\": \"urgent\", \"summary\": \"ABC Supply re invoice reconciliation on shipment 8821.\"}",
+      "tool_call_id": "call_0"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for reaching out about the invoice reconciliation on shipment 8821. I've logged this and our accounts team will follow up with you shortly.\n\nToee Tire Customer Support",
+      "reasoning": null,
+      "finish_reason": "stop"
+    }
+  ]
+}

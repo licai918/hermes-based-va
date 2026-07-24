@@ -1,0 +1,40 @@
+{
+  "final_response": "Thanks for reaching out. To pull up the right order, could you share your order number? Once I have it I can look into the status for you, and I've opened a case so we can follow up.\n\nToee Tire Customer Support",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: ambiguous_phone_match\n- shopify_customer_ids: ['gid://shopify/Customer/2001', 'gid://shopify/Customer/2002']\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSubject: Order status\n\nI need the status of my recent order.\n\nSubject: Re: Order status\n\nI don't have the order number right now."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": null,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "call_id": "call_0",
+          "response_item_id": "fc_0",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"non_customer_general\", \"summary\": \"Ambiguous email match; order status request without an order number.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_bbb48cdd\", \"status\": \"open\", \"contact_reason\": \"non_customer_general\", \"summary\": \"Ambiguous email match; order status request without an order number.\"}",
+      "tool_call_id": "call_0"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for reaching out. To pull up the right order, could you share your order number? Once I have it I can look into the status for you, and I've opened a case so we can follow up.\n\nToee Tire Customer Support",
+      "reasoning": null,
+      "finish_reason": "stop"
+    }
+  ]
+}

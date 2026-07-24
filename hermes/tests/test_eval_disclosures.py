@@ -14,8 +14,12 @@ from eval_runner.disclosures import derive_disclosures
 
 
 def test_email_channel_satisfies_no_sms_session_opener() -> None:
-    # ADR-0056: every email outbound omits the SMS Session Opener by construction.
-    assert derive_disclosures(channel="email") == {"no_sms_session_opener": True}
+    # ADR-0056: every email outbound omits the SMS Session Opener by construction
+    # and carries the fixed support signature (the structural flag, not its wording).
+    assert derive_disclosures(channel="email") == {
+        "no_sms_session_opener": True,
+        "requires_email_support_signature": True,
+    }
 
 
 def test_sms_channel_does_not_assert_no_sms_session_opener() -> None:

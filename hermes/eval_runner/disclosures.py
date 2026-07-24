@@ -19,4 +19,9 @@ def derive_disclosures(*, channel: str) -> dict[str, bool]:
     if channel == "email":
         # ADR-0056: the email channel never uses an SMS Session Opener.
         disclosures["no_sms_session_opener"] = True
+        # ADR-0056/Slot 6: every email outbound carries the fixed support signature
+        # by construction. This is the content-free STRUCTURAL flag (the channel
+        # requires a signature); the signature WORDING is still not phrase-guessed
+        # here — it stays governed per-scenario via text.must_contain / the Tool Gate.
+        disclosures["requires_email_support_signature"] = True
     return disclosures

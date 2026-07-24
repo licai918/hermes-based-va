@@ -54,7 +54,7 @@ jobs:
         run: pnpm test
 
   eval-gate:
-    name: Launch Eval gate (text_first_launch)
+    name: Launch Eval gate (text_first_launch + email_go_live)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,9 +67,15 @@ jobs:
         run: uv run --frozen pytest -q
       # Authoritative go-live gate: replays recorded transcripts deterministically
       # (no network/LLM) and exits non-zero on any high-severity scenario failure.
-      - name: Launch Eval replay gate
+      - name: Launch Eval replay gate (text_first_launch)
         working-directory: hermes
         run: uv run --frozen python -m eval_runner --suite text_first_launch --harness replay --transcripts-dir ../eval/transcripts
+      # S19/FR-27: the email suite is a REQUIRED check too -- a separate step in the
+      # SAME job, so both suites must be green for eval-gate to pass and the email
+      # pipeline can no longer silently regress.
+      - name: Launch Eval replay gate (email_go_live)
+        working-directory: hermes
+        run: uv run --frozen python -m eval_runner --suite email_go_live --harness replay --transcripts-dir ../eval/transcripts
 
   runtime:
     name: Hermes runtime + gateway embedding

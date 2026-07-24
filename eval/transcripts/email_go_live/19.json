@@ -1,0 +1,74 @@
+{
+  "final_response": "Here's what I found for you:\n- Order #1042 (All-Season 225/60R16): in transit\n- Invoice INV-9001: open\nLet me know if there's anything else I can help with.\n\nToee Tire Customer Support",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: verified_customer\n- shopify_customer_id: gid://shopify/Customer/1001\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSubject: Account inquiry\n\nCan you check order 1042, delivery status, and whether invoice INV-9001 is open?"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": null,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "call_id": "call_0",
+          "response_item_id": "fc_0",
+          "type": "function",
+          "function": {
+            "name": "toee_shopify_read__get_order",
+            "arguments": "{\"order_number\": \"1042\"}"
+          }
+        },
+        {
+          "id": "call_1",
+          "call_id": "call_1",
+          "response_item_id": "fc_1",
+          "type": "function",
+          "function": {
+            "name": "toee_easyroutes_read__get_delivery_status",
+            "arguments": "{\"order_number\": \"1042\"}"
+          }
+        },
+        {
+          "id": "call_2",
+          "call_id": "call_2",
+          "response_item_id": "fc_2",
+          "type": "function",
+          "function": {
+            "name": "toee_qbo_read__get_invoice",
+            "arguments": "{\"invoice_number\": \"INV-9001\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_shopify_read__get_order",
+      "tool_name": "toee_shopify_read__get_order",
+      "content": "{\"order_number\": \"1042\", \"customer_id\": \"gid://shopify/Customer/1001\", \"line_items\": [{\"sku\": \"TIRE-225-60R16\", \"title\": \"All-Season 225/60R16\"}], \"fulfillment\": {\"state\": \"in_transit\", \"shipment_status\": \"in_transit\", \"tracking\": {\"number\": \"ER-1042\", \"url\": \"https://api.easyroutes.app/orders/status/route-7-stop-4\", \"company\": \"EasyRoutes\"}}}",
+      "tool_call_id": "call_0"
+    },
+    {
+      "role": "tool",
+      "name": "toee_easyroutes_read__get_delivery_status",
+      "tool_name": "toee_easyroutes_read__get_delivery_status",
+      "content": "{\"order_number\": \"1042\", \"status\": \"in_transit\"}",
+      "tool_call_id": "call_1"
+    },
+    {
+      "role": "tool",
+      "name": "toee_qbo_read__get_invoice",
+      "tool_name": "toee_qbo_read__get_invoice",
+      "content": "{\"invoice_number\": \"INV-9001\", \"shopify_customer_id\": \"gid://shopify/Customer/1001\", \"customer_email\": \"accounts@acme-fleet.example\", \"balance\": 1250.0}",
+      "tool_call_id": "call_2"
+    },
+    {
+      "role": "assistant",
+      "content": "Here's what I found for you:\n- Order #1042 (All-Season 225/60R16): in transit\n- Invoice INV-9001: open\nLet me know if there's anything else I can help with.\n\nToee Tire Customer Support",
+      "reasoning": null,
+      "finish_reason": "stop"
+    }
+  ]
+}
