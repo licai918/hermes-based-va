@@ -31,7 +31,16 @@ outcome, not a judgment). Reuses ``resolve_draft_rating_authorization`` and
 the case-ownership gate verbatim -- an outcome write is governed exactly like
 a rating write, just a different payload shape.
 
-The real ``list_feedback`` read (S10) stays a stub -- out of scope here.
+``list_feedback`` (0.0.4 S10, ADR-0154, FR-3 read half) is the Supervisor
+Admin's governed READ over BOTH tables at once: interaction_review rows keyed
+by subject, draft_feedback rows keyed by case + draft_correlation_id. It is
+the seam Phase 2's aggregation will consume and the way an admin inspects
+either table through dispatch today without a database client. Bounded
+(``_LIST_FEEDBACK_LIMIT``) with two optional filters (``since``, ``verdict``)
+shared with the Postgres handler -- see the validators below. Read-only: no
+actor is required and no audit row is written (parity with
+``list_agent_experience``/``list_dead_letters`` -- a read is not a governed
+action).
 """
 
 from __future__ import annotations
@@ -304,6 +313,70 @@ def _read_edit_distance_ratio(
     return None
 
 
+# list_feedback (S10): bounded-read filters, shared with the Postgres handler
+# (imported verbatim, same "one resolver, both twins" discipline as the write
+# validators above) so the two backends can't drift on what a valid filter is.
+
+# ponytail: a fixed cap, not a cursor/pagination scheme -- this is a supervisor
+# triage read, not a bulk export. Add a cursor the day someone needs page 2.
+_LIST_FEEDBACK_LIMIT = 50
+
+
+def _read_since_filter(params: dict[str, Any]) -> Optional[str]:
+    """Optional ISO-8601 lower bound on ``created_at``, validated up front.
+
+    Reject rather than silently ignore a malformed value (same "reject, don't
+    coerce" discipline as ``_read_edit_distance_ratio`` above) -- a typo'd
+    filter should fail loudly, not quietly return everything.
+    """
+    since = params.get("since")
+    if since is None:
+        return None
+    if not isinstance(since, str):
+        raise ToolDriverError(
+            "unexpected_error", "list_feedback requires since to be a string."
+        )
+    try:
+        datetime.fromisoformat(since)
+    except ValueError as exc:
+        raise ToolDriverError(
+            "unexpected_error",
+            f'list_feedback rejects since "{since}": not a valid ISO-8601 timestamp.',
+        ) from exc
+    return since
+
+
+def _read_verdict_filter(params: dict[str, Any]) -> Optional[str]:
+    """Optional verdict filter spanning BOTH mechanisms' vocabularies at once.
+
+    Deliberately NOT enum-checked against either single set (unlike
+    ``_require_verdict``/``_require_draft_rating_verdict``): one param filters
+    both tables in the same call, and each table's own verdict column only
+    ever holds its own vocabulary anyway, so an unmatched value just yields no
+    rows from that table rather than needing a combined enum here.
+    """
+    verdict = params.get("verdict")
+    if verdict is None:
+        return None
+    if not isinstance(verdict, str):
+        raise ToolDriverError(
+            "unexpected_error", "list_feedback requires verdict to be a string."
+        )
+    return verdict
+
+
+def _read_list_limit(params: dict[str, Any]) -> int:
+    """Bounded page size: caller-supplied, clamped to the cap, never above it."""
+    limit = params.get("limit")
+    if limit is None:
+        return _LIST_FEEDBACK_LIMIT
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        raise ToolDriverError(
+            "unexpected_error", "list_feedback requires limit to be a positive integer."
+        )
+    return min(limit, _LIST_FEEDBACK_LIMIT)
+
+
 def resolve_draft_rating_authorization(context: "ToolExecutionContext") -> str:
     """Framework-derived ``rep_account_id`` for submit_draft_rating.
 
@@ -464,7 +537,37 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
     def list_feedback(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
-        return {"interaction_reviews": [], "draft_feedback": []}
+        # Read-only (S10): no actor required, no audit row -- see the module
+        # docstring and resolve_*_authorization's precedent for why a read
+        # isn't a governed action the way the three writes above are.
+        del context
+        since = _read_since_filter(params)
+        verdict = _read_verdict_filter(params)
+        limit = _read_list_limit(params)
+
+        def _matches(entry: dict[str, Any]) -> bool:
+            if since is not None and datetime.fromisoformat(
+                entry["created_at"]
+            ) < datetime.fromisoformat(since):
+                return False
+            if verdict is not None and entry.get("verdict") != verdict:
+                return False
+            return True
+
+        reviews = sorted(
+            (dict(e) for e in store if _matches(e)),
+            key=lambda e: e["created_at"],
+            reverse=True,
+        )
+        drafts = sorted(
+            (dict(e) for e in draft_ratings if _matches(e)),
+            key=lambda e: e["created_at"],
+            reverse=True,
+        )
+        return {
+            "interaction_reviews": reviews[:limit],
+            "draft_feedback": drafts[:limit],
+        }
 
     return {
         "toee_feedback": {

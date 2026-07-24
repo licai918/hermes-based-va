@@ -584,6 +584,48 @@ def test_dispatch_record_draft_outcome_on_an_unheld_case_is_denied(datastore) ->
         assert cur.fetchone()[0] == 0
 
 
+def test_dispatch_list_feedback_on_supervisor_admin_reads_back_both_tables(
+    datastore,
+) -> None:
+    # 0.0.4 S10 (FR-3 read half): the Supervisor Admin's governed read over
+    # BOTH feedback tables, end-to-end over the real HTTP dispatch route --
+    # writes land under internal_copilot (S03/S06 dispatch), the read comes
+    # back under supervisor_admin (ADR-0038), the profile S02 allowlisted it
+    # on.
+    driver, _, _ = datastore
+
+    write_response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_interaction_review",
+            "params": {
+                "subject_kind": "auto_handled_record",
+                "subject_id": "rec_1",
+                "verdict": "fail",
+                "reason_tags": ["factual_error"],
+            },
+            "actor_account_id": "acct_super_1",
+        },
+    )
+    assert write_response.json()["ok"] is True
+
+    read_response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={"tool": "toee_feedback", "action": "list_feedback"},
+    )
+    assert read_response.status_code == 200
+    body = read_response.json()
+    assert body["ok"] is True
+    reviews = body["data"]["interaction_reviews"]
+    assert len(reviews) == 1
+    assert reviews[0]["subject_id"] == "rec_1"
+    assert reviews[0]["reason_tags"] == ["factual_error"]
+    assert body["data"]["draft_feedback"] == []
+
+
 def test_dispatch_governed_write_without_actor_is_denied(datastore) -> None:
     # I1 regression end-to-end (ADR-0141): a governed case write dispatched with NO
     # actor_account_id is a governed denial (HTTP 200, ok False), and it leaves NO

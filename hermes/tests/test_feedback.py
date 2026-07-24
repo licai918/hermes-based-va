@@ -554,6 +554,161 @@ def test_record_draft_outcome_rep_cannot_be_forged() -> None:
     assert result.data["rep_account_id"] == "acct_real"
 
 
+# --- list_feedback (S10): the Supervisor Admin read over BOTH tables --------
+
+
+def _list(driver, context=None, **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="list_feedback",
+        params=params,
+        context=context or ToolExecutionContext(profile="supervisor_admin"),
+        driver=driver,
+    )
+
+
+def test_list_feedback_on_an_empty_store_returns_empty_lists_not_an_error() -> None:
+    driver = _driver()
+    result = _list(driver)
+    assert result.ok is True
+    assert result.data == {"interaction_reviews": [], "draft_feedback": []}
+
+
+def test_list_feedback_reads_back_both_tables_with_tags_and_correlation_id() -> None:
+    driver = _driver()
+    _submit(
+        driver,
+        _internal_ctx(user_id="acct_super_1"),
+        subject_kind="auto_handled_record",
+        subject_id="rec_1",
+        verdict="fail",
+        reason_tags=["factual_error", "tool_misuse"],
+    )
+    _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["wrong_tone"],
+        draft_text="Hey, your tire order is on the way!",
+    )
+
+    result = _list(driver)
+    assert result.ok is True
+    reviews = result.data["interaction_reviews"]
+    drafts = result.data["draft_feedback"]
+    assert len(reviews) == 1
+    assert reviews[0]["subject_id"] == "rec_1"
+    assert reviews[0]["reason_tags"] == ["factual_error", "tool_misuse"]
+    assert len(drafts) == 1
+    assert drafts[0]["draft_correlation_id"] == "draft_corr_1"
+    assert drafts[0]["reason_tags"] == ["wrong_tone"]
+
+
+def test_list_feedback_verdict_filter_applies_to_each_table_independently() -> None:
+    driver = _driver()
+    _submit(
+        driver,
+        _internal_ctx(user_id="acct_super_1"),
+        subject_kind="auto_handled_record",
+        subject_id="rec_1",
+        verdict="fail",
+        reason_tags=["factual_error"],
+    )
+    _submit(
+        driver,
+        _internal_ctx(user_id="acct_super_1"),
+        subject_kind="auto_handled_record",
+        subject_id="rec_2",
+        verdict="pass",
+    )
+    _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["wrong_tone"],
+        draft_text="Hey, your tire order is on the way!",
+    )
+
+    result = _list(driver, verdict="fail")
+    assert result.ok is True
+    assert [r["subject_id"] for r in result.data["interaction_reviews"]] == ["rec_1"]
+    # "fail" never appears in draft_feedback.verdict -- no cross-contamination.
+    assert result.data["draft_feedback"] == []
+
+
+def test_list_feedback_bounded_by_limit_cap() -> None:
+    driver = _driver()
+    for i in range(3):
+        _submit(
+            driver,
+            _internal_ctx(user_id="acct_super_1"),
+            subject_kind="auto_handled_record",
+            subject_id=f"rec_{i}",
+            verdict="pass",
+        )
+
+    result = _list(driver, limit=2)
+    assert result.ok is True
+    assert len(result.data["interaction_reviews"]) == 2
+
+
+def test_list_feedback_rejects_a_limit_above_zero_but_clamps_to_the_cap() -> None:
+    from toee_hermes.drivers.mock.feedback import _LIST_FEEDBACK_LIMIT
+
+    driver = _driver()
+    result = _list(driver, limit=_LIST_FEEDBACK_LIMIT + 1000)
+    assert result.ok is True  # clamped, not rejected
+
+
+def test_list_feedback_rejects_a_non_positive_limit() -> None:
+    driver = _driver()
+    result = _list(driver, limit=0)
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_list_feedback_since_filter_excludes_older_rows() -> None:
+    import time
+
+    driver = _driver()
+    _submit(
+        driver,
+        _internal_ctx(user_id="acct_super_1"),
+        subject_kind="auto_handled_record",
+        subject_id="rec_old",
+        verdict="pass",
+    )
+    time.sleep(0.01)
+    from datetime import datetime, timezone
+
+    cutoff = datetime.now(timezone.utc).isoformat()
+    time.sleep(0.01)
+    _submit(
+        driver,
+        _internal_ctx(user_id="acct_super_1"),
+        subject_kind="auto_handled_record",
+        subject_id="rec_new",
+        verdict="pass",
+    )
+
+    result = _list(driver, since=cutoff)
+    assert result.ok is True
+    assert [r["subject_id"] for r in result.data["interaction_reviews"]] == ["rec_new"]
+
+
+def test_list_feedback_rejects_a_malformed_since() -> None:
+    driver = _driver()
+    result = _list(driver, since="not-a-timestamp")
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
 def test_record_draft_outcome_and_submit_draft_rating_share_correlation_id() -> None:
     # S08 brief: rows written by record_draft_outcome and submit_draft_rating
     # for the SAME draft share the draft_correlation_id -- one draft's

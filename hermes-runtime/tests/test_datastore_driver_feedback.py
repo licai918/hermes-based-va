@@ -1049,6 +1049,177 @@ def test_record_draft_outcome_missing_draft_text_persists_nothing(datastore) -> 
 # --- model-supplied actor cannot be forged -------------------------------------
 
 
+# --- list_feedback (S10): the Supervisor Admin read over BOTH tables --------
+
+
+def _list(driver, *, profile="supervisor_admin", **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="list_feedback",
+        params=params,
+        context=ToolExecutionContext(profile=profile, user_id=None),
+        driver=driver,
+    )
+
+
+def test_list_feedback_on_an_empty_store_returns_empty_lists_not_an_error(
+    datastore,
+) -> None:
+    driver, _, _ = datastore
+    result = _list(driver)
+    assert result.ok is True
+    assert result.data == {"interaction_reviews": [], "draft_feedback": []}
+
+
+def test_list_feedback_reads_back_live_rows_from_both_tables(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    review = _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_1",
+        verdict="fail",
+        reason_tags=["factual_error", "tool_misuse"],
+        comment="Quoted the wrong SKU.",
+    )
+    rating = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["wrong_tone"],
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert review.ok and rating.ok
+
+    result = _list(driver)
+    assert result.ok is True
+    reviews = result.data["interaction_reviews"]
+    drafts = result.data["draft_feedback"]
+    assert len(reviews) == 1
+    assert reviews[0]["id"] == review.data["id"]
+    assert reviews[0]["subject_id"] == "rec_1"
+    assert set(reviews[0]["reason_tags"]) == {"factual_error", "tool_misuse"}
+    assert reviews[0]["created_at"] is not None  # serialized, not a raw datetime
+    assert len(drafts) == 1
+    assert drafts[0]["id"] == rating.data["id"]
+    assert drafts[0]["draft_correlation_id"] == "draft_corr_1"
+    assert drafts[0]["reason_tags"] == ["wrong_tone"]
+
+
+def test_list_feedback_verdict_filter_does_not_cross_contaminate_tables(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_fail",
+        verdict="fail",
+        reason_tags=["factual_error"],
+    )
+    _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_pass",
+        verdict="pass",
+    )
+    _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["wrong_tone"],
+        draft_text="Hey, your tire order is on the way!",
+    )
+
+    result = _list(driver, verdict="fail")
+    assert result.ok is True
+    assert [r["subject_id"] for r in result.data["interaction_reviews"]] == ["rec_fail"]
+    # "fail" is never a draft_feedback verdict -- the shared filter param must
+    # not leak a match across the two independent vocabularies.
+    assert result.data["draft_feedback"] == []
+
+
+def test_list_feedback_since_filter_excludes_older_rows(datastore) -> None:
+    driver, conn, _ = datastore
+
+    old = _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_old",
+        verdict="pass",
+    )
+    assert old.ok
+    # Backdate the old row rather than sleeping between inserts -- deterministic,
+    # no timing race against the DB clock's actual resolution.
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE interaction_review SET created_at = now() - interval '1 hour' "
+            "WHERE id = %s",
+            (old.data["id"],),
+        )
+
+    new = _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_new",
+        verdict="pass",
+    )
+    assert new.ok
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT now() - interval '30 minutes'")
+        cutoff = cur.fetchone()[0].isoformat()
+
+    result = _list(driver, since=cutoff)
+    assert result.ok is True
+    assert [r["subject_id"] for r in result.data["interaction_reviews"]] == ["rec_new"]
+
+
+def test_list_feedback_bounded_by_limit_cap(datastore) -> None:
+    driver, _, _ = datastore
+    for i in range(3):
+        result = _submit(
+            driver,
+            user_id="acct_super_1",
+            subject_kind="auto_handled_record",
+            subject_id=f"rec_{i}",
+            verdict="pass",
+        )
+        assert result.ok
+
+    result = _list(driver, limit=2)
+    assert result.ok is True
+    assert len(result.data["interaction_reviews"]) == 2
+
+
+def test_list_feedback_rejects_a_non_positive_limit(datastore) -> None:
+    driver, _, _ = datastore
+    result = _list(driver, limit=0)
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_list_feedback_rejects_a_malformed_since(datastore) -> None:
+    driver, _, _ = datastore
+    result = _list(driver, since="not-a-timestamp")
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
 def test_record_draft_outcome_rep_cannot_be_forged(datastore) -> None:
     driver, conn, _ = datastore
     _insert_case(conn, case_id="case_1", assignee_account_id="acct_real")

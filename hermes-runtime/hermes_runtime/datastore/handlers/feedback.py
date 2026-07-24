@@ -16,8 +16,30 @@ INSERT + ``insert_audit`` in the SAME transaction, return a dict) and reuse
 the SAME validation/authorization helpers the mock twin uses (imported from
 ``toee_hermes.drivers.mock.feedback`` -- the "one resolver, both twins"
 discipline) so the two backends can't silently drift on what a governed
-rejection is. The real ``list_feedback`` read (S10) is not registered yet --
-this fragment only carries what S03/S06/S08 ship.
+rejection is.
+
+``list_feedback`` (S10, FR-3 read half) is the Supervisor Admin's governed
+read over BOTH tables: bounded, filterable (``since``/``verdict``), and
+read-only -- no actor, no audit row (mirrors ``list_agent_experience`` /
+``dead_letter._list_dead_letters``). It is the seam Phase 2's aggregation
+will consume.
+
+**Known and accepted seam -- profile allowlisting is per TOOL, not per
+ACTION** (record this so a future reader does not mistake the allowlist for
+the actual boundary, per the S10 brief). ``toee_feedback`` is allowlisted on
+BOTH ``internal_copilot`` (for the three writes above) and
+``supervisor_admin`` (for ``list_feedback`` -- see ``toee_hermes.plugin.
+profiles.PROFILE_TOOL_ALLOWLIST``). That means ``list_feedback`` is
+*technically* dispatchable under the internal_copilot profile too, same as
+the three writes are technically dispatchable under supervisor_admin -- the
+allowlist alone does not separate them. It is not reachable in practice for
+two independent reasons: (1) no copilot BFF route maps to ``list_feedback``
+(only the admin BFF's ``/admin`` surface calls it) and no admin BFF route
+maps to the three writes (only the copilot/review-fork surfaces call those);
+and (2) every one of the four actions is in ``_AGENT_EXCLUDED_ACTIONS``
+(``toee_hermes.plugin``), so none of them ever reaches a live agent's own
+tool-calling loop regardless of profile. The real restriction is which BFF
+route exists, not which profile's allowlist a tool name sits in.
 """
 
 from __future__ import annotations
@@ -30,8 +52,11 @@ from toee_hermes.drivers.mock.feedback import (
     _read_comment,
     _read_edit_distance_ratio,
     _read_internal_reason_tags,
+    _read_list_limit,
     _read_rating_comment,
     _read_reason_tags,
+    _read_since_filter,
+    _read_verdict_filter,
     _require_case_id,
     _require_draft_correlation_id,
     _require_draft_kind,
@@ -236,12 +261,58 @@ def _record_draft_outcome(
     return serialize_row(row)
 
 
+def _list_feedback(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Supervisor Admin's bounded read over BOTH feedback tables (S10, FR-3).
+
+    Split-by-table (not a merged/unified list): ``reason_tags`` stays a
+    first-class column on each row rather than flattened into prose, which is
+    what makes this aggregation-friendly for Phase 2. A read -> no actor
+    required, no audit row (parity with ``list_agent_experience`` /
+    ``dead_letter._list_dead_letters`` -- see the module docstring for the
+    per-tool-allowlist note this handler's registration relies on).
+    """
+    del context
+    since = _read_since_filter(params)
+    verdict = _read_verdict_filter(params)
+    limit = _read_list_limit(params)
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            SELECT {_REVIEW_COLUMNS}
+            FROM interaction_review
+            WHERE (%(since)s::timestamptz IS NULL OR created_at >= %(since)s::timestamptz)
+              AND (%(verdict)s::text IS NULL OR verdict = %(verdict)s)
+            ORDER BY created_at DESC
+            LIMIT %(limit)s
+            """,
+            {"since": since, "verdict": verdict, "limit": limit},
+        )
+        reviews = [serialize_row(row) for row in cur.fetchall()]
+
+        cur.execute(
+            f"""
+            SELECT {_DRAFT_RATING_COLUMNS}
+            FROM draft_feedback
+            WHERE (%(since)s::timestamptz IS NULL OR created_at >= %(since)s::timestamptz)
+              AND (%(verdict)s::text IS NULL OR verdict = %(verdict)s)
+            ORDER BY created_at DESC
+            LIMIT %(limit)s
+            """,
+            {"since": since, "verdict": verdict, "limit": limit},
+        )
+        drafts = [serialize_row(row) for row in cur.fetchall()]
+
+    return {"interaction_reviews": reviews, "draft_feedback": drafts}
+
+
 def feedback_handlers() -> dict[str, dict[str, Any]]:
-    """Registry fragment for ``toee_feedback`` (grows with S10)."""
+    """Registry fragment for ``toee_feedback`` (S03/S06/S08/S10 complete)."""
     return {
         "toee_feedback": {
             "submit_interaction_review": _submit_interaction_review,
             "submit_draft_rating": _submit_draft_rating,
             "record_draft_outcome": _record_draft_outcome,
+            "list_feedback": _list_feedback,
         }
     }
