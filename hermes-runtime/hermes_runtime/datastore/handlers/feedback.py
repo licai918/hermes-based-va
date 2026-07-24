@@ -6,14 +6,18 @@ sales_outreach Follow-up Case. ``submit_draft_rating`` (S06) is the INTERNAL
 mechanism's write: a rep's thumbs-up/down on one Copilot Draft Action draft,
 PLUS a case-ownership gate (the acting rep must hold the case -- mirrors
 ``_send_sms_message``'s assignee check in ``datastore/handlers/cases.py``).
-Both mirror the ``agent_experience`` Postgres handler's shape (validate,
+``record_draft_outcome`` (S08) is the IMPLICIT counterpart to
+``submit_draft_rating``: writes into the SAME ``draft_feedback`` table
+whether the rep sent the generated draft untouched or edited it first,
+reusing ``submit_draft_rating``'s actor resolver and case-ownership gate
+verbatim (an outcome write is governed exactly like a rating write). All
+three mirror the ``agent_experience`` Postgres handler's shape (validate,
 INSERT + ``insert_audit`` in the SAME transaction, return a dict) and reuse
 the SAME validation/authorization helpers the mock twin uses (imported from
 ``toee_hermes.drivers.mock.feedback`` -- the "one resolver, both twins"
 discipline) so the two backends can't silently drift on what a governed
-rejection is. ``record_draft_outcome`` (S08) and the real ``list_feedback``
-read (S10) are not registered yet -- this fragment only carries what S03/S06
-ship.
+rejection is. The real ``list_feedback`` read (S10) is not registered yet --
+this fragment only carries what S03/S06/S08 ship.
 """
 
 from __future__ import annotations
@@ -24,12 +28,14 @@ from psycopg.rows import dict_row
 
 from toee_hermes.drivers.mock.feedback import (
     _read_comment,
+    _read_edit_distance_ratio,
     _read_internal_reason_tags,
     _read_rating_comment,
     _read_reason_tags,
     _require_case_id,
     _require_draft_correlation_id,
     _require_draft_kind,
+    _require_draft_outcome,
     _require_draft_rating_verdict,
     _require_draft_text,
     _require_subject_id,
@@ -177,11 +183,65 @@ def _submit_draft_rating(
     return serialize_row(row)
 
 
+def _record_draft_outcome(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    # Same gate-first ordering as _submit_draft_rating: a missing/unauthorized
+    # actor is ALWAYS policy_blocked before anything else in the payload is
+    # read. Reuses that resolver verbatim (S08 brief) -- an outcome write is
+    # governed exactly like a rating write, just a different payload shape.
+    rep_account_id = resolve_draft_rating_authorization(context)
+    case_id = _require_case_id(params)
+    draft_correlation_id = _require_draft_correlation_id(params)
+    draft_kind = _require_draft_kind(params)
+    outcome = _require_draft_outcome(params)
+    draft_text = _require_draft_text(params)
+    edit_distance_ratio = _read_edit_distance_ratio(params, outcome=outcome)
+
+    # Same case-ownership gate as _submit_draft_rating (S06 brief): an outcome
+    # is a governed write like any other.
+    _require_case_held_by(conn, case_id=case_id, actor=rep_account_id)
+
+    outcome_id = new_id("draft")
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            f"""
+            INSERT INTO draft_feedback
+                (id, case_id, draft_correlation_id, draft_kind, draft_text,
+                 outcome, edit_distance_ratio, rep_account_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING {_DRAFT_RATING_COLUMNS}
+            """,
+            (
+                outcome_id,
+                case_id,
+                draft_correlation_id,
+                draft_kind,
+                draft_text,
+                outcome,
+                edit_distance_ratio,
+                rep_account_id,
+            ),
+        )
+        row = cur.fetchone()
+    insert_audit(
+        conn,
+        profile=context.profile,
+        account_id=rep_account_id,
+        action="draft_outcome_recorded",
+        target_type="case",
+        target_id=case_id,
+        details={"outcome": outcome, "edit_distance_ratio": edit_distance_ratio},
+    )
+    return serialize_row(row)
+
+
 def feedback_handlers() -> dict[str, dict[str, Any]]:
-    """Registry fragment for ``toee_feedback`` (grows with S08/S10)."""
+    """Registry fragment for ``toee_feedback`` (grows with S10)."""
     return {
         "toee_feedback": {
             "submit_interaction_review": _submit_interaction_review,
             "submit_draft_rating": _submit_draft_rating,
+            "record_draft_outcome": _record_draft_outcome,
         }
     }

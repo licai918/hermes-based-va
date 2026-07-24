@@ -263,6 +263,10 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("toee_feedback", "record_draft_outcome"): {
         "properties": {
+            "case_id": {
+                "type": "string",
+                "description": "The case the draft belongs to; the acting rep must hold it.",
+            },
             "draft_correlation_id": {
                 "type": "string",
                 "description": (
@@ -283,10 +287,26 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             },
             "edit_distance_ratio": {
                 "type": "number",
-                "description": "Normalized edit distance; required when outcome is sent_edited.",
+                "description": (
+                    "Normalized edit distance; required when outcome is "
+                    "sent_edited, rejected when outcome is sent_as_is."
+                ),
+            },
+            "draft_text": {
+                "type": "string",
+                "description": (
+                    "The generated-draft snapshot this outcome is about; always "
+                    "available (the rep sends the draft card), so required."
+                ),
             },
         },
-        "required": ["draft_correlation_id", "draft_kind", "outcome"],
+        "required": [
+            "case_id",
+            "draft_correlation_id",
+            "draft_kind",
+            "outcome",
+            "draft_text",
+        ],
     },
     ("toee_feedback", "submit_draft_rating"): {
         "properties": {

@@ -708,3 +708,367 @@ def test_submit_draft_rating_rep_cannot_be_forged(datastore) -> None:
             (result.data["id"],),
         )
         assert cur.fetchone()[0] == "acct_real"
+
+
+# --- record_draft_outcome (S08): the IMPLICIT mechanism ------------------------
+
+
+def _record(driver, *, profile="internal_copilot", user_id=None, **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="record_draft_outcome",
+        params=params,
+        context=ToolExecutionContext(profile=profile, user_id=user_id),
+        driver=driver,
+    )
+
+
+def _outcome_audit_count(conn, *, action: str = "draft_outcome_recorded") -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = %s", (action,)
+        )
+        return cur.fetchone()[0]
+
+
+def test_record_draft_outcome_sent_as_is_persists_a_row(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok
+    outcome_id = result.data["id"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT case_id, draft_correlation_id, draft_kind, draft_text, "
+            "outcome, edit_distance_ratio, verdict, reason_tags, "
+            "rep_account_id, created_at FROM draft_feedback WHERE id = %s",
+            (outcome_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    (
+        case_id,
+        corr_id,
+        draft_kind,
+        draft_text,
+        outcome,
+        ratio,
+        verdict,
+        reason_tags,
+        rep,
+        created_at,
+    ) = row
+    assert case_id == "case_1"
+    assert corr_id == "draft_corr_1"
+    assert draft_kind == "sms"
+    assert draft_text == "Hey, your tire order is on the way!"
+    assert outcome == "sent_as_is"
+    assert ratio is None
+    assert verdict is None
+    assert reason_tags == []
+    assert rep == "acct_rep_1"
+    assert created_at is not None
+
+
+def test_record_draft_outcome_sent_edited_persists_a_plausible_ratio(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_2",
+        draft_kind="email",
+        outcome="sent_edited",
+        edit_distance_ratio=0.42,
+        draft_text="Original generated draft body.",
+    )
+    assert result.ok
+    outcome_id = result.data["id"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT outcome, edit_distance_ratio FROM draft_feedback WHERE id = %s",
+            (outcome_id,),
+        )
+        outcome, ratio = cur.fetchone()
+    assert outcome == "sent_edited"
+    assert ratio == pytest.approx(0.42)
+
+
+def test_record_draft_outcome_writes_an_audit_row(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id "
+            "FROM workbench_audit_log WHERE action = 'draft_outcome_recorded'"
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id = row
+    assert account_id == "acct_rep_1"
+    assert action == "draft_outcome_recorded"
+    assert target_type == "case"
+    assert target_id == "case_1"
+
+
+# --- THE correlation-join test: a rating and an outcome for the SAME draft ----
+
+
+def test_rating_and_outcome_for_the_same_draft_share_correlation_id_as_two_rows(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    rating = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_join",
+        draft_kind="sms",
+        verdict="up",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    outcome = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_join",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert rating.ok and outcome.ok
+    assert rating.data["id"] != outcome.data["id"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, outcome, verdict FROM draft_feedback "
+            "WHERE draft_correlation_id = %s ORDER BY created_at",
+            ("draft_corr_join",),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 2
+    ids = {row[0] for row in rows}
+    assert ids == {rating.data["id"], outcome.data["id"]}
+    outcomes_by_id = {row[0]: (row[1], row[2]) for row in rows}
+    assert outcomes_by_id[rating.data["id"]] == ("rated_only", "up")
+    assert outcomes_by_id[outcome.data["id"]] == ("sent_as_is", None)
+
+
+# --- THE governance test: no actor -> zero rows, zero audit rows --------------
+
+
+def test_record_draft_outcome_with_no_actor_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id=None,
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+    assert _outcome_audit_count(conn) == 0
+
+
+def test_record_draft_outcome_is_policy_blocked_outside_internal_copilot(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        profile="customer_service_external",
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+
+
+# --- THE case-ownership test: record an outcome on a case you don't hold -----
+
+
+def test_record_draft_outcome_on_a_case_the_actor_does_not_hold_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_other_rep")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+    assert _outcome_audit_count(conn) == 0
+
+
+def test_record_draft_outcome_on_a_nonexistent_case_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_does_not_exist",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+
+
+# --- rejections persist nothing ------------------------------------------------
+
+
+def test_record_draft_outcome_sent_edited_without_ratio_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_edited",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+def test_record_draft_outcome_sent_as_is_with_ratio_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        edit_distance_ratio=0.1,
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+def test_record_draft_outcome_rejects_unknown_outcome_and_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="ignored",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+def test_record_draft_outcome_missing_draft_text_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _record(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+# --- model-supplied actor cannot be forged -------------------------------------
+
+
+def test_record_draft_outcome_rep_cannot_be_forged(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_real")
+
+    result = _record(
+        driver,
+        user_id="acct_real",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+        rep_account_id="acct_forged",
+    )
+    assert result.ok
+    assert result.data["rep_account_id"] == "acct_real"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT rep_account_id FROM draft_feedback WHERE id = %s",
+            (result.data["id"],),
+        )
+        assert cur.fetchone()[0] == "acct_real"

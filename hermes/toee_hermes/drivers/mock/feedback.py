@@ -22,8 +22,16 @@ table, so it is enforced ONLY in the Postgres handler (mirrors
 this mock has no case store to check against, same as the ``toee_case_manage``
 mock stubs (``admin_stubs.py``) never enforce it either.
 
-``record_draft_outcome`` (S08) and the real ``list_feedback`` read (S10) stay
-stubs -- out of scope here.
+``record_draft_outcome`` (0.0.4 S08, ADR-0154, FR-1/4/9/NFR-2) is the
+IMPLICIT counterpart to ``submit_draft_rating``: whether the rep sent the
+generated draft untouched (``sent_as_is``) or edited it first
+(``sent_edited`` + a normalized edit-distance ratio), written into the SAME
+``draft_feedback`` table (no verdict/tags -- this mechanism records an
+outcome, not a judgment). Reuses ``resolve_draft_rating_authorization`` and
+the case-ownership gate verbatim -- an outcome write is governed exactly like
+a rating write, just a different payload shape.
+
+The real ``list_feedback`` read (S10) stays a stub -- out of scope here.
 """
 
 from __future__ import annotations
@@ -252,6 +260,50 @@ def _require_draft_text(params: dict[str, Any]) -> str:
     return draft_text
 
 
+# record_draft_outcome (S08): the implicit counterpart to a rating verdict --
+# whether the rep sent the draft as generated or edited it first.
+DRAFT_OUTCOMES: tuple[str, ...] = ("sent_as_is", "sent_edited")
+
+
+def _require_draft_outcome(params: dict[str, Any]) -> str:
+    outcome = params.get("outcome")
+    if outcome not in DRAFT_OUTCOMES:
+        raise ToolDriverError(
+            "unexpected_error",
+            f'record_draft_outcome rejects outcome "{outcome}"; only '
+            f"{DRAFT_OUTCOMES} are allowed.",
+        )
+    return outcome
+
+
+def _read_edit_distance_ratio(
+    params: dict[str, Any], *, outcome: str
+) -> Optional[float]:
+    """Required exactly when ``outcome`` is ``sent_edited``, rejected otherwise.
+
+    A ``sent_as_is`` outcome with a ratio attached is a contradiction (nothing
+    was edited, so there is nothing to measure) -- reject it rather than
+    silently drop it, same "reject, don't coerce" discipline as the reason-tag
+    set checks above.
+    """
+    ratio = params.get("edit_distance_ratio")
+    if outcome == "sent_edited":
+        if not isinstance(ratio, (int, float)) or isinstance(ratio, bool):
+            raise ToolDriverError(
+                "unexpected_error",
+                "record_draft_outcome requires a numeric edit_distance_ratio "
+                "when outcome is sent_edited.",
+            )
+        return float(ratio)
+    if ratio is not None:
+        raise ToolDriverError(
+            "unexpected_error",
+            "record_draft_outcome rejects edit_distance_ratio when outcome is "
+            "sent_as_is.",
+        )
+    return None
+
+
 def resolve_draft_rating_authorization(context: "ToolExecutionContext") -> str:
     """Framework-derived ``rep_account_id`` for submit_draft_rating.
 
@@ -345,7 +397,36 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
     def record_draft_outcome(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
-        return {"feedback_id": None, "status": "unavailable"}
+        # Same gate-first ordering as submit_draft_rating: a missing/
+        # unauthorized actor is ALWAYS policy_blocked before anything else is
+        # read. Reuses that resolver verbatim (S08 brief) -- an outcome write
+        # is governed exactly like a rating write, just a different payload.
+        rep_account_id = resolve_draft_rating_authorization(context)
+        case_id = _require_case_id(params)
+        draft_correlation_id = _require_draft_correlation_id(params)
+        draft_kind = _require_draft_kind(params)
+        outcome = _require_draft_outcome(params)
+        draft_text = _require_draft_text(params)
+        edit_distance_ratio = _read_edit_distance_ratio(params, outcome=outcome)
+
+        entry = {
+            "id": f"draft_{len(draft_ratings) + 1}",
+            "case_id": case_id,
+            "draft_correlation_id": draft_correlation_id,
+            "draft_kind": draft_kind,
+            "draft_text": draft_text,
+            "outcome": outcome,
+            "edit_distance_ratio": edit_distance_ratio,
+            "verdict": None,
+            "reason_tags": [],
+            "comment": None,
+            "rep_account_id": rep_account_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # Same store as submit_draft_rating: rows from both actions share the
+        # draft_correlation_id, so one draft's implicit + explicit signals join.
+        draft_ratings.append(entry)
+        return dict(entry)
 
     def submit_draft_rating(
         params: dict[str, Any], context: "ToolExecutionContext"

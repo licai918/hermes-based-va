@@ -394,3 +394,194 @@ def test_submit_draft_rating_is_append_only() -> None:
     )
     assert first.ok is True and second.ok is True
     assert first.data["id"] != second.data["id"]
+
+
+# --- record_draft_outcome (S08): the IMPLICIT mechanism ------------------------
+
+
+def _record(driver, context, **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="record_draft_outcome",
+        params=params,
+        context=context,
+        driver=driver,
+    )
+
+
+def test_record_draft_outcome_sent_as_is() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+
+    assert result.ok is True
+    assert result.data["outcome"] == "sent_as_is"
+    assert result.data["edit_distance_ratio"] is None
+    assert result.data["verdict"] is None
+    assert result.data["reason_tags"] == []
+    # RK-1 parity: the rep is framework-derived, never a model-supplied param.
+    assert result.data["rep_account_id"] == "acct_rep_1"
+
+
+def test_record_draft_outcome_sent_edited_with_ratio() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_2",
+        draft_kind="email",
+        outcome="sent_edited",
+        edit_distance_ratio=0.35,
+        draft_text="Original generated draft body.",
+    )
+
+    assert result.ok is True
+    assert result.data["outcome"] == "sent_edited"
+    assert result.data["edit_distance_ratio"] == 0.35
+
+
+def test_record_draft_outcome_sent_edited_requires_ratio() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_edited",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_record_draft_outcome_sent_as_is_rejects_ratio() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        edit_distance_ratio=0.2,
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_record_draft_outcome_rejects_unknown_outcome() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="ignored",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_record_draft_outcome_missing_draft_text_is_rejected() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_record_draft_outcome_with_no_actor_is_policy_blocked() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id=None),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_record_draft_outcome_is_policy_blocked_outside_internal_copilot() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _external_ctx(),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_record_draft_outcome_rep_cannot_be_forged() -> None:
+    driver = _driver()
+    result = _record(
+        driver,
+        _internal_ctx(user_id="acct_real"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+        rep_account_id="acct_forged",
+    )
+    assert result.ok is True
+    assert result.data["rep_account_id"] == "acct_real"
+
+
+def test_record_draft_outcome_and_submit_draft_rating_share_correlation_id() -> None:
+    # S08 brief: rows written by record_draft_outcome and submit_draft_rating
+    # for the SAME draft share the draft_correlation_id -- one draft's
+    # implicit + explicit signals join.
+    driver = _driver()
+    ctx = _internal_ctx(user_id="acct_rep_1")
+    rating = _rate(
+        driver,
+        ctx,
+        case_id="case_1",
+        draft_correlation_id="draft_corr_join",
+        draft_kind="sms",
+        verdict="up",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    outcome = _record(
+        driver,
+        ctx,
+        case_id="case_1",
+        draft_correlation_id="draft_corr_join",
+        draft_kind="sms",
+        outcome="sent_as_is",
+        draft_text="Hey, your tire order is on the way!",
+    )
+    assert rating.ok is True and outcome.ok is True
+    assert rating.data["id"] != outcome.data["id"]
+    assert (
+        rating.data["draft_correlation_id"]
+        == outcome.data["draft_correlation_id"]
+        == "draft_corr_join"
+    )
