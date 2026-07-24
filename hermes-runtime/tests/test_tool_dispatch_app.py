@@ -398,6 +398,44 @@ def test_dispatch_actor_attributes_the_audit_actor_end_to_end(datastore) -> None
     assert claim["account_id"] == "acct_actor_e2e"
 
 
+def test_dispatch_submit_interaction_review_without_actor_is_denied(datastore) -> None:
+    # 0.0.4 S03 (ADR-0154): the module's central governance claim, end-to-end
+    # over the real HTTP dispatch route -- a governed submit_interaction_review
+    # dispatched with NO actor_account_id is a policy_blocked denial (HTTP 200,
+    # ok False) that leaves NO interaction_review row and NO audit row behind.
+    # This is the "AI cannot score itself" guarantee: assert absence, not just
+    # the error (mirrors test_dispatch_governed_write_without_actor_is_denied
+    # immediately below).
+    driver, conn, _ = datastore
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_interaction_review",
+            "params": {
+                "subject_kind": "auto_handled_record",
+                "subject_id": "rec_1",
+                "verdict": "pass",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM interaction_review")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action = 'interaction_review_submitted'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
 def test_dispatch_governed_write_without_actor_is_denied(datastore) -> None:
     # I1 regression end-to-end (ADR-0141): a governed case write dispatched with NO
     # actor_account_id is a governed denial (HTTP 200, ok False), and it leaves NO
