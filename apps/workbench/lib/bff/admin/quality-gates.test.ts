@@ -116,6 +116,19 @@ describe("handleGetQualityGates", () => {
     expect(body.reports[0]!.rows[0]!.passed).toBeNull();
   });
 
+  it("forces judge rows to advisory even if an artifact wrongly carried passed:true (NFR-7)", async () => {
+    await writeArtifact("judge-bad.json", {
+      kind: "judge",
+      generated_at: "2026-07-24T03:00:00Z",
+      source: "python -m hermes_runtime.advisory_judge_report",
+      source_run: null,
+      rows: [{ name: "Judge", command: "cmd", result: "precision 1.000", passed: true, note: null }],
+    });
+
+    const body = await view(Date.parse("2026-07-24T04:00:00Z"));
+    expect(body.reports[0]!.rows[0]!.passed).toBeNull();
+  });
+
   it("orders reports recall, latency, judge for a deterministic panel", async () => {
     await writeArtifact("judge-1.json", { kind: "judge", generated_at: "2026-07-24T03:00:00Z", source: "j", source_run: null, rows: [] });
     await writeArtifact("latency-1.json", { kind: "latency", generated_at: "2026-07-24T03:00:00Z", source: "l", source_run: null, rows: [] });

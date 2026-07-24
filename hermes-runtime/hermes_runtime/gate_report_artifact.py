@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -39,26 +40,36 @@ def write_report(
     source_run: Optional[str] = None,
     reports_dir: Optional[Path] = None,
     now: Optional[datetime] = None,
-) -> Path:
-    """Write one gate-report artifact and return its path.
+) -> Optional[Path]:
+    """Write one gate-report artifact; return its path, or None if the write failed.
 
     ``rows`` are the panel rows verbatim (``name``/``command``/``result``/``passed``/
     ``note``); ``passed=None`` means advisory (no PASS/FAIL), e.g. the judge report.
+
+    BEST-EFFORT: this is a side-report for the admin panel, never part of a gate's
+    verdict. An unwritable reports dir (misconfig, read-only CI FS, disk full,
+    permission) must NEVER crash or flip the caller's exit code -- especially the
+    ADVISORY judge, which never blocks merge (NFR-7). Any OSError is logged and
+    swallowed, returning None; callers ignore the return value.
     """
     ts = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     directory = reports_dir or default_reports_dir()
-    directory.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "kind": kind,
-        "generated_at": ts.isoformat().replace("+00:00", "Z"),
-        "source": source,
-        "source_run": source_run or os.environ.get("GATE_REPORT_SOURCE_RUN"),
-        "rows": [dict(r) for r in rows],
-    }
-    stamp = ts.strftime("%Y%m%dT%H%M%S%fZ")
-    path = directory / f"{kind}-{stamp}.json"
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    return path
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "kind": kind,
+            "generated_at": ts.isoformat().replace("+00:00", "Z"),
+            "source": source,
+            "source_run": source_run or os.environ.get("GATE_REPORT_SOURCE_RUN"),
+            "rows": [dict(r) for r in rows],
+        }
+        stamp = ts.strftime("%Y%m%dT%H%M%S%fZ")
+        path = directory / f"{kind}-{stamp}.json"
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return path
+    except OSError as err:
+        print(f"warning: could not write gate report artifact ({kind}): {err}", file=sys.stderr)
+        return None
 
 
 def demo() -> None:  # ponytail: one runnable self-check, no framework

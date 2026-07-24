@@ -184,6 +184,22 @@ def test_cmd_recall_defaults_to_the_checked_in_fixture_when_no_path_given(monkey
     assert "recall@3" in out
 
 
+def test_unwritable_report_dir_does_not_flip_a_passing_recall_gate(tmp_path, monkeypatch, capsys) -> None:
+    # A failed side-report write must not turn a PASSING gate into a non-zero exit
+    # (S23): point GATE_REPORTS_DIR under an existing FILE so the artifact mkdir raises.
+    path = tmp_path / "q.json"
+    path.write_text(json.dumps([{"q": "hours", "gold": ["CONTACT_INFORMATION"]}]), encoding="utf-8")
+    monkeypatch.setattr(gates, "retrieve", lambda query, **kw: [_chunk("CONTACT_INFORMATION")])
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir", encoding="utf-8")
+    monkeypatch.setenv("GATE_REPORTS_DIR", str(blocker / "sub"))
+
+    code = gates.main(["recall", str(path)])
+
+    assert code == 0  # still PASS despite the failed side-write
+    assert "could not write gate report artifact" in capsys.readouterr().err
+
+
 def test_main_with_no_subcommand_prints_usage_and_returns_2(capsys) -> None:
     code = gates.main([])
     err = capsys.readouterr().err

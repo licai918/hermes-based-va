@@ -92,13 +92,18 @@ function parseArtifact(raw: unknown): ParsedArtifact | null {
   if (!Array.isArray(r.rows)) return null;
   const rows = r.rows.map(parseRow);
   if (rows.some((row) => row === null)) return null;
+  // Defense-in-depth (NFR-7): a judge artifact is ADVISORY by definition -- force
+  // passed=null so even a wrongly-emitted judge row can never render PASS/FAIL.
+  const gateRows = (rows as GateRow[]).map((row) =>
+    kind === "judge" ? { ...row, passed: null } : row,
+  );
   return {
     kind,
     source,
     sourceRun: asString(r.source_run),
     generatedAt,
     generatedAtMs,
-    rows: rows as GateRow[],
+    rows: gateRows,
   };
 }
 

@@ -89,3 +89,20 @@ def test_exit_zero_even_when_the_judge_is_useless(tmp_path: Path) -> None:
     # Advisory: undetermined verdicts are surfaced, never a non-zero exit (FR-29).
     assert exit_code == 0
     assert "undetermined" in out.read_text(encoding="utf-8")
+
+
+def test_unwritable_report_dir_never_fails_the_advisory_judge(tmp_path: Path, monkeypatch) -> None:
+    # The side-report write must never affect the advisory judge's exit code (NFR-7):
+    # point GATE_REPORTS_DIR under an existing FILE so the artifact mkdir raises OSError.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir", encoding="utf-8")
+    monkeypatch.setenv("GATE_REPORTS_DIR", str(blocker / "sub"))
+
+    out = tmp_path / "report.md"
+    exit_code = main(
+        ["--out", str(out), "--env-file", str(tmp_path / "absent.env")],
+        client=_AlwaysYesJudge(),
+    )
+
+    assert exit_code == 0  # advisory judge still passes despite the failed side-write
+    assert "precision `" in out.read_text(encoding="utf-8")
