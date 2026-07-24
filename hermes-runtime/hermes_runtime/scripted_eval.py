@@ -42,10 +42,13 @@ from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional, Seque
 SCRIPTED_MODE_ENV = "EVAL_SCRIPTED_MODE"
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-# Kept in step with gateway_composition's own prod check (duplicated, not imported,
-# so this module never imports gateway_composition -- that module imports this one).
+# Same env var gateway_composition._deploy_environment() reads (duplicated, not
+# imported, so this module never imports gateway_composition -- that module imports
+# this one). ALLOWLIST, not denylist: arming requires an EXPLICIT known non-prod
+# label. Unset ("") or any unknown/novel value (prod-us, live, ...) is refused, so a
+# mislabeled or unlabeled environment can never fail open and arm the seam.
 _DEPLOY_ENV = "DEPLOY_ENVIRONMENT"
-_PRODUCTION_ENVIRONMENTS = frozenset({"production", "prod", "staging"})
+_NON_PROD_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "ci"})
 
 # The eval fixtures live at the repo-root ``eval/`` dir; resolve from the package
 # location (mirrors eval_runner.cli._DEFAULT_EVAL_DIR). Absent from the prod image.
@@ -58,19 +61,22 @@ def scripted_eval_armed() -> bool:
 
 
 def require_scripted_eval_prod_inert() -> None:
-    """Refuse to arm the scripted seam in a production config (fail-closed).
+    """Refuse to arm the scripted seam outside an explicit non-prod environment (fail-closed).
 
-    Called by :func:`resolve_turn_collaborators` only when the seam is armed, so a
-    prod revision that set ``EVAL_SCRIPTED_MODE`` raises at boot rather than serving
-    real customer turns against injected agent replies.
+    Called by :func:`resolve_turn_collaborators` only when the seam is armed. Allowlist:
+    it arms ONLY when ``DEPLOY_ENVIRONMENT`` is a known non-prod label, and raises at boot
+    for unset, a novel prod label (``prod-us``, ``live``), or anything unrecognized -- so a
+    prod (or unlabeled) revision that set ``EVAL_SCRIPTED_MODE`` can never serve real customer
+    turns against injected agent replies.
     """
     environment = (os.environ.get(_DEPLOY_ENV) or "").strip().lower()
-    if environment in _PRODUCTION_ENVIRONMENTS:
+    if environment not in _NON_PROD_ENVIRONMENTS:
         raise ValueError(
-            f"{SCRIPTED_MODE_ENV} must never be armed in a production environment "
-            f"({_DEPLOY_ENV}={environment!r}): the scripted-eval seam injects "
-            "predetermined agent replies and is for the eval harness only. Unset "
-            f"{SCRIPTED_MODE_ENV}."
+            f"{SCRIPTED_MODE_ENV} may only arm when {_DEPLOY_ENV} is an explicit non-prod "
+            f"environment ({', '.join(sorted(_NON_PROD_ENVIRONMENTS))}); got "
+            f"{environment or '(unset)'!r}. The scripted-eval seam injects predetermined "
+            f"agent replies and refuses any unlabeled or unknown environment. Set "
+            f"{_DEPLOY_ENV} to a non-prod value or unset {SCRIPTED_MODE_ENV}."
         )
 
 

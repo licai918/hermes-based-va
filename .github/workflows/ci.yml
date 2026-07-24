@@ -173,6 +173,12 @@ jobs:
   harness-topology:
     name: Harness topology (full turn-path stack)
     runs-on: ubuntu-latest
+    # S18 (FR-26): an explicit non-prod label so the scripted-eval seam's allowlist guard
+    # arms (compose interpolates ${DEPLOY_ENVIRONMENT:-development}). Job-level, not the
+    # container env_file, because a compose `environment:` value wins over env_file -- so
+    # this is the one place that actually reaches the gateway + turn-worker.
+    env:
+      DEPLOY_ENVIRONMENT: ci
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

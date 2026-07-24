@@ -37,6 +37,12 @@ x-datastore-env: &datastore-env
   # inside a container resolves the localhost default, which is not this Postgres.
   KNOWLEDGE_DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_knowledge
   TOOL_BACKEND: datastore
+  # 0.0.4 S18 (FR-26): compose is NEVER prod, so every service here gets an explicit
+  # non-prod label. This is what lets the scripted-eval seam ARM under its allowlist
+  # guard (scripted_eval.require_scripted_eval_prod_inert) -- both the gateway and the
+  # turn-worker read EVAL_SCRIPTED_MODE from env_file, so both hit that guard. Defaults
+  # to `development` locally; the CI harness job overrides it to `ci` via the shell env.
+  DEPLOY_ENVIRONMENT: ${DEPLOY_ENVIRONMENT:-development}
 
 services:
   postgres:

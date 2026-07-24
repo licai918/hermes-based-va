@@ -46,19 +46,28 @@ def test_armed_by_truthy_flag(monkeypatch, value) -> None:
     assert scripted_eval_armed() is True
 
 
-@pytest.mark.parametrize("env", ["production", "prod", "staging"])
-def test_refuses_to_arm_in_a_prod_environment(monkeypatch, env) -> None:
+# Allowlist guard: refuses known prod labels, novel/unknown prod labels, AND unset --
+# only an explicit non-prod label arms. The unset + novel-label cases are the fail-open
+# gaps the inversion closes (the old denylist armed on both).
+@pytest.mark.parametrize(
+    "env", ["production", "prod", "staging", "prod-us", "prod-eu", "live", "unknown"]
+)
+def test_refuses_to_arm_outside_an_explicit_non_prod_env(monkeypatch, env) -> None:
     monkeypatch.setenv(scripted_eval._DEPLOY_ENV, env)
-    with pytest.raises(ValueError, match="never be armed in a production"):
+    with pytest.raises(ValueError, match="may only arm"):
         require_scripted_eval_prod_inert()
 
 
-def test_prod_inert_guard_allows_local_and_ci(monkeypatch) -> None:
-    # Unset (local) and any non-prod label boot fine.
+def test_refuses_to_arm_when_deploy_env_is_unset(monkeypatch) -> None:
     monkeypatch.delenv(scripted_eval._DEPLOY_ENV, raising=False)
-    require_scripted_eval_prod_inert()
-    monkeypatch.setenv(scripted_eval._DEPLOY_ENV, "ci")
-    require_scripted_eval_prod_inert()
+    with pytest.raises(ValueError, match="may only arm"):
+        require_scripted_eval_prod_inert()
+
+
+@pytest.mark.parametrize("env", ["development", "dev", "local", "test", "ci", " CI "])
+def test_arms_on_an_explicit_non_prod_env(monkeypatch, env) -> None:
+    monkeypatch.setenv(scripted_eval._DEPLOY_ENV, env)
+    require_scripted_eval_prod_inert()  # does not raise
 
 
 def test_disarmed_gateway_never_builds_the_scripted_run_turn(monkeypatch) -> None:

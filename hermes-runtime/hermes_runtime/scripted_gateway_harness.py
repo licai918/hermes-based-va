@@ -30,6 +30,7 @@ armed via ``EVAL_SCRIPTED_MODE=1``)::
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import time
@@ -90,7 +91,9 @@ def _contact_phone(scenario: MergedScenario) -> str:
     try:
         n = int(scenario.scenario_id)
     except ValueError:
-        n = abs(hash(scenario.scenario_id)) % 10000
+        # Stable across processes: builtin hash() is salted per-process for str, a
+        # latent footgun in a determinism-critical harness. sha1 is fixed.
+        n = int(hashlib.sha1(scenario.scenario_id.encode()).hexdigest(), 16)
     return f"+1416555{n % 10000:04d}"
 
 
