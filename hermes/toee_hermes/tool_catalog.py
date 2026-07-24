@@ -25,6 +25,13 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     ),
     "toee_qbo_read": ("get_invoice", "list_customer_invoices", "get_ar_summary"),
     "toee_easyroutes_read": ("get_delivery_status", "get_route_details"),
+    # 0.0.4 S31b: consumer of the owner's live delivery-promise Gadget endpoint
+    # (POST /internal/hermes/delivery-promise). get_order_delivery is Tier 2 (rich
+    # routed-order status by order — routeLabel/estimatedReturnAt/POD, richer than
+    # S30's Shopify-fulfillment Tier 1); get_product_promise is Tier 3a (a pre-/
+    # just-delivery promise by verified customer + variant). Both verified-customer
+    # scoped; the endpoint enforces order ownership (404, no leak).
+    "toee_delivery_promise": ("get_order_delivery", "get_product_promise"),
     "toee_square_payment_link": ("send_payment_link",),
     "toee_sms_reply": ("send_message",),
     "toee_case": ("create_case", "update_case"),

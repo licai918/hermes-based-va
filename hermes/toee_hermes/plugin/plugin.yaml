@@ -20,6 +20,8 @@ provides_tools:
   - toee_qbo_read__get_ar_summary
   - toee_easyroutes_read__get_delivery_status
   - toee_easyroutes_read__get_route_details
+  - toee_delivery_promise__get_order_delivery
+  - toee_delivery_promise__get_product_promise
   - toee_square_payment_link__send_payment_link
   - toee_sms_reply__send_message
   - toee_case__create_case

@@ -31,6 +31,9 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_shopify_read",
             "toee_qbo_read",
             "toee_easyroutes_read",
+            # 0.0.4 S31b: live delivery-promise endpoint (Tier 2 order status +
+            # Tier 3a product promise) — a verified customer's own delivery reads.
+            "toee_delivery_promise",
             "toee_square_payment_link",
             "toee_sms_reply",
             "toee_case",
@@ -45,6 +48,8 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_shopify_read",
             "toee_qbo_read",
             "toee_easyroutes_read",
+            # 0.0.4 S31b: copilot answers the same delivery questions as external.
+            "toee_delivery_promise",
             "toee_identity_lookup",
             "toee_case_manage",
             "toee_copilot_draft",

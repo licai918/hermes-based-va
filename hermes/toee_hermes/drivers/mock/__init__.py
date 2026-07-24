@@ -18,6 +18,11 @@ from .driver import (
     MockHandlerRegistry,
     merge_registries,
 )
+from .delivery import (
+    DeliveryMockData,
+    create_delivery_mock_handlers,
+    delivery_baseline_data,
+)
 from .easyroutes import (
     EasyroutesMockData,
     create_easyroutes_mock_handlers,
@@ -69,6 +74,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_shopify_mock_handlers(),
         create_qbo_mock_handlers(),
         create_easyroutes_mock_handlers(),
+        create_delivery_mock_handlers(),
         create_knowledge_mock_handlers(),
         create_case_mock_handlers(),
         create_memory_mock_handlers(),
@@ -99,6 +105,9 @@ __all__ = [
     "EasyroutesMockData",
     "create_easyroutes_mock_handlers",
     "easyroutes_baseline_data",
+    "DeliveryMockData",
+    "create_delivery_mock_handlers",
+    "delivery_baseline_data",
     "KnowledgeMockData",
     "create_knowledge_mock_handlers",
     "knowledge_baseline_data",

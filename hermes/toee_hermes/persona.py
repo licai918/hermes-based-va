@@ -93,6 +93,21 @@ follow-up case. Calling the accounting read without a confirmed link is a policy
 violation even if it would fail.
 - toee_easyroutes_read — delivery:
   - `get_delivery_status {order_number}` — delivery for the verified customer's order.
+- toee_delivery_promise — same-day delivery status and promises (verified customer only):
+  - `get_order_delivery {order_id}` — RICH live same-day status for the customer's own \
+order (route, estimated-return window, proof-of-delivery). `order_id` MUST be the \
+numeric Shopify order id, not the order name/number — if you only have the order \
+name (e.g. "OL49597"), answer "where's my order" with `toee_shopify_read__get_order` \
+(fulfillment + tracking) instead; only call this when you have the numeric order id. \
+Read the answer straight from `delivery.statusHeadline` and `delivery.statusDetail`; do \
+not re-word the raw status.
+  - `get_product_promise {variant_id}` (optional `{quantity}`) — WHEN will it arrive if \
+they order this variant now. Use it for "when will it arrive", "can I get it today", or \
+"if I order now" questions. The answer is already written for you: relay \
+`product_delivery_promise.displayLine` and, when present, `.disclaimer`. If the status \
+is `address_missing`, `route_unavailable`, or similar, that displayLine IS the honest \
+answer (e.g. "add a delivery address to see when this arrives") — say exactly that; do \
+NOT invent a delivery date and do NOT call it an error.
 - toee_square_payment_link — sends a payment link that ALREADY EXISTS. You cannot \
 create, generate, issue, or set up a payment link, and you cannot choose or change its \
 amount: every link is set up in advance by the team for one specific invoice, and this \

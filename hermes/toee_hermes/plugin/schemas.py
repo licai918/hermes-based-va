@@ -53,6 +53,36 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         # Neither is required -- the mock driver accepts either (slot first,
         # falling back to query).
     },
+    # 0.0.4 S31b: the delivery-promise tool. The verified customer id is supplied
+    # from the Session Identity Snapshot by the driver (never a tool param, ADR-0043),
+    # so only the order/variant references are declared — name-guessing them would be
+    # the S10 failure mode.
+    ("toee_delivery_promise", "get_order_delivery"): {
+        "properties": {
+            "order_id": {
+                "type": "string",
+                "description": (
+                    "The numeric Shopify order id of the verified customer's own order "
+                    '(e.g. "7189924970579"). The order name/number (e.g. "OL49597") is '
+                    "NOT accepted by this tool."
+                ),
+            },
+        },
+        "required": ["order_id"],
+    },
+    ("toee_delivery_promise", "get_product_promise"): {
+        "properties": {
+            "variant_id": {
+                "type": "string",
+                "description": "The Shopify product variant id to get a delivery promise for.",
+            },
+            "quantity": {
+                "type": "integer",
+                "description": "Optional quantity being considered (defaults to 1).",
+            },
+        },
+        "required": ["variant_id"],
+    },
     # 0.0.3 S22 (FR-23): the governed L6 propose write -- kind/content name-
     # guessing would be exactly the S10 failure mode, so both are declared and
     # required rather than left to an open object.

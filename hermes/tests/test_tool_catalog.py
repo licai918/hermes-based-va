@@ -20,6 +20,8 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_shopify_read",
         "toee_qbo_read",
         "toee_easyroutes_read",
+        # 0.0.4 S31b: live delivery-promise endpoint (Tier 2 + Tier 3a).
+        "toee_delivery_promise",
         "toee_square_payment_link",
         "toee_sms_reply",
         "toee_case",
