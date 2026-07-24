@@ -147,7 +147,8 @@ SKIPPED [1] tests\test_knowledge_retriever.py:308: fastembed not installed
 
 ## Commit
 
-- `<filled in after commit — see below>`
+- `03b5739` — feat(quality-feedback): implicit draft outcome write path -- record_draft_outcome (S08)
+- Parent: `6bf09a0` (S06 fix)
 
 ## Concerns (per instructions, noted rather than fixed here)
 
