@@ -163,6 +163,13 @@ def _shopify_numeric_customer_id(customer_id: str | None) -> str | None:
     return customer_id[len(prefix) :] if customer_id.startswith(prefix) else customer_id
 
 
+def _to_customer_gid(customer_id: str | None) -> str | None:
+    """Normalize a raw/gid Shopify customer id to canonical gid form, or None."""
+    if not customer_id:
+        return None
+    return customer_id if customer_id.startswith("gid://") else f"gid://shopify/Customer/{customer_id}"
+
+
 def _shopify_customer_gid(order: dict[str, Any]) -> str | None:
     """Normalize Composio/Shopify order payloads to the mock contract gid form."""
     customer_id = order.get("customer_id")
@@ -209,6 +216,74 @@ def _shape_order(order: dict[str, Any]) -> dict[str, Any]:
             {"sku": item.get("sku"), "title": item.get("title")}
             for item in (order.get("line_items") or [])
         ],
+        # S30 (FR-20): native-Fulfillment delivery status. EasyRoutes writes
+        # shipment_status + tracking back to the Shopify order's fulfillment, so
+        # the order itself carries the delivery answer.
+        "fulfillment": _shape_fulfillment(order),
+    }
+
+
+def _first_str(value: Any) -> str | None:
+    """First non-empty string from a scalar or a list (REST tracking_url[s])."""
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item:
+                return item
+    return None
+
+
+def _shape_tracking(fulfillment: dict[str, Any]) -> dict[str, Any] | None:
+    """The customer-facing tracking triple, or None when the order carries none.
+
+    REST fulfillments expose both singular (``tracking_number``/``tracking_url``)
+    and plural (``tracking_numbers``/``tracking_urls``) forms; the ``url`` is the
+    customer-clickable EasyRoutes live-tracking page (FR-20). A missing url just
+    omits the link — it is not an error.
+    """
+    number = _first_str(fulfillment.get("tracking_number")) or _first_str(
+        fulfillment.get("tracking_numbers")
+    )
+    url = _first_str(fulfillment.get("tracking_url")) or _first_str(
+        fulfillment.get("tracking_urls")
+    )
+    company = fulfillment.get("tracking_company")
+    company = company if isinstance(company, str) and company else None
+    if not (number or url or company):
+        return None
+    return {"number": number, "url": url, "company": company}
+
+
+def _shape_fulfillment(order: dict[str, Any]) -> dict[str, Any]:
+    """Project a REST Shopify order's delivery state (S30).
+
+    Distinguishes, from the REAL REST fields — top-level ``fulfillment_status`` and
+    ``fulfillments[].{shipment_status, tracking_*}`` — the customer-facing states:
+    ``unfulfilled`` (placed, not yet shipped) / ``in_transit`` / ``out_for_delivery``
+    / ``attempted_delivery`` / ``delivered`` / ``ready_for_pickup`` (pickup) /
+    ``fulfilled`` (shipped, no carrier status). Fail-closed: a placed-but-unshipped
+    order is the honest ``unfulfilled``, NEVER a fabricated ``delivered``; a real
+    backend fault never reaches here (the SDK client raises before shaping).
+    """
+    fulfillments = order.get("fulfillments")
+    fulfillments = fulfillments if isinstance(fulfillments, list) else []
+    status = order.get("fulfillment_status")
+    status = status if isinstance(status, str) and status else None
+    if not fulfillments and status is None:
+        return {"state": "unfulfilled", "shipment_status": None, "tracking": None}
+    latest = fulfillments[-1] if fulfillments else {}
+    if not isinstance(latest, dict):
+        latest = {}
+    shipment = latest.get("shipment_status")
+    shipment = shipment if isinstance(shipment, str) and shipment else None
+    return {
+        # shipment_status is the granular carrier state; fall back to the order-level
+        # fulfillment_status, then a plain "fulfilled" for a shipped order with no
+        # carrier update — never invent a delivered/in-transit the payload lacks.
+        "state": shipment or status or "fulfilled",
+        "shipment_status": shipment,
+        "tracking": _shape_tracking(latest),
     }
 
 
@@ -252,10 +327,19 @@ def _shopify_get_order_request(
     return {"order_id": order_id}
 
 
-def _shopify_get_order_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
+def _shopify_get_order_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
     payload = _unwrap_composio_payload(raw)
     order = payload.get("order", raw.get("order", raw))
-    return _shape_order(order)
+    shaped = _shape_order(order)
+    # Ownership (ADR-0043): get_order is by a model-supplied order number, which is
+    # NOT owner-scoped by the vendor query the way list_customer_orders is. Now that
+    # the order carries live delivery status + a tracking url, an owner mismatch would
+    # leak another customer's shipment — so fail closed unless the returned order
+    # belongs to the verified customer (mirrors the mock's owner check, parity).
+    verified = _to_customer_gid(_verified_customer_id(context))
+    if verified is not None and shaped.get("customer_id") != verified:
+        raise ToolDriverError("not_found", "No matching order for this customer.")
+    return shaped
 
 
 def _shopify_list_orders_request(

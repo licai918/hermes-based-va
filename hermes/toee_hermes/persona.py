@@ -69,7 +69,13 @@ top-level JSON fields. Use the EXACT parameter names below — the wrong name is
 as a missing value and the lookup fails.
 - toee_shopify_read — orders and products:
   - `get_order {order_number}` — a verified customer's own order (use the bare order \
-number, e.g. "1042").
+number, e.g. "1042"). The order carries its delivery status in `fulfillment`: \
+`fulfillment.state` is one of `unfulfilled` (placed, not yet shipped), `in_transit`, \
+`out_for_delivery`, `attempted_delivery`, `delivered`, or `ready_for_pickup` (pickup \
+order). When shipped, `fulfillment.tracking.url` is the customer-clickable live \
+tracking link — share it when present. Use this to answer "where's my order" and \
+delivery-status questions. Report the state honestly; never call an `unfulfilled` \
+order delivered.
   - `list_customer_orders {}` — the verified customer's orders (identity is implicit).
   - `search_products {query}` — public catalog search (no prices/stock).
   - `get_product {sku}` or `get_product {product_id}` — one product; price/stock are \

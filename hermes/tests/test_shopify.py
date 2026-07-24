@@ -85,6 +85,17 @@ def test_get_order_returns_order_for_verified_owner() -> None:
     assert result.data["line_items"] == [
         {"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}
     ]
+    # S30 parity: get_order carries the same fulfillment block the composio driver
+    # projects, so the agent answers delivery status from the order.
+    assert result.data["fulfillment"] == {
+        "state": "in_transit",
+        "shipment_status": "in_transit",
+        "tracking": {
+            "number": "ER-1042",
+            "url": "https://api.easyroutes.app/orders/status/route-7-stop-4",
+            "company": "EasyRoutes",
+        },
+    }
 
 
 def test_get_order_blocks_unmatched_caller() -> None:
@@ -122,6 +133,16 @@ def test_list_customer_orders_returns_only_owned_orders() -> None:
             "line_items": [
                 {"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}
             ],
+            # S30: order 1042's native fulfillment (in_transit, EasyRoutes tracking).
+            "fulfillment": {
+                "state": "in_transit",
+                "shipment_status": "in_transit",
+                "tracking": {
+                    "number": "ER-1042",
+                    "url": "https://api.easyroutes.app/orders/status/route-7-stop-4",
+                    "company": "EasyRoutes",
+                },
+            },
         }
     ]
 

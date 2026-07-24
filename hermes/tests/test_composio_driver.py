@@ -124,6 +124,9 @@ def test_shopify_get_order_maps_to_contract_shape() -> None:
         "order_number": "1042",
         "customer_id": VERIFIED_CUSTOMER_ID,
         "line_items": [{"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}],
+        # No fulfillments on this raw order -> the honest "placed, not yet shipped"
+        # state (S30), never a fabricated "delivered".
+        "fulfillment": {"state": "unfulfilled", "shipment_status": None, "tracking": None},
     }
     _assert_one_to_one(client, "toee_shopify_read", "get_order", "ca_shopify")
 
@@ -135,6 +138,15 @@ def test_shopify_list_customer_orders_maps_each_item() -> None:
                 "order_number": "1042",
                 "customer_id": VERIFIED_CUSTOMER_ID,
                 "line_items": [{"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}],
+                "fulfillment_status": "fulfilled",
+                "fulfillments": [
+                    {
+                        "shipment_status": "delivered",
+                        "tracking_number": "ER-1042",
+                        "tracking_url": "https://api.easyroutes.app/orders/status/uuid-1042",
+                        "tracking_company": "EasyRoutes",
+                    }
+                ],
             }
         ]
     }
@@ -151,6 +163,15 @@ def test_shopify_list_customer_orders_maps_each_item() -> None:
             "order_number": "1042",
             "customer_id": VERIFIED_CUSTOMER_ID,
             "line_items": [{"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}],
+            "fulfillment": {
+                "state": "delivered",
+                "shipment_status": "delivered",
+                "tracking": {
+                    "number": "ER-1042",
+                    "url": "https://api.easyroutes.app/orders/status/uuid-1042",
+                    "company": "EasyRoutes",
+                },
+            },
         }
     ]
     _assert_one_to_one(client, "toee_shopify_read", "list_customer_orders", "ca_shopify")
@@ -182,13 +203,154 @@ def test_shopify_get_order_maps_nested_shopify_customer() -> None:
         "toee_shopify_read",
         "get_order",
         {"order_number": "7157788934227"},
-        _ctx(identity=_verified()),
+        # Verified identity matches the nested order owner (ownership is enforced).
+        _ctx(identity={
+            "outcome": "verified_customer",
+            "shopify_customer_id": "gid://shopify/Customer/6764623954003",
+        }),
     )
     assert out == {
         "order_number": "49299",
         "customer_id": "gid://shopify/Customer/6764623954003",
         "line_items": [{"sku": "SKU1", "title": "Tire"}],
+        "fulfillment": {"state": "unfulfilled", "shipment_status": None, "tracking": None},
     }
+
+
+# --- S30: delivery status from native Shopify Fulfillment (FR-20) -------------
+
+
+def _order_raw(**fulfillment_fields: Any) -> dict[str, Any]:
+    order: dict[str, Any] = {
+        "order_number": "1042",
+        "customer_id": VERIFIED_CUSTOMER_ID,
+        "line_items": [{"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}],
+    }
+    order.update(fulfillment_fields)
+    return {"order": order}
+
+
+def test_shopify_get_order_projects_in_transit_with_tracking() -> None:
+    """A shipped order carries shipment_status + the customer-clickable tracking url."""
+    client = FakeComposioClient(
+        _order_raw(
+            fulfillment_status="fulfilled",
+            fulfillments=[
+                {
+                    "shipment_status": "in_transit",
+                    "tracking_number": "ER-1042",
+                    "tracking_url": "https://api.easyroutes.app/orders/status/uuid-1042",
+                    "tracking_company": "EasyRoutes",
+                }
+            ],
+        )
+    )
+    out = _run(
+        client, "toee_shopify_read", "get_order", {"order_number": "1042"}, _ctx(identity=_verified())
+    )
+    assert out["fulfillment"] == {
+        "state": "in_transit",
+        "shipment_status": "in_transit",
+        "tracking": {
+            "number": "ER-1042",
+            "url": "https://api.easyroutes.app/orders/status/uuid-1042",
+            "company": "EasyRoutes",
+        },
+    }
+
+
+def test_shopify_get_order_delivered() -> None:
+    client = FakeComposioClient(
+        _order_raw(
+            fulfillment_status="fulfilled",
+            fulfillments=[{"shipment_status": "delivered"}],
+        )
+    )
+    out = _run(
+        client, "toee_shopify_read", "get_order", {"order_number": "1042"}, _ctx(identity=_verified())
+    )
+    assert out["fulfillment"]["state"] == "delivered"
+    assert out["fulfillment"]["shipment_status"] == "delivered"
+    assert out["fulfillment"]["tracking"] is None  # missing tracking just omits the link
+
+
+def test_shopify_get_order_unfulfilled_never_narrated_delivered() -> None:
+    """A placed-but-not-shipped order is the honest 'unfulfilled', never 'delivered'."""
+    client = FakeComposioClient(
+        _order_raw(fulfillment_status=None, fulfillments=[])
+    )
+    out = _run(
+        client, "toee_shopify_read", "get_order", {"order_number": "1042"}, _ctx(identity=_verified())
+    )
+    assert out["fulfillment"] == {
+        "state": "unfulfilled",
+        "shipment_status": None,
+        "tracking": None,
+    }
+
+
+def test_shopify_get_order_pickup_ready() -> None:
+    """Pickup orders (no EasyRoutes route) surface Shopify's ready_for_pickup status."""
+    client = FakeComposioClient(
+        _order_raw(
+            fulfillment_status="fulfilled",
+            fulfillments=[{"shipment_status": "ready_for_pickup"}],
+        )
+    )
+    out = _run(
+        client, "toee_shopify_read", "get_order", {"order_number": "1042"}, _ctx(identity=_verified())
+    )
+    assert out["fulfillment"]["state"] == "ready_for_pickup"
+
+
+def test_shopify_get_order_fulfilled_without_shipment_status() -> None:
+    """A manual fulfillment with no carrier shipment_status is 'fulfilled', not delivered."""
+    client = FakeComposioClient(
+        _order_raw(fulfillment_status="fulfilled", fulfillments=[{}])
+    )
+    out = _run(
+        client, "toee_shopify_read", "get_order", {"order_number": "1042"}, _ctx(identity=_verified())
+    )
+    assert out["fulfillment"]["state"] == "fulfilled"
+    assert out["fulfillment"]["shipment_status"] is None
+
+
+def test_shopify_get_order_rejects_non_owned_order() -> None:
+    """A verified customer must never receive another customer's order + tracking."""
+    client = FakeComposioClient(
+        _order_raw(
+            customer_id="gid://shopify/Customer/9999",
+            fulfillments=[
+                {
+                    "shipment_status": "out_for_delivery",
+                    "tracking_url": "https://api.easyroutes.app/orders/status/leak",
+                }
+            ],
+        )
+    )
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(
+            client,
+            "toee_shopify_read",
+            "get_order",
+            {"order_number": "1042"},
+            _ctx(identity=_verified()),
+        )
+    assert excinfo.value.error_class == "not_found"
+
+
+def test_shopify_get_order_fault_fails_closed_not_delivered() -> None:
+    """A backend fault fails closed as a governed error, never a fabricated status."""
+    client = FakeComposioClient(error=RuntimeError("boom"))
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(
+            client,
+            "toee_shopify_read",
+            "get_order",
+            {"order_number": "1042"},
+            _ctx(identity=_verified()),
+        )
+    assert excinfo.value.error_class == "composio_api_error"
 
 
 def test_shopify_search_products_returns_public_fields_only() -> None:
