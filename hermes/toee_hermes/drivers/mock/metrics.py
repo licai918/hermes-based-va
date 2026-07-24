@@ -38,23 +38,10 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             "merge_count": 0,
             "correction_count": 0,
             "proposal_outcomes": {"accepted": 0, "dismissed": 0, "rate": None},
-            "self_service_usage": {
-                "count": 0,
-                "proxy": True,
-                "label": (
-                    "proxy: counts customer-initiated preference clears "
-                    "(workbench_audit_log preference_cleared, initiator=customer); "
-                    "get_my_memory_summary reads are not separately counted."
-                ),
-            },
-            "l6_confirmed_entries": {
-                "count": 0,
-                "proxy": True,
-                "label": (
-                    "proxy: count of CONFIRMED L6 entries available for "
-                    "injection, not actual per-turn injection events."
-                ),
-            },
+            # S21/FR-30: real once-per-action counters (metric_event), no longer
+            # proxied -- plain totals, zero on a storeless mock deployment.
+            "self_service_usage": 0,
+            "l6_confirmed_entries": 0,
         }
 
     return {"toee_metrics": {"get_aggregate_metrics": get_aggregate_metrics}}

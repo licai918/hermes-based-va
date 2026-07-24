@@ -39,6 +39,36 @@ def serialize_row(row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     }
 
 
+# --- governed-action counters (S21/FR-30) --------------------------------------
+# Real counter events emitted at the governed self-service and L6-confirm sites,
+# aggregated by ``datastore/handlers/metrics.py`` (replacing the old proxy
+# derivations). Names are shared here so the emit side and the aggregation side
+# can't drift apart.
+METRIC_SELF_SERVICE_USAGE = "self_service_usage"
+METRIC_L6_CONFIRMED = "l6_confirmed_entries"
+
+
+def insert_metric_event(conn, *, metric: str, flag: bool = True) -> str:
+    """Append one ``metric_event`` counter row in the caller's transaction.
+
+    Unlike the fire-and-forget ``hermes_runtime.metrics.emit_metric_event`` (its
+    OWN unpooled connection, for per-turn gaps with no ambient transaction), a
+    governed-action counter rides the SAME pooled connection the handler already
+    holds and commits atomically with the action in :meth:`PostgresDriver.execute`
+    -- so it never counts an action that rolled back, and never opens an extra
+    (unpooled) connection (S29/FR-31 discipline). Callers MUST emit only on the
+    real, once-only state transition (an actual delete/confirm, not a no-op
+    replay) so a redelivered durable job can't double-count.
+    """
+    event_id = new_id("metric")
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO metric_event (id, metric, flag) VALUES (%s, %s, %s)",
+            (event_id, metric, flag),
+        )
+    return event_id
+
+
 def insert_audit(
     conn,
     *,

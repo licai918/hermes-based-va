@@ -28,8 +28,8 @@ function rawMetrics(overrides: Record<string, unknown> = {}) {
     merge_count: 2,
     correction_count: 1,
     proposal_outcomes: { accepted: 1, dismissed: 1, rate: 0.5 },
-    self_service_usage: { count: 1, proxy: true, label: "proxy: clears only" },
-    l6_confirmed_entries: { count: 1, proxy: true, label: "proxy: confirmed L6 rows" },
+    self_service_usage: 3,
+    l6_confirmed_entries: 2,
     ...overrides,
   };
 }
@@ -78,17 +78,15 @@ describe("handleGetAggregateMetricsViaApi", () => {
     expect(body.honoredRate.label.length).toBeGreaterThan(0);
   });
 
-  it("carries the proxy labels for self-service usage and L6 confirmed entries", async () => {
+  it("carries self-service usage and L6 confirmed entries as real counts, no proxy wrapper (S21/FR-30)", async () => {
     const client = apiClient(async () => dispatchResponse(rawMetrics()));
     const res = await handleGetAggregateMetricsViaApi(client);
-    const body = (await res.json()) as {
-      selfServiceUsage: { count: number; proxy: boolean; label: string };
-      l6ConfirmedEntries: { count: number; proxy: boolean; label: string };
-    };
-    expect(body.selfServiceUsage).toMatchObject({ count: 1, proxy: true });
-    expect(body.selfServiceUsage.label.length).toBeGreaterThan(0);
-    expect(body.l6ConfirmedEntries).toMatchObject({ count: 1, proxy: true });
-    expect(body.l6ConfirmedEntries.label.length).toBeGreaterThan(0);
+    const body = (await res.json()) as Record<string, unknown>;
+    // Plain integers now (like mergeCount/correctionCount) -- the proxy flag
+    // and label are gone from these two tiles.
+    expect(body.selfServiceUsage).toBe(3);
+    expect(body.l6ConfirmedEntries).toBe(2);
+    expect(JSON.stringify(body)).not.toContain("proxy");
   });
 
   it("maps a governed denial to its per-class status (ADR-0104)", async () => {

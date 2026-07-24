@@ -4,11 +4,12 @@
 // group): memory injection rate, slots-populated distribution, honored rate
 // (advisory, judge-sampled -- NEVER gating), merge count, correction count,
 // proposal accept/dismiss rate, knowledge found rate, and self-service usage.
-// Six tiles are LIVE SQL aggregations (memory injection, knowledge found,
-// slots distribution, merge count, correction count, proposal outcomes);
-// honored rate and the two "proxy" tiles (self-service usage, L6 confirmed
-// entries) are honestly labeled non-live/proxy rather than a silent zero --
-// see each tile's caption. Loads on mount: a global panel, no case_id to key
+// Live SQL aggregations everywhere except honored rate: memory injection,
+// knowledge found, slots distribution, merge count, correction count, proposal
+// outcomes, and -- since 0.0.4 S21 (FR-30) -- self-service usage and L6
+// confirmed entries, now real once-per-action counters (metric_event) rather
+// than the earlier proxies. Only honored rate stays honestly labeled non-live
+// (advisory, judge-sampled). Loads on mount: a global panel, no case_id to key
 // off (mirrors AgentExperienceConsole).
 import { useEffect, useState } from "react";
 import { getAggregateMetrics } from "@/lib/api/admin-client";
@@ -132,15 +133,13 @@ export function MetricsPanel() {
         />
         <Tile
           title="Self-service usage"
-          main={String(metrics.selfServiceUsage.count)}
-          sub={metrics.selfServiceUsage.label}
-          proxy={metrics.selfServiceUsage.proxy}
+          main={String(metrics.selfServiceUsage)}
+          sub="customer self-service preference clears"
         />
         <Tile
           title="L6 confirmed entries"
-          main={String(metrics.l6ConfirmedEntries.count)}
-          sub={metrics.l6ConfirmedEntries.label}
-          proxy={metrics.l6ConfirmedEntries.proxy}
+          main={String(metrics.l6ConfirmedEntries)}
+          sub="agent-experience confirm events"
         />
       </div>
 

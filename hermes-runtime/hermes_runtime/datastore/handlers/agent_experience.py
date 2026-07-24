@@ -28,7 +28,13 @@ from toee_hermes.drivers.mock.agent_experience import (
 )
 from toee_hermes.errors import ToolDriverError
 
-from ._common import insert_audit, new_id, serialize_row
+from ._common import (
+    METRIC_L6_CONFIRMED,
+    insert_audit,
+    insert_metric_event,
+    new_id,
+    serialize_row,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -156,6 +162,13 @@ def _decide_experience(
         target_id=entry_id,
         details={"status": new_status},
     )
+    # S21/FR-30: real L6-confirmed counter. Emitted only on an actual
+    # proposed->confirmed transition -- reject doesn't count, and the
+    # ``WHERE status = 'proposed'`` guard above is the once-only fence: a
+    # redelivered confirm finds the row already confirmed, returns at the
+    # no-op branch above (before here), and emits nothing.
+    if new_status == "confirmed":
+        insert_metric_event(conn, metric=METRIC_L6_CONFIRMED)
     return serialize_row(row)
 
 

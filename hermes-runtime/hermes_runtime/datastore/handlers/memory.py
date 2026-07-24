@@ -36,7 +36,13 @@ from toee_hermes.drivers.mock.memory import (
 )
 from toee_hermes.errors import ToolDriverError
 
-from ._common import insert_audit, new_id, serialize_row
+from ._common import (
+    METRIC_SELF_SERVICE_USAGE,
+    insert_audit,
+    insert_metric_event,
+    new_id,
+    serialize_row,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -111,6 +117,7 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
             "DELETE FROM customer_memory_slot WHERE binding_key = %s AND slot_name = %s",
             (binding_key, slot),
         )
+        deleted = cur.rowcount
     insert_audit(
         conn,
         profile=context.profile,
@@ -120,6 +127,12 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
         target_id=slot,
         details={"slot": slot, "binding_key": binding_key, "initiator": initiator},
     )
+    # S21/FR-30: real self-service-usage counter. Only a CUSTOMER-initiated clear
+    # that actually removed a slot counts -- gating on rowcount is the once-only
+    # fence: a redelivered durable turn that re-runs this clear finds the slot
+    # already gone (deletes 0) and emits nothing, so it can't double-count.
+    if initiator == "customer" and deleted:
+        insert_metric_event(conn, metric=METRIC_SELF_SERVICE_USAGE)
     return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
 
