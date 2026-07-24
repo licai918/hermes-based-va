@@ -11,8 +11,8 @@ import json
 from hermes_runtime.boot import boot_profile
 
 
-def test_external_profile_boots_23_governed_toee_tools() -> None:
-    # ADR-0034 external allowlist registers exactly 23 action-tools (ADR-0139).
+def test_external_profile_boots_26_governed_toee_tools() -> None:
+    # ADR-0034 external allowlist registers exactly 26 action-tools (ADR-0139).
     # 0.0.3 S15 adds toee_customer_memory.dismiss_proposal: it rides the same
     # shared toolset upsert/clear/get_preferences already use, so it is also
     # registered here even though the external (customer-facing) profile never
@@ -22,9 +22,14 @@ def test_external_profile_boots_23_governed_toee_tools() -> None:
     # toee_customer_memory.get_my_memory_summary: unlike get_memory_audit (still
     # excluded), this one IS deliberately customer-facing (FR-21), so it is a
     # real +1 to the external model's tool-calling surface, not defense-in-depth.
+    # 0.0.4 S31/S32 add toee_delivery_promise's three actions
+    # (get_delivery_quote, get_order_delivery, get_product_promise): all
+    # customer-facing delivery READS (a prospect asking "when would this
+    # arrive", a verified customer asking about an order) -- never a send, never
+    # money -- so +3 to the external surface, taking 23 -> 26.
     booted = boot_profile("customer_service_external")
     toee_tools = [name for name in booted.tool_names if name.startswith("toee_")]
-    assert len(toee_tools) == 23
+    assert len(toee_tools) == 26
 
 
 def test_external_profile_dispatch_returns_governed_json() -> None:
