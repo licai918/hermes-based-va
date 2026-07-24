@@ -3,11 +3,15 @@
 // Read-only Auto-Handled Audit detail (ADR-0086): summary header, full
 // conversation timeline (prior auto-handled turns de-emphasized), and a
 // tool-call evidence panel surfacing input/output summaries plus any
-// unavailable-system error class. No claim/assign/draft/send controls. Fetching
-// the record server-side records a Workbench Audit Log audit_view entry.
+// unavailable-system error class. No claim/assign/draft/send controls -- the
+// review bar (0.0.4 S04, ADR-0154) is the one exception, writing to the review
+// table only, never touching conversation data. Fetching the record server-side
+// records a Workbench Audit Log audit_view entry.
+import type { WorkbenchRoleId } from "@toee/shared";
 import { getAutoHandled } from "@/lib/api/audit-client";
 import type { ThreadAuthor } from "@/lib/gateway/types";
 import { formatChannel, formatRelativeTime } from "@/lib/format";
+import { ReviewBar } from "./ReviewBar";
 import {
   Notice,
   cardStyle,
@@ -27,7 +31,13 @@ const AUTHOR_LABELS: Record<ThreadAuthor, string> = {
   workbench: "Workbench",
 };
 
-export function AutoHandledDetail({ recordId }: { recordId: string }) {
+export function AutoHandledDetail({
+  recordId,
+  role,
+}: {
+  recordId: string;
+  role?: WorkbenchRoleId;
+}) {
   const state = useAsync(() => getAutoHandled(recordId), [recordId]);
   const now = Date.now();
 
@@ -74,6 +84,12 @@ export function AutoHandledDetail({ recordId }: { recordId: string }) {
               </p>
             )}
           </header>
+
+          <ReviewBar
+            role={role}
+            subjectKind="auto_handled_record"
+            subjectId={recordId}
+          />
 
           <section style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Conversation</h2>

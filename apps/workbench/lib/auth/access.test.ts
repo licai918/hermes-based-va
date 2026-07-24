@@ -31,6 +31,15 @@ describe("canAccess", () => {
     expect(canAccess(admin, "/copilot/audit/auto-handled")).toBe(true);
   });
 
+  it("denies reps on the review write route but allows supervisor/admin (0.0.4 S04, quality-feedback)", () => {
+    // The interaction-review write's ONLY role boundary: the datastore carries no
+    // role column, so this prefix gate is what stands between a rep and a
+    // supervisor-only write (see review.ts's module docstring).
+    expect(canAccess(rep, "/api/copilot/audit/review")).toBe(false);
+    expect(canAccess(supervisor, "/api/copilot/audit/review")).toBe(true);
+    expect(canAccess(admin, "/api/copilot/audit/review")).toBe(true);
+  });
+
   it("denies reps on admin paths but allows supervisor/admin", () => {
     expect(canAccess(rep, "/admin/knowledge")).toBe(false);
     expect(canAccess(rep, "/api/admin/accounts")).toBe(false);

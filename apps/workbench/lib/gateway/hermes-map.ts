@@ -5,6 +5,7 @@
 // (unknown channel/status, malformed timestamp, non-object payload) as governed
 // HermesApiErrors so a bad upstream surfaces on the ADR-0090 banner instead of
 // rendering garbage. Hand-written guards keep the BFF dependency-light.
+import { EXTERNAL_REVIEW_REASON_TAGS } from "@toee/shared";
 import { HermesApiError } from "./hermes-api-client";
 import {
   PREFERENCE_SLOTS,
@@ -14,6 +15,10 @@ import {
   type CaseChannel,
   type CaseStatus,
   type CustomerPreferences,
+  type ExternalReviewReasonTag,
+  type InteractionReview,
+  type InteractionReviewSubjectKind,
+  type InteractionReviewVerdict,
   type MemoryAuditEntry,
   type MemoryAuditView,
   type MemoryPreferenceSlot,
@@ -275,5 +280,50 @@ export function mapAutoHandledRecord(raw: unknown): AutoHandledRecord {
     toolFailure: r.tool_failure === true || r.toolFailure === true,
     timeline: timelineRaw.map(mapThreadMessage),
     toolCalls: toolCallsRaw.map(mapToolCallEvidence),
+  };
+}
+
+const REVIEW_SUBJECT_KINDS: readonly InteractionReviewSubjectKind[] = [
+  "auto_handled_record",
+  "sales_outreach_case",
+];
+const REVIEW_VERDICTS: readonly InteractionReviewVerdict[] = ["pass", "fail"];
+
+// Maps the row `submit_interaction_review` returns (0.0.4 S03/S04, ADR-0154) onto
+// the camelCase InteractionReview the review bar renders. An unrecognised
+// reason_tags entry is dropped rather than rejected outright -- this is a display
+// mapper for the row the BFF's own write just produced, not a re-validation of a
+// third-party payload.
+export function mapInteractionReview(raw: unknown): InteractionReview {
+  const r = asObject(raw, "interaction review");
+  const subjectKind = r.subject_kind;
+  if (!(REVIEW_SUBJECT_KINDS as readonly unknown[]).includes(subjectKind)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown review subject_kind: ${String(subjectKind)}`,
+    );
+  }
+  const verdict = r.verdict;
+  if (!(REVIEW_VERDICTS as readonly unknown[]).includes(verdict)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown review verdict: ${String(verdict)}`,
+    );
+  }
+  const rawTags = Array.isArray(r.reason_tags) ? r.reason_tags : [];
+  const reasonTags = rawTags.filter(
+    (t): t is ExternalReviewReasonTag =>
+      typeof t === "string" &&
+      (EXTERNAL_REVIEW_REASON_TAGS as readonly string[]).includes(t),
+  );
+  return {
+    reviewId: requiredString(r.id, "review id"),
+    subjectKind: subjectKind as InteractionReviewSubjectKind,
+    subjectId: requiredString(r.subject_id, "subject_id"),
+    verdict: verdict as InteractionReviewVerdict,
+    reasonTags,
+    comment: nullableString(r.comment),
+    reviewerAccountId: requiredString(r.reviewer_account_id, "reviewer_account_id"),
+    createdAt: isoToMs(r.created_at, "created_at"),
   };
 }

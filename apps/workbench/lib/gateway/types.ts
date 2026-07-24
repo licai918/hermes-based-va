@@ -3,12 +3,22 @@
 // ADR-0085/0086 audit views). These are the workbench's WIRE shapes: hermes-map.ts
 // validates each snake_case datastore row onto them (0.0.4 S09 deleted the
 // in-memory store they were originally written for; the shapes did not change).
-import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/shared";
+import {
+  MEMORY_PREFERENCE_SLOTS,
+  type ExternalReviewReasonTag,
+  type InteractionReviewVerdict,
+  type MemoryPreferenceSlot,
+} from "@toee/shared";
 
 // Re-exported so the rest of the BFF/gateway layer imports the slot union from
 // "./types" alongside everything else, without drifting from the @toee/shared
 // contract's own slot names (ADR-0111, S07/FR-6).
 export type { MemoryPreferenceSlot };
+
+// Re-exported so 0.0.4 S04 review code imports the EXTERNAL Review Reason Tag
+// vocabulary + verdict from "./types" alongside everything else, without
+// drifting from the @toee/shared feedback.ts contract (ADR-0154).
+export type { ExternalReviewReasonTag, InteractionReviewVerdict };
 
 export type CaseChannel = "sms" | "email" | "voice";
 
@@ -102,6 +112,27 @@ export interface AutoHandledRecord {
   toolFailure: boolean;
   timeline: ThreadMessage[];
   toolCalls: ToolCallEvidence[];
+}
+
+// The EXTERNAL mechanism's subject: one Auto-Handled Interaction record or one
+// sales_outreach Follow-up Case (ADR-0154, 0.0.4 S04). Mirrors
+// INTERACTION_REVIEW_SUBJECT_KINDS in the Python plugin schemas.
+export type InteractionReviewSubjectKind =
+  | "auto_handled_record"
+  | "sales_outreach_case";
+
+// A supervisor/admin's pass/fail judgment (toee_feedback.submit_interaction_review,
+// ADR-0154, 0.0.4 S03/S04). Append-only on the datastore: a re-review is a new row,
+// never an update -- the BFF/UI treat the latest one per subject as "the" review.
+export interface InteractionReview {
+  reviewId: string;
+  subjectKind: InteractionReviewSubjectKind;
+  subjectId: string;
+  verdict: InteractionReviewVerdict;
+  reasonTags: ExternalReviewReasonTag[];
+  comment: string | null;
+  reviewerAccountId: string;
+  createdAt: number;
 }
 
 // Assignee filter modes for the queue (ADR-0079). Reps default to
