@@ -436,6 +436,78 @@ def test_dispatch_submit_interaction_review_without_actor_is_denied(datastore) -
         assert cur.fetchone()[0] == 0
 
 
+def test_dispatch_submit_draft_rating_without_actor_is_denied(datastore) -> None:
+    # 0.0.4 S06 (ADR-0154): the INTERNAL mechanism's governance claim,
+    # end-to-end over the real HTTP dispatch route -- a governed
+    # submit_draft_rating dispatched with NO actor_account_id is a
+    # policy_blocked denial (HTTP 200, ok False) that leaves NO draft_feedback
+    # row and NO audit row behind, mirroring the interaction_review test above.
+    driver, conn, _ = datastore
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_draft_rating",
+            "params": {
+                "case_id": "case_1",
+                "draft_correlation_id": "draft_corr_1",
+                "draft_kind": "sms",
+                "verdict": "up",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action = 'draft_rating_submitted'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_submit_draft_rating_on_an_unheld_case_is_denied(datastore) -> None:
+    # The S06 case-ownership gate, end-to-end over the dispatch route: an
+    # attributed actor who does not hold the case is still policy_blocked.
+    driver, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cases (id, channel, assignee_account_id) "
+            "VALUES ('case_1', 'sms', 'acct_other_rep')"
+        )
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_draft_rating",
+            "params": {
+                "case_id": "case_1",
+                "draft_correlation_id": "draft_corr_1",
+                "draft_kind": "sms",
+                "verdict": "up",
+            },
+            "actor_account_id": "acct_rep_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        assert cur.fetchone()[0] == 0
+
+
 def test_dispatch_governed_write_without_actor_is_denied(datastore) -> None:
     # I1 regression end-to-end (ADR-0141): a governed case write dispatched with NO
     # actor_account_id is a governed denial (HTTP 200, ok False), and it leaves NO

@@ -1,12 +1,16 @@
-"""0.0.4 S03 (ADR-0154, FR-1/2/4/NFR-2/5): Postgres-backed ``toee_feedback``.
+"""0.0.4 S03/S06 (ADR-0154, FR-1/2/4/NFR-2/5): Postgres-backed ``toee_feedback``.
 
 ``submit_interaction_review`` is the EXTERNAL mechanism: a supervisor's
 pass/fail judgment on one Auto-Handled Interaction record or one
 sales_outreach Follow-up Case, persisted through the governed dispatch path,
 actor-attributed and append-only. THE central governance claim of this
 module: a write with no framework-resolved acting employee persists nothing --
-zero rows, zero audit rows, not just a policy_blocked response. Skip-if-no-DB
-via the shared ``datastore`` fixture (ADR-0142).
+zero rows, zero audit rows, not just a policy_blocked response.
+
+``submit_draft_rating`` (S06) is the INTERNAL mechanism: a rep's thumbs-up/
+down on one Copilot Draft Action draft, PLUS a case-ownership gate (the acting
+rep must hold the case). Skip-if-no-DB via the shared ``datastore`` fixture
+(ADR-0142).
 """
 
 from __future__ import annotations
@@ -289,6 +293,374 @@ def test_submit_interaction_review_reviewer_cannot_be_forged(datastore) -> None:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT reviewer_account_id FROM interaction_review WHERE id = %s",
+            (result.data["id"],),
+        )
+        assert cur.fetchone()[0] == "acct_real"
+
+
+# --- submit_draft_rating (S06): the INTERNAL mechanism -------------------------
+
+
+def _insert_case(conn, *, case_id: str, assignee_account_id: str | None) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cases (id, channel, assignee_account_id) "
+            "VALUES (%s, 'sms', %s)",
+            (case_id, assignee_account_id),
+        )
+
+
+def _rate(driver, *, profile="internal_copilot", user_id=None, **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="submit_draft_rating",
+        params=params,
+        context=ToolExecutionContext(profile=profile, user_id=user_id),
+        driver=driver,
+    )
+
+
+def _rating_count(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        return cur.fetchone()[0]
+
+
+def _rating_audit_count(conn, *, action: str = "draft_rating_submitted") -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = %s", (action,)
+        )
+        return cur.fetchone()[0]
+
+
+# --- happy path: real rows, read back directly from Postgres ------------------
+
+
+def test_submit_draft_rating_up_persists_a_rated_only_row(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert result.ok
+    rating_id = result.data["id"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT case_id, draft_correlation_id, draft_kind, outcome, verdict, "
+            "reason_tags, rep_account_id, created_at "
+            "FROM draft_feedback WHERE id = %s",
+            (rating_id,),
+        )
+        row = cur.fetchone()
+    assert row is not None
+    case_id, corr_id, draft_kind, outcome, verdict, reason_tags, rep, created_at = row
+    assert case_id == "case_1"
+    assert corr_id == "draft_corr_1"
+    assert draft_kind == "sms"
+    assert outcome == "rated_only"
+    assert verdict == "up"
+    assert reason_tags == []
+    assert rep == "acct_rep_1"
+    assert created_at is not None
+
+
+def test_submit_draft_rating_down_with_tags_persists(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_2",
+        draft_kind="email",
+        verdict="down",
+        reason_tags=["wrong_tone", "too_verbose"],
+        comment="Rewrote the whole thing.",
+    )
+    assert result.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT verdict, reason_tags, comment FROM draft_feedback WHERE id = %s",
+            (result.data["id"],),
+        )
+        verdict, reason_tags, comment = cur.fetchone()
+    assert verdict == "down"
+    assert set(reason_tags) == {"wrong_tone", "too_verbose"}
+    assert comment == "Rewrote the whole thing."
+
+
+def test_submit_draft_rating_writes_an_audit_row(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert result.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id "
+            "FROM workbench_audit_log WHERE action = 'draft_rating_submitted'"
+        )
+        row = cur.fetchone()
+    assert row is not None
+    account_id, action, target_type, target_id = row
+    assert account_id == "acct_rep_1"
+    assert action == "draft_rating_submitted"
+    assert target_type == "case"
+    assert target_id == "case_1"
+
+
+# --- append-only: two ratings on one draft -> two rows -------------------------
+
+
+def test_submit_draft_rating_is_append_only(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    first = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    second = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["wrong_tone"],
+    )
+    assert first.ok and second.ok
+    assert first.data["id"] != second.data["id"]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM draft_feedback WHERE draft_correlation_id = %s",
+            ("draft_corr_1",),
+        )
+        assert cur.fetchone()[0] == 2
+
+
+# --- THE governance test: no actor -> zero rows, zero audit rows --------------
+
+
+def test_submit_draft_rating_with_no_actor_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id=None,
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+    assert _rating_audit_count(conn) == 0
+
+
+def test_submit_draft_rating_is_policy_blocked_outside_internal_copilot(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        profile="customer_service_external",
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+
+
+# --- THE case-ownership test: rate a case you don't hold -> zero rows --------
+
+
+def test_submit_draft_rating_on_a_case_the_actor_does_not_hold_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_other_rep")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+    assert _rating_audit_count(conn) == 0
+
+
+def test_submit_draft_rating_on_an_unassigned_case_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id=None)
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+
+
+def test_submit_draft_rating_on_a_nonexistent_case_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_does_not_exist",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _rating_count(conn) == 0
+
+
+# --- DB-level CHECK: the floor holds even if a handler bug skips validation ---
+
+
+def test_db_check_rejects_down_with_empty_tags_even_via_raw_sql(datastore) -> None:
+    # Proves the CONSTRAINT itself, independent of the handler -- same
+    # coalesce()-matters reasoning as interaction_review's equivalent test
+    # above, verified here for draft_feedback's own CHECK.
+    _, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+    with conn.cursor() as cur:
+        with pytest.raises(Exception):
+            cur.execute(
+                "INSERT INTO draft_feedback "
+                "(id, case_id, draft_correlation_id, draft_kind, outcome, "
+                "verdict, reason_tags, rep_account_id) "
+                "VALUES ('draft_raw', 'case_1', 'corr_raw', 'sms', 'rated_only', "
+                "'down', '{}', 'acct_rep_1')"
+            )
+    conn.rollback()
+
+
+# --- rejections persist nothing ------------------------------------------------
+
+
+def test_submit_draft_rating_down_without_tags_persists_nothing(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+def test_submit_draft_rating_rejects_external_tag_and_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["tool_misuse"],  # external (interaction-review) set
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+def test_submit_draft_rating_rejects_unknown_draft_kind_and_persists_nothing(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="call",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+
+
+# --- model-supplied actor/verdict cannot be forged -----------------------------
+
+
+def test_submit_draft_rating_rep_cannot_be_forged(datastore) -> None:
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_real")
+
+    result = _rate(
+        driver,
+        user_id="acct_real",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+        rep_account_id="acct_forged",
+    )
+    assert result.ok
+    assert result.data["rep_account_id"] == "acct_real"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT rep_account_id FROM draft_feedback WHERE id = %s",
             (result.data["id"],),
         )
         assert cur.fetchone()[0] == "acct_real"

@@ -203,3 +203,169 @@ def test_submit_interaction_review_is_append_only() -> None:
     )
     assert first.ok is True and second.ok is True
     assert first.data["id"] != second.data["id"]
+
+
+# --- submit_draft_rating (S06): the INTERNAL mechanism -------------------------
+
+
+def _rate(driver, context, **params):
+    return execute_tool(
+        tool="toee_feedback",
+        action="submit_draft_rating",
+        params=params,
+        context=context,
+        driver=driver,
+    )
+
+
+def test_submit_draft_rating_up_needs_no_tags() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+
+    assert result.ok is True
+    assert result.data["case_id"] == "case_1"
+    assert result.data["draft_kind"] == "sms"
+    assert result.data["verdict"] == "up"
+    assert result.data["reason_tags"] == []
+    assert result.data["outcome"] == "rated_only"
+    # RK-1 parity: the rep is framework-derived, never a model-supplied param.
+    assert result.data["rep_account_id"] == "acct_rep_1"
+
+
+def test_submit_draft_rating_down_with_tags_and_comment() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_2",
+        draft_kind="email",
+        verdict="down",
+        reason_tags=["wrong_tone", "too_verbose"],
+        comment="Rewrote the whole thing.",
+    )
+
+    assert result.ok is True
+    assert result.data["verdict"] == "down"
+    assert result.data["reason_tags"] == ["wrong_tone", "too_verbose"]
+    assert result.data["comment"] == "Rewrote the whole thing."
+
+
+def test_submit_draft_rating_rejects_unknown_draft_kind() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="call",
+        verdict="up",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_submit_draft_rating_down_without_tags_is_rejected() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_submit_draft_rating_rejects_a_tag_from_the_external_set() -> None:
+    # ADR-0154: the external (interaction-review) tag set is deliberately
+    # separate -- "factual_error" is shared, but "tool_misuse" belongs to
+    # submit_interaction_review, not here.
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["tool_misuse"],
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
+
+
+def test_submit_draft_rating_with_no_actor_is_policy_blocked() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id=None),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_submit_draft_rating_is_policy_blocked_outside_internal_copilot() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _external_ctx(),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
+def test_submit_draft_rating_rep_cannot_be_forged() -> None:
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_real"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+        rep_account_id="acct_forged",
+    )
+    assert result.ok is True
+    assert result.data["rep_account_id"] == "acct_real"
+
+
+def test_submit_draft_rating_is_append_only() -> None:
+    driver = _driver()
+    ctx = _internal_ctx(user_id="acct_rep_1")
+    first = _rate(
+        driver,
+        ctx,
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    second = _rate(
+        driver,
+        ctx,
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="down",
+        reason_tags=["wrong_tone"],
+    )
+    assert first.ok is True and second.ok is True
+    assert first.data["id"] != second.data["id"]
