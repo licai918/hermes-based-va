@@ -18,6 +18,7 @@ import type {
   ReingestQueued,
 } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { QualityGatesView } from "@/lib/bff/admin/quality-gates";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
 import type {
   AgentExperienceEntry,
@@ -216,6 +217,12 @@ export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
 
 export function getAggregateMetrics(): Promise<AggregateMetrics> {
   return getJson<AggregateMetrics>("/api/admin/metrics");
+}
+
+// --- Knowledge quality & latency gates live read (0.0.4 S23, FR-32) ----------
+
+export function getQualityGatesReports(): Promise<QualityGatesView> {
+  return getJson<QualityGatesView>("/api/admin/quality-gates");
 }
 
 // --- Customer Memory retention sweep admin panel (0.0.3 S28, FR-30) ----------

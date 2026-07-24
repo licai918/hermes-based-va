@@ -36,6 +36,7 @@ from eval_runner.judge import JudgeClient, resolve_judge_model
 from eval_runner.judge_measure import measure_judge
 from eval_runner.judge_report import render_report, render_skipped
 
+from hermes_runtime.gate_report_artifact import write_report
 from hermes_runtime.openrouter import openrouter_configured, resolve_openrouter_config
 from hermes_runtime.record_eval import load_env_file
 
@@ -81,6 +82,28 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
     model = resolve_judge_model()
     metrics = measure_judge(client=judge, model=model)
     _emit(args.out, render_report(metrics, model=model))
+
+    # Emit the live artifact the QualityGatesPanel reads (S23, FR-32). Only on a
+    # REAL measurement -- the graceful skip above writes nothing, so the panel
+    # honestly shows no judge report rather than a fabricated one. `passed=None`:
+    # advisory forever (FR-29/NFR-7), never a PASS/FAIL gate.
+    write_report(
+        "judge",
+        "python -m hermes_runtime.advisory_judge_report",
+        [
+            {
+                "name": "Judge precision/recall (FR-29)",
+                "command": "python -m hermes_runtime.advisory_judge_report",
+                "result": (
+                    f"precision {metrics.precision:.3f}, recall {metrics.recall:.3f}, "
+                    f"accuracy {metrics.accuracy:.3f} ({metrics.total} fixtures, "
+                    f"{metrics.undetermined} undetermined)"
+                ),
+                "passed": None,
+                "note": f"Judge model {model}. Advisory only -- never blocks merge (NFR-7).",
+            }
+        ],
+    )
     return 0
 
 

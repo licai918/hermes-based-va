@@ -18,6 +18,13 @@ from hermes_runtime.knowledge import gates
 from hermes_runtime.knowledge.retriever import RetrievedChunk
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gate_reports(tmp_path_factory, monkeypatch):
+    # The CLI commands now emit a live gate-report artifact (S23); keep it out of
+    # the repo's real .reports/gates during tests.
+    monkeypatch.setenv("GATE_REPORTS_DIR", str(tmp_path_factory.mktemp("gate-reports")))
+
+
 def _chunk(page_id: str) -> RetrievedChunk:
     return RetrievedChunk(
         page_id=page_id,
