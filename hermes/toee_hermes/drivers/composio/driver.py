@@ -291,15 +291,43 @@ def _shape_fulfillment(order: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _public_variants(product: dict[str, Any], sku: str | None, title: Any) -> list[dict[str, Any]]:
+    """A minimal per-variant list ``[{sku, option}]`` for size disambiguation (S31b).
+
+    A tire has one variant per size and its sku is per-variant, so the agent needs each
+    variant's sku (to feed Tier 3a ``get_product_promise{sku}``) and a human label to pick
+    the customer's size. ``option`` is the variant's own title/option label. Only the sku
+    and the label are exposed — never the internal variant id (no leak).
+    """
+    raw = product.get("variants")
+    out: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for variant in raw:
+            if not isinstance(variant, dict):
+                continue
+            vsku = variant.get("sku")
+            option = variant.get("option") or variant.get("title") or variant.get("option1")
+            if vsku or option:
+                out.append({"sku": vsku, "option": option})
+    if out:
+        return out
+    # ponytail: derive one variant from the product-level sku/title when the payload
+    # carries no variants list. Upgrade to a real per-size list when a payload/scenario
+    # actually has multiple sizes under one product.
+    return [{"sku": sku, "option": title}] if sku else []
+
+
 def _shape_public_product(product: dict[str, Any]) -> dict[str, Any]:
     # Mock/eval fixtures already carry the public contract shape.
     if isinstance(product.get("product_id"), str) and product.get("product_url"):
+        sku = product.get("sku")
         return {
             "product_id": product.get("product_id"),
-            "sku": product.get("sku"),
+            "sku": sku,
             "title": product.get("title"),
             "product_url": product.get("product_url"),
             "media_url": product.get("media_url"),
+            "variants": _public_variants(product, sku, product.get("title")),
         }
     variants = product.get("variants") or []
     sku = variants[0].get("sku") if variants else product.get("sku")
@@ -316,6 +344,7 @@ def _shape_public_product(product: dict[str, Any]) -> dict[str, Any]:
         "title": product.get("title"),
         "product_url": product_url,
         "media_url": media_url,
+        "variants": _public_variants(product, sku, product.get("title")),
     }
 
 

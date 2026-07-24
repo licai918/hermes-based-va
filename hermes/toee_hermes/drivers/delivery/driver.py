@@ -167,29 +167,40 @@ class DeliveryPromiseDriver:
         shopify_customer_id = _require_verified_numeric_id(context)
 
         if request.action == "get_order_delivery":
-            order_id = _read(request.params, "order_id", "orderId", "order_number", "orderNumber")
-            if not order_id:
+            # The agent sources the order NAME from toee_shopify_read.get_order
+            # (its ``order_number`` field, e.g. "OL49597"); the endpoint resolves the
+            # name to the order within the shop and enforces the same ownership (404).
+            order_name = _read(request.params, "order_name", "order_number", "orderName", "orderNumber")
+            if not order_name:
                 raise ToolDriverError(
-                    "policy_blocked", "get_order_delivery requires an order reference."
+                    "policy_blocked", "get_order_delivery requires an order name."
                 )
-            body = self._fetch({"orderId": order_id, "shopifyCustomerId": shopify_customer_id})
-            return _shape_order_delivery(body, order_id)
+            body = self._fetch(
+                {"orderName": order_name, "shopifyCustomerId": shopify_customer_id}
+            )
+            return _shape_order_delivery(body, order_name)
 
         if request.action == "get_product_promise":
+            # The agent sources the SKU from toee_shopify_read.get_product/search
+            # (per-variant); the endpoint resolves+validates the sku to a real in-shop
+            # variant before the engine (unknown sku / product-id-as-variant -> 404,
+            # ambiguous sku -> 400). A raw numeric variantId still works (backward compat).
+            payload: dict[str, Any] = {"shopifyCustomerId": shopify_customer_id}
+            sku = _read(request.params, "sku")
             variant_id = _read(request.params, "variant_id", "variantId")
-            if not variant_id:
+            if sku:
+                payload["sku"] = sku
+            elif variant_id:
+                payload["variantId"] = variant_id
+            else:
                 raise ToolDriverError(
-                    "policy_blocked", "get_product_promise requires a variant id."
+                    "policy_blocked", "get_product_promise requires a sku."
                 )
-            payload: dict[str, Any] = {
-                "shopifyCustomerId": shopify_customer_id,
-                "variantId": variant_id,
-            }
             quantity = _quantity(request.params)
             if quantity is not None:
                 payload["quantity"] = quantity
             body = self._fetch(payload)
-            return _shape_product_promise(body, variant_id)
+            return _shape_product_promise(body, variant_id or sku)
 
         # Catalog validation in execute_tool runs first, so an unknown action here is a
         # config gap, surfaced governed rather than as a raw raise.
@@ -240,7 +251,7 @@ def _quantity(params: dict[str, Any]) -> Optional[int]:
     return None
 
 
-def _shape_order_delivery(body: dict[str, Any], order_id: str) -> dict[str, Any]:
+def _shape_order_delivery(body: dict[str, Any], order_ref: str) -> dict[str, Any]:
     """Extract the Tier 2 delivery block, or FAIL CLOSED on an unexpected shape.
 
     Only an affirmatively-recognized ``delivery`` dict yields data; any other shape
@@ -250,33 +261,35 @@ def _shape_order_delivery(body: dict[str, Any], order_id: str) -> dict[str, Any]
     verbatim so the agent relays the endpoint's prose, not a re-invented enum phrasing.
     """
     delivery = body.get("delivery") if isinstance(body, dict) else None
-    if body.get("error") or not isinstance(delivery, dict):
+    if not isinstance(body, dict) or body.get("error") or not isinstance(delivery, dict):
         raise ToolDriverError(
             "configuration_missing",
             "Delivery-promise returned an unexpected Tier 2 shape.",
         )
     return {
-        "order_id": body.get("orderId") or order_id,
-        "order_name": body.get("orderName"),
+        "order_id": body.get("orderId"),
+        "order_name": body.get("orderName") or order_ref,
         "delivery": delivery,
     }
 
 
-def _shape_product_promise(body: dict[str, Any], variant_id: str) -> dict[str, Any]:
+def _shape_product_promise(body: dict[str, Any], product_ref: str) -> dict[str, Any]:
     """Extract the Tier 3a promise block, or FAIL CLOSED on an unexpected shape.
 
     A cold-start ``address_missing`` / ``route_unavailable`` status INSIDE the block is a
     real success relayed verbatim (its own ``displayLine``/``disclaimer``), NOT an error —
-    only a missing/wrong-typed block or an ``error`` field fails closed.
+    only a missing/wrong-typed block or an ``error`` field fails closed. The endpoint
+    echoes both ``variantId`` and ``sku`` (it resolves a sku to its variant).
     """
     promise = body.get("productDeliveryPromise") if isinstance(body, dict) else None
-    if body.get("error") or not isinstance(promise, dict):
+    if not isinstance(body, dict) or body.get("error") or not isinstance(promise, dict):
         raise ToolDriverError(
             "configuration_missing",
             "Delivery-promise returned an unexpected Tier 3a shape.",
         )
     return {
-        "variant_id": body.get("variantId") or variant_id,
+        "variant_id": body.get("variantId") or product_ref,
+        "sku": body.get("sku"),
         "quantity": body.get("quantity"),
         "business_date": body.get("businessDate"),
         "timezone": body.get("timezone"),

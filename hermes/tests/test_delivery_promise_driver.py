@@ -37,7 +37,9 @@ DELIVERY_TOOL = "toee_delivery_promise"
 VERIFIED_CUSTOMER_ID = "gid://shopify/Customer/1019382595648"
 VERIFIED_NUMERIC = "1019382595648"
 ORDER_ID = "7189924970579"
+ORDER_NAME = "OL49597"
 VARIANT_ID = "39379581042771"
+SKU = "TRIM00014"
 
 # Tier 2 200 body shape (S31a confirmed contract).
 TIER2_BODY = {
@@ -68,6 +70,7 @@ TIER3A_ADDRESS_MISSING = {
     "businessDate": "2026-07-24",
     "timezone": "America/Toronto",
     "variantId": VARIANT_ID,
+    "sku": SKU,
     "quantity": 1,
     "productDeliveryPromise": {
         "status": "address_missing",
@@ -141,30 +144,34 @@ def _driver(client: DeliveryPromiseClient, **kw: Any) -> DeliveryPromiseDriver:
 def test_tier2_returns_delivery_block_for_verified_customer() -> None:
     client = FakeClient(TIER2_BODY)
     result = _call(
-        _driver(client), "get_order_delivery", {"order_id": ORDER_ID}, identity=_verified()
+        _driver(client), "get_order_delivery", {"order_name": ORDER_NAME}, identity=_verified()
     )
     assert result.ok is True
     assert result.data["order_id"] == ORDER_ID
     assert result.data["order_name"] == "OL49597"
     assert result.data["delivery"] == TIER2_BODY["delivery"]
     # The verified customer's NUMERIC id is sent as shopifyCustomerId, never a
-    # model-supplied one; orderId is the request param.
-    assert client.payloads[0] == {"orderId": ORDER_ID, "shopifyCustomerId": VERIFIED_NUMERIC}
+    # model-supplied one; the customer-facing ORDER NAME is sent as orderName (which the
+    # agent sources from get_order's order_number — the reachability fix).
+    assert client.payloads[0] == {"orderName": ORDER_NAME, "shopifyCustomerId": VERIFIED_NUMERIC}
 
 
 # --- Tier 3a happy path + empty-but-successful relay -------------------------
 
 
-def test_tier3a_returns_product_promise_block_for_verified_customer() -> None:
+def test_tier3a_by_sku_reaches_endpoint_and_relays_promise() -> None:
+    # The reachability fix: the agent supplies a SKU (sourced from get_product's variants),
+    # sent as `sku`; the endpoint resolves it to a variant and echoes both.
     client = FakeClient(TIER3A_ADDRESS_MISSING)
     result = _call(
         _driver(client),
         "get_product_promise",
-        {"variant_id": VARIANT_ID, "quantity": 2},
+        {"sku": SKU, "quantity": 2},
         identity=_verified(),
     )
     assert result.ok is True
     assert result.data["variant_id"] == VARIANT_ID
+    assert result.data["sku"] == SKU
     assert result.data["product_delivery_promise"]["status"] == "address_missing"
     # The endpoint's customer-safe prose is relayed verbatim.
     assert (
@@ -173,9 +180,21 @@ def test_tier3a_returns_product_promise_block_for_verified_customer() -> None:
     )
     assert client.payloads[0] == {
         "shopifyCustomerId": VERIFIED_NUMERIC,
-        "variantId": VARIANT_ID,
+        "sku": SKU,
         "quantity": 2,
     }
+
+
+def test_tier3a_by_variant_id_still_works_backward_compat() -> None:
+    client = FakeClient(TIER3A_ADDRESS_MISSING)
+    result = _call(
+        _driver(client),
+        "get_product_promise",
+        {"variant_id": VARIANT_ID},
+        identity=_verified(),
+    )
+    assert result.ok is True
+    assert client.payloads[0] == {"shopifyCustomerId": VERIFIED_NUMERIC, "variantId": VARIANT_ID}
 
 
 def test_tier3a_address_missing_is_a_success_not_an_error() -> None:
@@ -184,7 +203,7 @@ def test_tier3a_address_missing_is_a_success_not_an_error() -> None:
     result = _call(
         _driver(FakeClient(TIER3A_ADDRESS_MISSING)),
         "get_product_promise",
-        {"variant_id": VARIANT_ID},
+        {"sku": SKU},
         identity=_verified(),
     )
     assert result.ok is True
@@ -192,8 +211,24 @@ def test_tier3a_address_missing_is_a_success_not_an_error() -> None:
 
 def test_tier3a_omits_quantity_when_not_supplied() -> None:
     client = FakeClient(TIER3A_ADDRESS_MISSING)
-    _call(_driver(client), "get_product_promise", {"variant_id": VARIANT_ID}, identity=_verified())
-    assert client.payloads[0] == {"shopifyCustomerId": VERIFIED_NUMERIC, "variantId": VARIANT_ID}
+    _call(_driver(client), "get_product_promise", {"sku": SKU}, identity=_verified())
+    assert client.payloads[0] == {"shopifyCustomerId": VERIFIED_NUMERIC, "sku": SKU}
+
+
+def test_get_order_delivery_without_name_fails_closed_before_http() -> None:
+    client = FakeClient(TIER2_BODY)
+    result = _call(_driver(client), "get_order_delivery", {}, identity=_verified())
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert client.payloads == []
+
+
+def test_get_product_promise_without_sku_or_variant_fails_closed_before_http() -> None:
+    client = FakeClient(TIER3A_ADDRESS_MISSING)
+    result = _call(_driver(client), "get_product_promise", {}, identity=_verified())
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert client.payloads == []
 
 
 # --- ownership / verified gate (ADR-0043) ------------------------------------
@@ -201,7 +236,7 @@ def test_tier3a_omits_quantity_when_not_supplied() -> None:
 
 def test_unverified_caller_fails_closed_before_any_http_call() -> None:
     client = FakeClient(TIER2_BODY)
-    result = _call(_driver(client), "get_order_delivery", {"order_id": ORDER_ID})
+    result = _call(_driver(client), "get_order_delivery", {"order_name": ORDER_NAME})
     assert result.ok is False
     assert result.error_class == "policy_blocked"
     # No lookup was attempted for an unverified caller.
@@ -210,7 +245,7 @@ def test_unverified_caller_fails_closed_before_any_http_call() -> None:
 
 def test_tier3a_unverified_caller_fails_closed() -> None:
     client = FakeClient(TIER3A_ADDRESS_MISSING)
-    result = _call(_driver(client), "get_product_promise", {"variant_id": VARIANT_ID})
+    result = _call(_driver(client), "get_product_promise", {"sku": SKU})
     assert result.ok is False
     assert result.error_class == "policy_blocked"
     assert client.payloads == []
@@ -226,7 +261,7 @@ def test_404_ownership_mismatch_fails_closed_as_not_found() -> None:
     result = _call(
         _driver(FakeClient(raises=fault)),
         "get_order_delivery",
-        {"order_id": ORDER_ID},
+        {"order_name": ORDER_NAME},
         identity=_verified(),
     )
     assert result.ok is False
@@ -238,7 +273,7 @@ def test_401_bad_bearer_fails_closed_as_auth() -> None:
     result = _call(
         _driver(FakeClient(raises=fault)),
         "get_order_delivery",
-        {"order_id": ORDER_ID},
+        {"order_name": ORDER_NAME},
         identity=_verified(),
     )
     assert result.ok is False
@@ -250,7 +285,7 @@ def test_503_transient_fails_closed_as_vendor_timeout() -> None:
     result = _call(
         _driver(FakeClient(raises=fault)),
         "get_product_promise",
-        {"variant_id": VARIANT_ID},
+        {"sku": SKU},
         identity=_verified(),
     )
     assert result.ok is False
@@ -261,7 +296,7 @@ def test_unclassified_client_error_becomes_governed_not_a_raw_raise() -> None:
     result = _call(
         _driver(FakeClient(raises=RuntimeError("socket exploded"))),
         "get_order_delivery",
-        {"order_id": ORDER_ID},
+        {"order_name": ORDER_NAME},
         identity=_verified(),
     )
     assert result.ok is False
@@ -274,7 +309,7 @@ def test_unexpected_body_shape_fails_closed_never_fabricates() -> None:
     result = _call(
         _driver(FakeClient({"traceId": "x", "unexpected": "shape"})),
         "get_order_delivery",
-        {"order_id": ORDER_ID},
+        {"order_name": ORDER_NAME},
         identity=_verified(),
     )
     assert result.ok is False
@@ -290,7 +325,7 @@ def test_deadline_bounds_the_call() -> None:
     result = _call(
         _driver(slow, deadline_ms=60),
         "get_order_delivery",
-        {"order_id": ORDER_ID},
+        {"order_name": ORDER_NAME},
         identity=_verified(),
     )
     elapsed = time.monotonic() - start
@@ -305,8 +340,8 @@ def test_deadline_bounds_the_call() -> None:
 def test_output_matches_the_mock_contract() -> None:
     mock = MockDriver(create_delivery_mock_handlers())
     real = _driver(FakeClient(TIER2_BODY))
-    real_out = _call(real, "get_order_delivery", {"order_id": ORDER_ID}, identity=_verified())
-    mock_out = _call(mock, "get_order_delivery", {"order_id": ORDER_ID}, identity=_verified())
+    real_out = _call(real, "get_order_delivery", {"order_name": ORDER_NAME}, identity=_verified())
+    mock_out = _call(mock, "get_order_delivery", {"order_name": ORDER_NAME}, identity=_verified())
     # Same top-level keys / structure so replay+eval exercise one contract.
     assert set(real_out.data) == set(mock_out.data)
     assert set(real_out.data["delivery"]) == set(mock_out.data["delivery"])
@@ -314,15 +349,33 @@ def test_output_matches_the_mock_contract() -> None:
 
 def test_mock_tier3a_returns_promise_block() -> None:
     mock = MockDriver(create_delivery_mock_handlers())
-    out = _call(mock, "get_product_promise", {"variant_id": VARIANT_ID}, identity=_verified())
+    out = _call(mock, "get_product_promise", {"sku": SKU}, identity=_verified())
     assert out.ok is True
     assert "product_delivery_promise" in out.data
     assert "displayLine" in out.data["product_delivery_promise"]
 
 
+def test_tier3a_output_matches_the_mock_contract() -> None:
+    mock = MockDriver(create_delivery_mock_handlers())
+    real = _driver(FakeClient(TIER3A_ADDRESS_MISSING))
+    real_out = _call(real, "get_product_promise", {"sku": SKU}, identity=_verified())
+    mock_out = _call(mock, "get_product_promise", {"sku": SKU}, identity=_verified())
+    assert set(real_out.data) == set(mock_out.data)
+    assert set(real_out.data["product_delivery_promise"]) == set(
+        mock_out.data["product_delivery_promise"]
+    )
+
+
+def test_mock_unknown_sku_fails_closed_like_the_endpoint_404() -> None:
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(mock, "get_product_promise", {"sku": "NOPE-000"}, identity=_verified())
+    assert out.ok is False
+    assert out.error_class == "not_found"
+
+
 def test_mock_unverified_fails_closed() -> None:
     mock = MockDriver(create_delivery_mock_handlers())
-    out = _call(mock, "get_order_delivery", {"order_id": ORDER_ID})
+    out = _call(mock, "get_order_delivery", {"order_name": ORDER_NAME})
     assert out.ok is False
     assert out.error_class == "policy_blocked"
 
@@ -333,7 +386,7 @@ def test_mock_unverified_fails_closed() -> None:
 def test_missing_secret_builds_a_driver_that_fails_closed_per_call(monkeypatch) -> None:
     monkeypatch.delenv("GADGET_API_KEY", raising=False)
     driver = build_delivery_promise_driver()  # total — must not raise
-    result = _call(driver, "get_order_delivery", {"order_id": ORDER_ID}, identity=_verified())
+    result = _call(driver, "get_order_delivery", {"order_name": ORDER_NAME}, identity=_verified())
     assert result.ok is False
     assert result.error_class == "configuration_missing"
 

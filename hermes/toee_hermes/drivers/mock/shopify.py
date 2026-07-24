@@ -186,6 +186,12 @@ def _to_public_product(product: ShopifyProduct) -> dict[str, Any]:
         "title": product.title,
         "product_url": product.product_url,
         "media_url": product.media_url,
+        # S31b: expose the variant sku(s) so the agent can pick the customer's size and
+        # feed its sku to Tier 3a get_product_promise. Same [{sku, option}] shape the
+        # composio driver projects (parity). ponytail: one product == one size here, so
+        # a single derived variant; seed multiple products (or add a variants field) when
+        # a scenario needs multi-size disambiguation under one product.
+        "variants": [{"sku": product.sku, "option": product.title}],
     }
 
 

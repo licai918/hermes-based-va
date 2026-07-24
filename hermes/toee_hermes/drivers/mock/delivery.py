@@ -41,8 +41,14 @@ class DeliveryOrderRecord:
 @dataclass(frozen=True)
 class DeliveryMockData:
     orders: list[DeliveryOrderRecord] = field(default_factory=list)
-    # The canned Tier 3a promise block echoed for any variant a verified customer asks
-    # about (the mock does not simulate the same-day engine; it proves relay parity).
+    # sku -> variantId, the way the live endpoint resolves+validates a sku to a real
+    # in-shop variant BEFORE the engine (unknown sku -> 404). The mock is keyed the same
+    # so it is not more permissive than the endpoint (S30 parity lesson).
+    variant_by_sku: dict[str, str] = field(
+        default_factory=lambda: {"TRIM00014": "39379581042771"}
+    )
+    # The canned Tier 3a promise block echoed for a resolved variant (the mock does not
+    # simulate the same-day engine; it proves relay parity).
     product_promise: dict[str, Any] = field(
         default_factory=lambda: dict(_BASELINE_PROMISE)
     )
@@ -123,11 +129,12 @@ def _get_order_delivery(
     data: DeliveryMockData, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
     numeric_id = _require_verified_numeric_id(context)
-    # Key by the numeric Shopify order id only — the live endpoint rejects the order
-    # name/number (400), so the mock must not be more permissive (parity, S30 lesson).
-    order_id = _read_string(params, "order_id", "orderId")
+    # The endpoint resolves the order NAME (e.g. "OL49597") to the order within the shop
+    # (numeric orderId still works too), then enforces ownership -> 404. The mock is keyed
+    # the same way: match by name or numeric id, then check ownership.
+    order_ref = _read_string(params, "order_name", "order_number", "orderName", "orderNumber", "order_id", "orderId")
     for record in data.orders:
-        if order_id == record.order_id:
+        if order_ref in (record.order_name, record.order_id):
             if record.owner_numeric_id != numeric_id:
                 raise ToolDriverError("not_found", "No order found for this customer.")
             return {
@@ -142,13 +149,22 @@ def _get_product_promise(
     data: DeliveryMockData, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
     _require_verified_numeric_id(context)
+    # The endpoint resolves+validates a sku to a real in-shop variant before the engine
+    # (unknown sku -> 404); a raw numeric variantId still works. Mirror that resolution.
+    sku = _read_string(params, "sku")
     variant_id = _read_string(params, "variant_id", "variantId")
-    if not variant_id:
-        raise ToolDriverError("policy_blocked", "get_product_promise requires a variant id.")
+    if sku:
+        resolved = data.variant_by_sku.get(sku)
+        if resolved is None:
+            raise ToolDriverError("not_found", "Unknown sku.")
+        variant_id = resolved
+    elif not variant_id:
+        raise ToolDriverError("policy_blocked", "get_product_promise requires a sku.")
     quantity = params.get("quantity")
     quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) else None
     return {
         "variant_id": variant_id,
+        "sku": sku,
         "quantity": quantity,
         "business_date": data.business_date,
         "timezone": data.timezone,

@@ -440,6 +440,7 @@ def test_shopify_search_products_returns_public_fields_only() -> None:
             "title": "All-Season 225/60R16",
             "product_url": "https://shop.toee.example/products/all-season-225-60r16",
             "media_url": "https://cdn.toee.example/products/all-season-225-60r16.jpg",
+            "variants": [{"sku": "TIRE-225-60R16", "option": "All-Season 225/60R16"}],
         }
     ]
     for product in out:
@@ -477,6 +478,7 @@ def test_shopify_get_product_public_for_non_verified() -> None:
         "title": "All-Season 225/60R16",
         "product_url": "https://shop.toee.example/products/all-season-225-60r16",
         "media_url": "https://cdn.toee.example/products/all-season-225-60r16.jpg",
+        "variants": [{"sku": "TIRE-225-60R16", "option": "All-Season 225/60R16"}],
     }
     assert "price" not in out
     assert "inventory" not in out

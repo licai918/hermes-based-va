@@ -216,6 +216,15 @@ def test_get_product_matches_by_sku() -> None:
     assert result.data["product_id"] == BASELINE_PRODUCT_ID
 
 
+def test_get_product_exposes_variants_with_sku_for_delivery_promise() -> None:
+    # S31b: the agent picks a size from `variants` and feeds its sku to Tier 3a
+    # get_product_promise{sku}. Each variant carries its sku + a human option label.
+    result = _call("get_product", {"sku": "TIRE-225-60R16"})
+    assert result.ok is True
+    variants = result.data["variants"]
+    assert variants == [{"sku": "TIRE-225-60R16", "option": "All-Season 225/60R16"}]
+
+
 def test_get_product_not_found_is_unexpected_error() -> None:
     result = _call(
         "get_product", {"product_id": "gid://shopify/Product/0000"}, identity=_verified()

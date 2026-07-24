@@ -59,29 +59,34 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
     # the S10 failure mode.
     ("toee_delivery_promise", "get_order_delivery"): {
         "properties": {
-            "order_id": {
+            "order_name": {
                 "type": "string",
                 "description": (
-                    "The numeric Shopify order id of the verified customer's own order "
-                    '(e.g. "7189924970579"). The order name/number (e.g. "OL49597") is '
-                    "NOT accepted by this tool."
+                    "The order name/number of the verified customer's own order "
+                    '(e.g. "OL49597"), as returned by toee_shopify_read.get_order / '
+                    "list_customer_orders in their order_number field, or as the customer "
+                    "stated it. Never fabricate an order name or id."
                 ),
             },
         },
-        "required": ["order_id"],
+        "required": ["order_name"],
     },
     ("toee_delivery_promise", "get_product_promise"): {
         "properties": {
-            "variant_id": {
+            "sku": {
                 "type": "string",
-                "description": "The Shopify product variant id to get a delivery promise for.",
+                "description": (
+                    "The SKU of the specific product variant (size) to get a delivery "
+                    "promise for, taken from the variants list of "
+                    "toee_shopify_read.get_product / search_products. Never fabricate a sku."
+                ),
             },
             "quantity": {
                 "type": "integer",
                 "description": "Optional quantity being considered (defaults to 1).",
             },
         },
-        "required": ["variant_id"],
+        "required": ["sku"],
     },
     # 0.0.3 S22 (FR-23): the governed L6 propose write -- kind/content name-
     # guessing would be exactly the S10 failure mode, so both are declared and
