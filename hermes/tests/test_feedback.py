@@ -227,6 +227,7 @@ def test_submit_draft_rating_up_needs_no_tags() -> None:
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
 
     assert result.ok is True
@@ -235,8 +236,28 @@ def test_submit_draft_rating_up_needs_no_tags() -> None:
     assert result.data["verdict"] == "up"
     assert result.data["reason_tags"] == []
     assert result.data["outcome"] == "rated_only"
+    # S06 review (Important): the generated-draft snapshot is captured too --
+    # a rated_only row has no linked outcome row to recover it from otherwise.
+    assert result.data["draft_text"] == "Hey, your tire order is on the way!"
     # RK-1 parity: the rep is framework-derived, never a model-supplied param.
     assert result.data["rep_account_id"] == "acct_rep_1"
+
+
+def test_submit_draft_rating_missing_draft_text_is_rejected() -> None:
+    # S06 review (Important): draft_text is now REQUIRED -- without it, a
+    # down-rating's generated draft would be unrecoverable (no linked outcome
+    # row exists for a rated_only row).
+    driver = _driver()
+    result = _rate(
+        driver,
+        _internal_ctx(user_id="acct_rep_1"),
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert result.ok is False
+    assert result.error_class == "unexpected_error"
 
 
 def test_submit_draft_rating_down_with_tags_and_comment() -> None:
@@ -250,6 +271,7 @@ def test_submit_draft_rating_down_with_tags_and_comment() -> None:
         verdict="down",
         reason_tags=["wrong_tone", "too_verbose"],
         comment="Rewrote the whole thing.",
+        draft_text="Original generated draft body.",
     )
 
     assert result.ok is True
@@ -342,6 +364,7 @@ def test_submit_draft_rating_rep_cannot_be_forged() -> None:
         draft_kind="sms",
         verdict="up",
         rep_account_id="acct_forged",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert result.ok is True
     assert result.data["rep_account_id"] == "acct_real"
@@ -357,6 +380,7 @@ def test_submit_draft_rating_is_append_only() -> None:
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     second = _rate(
         driver,
@@ -366,6 +390,7 @@ def test_submit_draft_rating_is_append_only() -> None:
         draft_kind="sms",
         verdict="down",
         reason_tags=["wrong_tone"],
+        draft_text="Hey, your tire order is on the way!",
     )
     assert first.ok is True and second.ok is True
     assert first.data["id"] != second.data["id"]

@@ -348,28 +348,64 @@ def test_submit_draft_rating_up_persists_a_rated_only_row(datastore) -> None:
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert result.ok
     rating_id = result.data["id"]
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT case_id, draft_correlation_id, draft_kind, outcome, verdict, "
-            "reason_tags, rep_account_id, created_at "
+            "SELECT case_id, draft_correlation_id, draft_kind, draft_text, "
+            "outcome, verdict, reason_tags, rep_account_id, created_at "
             "FROM draft_feedback WHERE id = %s",
             (rating_id,),
         )
         row = cur.fetchone()
     assert row is not None
-    case_id, corr_id, draft_kind, outcome, verdict, reason_tags, rep, created_at = row
+    (
+        case_id,
+        corr_id,
+        draft_kind,
+        draft_text,
+        outcome,
+        verdict,
+        reason_tags,
+        rep,
+        created_at,
+    ) = row
     assert case_id == "case_1"
     assert corr_id == "draft_corr_1"
     assert draft_kind == "sms"
+    # S06 review (Important): the generated-draft snapshot persists and reads
+    # back verbatim from live Postgres -- a rated_only row has no linked
+    # outcome row to recover this from otherwise.
+    assert draft_text == "Hey, your tire order is on the way!"
     assert outcome == "rated_only"
     assert verdict == "up"
     assert reason_tags == []
     assert rep == "acct_rep_1"
     assert created_at is not None
+
+
+def test_submit_draft_rating_missing_draft_text_persists_nothing(datastore) -> None:
+    # S06 review (Important): draft_text is now REQUIRED -- a rated_only row
+    # has no linked outcome row (record_draft_outcome only fires on a send),
+    # so without this the generated draft a down-rating refers to is lost.
+    driver, conn, _ = datastore
+    _insert_case(conn, case_id="case_1", assignee_account_id="acct_rep_1")
+
+    result = _rate(
+        driver,
+        user_id="acct_rep_1",
+        case_id="case_1",
+        draft_correlation_id="draft_corr_1",
+        draft_kind="sms",
+        verdict="up",
+    )
+    assert not result.ok
+    assert result.error_class == "unexpected_error"
+    assert _rating_count(conn) == 0
+    assert _rating_audit_count(conn) == 0
 
 
 def test_submit_draft_rating_down_with_tags_persists(datastore) -> None:
@@ -385,6 +421,7 @@ def test_submit_draft_rating_down_with_tags_persists(datastore) -> None:
         verdict="down",
         reason_tags=["wrong_tone", "too_verbose"],
         comment="Rewrote the whole thing.",
+        draft_text="Original generated draft body.",
     )
     assert result.ok
 
@@ -410,6 +447,7 @@ def test_submit_draft_rating_writes_an_audit_row(datastore) -> None:
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert result.ok
 
@@ -441,6 +479,7 @@ def test_submit_draft_rating_is_append_only(datastore) -> None:
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     second = _rate(
         driver,
@@ -450,6 +489,7 @@ def test_submit_draft_rating_is_append_only(datastore) -> None:
         draft_kind="sms",
         verdict="down",
         reason_tags=["wrong_tone"],
+        draft_text="Hey, your tire order is on the way!",
     )
     assert first.ok and second.ok
     assert first.data["id"] != second.data["id"]
@@ -519,6 +559,7 @@ def test_submit_draft_rating_on_a_case_the_actor_does_not_hold_persists_nothing(
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert not result.ok
     assert result.error_class == "policy_blocked"
@@ -537,6 +578,7 @@ def test_submit_draft_rating_on_an_unassigned_case_persists_nothing(datastore) -
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert not result.ok
     assert result.error_class == "policy_blocked"
@@ -553,6 +595,7 @@ def test_submit_draft_rating_on_a_nonexistent_case_persists_nothing(datastore) -
         draft_correlation_id="draft_corr_1",
         draft_kind="sms",
         verdict="up",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert not result.ok
     assert result.error_class == "policy_blocked"
@@ -654,6 +697,7 @@ def test_submit_draft_rating_rep_cannot_be_forged(datastore) -> None:
         draft_kind="sms",
         verdict="up",
         rep_account_id="acct_forged",
+        draft_text="Hey, your tire order is on the way!",
     )
     assert result.ok
     assert result.data["rep_account_id"] == "acct_real"

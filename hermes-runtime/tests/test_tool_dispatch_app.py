@@ -494,6 +494,7 @@ def test_dispatch_submit_draft_rating_on_an_unheld_case_is_denied(datastore) -> 
                 "draft_correlation_id": "draft_corr_1",
                 "draft_kind": "sms",
                 "verdict": "up",
+                "draft_text": "Hey, your tire order is on the way!",
             },
             "actor_account_id": "acct_rep_1",
         },

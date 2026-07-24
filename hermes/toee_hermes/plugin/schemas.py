@@ -320,8 +320,22 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
                 "type": "string",
                 "description": "Optional free-text color, never required.",
             },
+            "draft_text": {
+                "type": "string",
+                "description": (
+                    "The generated-draft snapshot being rated; always available "
+                    "(you rate the draft card), so required -- a rated_only row "
+                    "has no linked outcome row to recover it from otherwise."
+                ),
+            },
         },
-        "required": ["case_id", "draft_correlation_id", "draft_kind", "verdict"],
+        "required": [
+            "case_id",
+            "draft_correlation_id",
+            "draft_kind",
+            "verdict",
+            "draft_text",
+        ],
     },
     ("toee_feedback", "list_feedback"): {
         "properties": {

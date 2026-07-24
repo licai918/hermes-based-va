@@ -236,17 +236,18 @@ def _read_rating_comment(params: dict[str, Any]) -> Optional[str]:
     return comment
 
 
-def _read_draft_text(params: dict[str, Any]) -> Optional[str]:
-    # ponytail: nullable -- neither this action's nor record_draft_outcome's
-    # PARAM_SCHEMAS (plugin/schemas.py) declares draft_text as a param, so the
-    # BFF may not always have it to send; capture it when present, don't block
-    # the rating on it.
+def _require_draft_text(params: dict[str, Any]) -> str:
+    # S06 review (Important): a rated_only row has no linked outcome row to
+    # join against (record_draft_outcome only fires on an actual send), so if
+    # draft_text isn't captured HERE, a down-rating's generated draft is lost
+    # forever -- a supervisor sees the tags but never what was written.
+    # Always available in practice: you rate the draft card, so its text is
+    # always in hand -- required, same as case_id/draft_correlation_id above.
     draft_text = params.get("draft_text")
-    if draft_text is None:
-        return None
-    if not isinstance(draft_text, str):
+    if not isinstance(draft_text, str) or not draft_text.strip():
         raise ToolDriverError(
-            "unexpected_error", "submit_draft_rating draft_text must be a string."
+            "unexpected_error",
+            "submit_draft_rating requires a non-empty string draft_text.",
         )
     return draft_text
 
@@ -360,7 +361,7 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
         verdict = _require_draft_rating_verdict(params)
         reason_tags = _read_internal_reason_tags(params, verdict=verdict)
         comment = _read_rating_comment(params)
-        draft_text = _read_draft_text(params)
+        draft_text = _require_draft_text(params)
 
         entry = {
             "id": f"draft_{len(draft_ratings) + 1}",

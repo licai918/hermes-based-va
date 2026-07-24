@@ -13,7 +13,10 @@ CREATE TABLE draft_feedback (
     case_id               TEXT NOT NULL REFERENCES cases(id),
     draft_correlation_id  TEXT NOT NULL,
     draft_kind            TEXT NOT NULL,
-    draft_text            TEXT,
+    draft_text            TEXT, -- nullable here; submit_draft_rating (S06
+                                 -- review) enforces NOT NULL at the write path
+                                 -- since S08's record_draft_outcome doesn't
+                                 -- exist yet and also always has it in hand
     outcome               TEXT NOT NULL,
     edit_distance_ratio   REAL,
     verdict               TEXT,

@@ -24,7 +24,6 @@ from psycopg.rows import dict_row
 
 from toee_hermes.drivers.mock.feedback import (
     _read_comment,
-    _read_draft_text,
     _read_internal_reason_tags,
     _read_rating_comment,
     _read_reason_tags,
@@ -32,6 +31,7 @@ from toee_hermes.drivers.mock.feedback import (
     _require_draft_correlation_id,
     _require_draft_kind,
     _require_draft_rating_verdict,
+    _require_draft_text,
     _require_subject_id,
     _require_subject_kind,
     _require_verdict,
@@ -136,7 +136,7 @@ def _submit_draft_rating(
     verdict = _require_draft_rating_verdict(params)
     reason_tags = _read_internal_reason_tags(params, verdict=verdict)
     comment = _read_rating_comment(params)
-    draft_text = _read_draft_text(params)
+    draft_text = _require_draft_text(params)
 
     # Additional gate for THIS mechanism only (S06 brief): the acting rep must
     # hold the case the draft belongs to.
