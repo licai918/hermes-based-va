@@ -336,7 +336,69 @@ def test_shopify_get_order_rejects_non_owned_order() -> None:
             {"order_number": "1042"},
             _ctx(identity=_verified()),
         )
-    assert excinfo.value.error_class == "not_found"
+    # Error class == the mock's (mock/shopify.py raises policy_blocked for non-owned).
+    assert excinfo.value.error_class == "policy_blocked"
+
+
+def test_shopify_get_order_rejects_non_owned_nested_customer() -> None:
+    """The reject side of the nested-customer gid path: mismatch fails closed."""
+    raw = {
+        "order": {
+            "order_number": 49299,
+            "customer": {"id": 6764623954003},  # normalized via _shopify_customer_gid
+            "line_items": [{"sku": "SKU1", "title": "Tire"}],
+            "fulfillments": [{"shipment_status": "in_transit"}],
+        }
+    }
+    client = FakeComposioClient(raw)
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(
+            client,
+            "toee_shopify_read",
+            "get_order",
+            {"order_number": "49299"},
+            _ctx(identity=_verified()),  # verified as 1001, order owned by 6764623954003
+        )
+    assert excinfo.value.error_class == "policy_blocked"
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        None,  # unmatched caller (no snapshot)
+        {"outcome": "unmatched_caller"},
+        {"outcome": "ambiguous_phone_match", "shopify_customer_ids": ["gid://shopify/Customer/2001"]},
+        {"outcome": "verified_customer"},  # verified snapshot MISSING its shopify id
+    ],
+)
+def test_shopify_get_order_unverified_caller_fails_closed(identity: Any) -> None:
+    """CRITICAL regression pin: an absent/unverified identity must NOT get the order.
+
+    The earlier ``verified is not None and …`` guard failed OPEN here — an anonymous
+    caller who supplied any order number received the order + line items + the live
+    tracking url. This bites if the guard ever reverts to that form.
+    """
+    client = FakeComposioClient(
+        _order_raw(
+            fulfillments=[
+                {
+                    "shipment_status": "out_for_delivery",
+                    "tracking_url": "https://api.easyroutes.app/orders/status/leak",
+                }
+            ],
+        )
+    )
+    with pytest.raises(ToolDriverError) as excinfo:
+        _run(
+            client,
+            "toee_shopify_read",
+            "get_order",
+            {"order_number": "1042"},
+            _ctx(identity=identity),
+        )
+    assert excinfo.value.error_class == "policy_blocked"
+    # No order/tracking ever crossed: the driver raised, it did not return a payload.
+    assert len(client.calls) == 1  # the backend fetch ran, but the result was withheld
 
 
 def test_shopify_get_order_fault_fails_closed_not_delivered() -> None:

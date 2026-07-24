@@ -272,6 +272,10 @@ def _shape_fulfillment(order: dict[str, Any]) -> dict[str, Any]:
     status = status if isinstance(status, str) and status else None
     if not fulfillments and status is None:
         return {"state": "unfulfilled", "shipment_status": None, "tracking": None}
+    # ponytail: last-wins — on a partially-delivered MULTI-shipment order this
+    # reports the newest shipment's status as the whole order's (honest per-shipment,
+    # potentially misleading per-order). Acceptable for Tier 1; upgrade to a
+    # per-shipment list / "partially delivered" rollup when multi-shipment matters.
     latest = fulfillments[-1] if fulfillments else {}
     if not isinstance(latest, dict):
         latest = {}
@@ -332,13 +336,25 @@ def _shopify_get_order_response(raw: dict[str, Any], context: "ToolExecutionCont
     order = payload.get("order", raw.get("order", raw))
     shaped = _shape_order(order)
     # Ownership (ADR-0043): get_order is by a model-supplied order number, which is
-    # NOT owner-scoped by the vendor query the way list_customer_orders is. Now that
-    # the order carries live delivery status + a tracking url, an owner mismatch would
-    # leak another customer's shipment — so fail closed unless the returned order
-    # belongs to the verified customer (mirrors the mock's owner check, parity).
+    # NOT owner-scoped by the vendor query the way list_customer_orders is, and the
+    # external Tool Gate allows toee_shopify_read wholesale (get_product/search are
+    # public catalog reads), so THIS driver is the sole defense on get_order. The
+    # order carries line items + live delivery status + a tracking url, so it MUST
+    # fail closed for anyone who is not the verified owner. An absent identity
+    # (unmatched/ambiguous, or a verified snapshot missing its shopify id) must NOT
+    # fall through and leak — hence the explicit ``verified is None`` arm (the
+    # earlier ``verified is not None and …`` form failed OPEN for anonymous callers).
+    # Error classes mirror the mock (mock/shopify.py) EXACTLY so eval/replay exercise
+    # one contract: policy_blocked for both the unverified and the non-owned case.
     verified = _to_customer_gid(_verified_customer_id(context))
-    if verified is not None and shaped.get("customer_id") != verified:
-        raise ToolDriverError("not_found", "No matching order for this customer.")
+    if verified is None:
+        raise ToolDriverError(
+            "policy_blocked", "get_order requires a verified customer."
+        )
+    if shaped.get("customer_id") != verified:
+        raise ToolDriverError(
+            "policy_blocked", "No order owned by the verified customer."
+        )
     return shaped
 
 
