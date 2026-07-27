@@ -38,6 +38,16 @@
   deliberately left for you): the mock `list` returns insertion order while Postgres uses
   `ORDER BY created_at DESC` — your queue will inherit the disagreement; and the mock id scheme
   `f"lex_{len(store)+1}"` starts colliding the moment deletion exists, which is this slice.
+- **`pii_redacted = false` does NOT mean "no PII on this row".** S01's redaction can waive a
+  span when it exactly equals the entry's own `surface_form`/`canonical_form` (it must — the
+  seeded `205 55 16` matches the phone pattern inside evidence prose, and redacting it would
+  destroy the evidence an admin needs). A waiver is recorded as `pii_keep_exempt` in the audit
+  row's `details`, which **no UI reads today**. Your console must not present the flag as a
+  clean bill of health; if you surface it at all, say what it actually means.
+- **Sweep the interim rows.** D20's hole is open between S01 and S02, so rows may exist with
+  `provenance = 'admin_manual'` and `decider_account_id IS NULL`. They arrive in your queue
+  looking authoritative. Find them and decide what to show — an unattributed `admin_manual` row
+  must not be indistinguishable from one a named admin actually approved.
 
 ## Goal
 

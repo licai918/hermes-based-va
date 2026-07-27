@@ -96,6 +96,25 @@ and keep the entry.
 Existing L6 behaviour must not change: `scan_agent_experience_content` keeps its current
 semantics by composing the two new resolvers, and its existing tests stay green untouched.
 
+**Amendment (found by the S01 re-review — L6's reject set DID widen, and the tests did not
+notice).** Deepening the `proposer_context` traversal so nested values could be scanned also fed
+L6's composite more strings than before, and L6's composite runs the PII leg over keys and
+nested values. So an L6 `proposer_context` key shaped like `order_1234567890` now
+`policy_blocked`s the whole `propose_experience` write. The existing L6 tests stayed green only
+because none of them covered the widened set — a clean illustration that "the tests still pass"
+says nothing about behaviour no test describes.
+
+**Ruling: the widening stands** — it is fail-safe, and narrowing it back to preserve
+bug-compatibility would be the wrong direction. But it is now **pinned by a test** rather than
+incidental, and recorded here rather than discovered later by whoever debugs a missing L6 row.
+S04's capture fork writes L6 rows; if one goes missing, this is the first thing to check.
+
+**And PII in dictionary KEYS is redacted, not just scanned.** The same rewrite scanned keys for
+injection but never redacted them for PII, so `{"jane.doe@example.com": "..."}` was stored
+verbatim with `pii_redacted` still false — then blessed in a docstring instead of closed. A
+docstring that blesses a PII hole is the same defect class as a boundary ledger claiming
+coverage it does not have. Keys get the redact leg too.
+
 ## D3. L7 provenance and L6 source enums must be extended — nobody owned this
 
 S25/S27 are told to emit `source = feedback_derived` **through** the governed propose actions.
