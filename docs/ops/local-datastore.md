@@ -4,6 +4,11 @@ The Toee Business Datastore is the system-of-record (ADR-0140). Per ADR-0142 it
 runs as **local Postgres first**; Cloud SQL is the deferred cloud target. This
 runbook brings it up locally and applies the schema. (Slice 32 / #35.)
 
+> `pnpm dev` does everything on this page (both databases, every migration, the
+> dev seed) as its first two phases — see
+> [`apps/workbench/README.md`](../../apps/workbench/README.md). This runbook is the
+> reference for what those phases do and how to drive them by hand.
+
 ## Bring up Postgres
 
 From the repo root:
@@ -35,7 +40,16 @@ defaulting to the docker-compose DSN above — no GCP credentials needed locally
 
 The `0005_dev_bootstrap` seed (demo accounts + cases) is LOCAL DEV ONLY and is
 skipped unless you set `HERMES_APPLY_DEV_SEED=1`, so a cloud/prod migrate never
-seeds demo data (ADR-0142). Tier B walkthrough: [`local-e2e.md`](local-e2e.md).
+seeds demo data (ADR-0142). `pnpm dev` sets it; a cloud migrate does not.
+
+The **separate** `toee_knowledge` database (S-ISO) has its own migration path and
+its own `schema_migrations`; it self-provisions the database if missing:
+
+```bash
+uv run python -m hermes_runtime.knowledge.migrate
+```
+
+Walkthrough: [`local-e2e.md`](local-e2e.md).
 
 ## Datastore-backed tools (Slice 33 / #36)
 

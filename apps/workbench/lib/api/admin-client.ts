@@ -4,11 +4,22 @@
 // whose 400 carries a policy `errors[]` we surface inline rather than throw.
 import type { WorkbenchRoleId } from "@toee/shared";
 import type { PublicAccount } from "@/lib/bff/admin/accounts";
-import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
+import type { DeadLetterView, ReplayReceipt } from "@/lib/bff/admin/dead-letter";
+import type { EvalRunReport, EvalRunSummary } from "@/lib/bff/admin/eval";
+import type {
+  IntegrationsView,
+  ReconnectLink,
+  ReprobeReceipt,
+} from "@/lib/bff/admin/integrations";
+import type {
+  CorpusStatus,
+  PolicySlot,
+  ProbeResult,
+  ReingestQueued,
+} from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
-import type { RetentionStatus, RetentionSweepResult } from "@/lib/bff/admin/retention";
-import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
-import type { PolicySlot } from "@/lib/gateway/knowledge-store";
+import type { QualityGatesView } from "@/lib/bff/admin/quality-gates";
+import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
 import type {
   AgentExperienceEntry,
   MemoryAuditView,
@@ -58,6 +69,11 @@ export function getCorpusStatus(): Promise<CorpusStatus> {
   return getJson<{ status: CorpusStatus }>("/api/admin/knowledge/corpus-status").then(
     (b) => b.status,
   );
+}
+
+// S04 (FR-11): queue a corpus re-ingest for the background worker.
+export function triggerCorpusReingest(): Promise<ReingestQueued> {
+  return sendJson<ReingestQueued>("POST", "/api/admin/knowledge/reingest");
 }
 
 export function probeKnowledge(query: string): Promise<ProbeResult[]> {
@@ -203,12 +219,51 @@ export function getAggregateMetrics(): Promise<AggregateMetrics> {
   return getJson<AggregateMetrics>("/api/admin/metrics");
 }
 
+// --- Knowledge quality & latency gates live read (0.0.4 S23, FR-32) ----------
+
+export function getQualityGatesReports(): Promise<QualityGatesView> {
+  return getJson<QualityGatesView>("/api/admin/quality-gates");
+}
+
 // --- Customer Memory retention sweep admin panel (0.0.3 S28, FR-30) ----------
 
 export function getRetentionStatus(): Promise<RetentionStatus> {
   return getJson<RetentionStatus>("/api/admin/retention");
 }
 
-export function triggerRetentionSweep(): Promise<RetentionSweepResult> {
-  return sendJson<RetentionSweepResult>("POST", "/api/admin/retention/sweep");
+export function triggerRetentionSweep(): Promise<RetentionSweepQueued> {
+  return sendJson<RetentionSweepQueued>("POST", "/api/admin/retention/sweep");
+}
+
+// --- Dead-letter view + governed Replay (0.0.4 S05, FR-13) -------------------
+
+export function getDeadLetterView(): Promise<DeadLetterView> {
+  return getJson<DeadLetterView>("/api/admin/dead-letter");
+}
+
+export function replayJob(jobId: string): Promise<ReplayReceipt> {
+  return sendJson<ReplayReceipt>("POST", "/api/admin/dead-letter/replay", { jobId });
+}
+
+// --- Integrations status page (0.0.4 S15, FR-23) -----------------------------
+
+export function getIntegrationsStatus(): Promise<IntegrationsView> {
+  return getJson<IntegrationsView>("/api/admin/integrations");
+}
+
+// S17 (FR-25): start a Composio OAuth reconnect. Returns the provider redirect URL
+// the browser should navigate to; the state cookie is set on the response by the
+// route. A fail-closed backend raises ApiError (no URL) rather than returning a link.
+export function initiateReconnect(integrationKey: string): Promise<ReconnectLink> {
+  return sendJson<ReconnectLink>("POST", "/api/admin/integrations/reconnect", {
+    integrationKey,
+  });
+}
+
+// S17 (FR-25): run an on-demand health re-probe of one integration -- the completion
+// step for both reconnect shapes. The page reloads status afterward to show the badge.
+export function reprobeIntegration(integrationKey: string): Promise<ReprobeReceipt> {
+  return sendJson<ReprobeReceipt>("POST", "/api/admin/integrations/reprobe", {
+    integrationKey,
+  });
 }

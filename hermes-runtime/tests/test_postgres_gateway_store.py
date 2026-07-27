@@ -7,8 +7,6 @@ import json
 from starlette.testclient import TestClient
 
 from hermes_runtime.gateway_app import create_app
-from hermes_runtime.gateway_store import InMemoryJobQueue
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
@@ -314,7 +312,6 @@ def test_webhook_through_create_app_writes_case(datastore) -> None:
         webhook_secret=WEBHOOK_SECRET,
         driver=driver,
         store=store,
-        queue=LocalDispatchingJobQueue(store=store, turn_runner=lambda *_: None),
         is_duplicate=store.is_duplicate,
     )
     client = TestClient(app)
@@ -333,15 +330,25 @@ def test_webhook_through_create_app_writes_case(datastore) -> None:
         assert cur.fetchone()[0] == 1
 
 
+def _job_count(conn, event_id: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM job WHERE payload->>'event_id' = %s", (event_id,)
+        )
+        return cur.fetchone()[0]
+
+
 def test_is_duplicate_skips_second_enqueue(datastore) -> None:
+    """A redelivery must not add a second turn job. The count is read off the
+    durable ``job`` table, because since S02 fix wave 1 the enqueue happens inside
+    ``persist_accepted_inbound``'s transaction -- there is no queue seam on the
+    route to observe instead."""
     driver, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)
-    queue = InMemoryJobQueue()
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         driver=driver,
         store=store,
-        queue=queue,
         is_duplicate=store.is_duplicate,
     )
     client = TestClient(app)
@@ -354,7 +361,7 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))
         assert cur.fetchone()[0] == 1
-    assert len(queue.payloads) == 1
+    assert _job_count(conn, "evt-dup-1") == 1
 
     assert client.post(
         f"/webhooks/simpletexting?token={WEBHOOK_SECRET}",
@@ -363,7 +370,7 @@ def test_is_duplicate_skips_second_enqueue(datastore) -> None:
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM agent_turn_context WHERE event_id = %s", ("evt-dup-1",))
         assert cur.fetchone()[0] == 1
-    assert len(queue.payloads) == 1
+    assert _job_count(conn, "evt-dup-1") == 1
 
 
 def test_claim_event_is_atomic_and_survives_a_new_store_instance(datastore) -> None:
@@ -382,7 +389,7 @@ def test_claim_event_is_atomic_and_survives_a_new_store_instance(datastore) -> N
 
 
 def test_replayed_opt_out_sends_one_confirmation_through_postgres(datastore) -> None:
-    # The full route against the durable store: five verbatim replays of a signed
+    # The full route against the durable store: five verbatim replays of a tokened
     # STOP webhook must yield exactly one outbound SMS.
     driver, conn, _ = datastore
     store = PostgresGatewayStore(connection=conn)

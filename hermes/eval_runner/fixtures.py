@@ -26,7 +26,13 @@ from toee_hermes.drivers.mock import (
     shopify_baseline_data,
     square_baseline_data,
 )
-from toee_hermes.drivers.mock.shopify import ShopifyLineItem, ShopifyOrder, ShopifyProduct
+from toee_hermes.drivers.mock.shopify import (
+    ShopifyFulfillment,
+    ShopifyLineItem,
+    ShopifyOrder,
+    ShopifyProduct,
+    ShopifyTracking,
+)
 
 from .types import (
     SUITE_VALUES,
@@ -240,6 +246,29 @@ def _to_shopify_order(
         order_number=str(raw.get("order_number", "")),
         customer_id=str(raw.get("customer_id") or fallback_customer_id or ""),
         line_items=line_items,
+        fulfillment=_to_fulfillment(raw.get("fulfillment")),
+    )
+
+
+def _to_fulfillment(raw: Any) -> Optional[ShopifyFulfillment]:
+    """Parse an optional fulfillment block from a base/override order (S30)."""
+    if not _is_object(raw):
+        return None
+    state = _str_field(raw.get("state"))
+    if state is None:
+        return None
+    tracking = None
+    raw_tracking = raw.get("tracking")
+    if _is_object(raw_tracking):
+        tracking = ShopifyTracking(
+            number=_str_field(raw_tracking.get("number")),
+            url=_str_field(raw_tracking.get("url")),
+            company=_str_field(raw_tracking.get("company")),
+        )
+    return ShopifyFulfillment(
+        state=state,
+        shipment_status=_str_field(raw.get("shipment_status")),
+        tracking=tracking,
     )
 
 

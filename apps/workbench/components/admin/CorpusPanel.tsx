@@ -2,20 +2,19 @@
 
 // S11 (FR-6, PRD): corpus status + retrieval probe, a SIBLING section on the
 // existing /admin/knowledge surface (ADR-0087) -- it does not touch the policy
-// slot master-detail above it. Re-ingest (FR-6) ships as a v1 stub: the ingest
-// CLI needs a corpus.json artifact + the embedding model, too heavy to run
-// inside the dispatch server process, so the panel shows the operator command
-// to run out-of-band plus a "refresh status" button to see the result.
+// slot master-detail above it.
+//
+// 0.0.4 S04 (FR-11) takes the ponytail upgrade S11 named: re-ingest was a v1
+// stub that printed a CLI command, because the ingest work (corpus artifact +
+// embedding model) is far too heavy for the dispatch server's request thread.
+// It now enqueues an `ingest` job, which the BACKGROUND WORKER runs -- the
+// substrate S11 was missing. The panel reads the job's status back below.
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { useErrorBanner } from "@/components/shell/error-banner";
-import { getCorpusStatus, probeKnowledge } from "@/lib/api/admin-client";
+import { getCorpusStatus, probeKnowledge, triggerCorpusReingest } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
 import type { CorpusStatus, ProbeResult } from "@/lib/bff/admin/knowledge";
-
-// ponytail: no server-side re-ingest execution (brief-documented v1 stub) --
-// upgrade to a live trigger if an operator command proves too manual in practice.
-const INGEST_COMMAND = "python -m hermes_runtime.knowledge.ingest <corpus.json>";
 
 const fieldStyle = { display: "block", marginBottom: "0.75rem" } as const;
 
@@ -24,6 +23,8 @@ export function CorpusPanel() {
   const [status, setStatus] = useState<CorpusStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [loadingStatus, setLoadingStatus] = useState(false);
+
+  const [reingesting, setReingesting] = useState(false);
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<ProbeResult[] | null>(null);
@@ -47,6 +48,21 @@ export function CorpusPanel() {
   useEffect(() => {
     loadStatus();
   }, [loadStatus]);
+
+  async function runReingest() {
+    setReingesting(true);
+    setStatusError(null);
+    try {
+      await triggerCorpusReingest();
+      await loadStatus(); // the readback: the queued job shows up immediately
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : "Failed to queue the re-ingest";
+      setStatusError(msg);
+      showError(msg);
+    } finally {
+      setReingesting(false);
+    }
+  }
 
   async function runProbe(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -117,17 +133,18 @@ export function CorpusPanel() {
         <button type="button" onClick={loadStatus} disabled={loadingStatus}>
           Refresh status
         </button>
-        <code style={{ background: "#f4f4f4", padding: "0.25rem 0.5rem", borderRadius: "0.25rem" }}>
-          {INGEST_COMMAND}
-        </code>
-        <button
-          type="button"
-          onClick={() => {
-            void navigator.clipboard?.writeText(INGEST_COMMAND);
-          }}
-        >
-          Copy command
+        <button type="button" onClick={() => void runReingest()} disabled={reingesting}>
+          {reingesting ? "Queueing re-ingest…" : "Re-ingest corpus"}
         </button>
+        {status?.lastIngestJob ? (
+          <span style={{ fontSize: "0.8125rem", opacity: 0.75 }}>
+            Last re-ingest job: {status.lastIngestJob.status}
+            {status.lastIngestJob.queuedAt ? ` (queued ${status.lastIngestJob.queuedAt})` : ""}
+            {status.lastIngestJob.lastError ? ` — ${status.lastIngestJob.lastError}` : ""}
+          </span>
+        ) : (
+          <span style={{ fontSize: "0.8125rem", opacity: 0.75 }}>No re-ingest queued yet</span>
+        )}
       </div>
 
       <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.75rem" }}>Test a query</h2>

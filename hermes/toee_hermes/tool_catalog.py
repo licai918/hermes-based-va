@@ -25,6 +25,20 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     ),
     "toee_qbo_read": ("get_invoice", "list_customer_invoices", "get_ar_summary"),
     "toee_easyroutes_read": ("get_delivery_status", "get_route_details"),
+    # 0.0.4 S31b: consumer of the owner's live delivery-promise Gadget endpoint
+    # (POST /internal/hermes/delivery-promise). get_order_delivery is Tier 2 (rich
+    # routed-order status by order — routeLabel/estimatedReturnAt/POD, richer than
+    # S30's Shopify-fulfillment Tier 1); get_product_promise is Tier 3a (a pre-/
+    # just-delivery promise by verified customer + variant). Both verified-customer
+    # scoped; the endpoint enforces order ownership (404, no leak).
+    # 0.0.4 S32 adds get_delivery_quote (Tier 3b): a PUBLIC pre-purchase area-level
+    # quote by postal code + sku with NO customer id — callable by an unmatched/
+    # unverified prospect (the driver enforces the verified-vs-public asymmetry).
+    "toee_delivery_promise": (
+        "get_order_delivery",
+        "get_product_promise",
+        "get_delivery_quote",
+    ),
     "toee_square_payment_link": ("send_payment_link",),
     "toee_sms_reply": ("send_message",),
     "toee_case": ("create_case", "update_case"),
@@ -68,6 +82,11 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "submit_for_eval",
         "rollback_published_policy",
         "get_corpus_status",
+        # 0.0.4 S04 (FR-11): queues an `ingest` job for the background worker,
+        # replacing 0.0.3 S11's display-only "run this CLI command" panel stub.
+        # Admin-only (_AGENT_EXCLUDED_ACTIONS) -- it TRUNCATEs and reloads the
+        # whole corpus, which is not a primitive any live turn may reach.
+        "enqueue_corpus_reingest",
     ),
     "toee_eval_review": (
         "list_eval_runs",
@@ -110,7 +129,43 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # via the admin BFF's deterministic tools:dispatch call or the schedulable
     # CLI entrypoint (hermes_runtime.retention_sweep), never a live agent's
     # tool-calling loop.
-    "toee_retention": ("trigger_retention_sweep", "get_retention_status"),
+    # 0.0.4 S04 (FR-11) adds enqueue_retention_sweep: the admin button now queues
+    # a `retention` job the background worker runs (which calls
+    # trigger_retention_sweep, unchanged, with the actor from the payload).
+    "toee_retention": (
+        "trigger_retention_sweep",
+        "enqueue_retention_sweep",
+        "get_retention_status",
+    ),
+    # 0.0.4 S05 (FR-13): the dead-letter operator view + governed Replay.
+    # list_dead_letters is the read (dead `job` rows plus the outbound_send
+    # states S03/S04 leave that no dead-letter row captures); replay_job returns
+    # ONE dead job to the queue, attributed to the acting supervisor and audited.
+    # Both admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
+    # precedent) -- reached only via the admin BFF's deterministic tools:dispatch
+    # call. Replay in particular re-runs arbitrary queued work, which is not a
+    # primitive any live turn may reach.
+    "toee_job_queue": ("list_dead_letters", "replay_job"),
+    # 0.0.4 S15 (FR-23): the /admin/integrations status-page read. One read-only
+    # action reporting, per integration (Composio Shopify/QBO/Square toolkits,
+    # EasyRoutes, SimpleTexting, OpenRouter, and the Gadget mapping endpoint),
+    # config presence + pinned version + last successful call + last probe result.
+    # Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the get_memory_audit
+    # precedent) -- reached only via the admin BFF's deterministic tools:dispatch
+    # call on the supervisor_admin profile, never a live agent's tool loop. It
+    # returns only status booleans + version pins, never a secret value (NFR-6).
+    # 0.0.4 S17 (FR-25) adds the two in-app reconnect actions, both admin-only
+    # (_AGENT_EXCLUDED_ACTIONS), reached only via the admin BFF's deterministic
+    # tools:dispatch on supervisor_admin: initiate_reconnect generates a Composio
+    # OAuth re-auth link (no token ever touches the workbench -- Composio holds the
+    # credentials), and reprobe_now runs one on-demand health probe so a reconnected
+    # integration's badge refreshes now rather than on the next scheduled cycle. Both
+    # are governed WRITES, attributed to the acting admin and audited.
+    "toee_integrations": (
+        "get_integrations_status",
+        "initiate_reconnect",
+        "reprobe_now",
+    ),
 }
 
 

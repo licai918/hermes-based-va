@@ -24,8 +24,18 @@ const GOVERNANCE: NavItem[] = [
   { label: "Metrics", href: ROUTES.adminMetrics },
 ];
 
+// FR-23 (0.0.4 S15): integrations status page. ADMIN-ONLY (a credential surface,
+// canAccess -> requiresAdmin), so it is NOT in the supervisor+admin GOVERNANCE list
+// above -- a supervisor must not see a link that 403s.
+const ADMIN_ONLY: NavItem[] = [
+  { label: "Integrations", href: ROUTES.adminIntegrations },
+];
+
 export function navItemsForRole(role: WorkbenchRoleId): NavItem[] {
-  if (role === WORKBENCH_ROLES.supervisor || role === WORKBENCH_ROLES.admin) {
+  if (role === WORKBENCH_ROLES.admin) {
+    return [COPILOT, SIMULATOR, ...GOVERNANCE, ...ADMIN_ONLY];
+  }
+  if (role === WORKBENCH_ROLES.supervisor) {
     return [COPILOT, SIMULATOR, ...GOVERNANCE];
   }
   return [COPILOT, SIMULATOR];

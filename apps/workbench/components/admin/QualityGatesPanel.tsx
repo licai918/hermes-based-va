@@ -1,23 +1,21 @@
-// Minimal admin surfacing for the FR-7/FR-7b knowledge gates + the FR-29 judge
-// measurement (S12). These are dev-harness CLI reports (hermes-runtime's
-// `hermes_runtime.knowledge.gates`, hermes's `eval_runner.judge_measure`), not
-// live-fetched data -- there is no server-side action here (running them needs
-// live Postgres + the real embedder/model, which the admin server does not
-// have wired). This satisfies NFR-1's carve-out ("dev-harness outputs satisfy
-// layer-2 via the admin panel that surfaces them") with a static "how to run +
-// last recorded numbers" readout.
-//
-// ponytail: numbers below are hand-recorded from the last manual run (see
-// .superpowers/sdd/0.0.3-S12-report.md), not live. A fuller integration (an
-// API route that shells out to the CLIs and a "run now" button) is a real
-// upgrade path if this becomes a frequently-checked page -- not built here,
-// since the CLIs already need a live DB + embedder/model this admin server
-// doesn't have, and static text unblocks the "front-end visible" requirement
-// today.
+"use client";
 
-// Stacked (not side-by-side) so the title/command/result never overlap at
-// narrow viewport widths -- a flex row with two flexShrink:0 halves squeezed
-// and overlapped below ~500px.
+// Knowledge quality & latency gates panel (S12 origin; 0.0.4 S23, FR-32). The
+// hand-copied static numbers are gone: this now reads the LATEST gate-report
+// artifacts live (governed admin read, /api/admin/quality-gates) -- the knowledge
+// recall/latency harness (`hermes_runtime.knowledge.gates`) and the S20 advisory
+// judge (`hermes_runtime.advisory_judge_report`), each emitting a JSON artifact per
+// run. Each report card shows the real rows + "as of <ts>" + source provenance.
+//
+// Honesty (FR-32), mirroring the MetricsPanel honored-rate tile (S22): no artifact
+// -> an honest "not yet available" empty state, never a fabricated number; an
+// artifact older than the stale threshold -> an "as of <ts> - may be stale" label
+// rather than presenting it as current.
+import { useEffect, useState } from "react";
+import { getQualityGatesReports } from "@/lib/api/admin-client";
+import { ApiError } from "@/lib/api/http";
+import type { QualityGateReport, QualityGatesView } from "@/lib/bff/admin/quality-gates";
+
 const GATE_ROW_STYLE = {
   padding: "0.625rem 0",
   borderBottom: "1px solid #e2e2e2",
@@ -35,76 +33,113 @@ function chipStyle(color: string) {
   };
 }
 
-function GateChip({ passed }: { passed: boolean }) {
+// passed=null is advisory (the judge report, FR-29): no PASS/FAIL, an ADVISORY chip.
+function GateChip({ passed }: { passed: boolean | null }) {
+  if (passed === null) return <span style={chipStyle("#a16207")}>ADVISORY</span>;
   return (
-    <span style={chipStyle(passed ? "#15803d" : "#b91c1c")}>
-      {passed ? "PASS" : "FAIL"}
-    </span>
+    <span style={chipStyle(passed ? "#15803d" : "#b91c1c")}>{passed ? "PASS" : "FAIL"}</span>
   );
 }
 
-type GateRow = {
-  name: string;
-  command: string;
-  result: string;
-  passed: boolean;
-  note?: string;
-};
+function asOfLine(report: QualityGateReport): string {
+  const when = new Date(report.generatedAt).toLocaleString();
+  const staleNote = report.stale ? " — may be stale" : "";
+  return `as of ${when}${staleNote}`;
+}
 
-const GATE_ROWS: GateRow[] = [
-  {
-    name: "Recall@3 (FR-7, synthetic set)",
-    command: "python -m hermes_runtime.knowledge.gates recall",
-    result: "22/30 = 73% (bar: 80%)",
-    passed: false,
-    note: "Interim dev-time gate on the spike's 30 synthetic questions. The real ~30 owner-question gate is S32.",
-  },
-  {
-    name: "Hybrid in-turn latency p95 (FR-7b)",
-    command: "python -m hermes_runtime.knowledge.gates latency",
-    result: "p95 48.4ms @167 chunks (bar: <800ms), embedding inference included",
-    passed: true,
-  },
-  {
-    name: "Deadline degrade (FR-7b, forced-slow path)",
-    command: "python -m hermes_runtime.knowledge.gates latency",
-    result: "governed miss in 815ms, bounded by the 800ms deadline",
-    passed: true,
-  },
-  {
-    name: "Judge precision/recall (FR-29)",
-    command: "python -m eval_runner.judge_measure --live",
-    result: "precision 1.000, recall 1.000, accuracy 0.923 (13 fixtures, 1 undetermined)",
-    passed: true,
-    note: "See .superpowers/sdd/0.0.3-S27-report.md for the full run.",
-  },
-];
+function ReportCard({ report }: { report: QualityGateReport }) {
+  return (
+    <div style={{ marginTop: "1rem" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: "0.5rem", flexWrap: "wrap" }}>
+        <span
+          style={{
+            fontSize: "0.75rem",
+            fontWeight: 600,
+            opacity: report.stale ? 0.9 : 0.6,
+            color: report.stale ? "#a16207" : undefined,
+          }}
+        >
+          {asOfLine(report)}
+        </span>
+        {report.sourceRun ? (
+          /^https?:\/\//.test(report.sourceRun) ? (
+            <a href={report.sourceRun} style={{ fontSize: "0.75rem" }} target="_blank" rel="noreferrer">
+              source run
+            </a>
+          ) : (
+            <span style={{ fontSize: "0.75rem", opacity: 0.6 }}>{report.sourceRun}</span>
+          )
+        ) : (
+          <code style={{ fontSize: "0.7rem", opacity: 0.55 }}>{report.source}</code>
+        )}
+      </div>
+      {report.rows.map((row) => (
+        <div key={row.name} style={GATE_ROW_STYLE}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+            <span style={{ fontWeight: 600 }}>{row.name}</span>
+            <GateChip passed={row.passed} />
+          </div>
+          <div>
+            <code style={{ fontSize: "0.75rem", opacity: 0.75 }}>{row.command}</code>
+          </div>
+          <div style={{ fontSize: "0.8125rem", marginTop: "0.125rem" }}>{row.result}</div>
+          {row.note ? (
+            <div style={{ fontSize: "0.75rem", opacity: 0.65, marginTop: "0.125rem" }}>{row.note}</div>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export function QualityGatesPanel() {
+  const [view, setView] = useState<QualityGatesView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getQualityGatesReports()
+      .then((result) => {
+        if (!cancelled) setView(result);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setView(null);
+        setError(e instanceof ApiError ? e.message : "Failed to load gate reports");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <section style={{ marginTop: "2rem" }}>
       <h2 style={{ fontSize: "1.125rem", marginBottom: "0.25rem" }}>Knowledge quality & latency gates</h2>
       <p style={{ fontSize: "0.8125rem", opacity: 0.75, marginBottom: "0.75rem" }}>
-        Repeatable CLI commands (ADR-0149), run manually against a live Postgres + the real
-        embedder/judge model. Numbers below are the last recorded run, not live.
+        Repeatable CLI gates (ADR-0149), run against a live Postgres + the real embedder/judge
+        model. Numbers below are the latest recorded run of each gate, read live from its report
+        artifact.
       </p>
-      <div>
-        {GATE_ROWS.map((row) => (
-          <div key={row.name} style={GATE_ROW_STYLE}>
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-              <span style={{ fontWeight: 600 }}>{row.name}</span>
-              <GateChip passed={row.passed} />
-            </div>
-            <div>
-              <code style={{ fontSize: "0.75rem", opacity: 0.75 }}>{row.command}</code>
-            </div>
-            <div style={{ fontSize: "0.8125rem", marginTop: "0.125rem" }}>{row.result}</div>
-            {row.note ? (
-              <div style={{ fontSize: "0.75rem", opacity: 0.65, marginTop: "0.125rem" }}>{row.note}</div>
-            ) : null}
-          </div>
-        ))}
-      </div>
+      {loading ? <p>Loading…</p> : null}
+      {error ? (
+        <p role="alert" style={{ color: "#8a1c1c" }}>
+          {error}
+        </p>
+      ) : null}
+      {!loading && !error && view && view.reports.length === 0 ? (
+        <p style={{ fontSize: "0.8125rem", opacity: 0.7 }}>
+          No gate reports available yet — run a gate to populate this panel.
+        </p>
+      ) : null}
+      {!loading && !error && view
+        ? view.reports.map((report) => <ReportCard key={report.kind} report={report} />)
+        : null}
     </section>
   );
 }

@@ -25,10 +25,18 @@ describe("navItemsForRole (ADR-0084)", () => {
     ]);
   });
 
-  it("gives an admin the same six entries as a supervisor", () => {
-    expect(navItemsForRole(WORKBENCH_ROLES.admin)).toEqual(
-      navItemsForRole(WORKBENCH_ROLES.supervisor),
+  it("gives an admin the supervisor entries plus the admin-only Integrations page", () => {
+    // 0.0.4 S15 (FR-23): Integrations is admin-only (a credential surface), so it
+    // is appended for admin alone -- a supervisor must not see a link that 403s.
+    const adminLabels = navItemsForRole(WORKBENCH_ROLES.admin).map((i) => i.label);
+    const supervisorLabels = navItemsForRole(WORKBENCH_ROLES.supervisor).map(
+      (i) => i.label,
     );
+    expect(adminLabels).toEqual([...supervisorLabels, "Integrations"]);
+    expect(
+      navItemsForRole(WORKBENCH_ROLES.admin).find((i) => i.label === "Integrations")
+        ?.href,
+    ).toBe("/admin/integrations");
   });
 });
 

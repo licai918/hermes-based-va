@@ -16,6 +16,8 @@ from typing import Callable, Optional
 
 from ..drivers.base import resolve_integration_driver
 from ..drivers.composio import COMPOSIO_LAYER1_TOOLS, build_composio_driver
+from ..drivers.delivery import DELIVERY_PROMISE_TOOL, build_delivery_promise_driver
+from ..drivers.easyroutes import EASYROUTES_READ_TOOL, build_easyroutes_driver
 from ..drivers.mock import MockDriver, create_all_mock_handlers
 from ..execute import ToolDriver
 from ..gates import create_turn_binding_gate
@@ -93,6 +95,17 @@ DriverSelector = Callable[[str], ToolDriver]
 # customer data" primitive is exactly the risk this exclusion list exists to
 # prevent. Reached only via the admin BFF's deterministic tools:dispatch call
 # or the schedulable CLI entrypoint (hermes_runtime.retention_sweep).
+#
+# 0.0.4 S04 (FR-11) adds two enqueue actions for the same reason: they are the
+# admin-only triggers that put a `retention` / `ingest` job on the durable queue.
+# Letting a model reach them would hand it the very primitives the two exclusions
+# above exist to withhold, one level of indirection away -- "delete customer
+# data" and "TRUNCATE and reload the whole knowledge corpus".
+#
+# 0.0.4 S05 (FR-13) adds the dead-letter view's two actions. Replay re-enqueues
+# arbitrary stuck work -- including the retention and ingest jobs the exclusions
+# above exist to withhold -- and the list read exposes other customers' job
+# payloads, so neither belongs in a live turn's tool loop.
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
@@ -102,7 +115,21 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_agent_experience", "reject_experience"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
+        ("toee_retention", "enqueue_retention_sweep"),
         ("toee_retention", "get_retention_status"),
+        ("toee_knowledge_ops", "enqueue_corpus_reingest"),
+        ("toee_job_queue", "list_dead_letters"),
+        ("toee_job_queue", "replay_job"),
+        # 0.0.4 S15 (FR-23): the /admin/integrations status read exposes the
+        # credential-configuration surface of every external backend -- not a
+        # primitive any live turn may reach. Admin BFF deterministic dispatch only.
+        ("toee_integrations", "get_integrations_status"),
+        # 0.0.4 S17 (FR-25): the two in-app reconnect actions. initiate_reconnect
+        # generates a Composio OAuth re-auth link and reprobe_now runs an on-demand
+        # health probe -- both act on a credential surface and are admin-only
+        # governed writes, never a primitive a live agent's tool loop may reach.
+        ("toee_integrations", "initiate_reconnect"),
+        ("toee_integrations", "reprobe_now"),
     }
 )
 
@@ -116,8 +143,13 @@ def _build_driver_selector(
     An ``injected`` driver (the eval recording path, :func:`register_eval`)
     overrides ALL tools and short-circuits backend resolution, so eval/replay never
     builds a live driver. Otherwise ``INTEGRATION_DRIVER`` selects the backend:
-    ``mock`` (default) serves every tool, while ``composio`` routes only the three
-    Layer 1 tools to the Composio driver and leaves the rest on mock (ADR-0128).
+    ``mock`` (default) serves every tool, while ``composio`` routes the three
+    Layer 1 tools to the Composio driver AND ``toee_easyroutes_read`` to the direct
+    EasyRoutes REST driver (FR-20 — a per-tool overlay beside Composio, NOT a new
+    ``INTEGRATION_DRIVER`` axis), leaving the rest on mock. So a live deployment
+    answers delivery questions from EasyRoutes and never falls back to the mock
+    (FR-21); ``build_easyroutes_driver`` is total (a missing token yields a driver
+    that fails closed per call, so Shopify/QBO/Square stay live regardless).
 
     ``extra_drivers`` is a per-tool override the embedding layer supplies for the
     live async turn (S04): precedence is ``extra_drivers[tool]`` -> composio ->
@@ -131,18 +163,27 @@ def _build_driver_selector(
     if injected is not None:
         return lambda _tool: injected
 
+    # resolve_integration_driver already rejects anything outside KNOWN_DRIVERS
+    # (mock | composio) with a ValueError naming the accepted values, so there is
+    # no third arm to guard here (0.0.4 S12, FR-21: the "rest" shell is deleted).
     kind = resolve_integration_driver()
     mock_driver = MockDriver(create_all_mock_handlers())
     composio_driver = build_composio_driver() if kind == "composio" else None
-    if kind not in ("mock", "composio"):
-        raise NotImplementedError(
-            f'Integration driver "{kind}" is not implemented yet (mock-first, ADR-0137).'
-        )
+    # Built eagerly like composio, but total (never raises here — see
+    # build_easyroutes_driver), so a missing token can't escape registration.
+    easyroutes_driver = build_easyroutes_driver() if kind == "composio" else None
+    # 0.0.4 S31b: the live delivery-promise endpoint, another per-tool overlay beside
+    # Composio (same total-build/fail-closed discipline as EasyRoutes, S31b).
+    delivery_driver = build_delivery_promise_driver() if kind == "composio" else None
     overrides = dict(extra_drivers or {})
 
     def select(tool: str) -> ToolDriver:
         if tool in overrides:
             return overrides[tool]
+        if easyroutes_driver is not None and tool == EASYROUTES_READ_TOOL:
+            return easyroutes_driver
+        if delivery_driver is not None and tool == DELIVERY_PROMISE_TOOL:
+            return delivery_driver
         if composio_driver is not None and tool in COMPOSIO_LAYER1_TOOLS:
             return composio_driver
         return mock_driver

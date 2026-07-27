@@ -1,11 +1,13 @@
 """Gateway persistence + async enqueue seam (ADR-0105/0107/0115, ADR-0140).
 
-The route layer persists each accepted inbound turn before acking, then enqueues a
-minimal job; the async agent-turn route reloads the context by ``event_id`` (memory
-is the source of truth, not the task payload, ADR-0107). These Protocols are the
-seam the real Toee Business Datastore (Postgres, ADR-0140) implements; the
-in-memory versions are the deterministic local-dev/test substrate so the gateway is
-runnable and testable without a database.
+The route layer hands each accepted inbound turn to the store before acking; the
+store persists it **and enqueues its minimal turn job as one unit** (0.0.4 S02
+fix wave 1 -- see :meth:`GatewayStore.persist_accepted_inbound`). The turn worker
+then reloads the context by ``event_id`` (memory is the source of truth, not the
+task payload, ADR-0107). These Protocols are the seam the real Toee Business
+Datastore (Postgres, ADR-0140) implements; the in-memory versions are the
+deterministic local-dev/test substrate so the gateway is runnable and testable
+without a database.
 
 The in-memory store mirrors the ADR-0115 entity hierarchy:
 
@@ -23,6 +25,7 @@ from toee_hermes.gateway.agent_turn import (
     AgentJobPayload,
     AgentTurnContext,
     build_agent_turn_context,
+    to_job_payload,
 )
 from toee_hermes.gateway.normalize import InboundChannelEvent, is_email_channel
 from toee_hermes.gateway.pipeline import InboundDecision
@@ -37,7 +40,16 @@ class GatewayStore(Protocol):
 
     def persist_accepted_inbound(
         self, decision: InboundDecision
-    ) -> tuple[AgentTurnContext, bool]: ...
+    ) -> tuple[AgentTurnContext, bool]:
+        """Persist an accepted inbound turn and enqueue its turn job atomically.
+
+        The enqueue belongs to the implementation, not to the caller: the two
+        writes must share a commit boundary or a crash between them loses an
+        already-acked customer message (US3). ``bool`` is ``created`` -- False
+        when this ``event_id`` was already persisted, in which case nothing new
+        was enqueued either.
+        """
+        ...
 
     def load_context(self, event_id: str) -> Optional[AgentTurnContext]: ...
 
@@ -49,15 +61,30 @@ class GatewayStore(Protocol):
 
 
 class JobQueue(Protocol):
-    """Async agent-turn dispatch seam (Cloud Tasks in production, ADR-0105)."""
+    """Async agent-turn dispatch seam for the **in-memory** store.
+
+    Production does not go through this Protocol any more: the durable Postgres
+    path (ADR-0155) enqueues inside ``PostgresGatewayStore``'s own transaction
+    via :func:`hermes_runtime.job_queue.insert_job`, because a seam here is by
+    construction a second commit boundary. What remains is the DB-free substrate
+    -- :class:`InMemoryJobQueue` and the test doubles that run the job body
+    inline.
+    """
 
     def enqueue(self, payload: AgentJobPayload) -> None: ...
 
 
 class InMemoryGatewayStore:
-    """Deterministic in-memory implementation of the ADR-0115 entity hierarchy."""
+    """Deterministic in-memory implementation of the ADR-0115 entity hierarchy.
 
-    def __init__(self) -> None:
+    ``queue`` is the DB-free stand-in for the Postgres store's in-transaction
+    outbox: one process, one dict, so "atomic" is free here. Inject one to
+    observe or to run the turn inline; the default records payloads for
+    assertions.
+    """
+
+    def __init__(self, queue: Optional[JobQueue] = None) -> None:
+        self.queue: JobQueue = queue if queue is not None else InMemoryJobQueue()
         self._contexts: dict[str, AgentTurnContext] = {}
         # MessageTurn bodies keyed by ref. ADR-0105 keeps PII out of the task
         # payload, so the inbound body lives here and the context carries the ref.
@@ -108,6 +135,8 @@ class InMemoryGatewayStore:
             inbound_body_ref=body_ref,
         )
         self._contexts[context.event_id] = context
+        if created:
+            self.queue.enqueue(to_job_payload(context))
         return context, created
 
     def load_context(self, event_id: str) -> Optional[AgentTurnContext]:

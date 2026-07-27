@@ -53,6 +53,68 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         # Neither is required -- the mock driver accepts either (slot first,
         # falling back to query).
     },
+    # 0.0.4 S31b: the delivery-promise tool. The verified customer id is supplied
+    # from the Session Identity Snapshot by the driver (never a tool param, ADR-0043),
+    # so only the order/variant references are declared — name-guessing them would be
+    # the S10 failure mode.
+    ("toee_delivery_promise", "get_order_delivery"): {
+        "properties": {
+            "order_name": {
+                "type": "string",
+                "description": (
+                    "The order name/number of the verified customer's own order "
+                    '(e.g. "OL49597"), as returned by toee_shopify_read.get_order / '
+                    "list_customer_orders in their order_number field, or as the customer "
+                    "stated it. Never fabricate an order name or id."
+                ),
+            },
+        },
+        "required": ["order_name"],
+    },
+    ("toee_delivery_promise", "get_product_promise"): {
+        "properties": {
+            "sku": {
+                "type": "string",
+                "description": (
+                    "The SKU of the specific product variant (size) to get a delivery "
+                    "promise for, taken from the variants list of "
+                    "toee_shopify_read.get_product / search_products. Never fabricate a sku."
+                ),
+            },
+            "quantity": {
+                "type": "integer",
+                "description": "Optional quantity being considered (defaults to 1).",
+            },
+        },
+        "required": ["sku"],
+    },
+    # 0.0.4 S32 (Tier 3b): the PUBLIC pre-purchase quote by postal code. No customer id
+    # (it's a hypothetical for a prospect); sourced sku + a caller-supplied postal.
+    ("toee_delivery_promise", "get_delivery_quote"): {
+        "properties": {
+            "sku": {
+                "type": "string",
+                "description": (
+                    "The SKU of the specific product variant (size), taken from the "
+                    "variants list of toee_shopify_read.get_product / search_products. "
+                    "Never fabricate a sku."
+                ),
+            },
+            "postal_code": {
+                "type": "string",
+                "description": (
+                    'The Canadian postal code to quote delivery to (e.g. "M3J 1P3"), as '
+                    "the customer gave it. Ask the customer for it if not provided; never "
+                    "fabricate one."
+                ),
+            },
+            "quantity": {
+                "type": "integer",
+                "description": "Optional quantity being considered (defaults to 1).",
+            },
+        },
+        "required": ["sku", "postal_code"],
+    },
     # 0.0.3 S22 (FR-23): the governed L6 propose write -- kind/content name-
     # guessing would be exactly the S10 failure mode, so both are declared and
     # required rather than left to an open object.
@@ -102,6 +164,36 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             },
         },
         "required": ["id"],
+    },
+    # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
+    # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still
+    # goes through this schema/param validation, so params are declared explicitly.
+    ("toee_integrations", "initiate_reconnect"): {
+        "properties": {
+            "integration_key": {
+                "type": "string",
+                "enum": ["shopify", "qbo", "square"],
+                "description": "The Composio-managed connection to reconnect.",
+            },
+            "callback_url": {
+                "type": "string",
+                "description": (
+                    "Workbench callback URL (carries the session-bound state) the "
+                    "provider returns to after re-auth. Built server-side, never "
+                    "client-supplied."
+                ),
+            },
+        },
+        "required": ["integration_key", "callback_url"],
+    },
+    ("toee_integrations", "reprobe_now"): {
+        "properties": {
+            "integration_key": {
+                "type": "string",
+                "description": "The integration to run an on-demand health probe for.",
+            },
+        },
+        "required": ["integration_key"],
     },
 }
 

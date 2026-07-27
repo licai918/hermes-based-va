@@ -28,14 +28,18 @@ from hermes_runtime.gateway_composition import (
     build_gateway_app,
     resolve_reply_sender,
 )
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 
-# Every env var a correctly-configured deployment must set.
+# Every env var a correctly-configured deployment must set. TOOL_BACKEND is one of
+# them since 0.0.4 S02: the gateway and the turn worker are separate processes, so
+# only the shared datastore backend can carry a turn between them (see
+# test_build_gateway_app_fails_closed_when_a_required_secret_is_absent, which
+# parametrizes over this dict and therefore covers it).
 REQUIRED_ENV = {
     WEBHOOK_SECRET_ENV: "whsec-123",
     INTERNAL_JOB_SECRET_ENV: "job-secret-123",
     "SIMPLETEXTING_API_TOKEN": "tok-123",
     "OPENROUTER_API_KEY": "or-key-123",
+    "TOOL_BACKEND": "datastore",
 }
 
 # Optional env that would otherwise leak from the developer's shell.
@@ -83,7 +87,7 @@ def test_build_gateway_app_wires_resolved_secrets_and_collaborators(
     assert callable(captured["turn_runner"])
 
 
-def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
+def test_build_gateway_app_wires_the_durable_path_without_touching_postgres(
     _full_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     captured: dict = {}
@@ -98,11 +102,30 @@ def test_build_gateway_app_wires_a_local_dispatcher_sharing_the_route_store(
 
     build_gateway_app()
 
-    # Locally there is no Cloud Tasks, so the queue itself drives the turn (ADR-0105
-    # local substrate) against the same store the internal route reloads from.
-    assert isinstance(captured["queue"], LocalDispatchingJobQueue)
+    # 0.0.4 S02 (FR-10, ADR-0155): the fast-ack path writes one durable `job` row
+    # and the separate turn-worker process runs the turn. No in-process dispatcher
+    # remains -- and no `queue` seam either: the enqueue happens inside the store's
+    # persist transaction, because a seam here would be a second commit boundary a
+    # crash could fall into after the webhook was already acked (fix wave 1).
+    assert "queue" not in captured
     assert captured["store"] is not None
-    assert captured["queue"]._store is captured["store"]
+    # The pool is lazy: wiring this must not have opened a connection at boot, which
+    # is what keeps `build_gateway_app()` bootable with no database running.
+    import hermes_runtime.datastore.pool as db_pool_mod
+
+    assert db_pool_mod._pools == {}
+
+
+def test_build_gateway_app_fails_closed_on_a_tool_backend_that_cannot_reply(
+    _full_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-memory store cannot cross the gateway/worker process boundary, so a
+    gateway booted on it would authenticate, persist, ack 200 -- and never reply.
+    That is the silently dropped reply this composition root refuses to allow."""
+    monkeypatch.setenv("TOOL_BACKEND", "mock")
+
+    with pytest.raises(ValueError, match="TOOL_BACKEND"):
+        build_gateway_app()
 
 
 def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(
@@ -114,7 +137,6 @@ def test_build_gateway_app_wires_postgres_store_when_tool_backend_is_datastore(
         captured.update(kwargs)
         return FastAPI()
 
-    monkeypatch.setenv("TOOL_BACKEND", "datastore")
     monkeypatch.setattr(
         "hermes_runtime.gateway_composition.create_app", _spy_create_app
     )
@@ -232,6 +254,7 @@ def test_build_gateway_app_wires_simulated_reply_sender_without_simpletexting_to
     monkeypatch.setenv(WEBHOOK_SECRET_ENV, "whsec-123")
     monkeypatch.setenv(INTERNAL_JOB_SECRET_ENV, "job-secret-123")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key-123")
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
     monkeypatch.delenv("SIMPLETEXTING_API_TOKEN", raising=False)
     monkeypatch.setenv(REPLY_SENDER_ENV, "simulated")
 
@@ -270,9 +293,9 @@ def test_simulated_reply_sender_still_mirrors_via_on_reply_sent(
         },
         on_reply_sent=lambda ctx, text: mirrored.append((ctx, text)),
     )
-    ctx = SimpleNamespace(conversation_id="conv-A")
+    ctx = SimpleNamespace(event_id="evt-A", conversation_id="conv-A")
 
-    runner(ctx, "Where is my order?")
+    runner(ctx, "Where is my order?", "job-A")
 
     assert mirrored == [(ctx, "Shipped!")]
 
@@ -285,6 +308,12 @@ def test_build_gateway_app_refuses_in_memory_dedup_in_a_deployed_environment(
     # a Cloud Run replay lands on another instance (or after a scale-to-zero) and is
     # accepted again. Booting that way in production is a misconfiguration, not a
     # degraded mode.
+    #
+    # Since 0.0.4 S02 the guard that fires here is `_require_datastore_backend`,
+    # which refuses the in-memory store on EVERY boot rather than only a deployed
+    # one -- the two processes cannot share a per-process dict at all. ADR-0153's
+    # scenario is therefore a strict subset of what the boot now rejects; the
+    # DEPLOY_ENVIRONMENT guard itself is pinned on its own seam below.
     monkeypatch.delenv("TOOL_BACKEND", raising=False)
     monkeypatch.setenv("DEPLOY_ENVIRONMENT", "production")
 
@@ -292,13 +321,20 @@ def test_build_gateway_app_refuses_in_memory_dedup_in_a_deployed_environment(
         build_gateway_app()
 
 
-def test_build_gateway_app_allows_the_in_memory_store_for_local_development(
-    _full_env: None, monkeypatch: pytest.MonkeyPatch
+def test_resolve_turn_collaborators_refuses_in_memory_dedup_when_deployed(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("TOOL_BACKEND", raising=False)
-    monkeypatch.delenv("DEPLOY_ENVIRONMENT", raising=False)
+    # ADR-0153's guard on the one seam that can still reach the in-memory branch
+    # without passing `_require_datastore_backend` first: a direct
+    # `resolve_turn_collaborators` call. Deployed -> refuse; local dev -> allow.
+    from hermes_runtime.gateway_composition import _require_in_memory_store_is_allowed
 
-    assert isinstance(build_gateway_app(), FastAPI)
+    monkeypatch.setenv("DEPLOY_ENVIRONMENT", "production")
+    with pytest.raises(ValueError, match="TOOL_BACKEND=datastore"):
+        _require_in_memory_store_is_allowed()
+
+    monkeypatch.delenv("DEPLOY_ENVIRONMENT", raising=False)
+    assert _require_in_memory_store_is_allowed() is None
 
 
 def test_build_gateway_app_installs_access_log_redaction(_full_env: None) -> None:

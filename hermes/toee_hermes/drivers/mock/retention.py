@@ -81,6 +81,14 @@ def create_retention_mock_handlers() -> MockHandlerRegistry:
             "run_at": None,
         }
 
+    def enqueue_retention_sweep(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.4 S04: there is no durable queue behind the mock backend (the `job`
+        # table is Postgres-only), so this reports the honest "nothing was
+        # queued" shape rather than a fabricated job id.
+        return {"job_id": None, "status": "unavailable"}
+
     def get_retention_status(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
@@ -94,6 +102,7 @@ def create_retention_mock_handlers() -> MockHandlerRegistry:
     return {
         "toee_retention": {
             "trigger_retention_sweep": trigger_retention_sweep,
+            "enqueue_retention_sweep": enqueue_retention_sweep,
             "get_retention_status": get_retention_status,
         }
     }

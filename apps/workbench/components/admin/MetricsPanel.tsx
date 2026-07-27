@@ -4,11 +4,14 @@
 // group): memory injection rate, slots-populated distribution, honored rate
 // (advisory, judge-sampled -- NEVER gating), merge count, correction count,
 // proposal accept/dismiss rate, knowledge found rate, and self-service usage.
-// Six tiles are LIVE SQL aggregations (memory injection, knowledge found,
-// slots distribution, merge count, correction count, proposal outcomes);
-// honored rate and the two "proxy" tiles (self-service usage, L6 confirmed
-// entries) are honestly labeled non-live/proxy rather than a silent zero --
-// see each tile's caption. Loads on mount: a global panel, no case_id to key
+// Live SQL aggregations everywhere except honored rate: memory injection,
+// knowledge found, slots distribution, merge count, correction count, proposal
+// outcomes, and -- since 0.0.4 S21 (FR-30) -- self-service usage and L6
+// confirmed entries, now real once-per-action counters (metric_event) rather
+// than the earlier proxies. Honored rate is now live too (0.0.4 S22, FR-31): the
+// scheduled honored_rate judge job persists an aggregate this tile shows with
+// "as of" provenance -- or an honest "Not yet computed" before the first run,
+// never a fabricated number. Loads on mount: a global panel, no case_id to key
 // off (mirrors AgentExperienceConsole).
 import { useEffect, useState } from "react";
 import { getAggregateMetrics } from "@/lib/api/admin-client";
@@ -29,37 +32,28 @@ const grid: React.CSSProperties = {
 const label: React.CSSProperties = { fontSize: "0.8125rem", opacity: 0.7, margin: 0 };
 const value: React.CSSProperties = { fontSize: "1.5rem", fontWeight: 600, margin: "0.125rem 0" };
 const caption: React.CSSProperties = { fontSize: "0.75rem", opacity: 0.65, margin: 0 };
-const proxyBadge: React.CSSProperties = {
-  fontSize: "0.625rem",
-  fontWeight: 600,
-  color: "#9a6700",
-  border: "1px solid #9a6700",
-  borderRadius: "999px",
-  padding: "0.05rem 0.4rem",
-  marginLeft: "0.4rem",
-};
 
 function pct(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 1000) / 10}%`;
 }
 
-function Tile({
-  title,
-  main,
-  sub,
-  proxy,
-}: {
-  title: string;
-  main: string;
-  sub?: string;
-  proxy?: boolean;
-}) {
+// Honored-rate provenance line. When live, keep the two stages distinct so the
+// ratio isn't misread as "only looked at 40 of 200": `sampleSize` were
+// determinately SCORED, `undetermined` were sampled but not determinately scored,
+// and `candidateTotal` is the ELIGIBLE population (threads with customer memory on
+// file, pre-cap) -- not "memory injected at reply time". Plus the "as of" run time;
+// when not yet computed, the honest label from the BFF.
+function honoredSub(h: AggregateMetrics["honoredRate"]): string {
+  if (!h.live) return h.label;
+  const asOf = h.asOf ? new Date(h.asOf).toLocaleDateString() : "unknown date";
+  const undetermined = h.undetermined ?? 0;
+  return `${h.sampleSize} scored · ${undetermined} undetermined of ${h.candidateTotal} turns with customer memory on file · as of ${asOf}`;
+}
+
+function Tile({ title, main, sub }: { title: string; main: string; sub?: string }) {
   return (
     <div style={tile}>
-      <p style={label}>
-        {title}
-        {proxy ? <span style={proxyBadge}>PROXY</span> : null}
-      </p>
+      <p style={label}>{title}</p>
       <p style={value}>{main}</p>
       {sub ? <p style={caption}>{sub}</p> : null}
     </div>
@@ -119,9 +113,8 @@ export function MetricsPanel() {
         />
         <Tile
           title="Honored rate"
-          main={metrics.honoredRate.live ? pct(metrics.honoredRate.rate) : "Not yet sampled"}
-          sub={metrics.honoredRate.label}
-          proxy={!metrics.honoredRate.live}
+          main={metrics.honoredRate.live ? pct(metrics.honoredRate.rate) : "Not yet computed"}
+          sub={honoredSub(metrics.honoredRate)}
         />
         <Tile title="Merge count" main={String(metrics.mergeCount)} sub="customer_memory_merge_audit" />
         <Tile title="Correction count" main={String(metrics.correctionCount)} sub="employee_confirmed writes" />
@@ -132,15 +125,13 @@ export function MetricsPanel() {
         />
         <Tile
           title="Self-service usage"
-          main={String(metrics.selfServiceUsage.count)}
-          sub={metrics.selfServiceUsage.label}
-          proxy={metrics.selfServiceUsage.proxy}
+          main={String(metrics.selfServiceUsage)}
+          sub="customer self-service preference clears"
         />
         <Tile
           title="L6 confirmed entries"
-          main={String(metrics.l6ConfirmedEntries.count)}
-          sub={metrics.l6ConfirmedEntries.label}
-          proxy={metrics.l6ConfirmedEntries.proxy}
+          main={String(metrics.l6ConfirmedEntries)}
+          sub="agent-experience confirm events"
         />
       </div>
 

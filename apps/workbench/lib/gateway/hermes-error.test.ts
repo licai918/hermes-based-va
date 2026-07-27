@@ -7,6 +7,11 @@ describe("errorClassToStatus", () => {
     expect(errorClassToStatus("policy_blocked")).toBe(403);
   });
 
+  it("maps an ADR-0018 lockout to 423, distinct from 401/403", () => {
+    expect(errorClassToStatus("locked")).toBe(423);
+    expect(errorClassToStatus("unauthenticated")).toBe(401);
+  });
+
   it("maps a vendor timeout to 504 (ADR-0104 retryable upstream)", () => {
     expect(errorClassToStatus("vendor_timeout")).toBe(504);
   });

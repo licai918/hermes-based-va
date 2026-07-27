@@ -1,13 +1,11 @@
-import { createAdminApiClient, createAdminDeps } from "@/lib/bff/admin/deps";
-import { handleListRuns, handleListRunsViaApi } from "@/lib/bff/admin/eval";
+import { createAdminApiClient } from "@/lib/bff/admin/deps";
+import { handleListRunsViaApi } from "@/lib/bff/admin/eval";
 import { withSession } from "@/lib/bff/with-session";
 
 export const runtime = "nodejs";
 
-export const GET = withSession((_req, ctx) => {
-  // ADR-0141/0146: list eval runs from the per-profile API when configured;
-  // otherwise the in-memory EvalStore.
-  const client = createAdminApiClient(ctx.session);
-  if (client) return handleListRunsViaApi(client);
-  return handleListRuns(createAdminDeps(ctx.session));
-});
+// ADR-0141/0146: eval runs come from toee_eval_review over the Supervisor Admin
+// Profile API; the ADR-0040 gate is enforced server-side.
+export const GET = withSession((_req, ctx) =>
+  handleListRunsViaApi(createAdminApiClient(ctx.session)),
+);

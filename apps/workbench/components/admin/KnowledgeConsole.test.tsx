@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { PolicySlot } from "@/lib/gateway/knowledge-store";
+import type { PolicySlot } from "@/lib/bff/admin/knowledge";
 import { ErrorBannerProvider } from "@/components/shell/error-banner";
 import { KnowledgeConsole, KnowledgeConsoleView } from "./KnowledgeConsole";
 

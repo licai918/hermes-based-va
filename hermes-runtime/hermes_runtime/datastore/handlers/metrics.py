@@ -1,15 +1,22 @@
 """Datastore handler for ``toee_metrics`` -- the aggregate-metrics admin panel
 (0.0.3 S26, FR-28).
 
-Six of the eight FR-28 metrics are cheap SQL aggregations over EXISTING
-tables (``customer_memory_slot``, ``customer_memory_merge_audit``,
-``workbench_audit_log``, ``agent_experience``); memory-injection rate and
-knowledge-found rate read the new ``metric_event`` counter table (migration
-0009) two GAP producers now emit into (``tool_backend.record_memory_injection_
-metric``, ``knowledge/driver.py._emit_found``). Honored rate is judge-sampled
-(S27) and advisory -- NEVER gating -- and genuinely cannot be computed inline
-here (it requires an LLM judge call over sampled live turns), so it ships as
-an honestly-labeled non-live placeholder rather than a silent zero.
+Some FR-28 metrics are cheap SQL aggregations over EXISTING tables
+(``customer_memory_slot``, ``customer_memory_merge_audit``,
+``workbench_audit_log``, ``agent_experience``); the rest read the
+``metric_event`` counter table (migration 0009). Memory-injection and
+knowledge-found rates are hits/total pairs (``tool_backend.record_memory_
+injection_metric``, ``knowledge/driver.py._emit_found``). Self-service usage and
+L6-confirmed entries (0.0.4 S21, FR-30) are plain once-per-action totals emitted
+in-transaction at their governed sites (``handlers/memory.py`` customer clear,
+``handlers/agent_experience.py`` confirm) -- no longer the pre-S21 audit-log/
+status-count proxies. Honored rate is judge-sampled (S27) and advisory -- NEVER
+gating -- and genuinely cannot be computed inline here (it requires an LLM judge
+call over sampled live turns), so a scheduled ``honored_rate`` background job
+(0.0.4 S22, FR-31) runs the judge and persists an aggregate this handler reads
+the LATEST of (``hermes_runtime.honored_rate.honored_rate_metric``). With no
+aggregate yet it returns the honest ``live=False`` "not yet computed" state --
+never a silent zero, never a fabricated rate.
 
 Read-only, admin-only: never registered as an LLM-callable tool (see
 ``_AGENT_EXCLUDED_ACTIONS``) -- reached only from the admin BFF's
@@ -21,30 +28,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
+from ...honored_rate import honored_rate_metric
+from ._common import METRIC_L6_CONFIRMED, METRIC_SELF_SERVICE_USAGE
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
-
-# Advisory, judge-sampled (S27, C7 core question, audit finding 6) -- this
-# panel never computes it inline (that would mean an LLM judge call on every
-# admin page load) and never gates on it. Honestly labeled non-live rather
-# than a silent zero (S26 brief discipline).
-_HONORED_RATE_LABEL = (
-    "Honored rate is advisory and judge-sampled (S27, C7 core question) -- "
-    "never gating. Run `python -m eval_runner.judge_measure` (or a "
-    "live-traffic sampler) against recorded turns to populate it."
-)
-
-_SELF_SERVICE_LABEL = (
-    "proxy: counts customer-initiated preference clears "
-    "(workbench_audit_log preference_cleared, initiator=customer); "
-    "get_my_memory_summary reads are not separately counted (uninstrumented)."
-)
-
-_L6_LABEL = (
-    "proxy: count of CONFIRMED L6 entries available for injection, not "
-    "actual per-turn injection events (uninstrumented)."
-)
-
 
 def _rate(hits: int, total: int) -> Optional[float]:
     """``hits / total``, rounded, or ``None`` when there is no denominator."""
@@ -69,17 +57,28 @@ def _distribution_dict(rows: Iterable[tuple[int, int]]) -> dict[str, int]:
 def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     with conn.cursor() as cur:
         # --- GAP counters: metric_event (migration 0009) ---------------------
+        # memory_injection/knowledge_search use the hits/total pair; the two
+        # S21/FR-30 governed-action counters (self_service_usage, l6_confirmed_
+        # entries) are plain totals emitted once per real action -- same table,
+        # one query.
+        # The two S21 counters share their metric name with the emit side via the
+        # _common constants, so the emit and aggregation sides can't drift (the
+        # _common docstring's promise). memory_injection/knowledge_search have no
+        # shared constant (no separate emit-site literal to drift from).
         cur.execute(
             """
             SELECT metric, COUNT(*) FILTER (WHERE flag) AS hits, COUNT(*) AS total
             FROM metric_event
-            WHERE metric IN ('memory_injection', 'knowledge_search')
+            WHERE metric IN ('memory_injection', 'knowledge_search', %s, %s)
             GROUP BY metric
-            """
+            """,
+            (METRIC_SELF_SERVICE_USAGE, METRIC_L6_CONFIRMED),
         )
         counters = {metric: (hits, total) for metric, hits, total in cur.fetchall()}
         mem_hits, mem_total = counters.get("memory_injection", (0, 0))
         know_hits, know_total = counters.get("knowledge_search", (0, 0))
+        self_service_count = counters.get(METRIC_SELF_SERVICE_USAGE, (0, 0))[1]
+        l6_confirmed_count = counters.get(METRIC_L6_CONFIRMED, (0, 0))[1]
 
         # --- slots-populated distribution: customer_memory_slot --------------
         cur.execute(
@@ -113,18 +112,10 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         )
         dismissed_count = cur.fetchone()[0]
 
-        # --- self-service usage (proxy: customer-initiated clears) -----------
-        cur.execute(
-            """
-            SELECT COUNT(*) FROM workbench_audit_log
-            WHERE action = 'preference_cleared' AND details ->> 'initiator' = 'customer'
-            """
-        )
-        self_service_count = cur.fetchone()[0]
-
-        # --- L6 confirmed entries (proxy for per-turn injection events) ------
-        cur.execute("SELECT COUNT(*) FROM agent_experience WHERE status = 'confirmed'")
-        l6_confirmed_count = cur.fetchone()[0]
+        # --- honored rate: latest honored_rate_aggregate (S22, FR-31) ---------
+        # Read the LATEST aggregate the scheduled honored_rate job persisted; an
+        # empty table returns the honest "not yet computed" state, never a zero.
+        honored_rate = honored_rate_metric(cur)
 
     accepted_total = correction_count + dismissed_count
 
@@ -140,7 +131,7 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
             "rate": _rate(know_hits, know_total),
         },
         "slots_populated_distribution": distribution,
-        "honored_rate": {"live": False, "rate": None, "label": _HONORED_RATE_LABEL},
+        "honored_rate": honored_rate,
         "merge_count": merge_count,
         "correction_count": correction_count,
         "proposal_outcomes": {
@@ -148,16 +139,12 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
             "dismissed": dismissed_count,
             "rate": _rate(correction_count, accepted_total),
         },
-        "self_service_usage": {
-            "count": self_service_count,
-            "proxy": True,
-            "label": _SELF_SERVICE_LABEL,
-        },
-        "l6_confirmed_entries": {
-            "count": l6_confirmed_count,
-            "proxy": True,
-            "label": _L6_LABEL,
-        },
+        # S21/FR-30: real once-per-action counters (metric_event), no longer
+        # proxied -- plain totals like merge_count/correction_count above. Keyed by
+        # the shared _common constants (identical values) so the output contract can't
+        # drift from the emit side.
+        METRIC_SELF_SERVICE_USAGE: self_service_count,
+        METRIC_L6_CONFIRMED: l6_confirmed_count,
     }
 
 

@@ -1,7 +1,9 @@
 // v1 Domain Adapter Tool catalog. One tool per integration with a fixed v1
 // `action` enum per ADR-0059 and ADR-0070. The catalog lists every valid
 // action for each tool; per-profile allowlisting and Tool Gate enforcement
-// live in @toee/domain-adapters.
+// live in the Python per-profile dispatch servers (hermes-runtime's
+// tool_dispatch_app.py / tool_dispatch_composition.py) since 0.0.4 S11
+// deleted @toee/domain-adapters (ADR-0156).
 export const TOOL_CATALOG = {
   toee_identity_lookup: [
     "match_phone",

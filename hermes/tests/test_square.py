@@ -132,6 +132,20 @@ def test_blocks_redirect_to_alternate_recipient() -> None:
     assert result.error_class == "policy_blocked"
 
 
+def test_blocks_when_no_pre_created_link_exists() -> None:
+    # 0.0.4 S26 retrieve semantics: links are created ahead of time in the Square
+    # console, so an invoice with no link has nothing to send. The mock must refuse
+    # rather than mint a URL — minting one is exactly the create behavior the owner
+    # decision removed, and it would let dev pass where production has nothing.
+    result = _send(
+        {"invoice_number": "INV-NO-LINK", "conversation_id": CONVERSATION_ID},
+        _verified_ctx(),
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+
+
 def test_blocks_payable_not_owned_by_verified_customer() -> None:
     result = _send(
         {"invoice_number": "INV-9001", "conversation_id": CONVERSATION_ID},

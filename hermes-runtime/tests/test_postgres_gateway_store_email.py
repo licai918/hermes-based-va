@@ -14,7 +14,6 @@ import json
 from starlette.testclient import TestClient
 
 from hermes_runtime.gateway_app import create_app
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
 
 WEBHOOK_SECRET = "test-simpletexting-url-token"
@@ -132,7 +131,6 @@ def test_email_webhook_matches_sender_and_persists_verified(datastore) -> None:
         webhook_secret=WEBHOOK_SECRET,
         driver=driver,
         store=store,
-        queue=LocalDispatchingJobQueue(store=store, turn_runner=lambda *_: None),
         is_duplicate=store.is_duplicate,
     )
     client = TestClient(app)

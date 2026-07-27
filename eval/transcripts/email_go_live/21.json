@@ -1,0 +1,40 @@
+{
+  "final_response": "Thanks for reaching out. I've opened a case and our operations team will follow up with you.\n\nToee Tire Customer Support",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSubject: Operations inquiry\n\nHello, I represent a local warehouse collective and need to discuss something with your operations team."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": null,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "call_id": "call_0",
+          "response_item_id": "fc_0",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"non_customer_general\", \"summary\": \"Warehouse collective requesting to discuss with operations.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_1a8e8369\", \"status\": \"open\", \"contact_reason\": \"non_customer_general\", \"summary\": \"Warehouse collective requesting to discuss with operations.\"}",
+      "tool_call_id": "call_0"
+    },
+    {
+      "role": "assistant",
+      "content": "Thanks for reaching out. I've opened a case and our operations team will follow up with you.\n\nToee Tire Customer Support",
+      "reasoning": null,
+      "finish_reason": "stop"
+    }
+  ]
+}

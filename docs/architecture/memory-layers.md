@@ -25,9 +25,11 @@ so it cannot drift out of sync with them.
 | **L4** | Customer Memory | 4 governed preference slots per customer | `toee_va` Postgres | **exact** `WHERE binding_key = ?`, injected per turn | ✅ shipped (0.0.1 + 0.0.2) |
 | **L5** | **Knowledge** | shared, non-PII company/product corpus | **separate `toee_knowledge` DB** | **hybrid lexical FTS + dense embedding**, top-k chunks | ✅ **shipped** ([ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md)) |
 | **L6** | **Agent experience** | what the agent learns from doing the job (operational, non-PII) | `toee_va` Postgres (`agent_experience`) | confirmed-only, bounded newest-first, injected per gated turn | ✅ **shipped** ([ADR-0152](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md)) |
+| **L7** | **Semantic lexicon** | domain language: surface→canonical aliases, notation normalizers, contextual defaults (shared, non-PII) | planned: `toee_va` Postgres (`semantic_lexicon`) | planned: **deterministic param normalization (hard)** + bounded `<confirmed_lexicon>` glossary (soft) | 🔬 **exploring** ([0.0.5 exploration](../../workspace/0.0.5/EXPLORATION.md)) |
 
 L1–L4 are the **four-layer model** of [ADR-0110](../adr/0110-native-memory-four-layer-model.md).
 L5 (Knowledge) and L6 (Agent experience) are the 0.0.3 additions, both now shipped — see below.
+L7 (Semantic lexicon) is a 0.0.5 exploration — see below.
 
 The same Postgres also holds **Workbench Accounts** and **knowledge publish state** (the 6
 governed operational-policy slots + history). Those sit **outside** the four-layer model; they are
@@ -156,6 +158,29 @@ deferred post-launch (ADR-0152).
 
 ---
 
+## L7 — Semantic lexicon *(exploring — [0.0.5 exploration](../../workspace/0.0.5/EXPLORATION.md))*
+
+*What the company's words mean* — domain language as governed data, distinct from customer
+preferences (L4), prose facts (L5), and how-to guidance (L6). Motivating examples:
+`TOEE ≡ TOEE TIRE`; `2055516 → 205/55R16`; a bare size defaults to the current season's tire
+**with mandatory confirmation**. New product lines keep adding vocabulary, so routine entries
+must be admin-editable without a deploy, and the layer must grow from conversations: a
+customer-confirmed clarification ("do you mean 205/55R16?" → "yes") becomes a `proposed` entry
+an admin approves/edits/rejects — the L6 propose→confirm pattern re-instantiated over a
+**structured** store ("port the loop, not the store", again).
+
+**Direction under exploration:** a `semantic_lexicon` table (three entry kinds graded by
+determinism — admin-free `alias` rows, code-owned `normalizer` patterns toggled per domain,
+structured `default_rule` rows), applied at TWO seams — deterministic tool-param normalization
+(hard) and a bounded fenced glossary injection (soft, eval-pinned) — captured by the gateway-side
+review fork (the external agent itself still never proposes; ADR-0152's boundary gets a
+superseding note when this lands). Full design, the L1–L7 routing decision tree, the boundary
+pins (L6/L7, L5/L7, L4/L7), and the anti-gap mechanisms:
+[`workspace/0.0.5/EXPLORATION.md`](../../workspace/0.0.5/EXPLORATION.md). Formal ADRs land with
+the 0.0.5 slices, per this file's maintenance rule.
+
+---
+
 ## Hermes Native Memory — where it actually sits
 
 The upstream framework has its **own** memory (agent notes + an FTS5 transcript store +
@@ -188,6 +213,13 @@ designed in up front rather than retrofitted.
 ---
 
 ## Change log
+
+- **2026-07-21 (0.0.5 exploration)** — L7 Semantic lexicon opened (🔬 exploring): admin-governed,
+  conversation-fed domain language (aliases / normalizers / contextual defaults) applied
+  deterministically at the tool boundary + as a bounded glossary; the L1–L7 scope map, routing
+  decision tree, and anti-gap/anti-overlap mechanisms are recorded in
+  [`workspace/0.0.5/EXPLORATION.md`](../../workspace/0.0.5/EXPLORATION.md). ADRs deferred to the
+  0.0.5 slices per the maintenance rule (docs follow decisions, not intentions).
 
 - **2026-07-21 (S25)** — L6 shipped: confirmed-entry injection (copilot draft turn
   + external read-only), two independent injection flags (both default OFF), the

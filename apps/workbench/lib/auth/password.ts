@@ -1,11 +1,17 @@
 // Workbench password policy + hashing (ADR-0018). Node runtime ONLY — uses
 // node:crypto. Do not import this module from Edge code (middleware).
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+//
+// 0.0.4 S09 deleted `verifyPassword`: the workbench no longer verifies credentials
+// in-process, `toee_workbench_admin.authenticate` does. `hashPassword` SURVIVES —
+// admin-created accounts are hashed here and only the hash crosses the wire
+// (ADR-0144's deliberate design, pinned by a cross-runtime hash-compatibility test
+// in hermes-runtime). Both halves must stay scrypt N=16384/r=8/p=1, 64-byte key,
+// `scrypt$<saltHex>$<hashHex>` — the Python side parses exactly this format.
+import { randomBytes, scryptSync } from "node:crypto";
 
 const MIN_LENGTH = 12;
 const SALT_BYTES = 16;
 const KEY_BYTES = 64;
-const HEX = /^[0-9a-f]+$/i;
 
 export function validatePassword(
   password: string,
@@ -30,24 +36,4 @@ export function hashPassword(plain: string): string {
   const salt = randomBytes(SALT_BYTES);
   const hash = scryptSync(plain, salt, KEY_BYTES);
   return `scrypt$${salt.toString("hex")}$${hash.toString("hex")}`;
-}
-
-export function verifyPassword(plain: string, stored: string): boolean {
-  const parts = stored.split("$");
-  if (parts.length !== 3) return false;
-  const [scheme, saltHex, hashHex] = parts;
-  if (scheme !== "scrypt" || !saltHex || !hashHex) return false;
-  if (!HEX.test(saltHex) || !HEX.test(hashHex)) return false;
-  if (saltHex.length % 2 !== 0 || hashHex.length % 2 !== 0) return false;
-  try {
-    const salt = Buffer.from(saltHex, "hex");
-    const expected = Buffer.from(hashHex, "hex");
-    if (salt.length === 0 || expected.length === 0) return false;
-    const actual = scryptSync(plain, salt, expected.length);
-    // actual.length === expected.length by construction; timingSafeEqual still
-    // guards against length mismatch from any future change.
-    return actual.length === expected.length && timingSafeEqual(actual, expected);
-  } catch {
-    return false;
-  }
 }

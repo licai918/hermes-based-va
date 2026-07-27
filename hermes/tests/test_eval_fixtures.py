@@ -127,7 +127,7 @@ def test_resolves_verified_customer_with_snapshot_and_linked_accounting() -> Non
         "resolved_at": RESOLVED_AT,
     }
     assert merged.mock_context.qbo.email_links["gid://shopify/Customer/1001"] == "linked"
-    assert len(merged.mock_context.square.payables) > 0
+    assert len(merged.mock_context.square.payment_links) > 0
     assert merged.mock_context.domain_errors == {}
 
 

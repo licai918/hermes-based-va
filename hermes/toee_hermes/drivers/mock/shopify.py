@@ -31,10 +31,28 @@ class ShopifyLineItem:
 
 
 @dataclass(frozen=True)
+class ShopifyTracking:
+    number: str | None = None
+    url: str | None = None
+    company: str | None = None
+
+
+@dataclass(frozen=True)
+class ShopifyFulfillment:
+    # Customer-facing delivery state (S30): unfulfilled / in_transit /
+    # out_for_delivery / attempted_delivery / delivered / ready_for_pickup /
+    # fulfilled. Mirrors the composio driver's projected fulfillment block.
+    state: str
+    shipment_status: str | None = None
+    tracking: ShopifyTracking | None = None
+
+
+@dataclass(frozen=True)
 class ShopifyOrder:
     order_number: str
     customer_id: str
     line_items: tuple[ShopifyLineItem, ...] = ()
+    fulfillment: ShopifyFulfillment | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +84,17 @@ shopify_baseline_data = ShopifyMockData(
             customer_id="gid://shopify/Customer/1001",
             line_items=(
                 ShopifyLineItem(sku="TIRE-225-60R16", title="All-Season 225/60R16"),
+            ),
+            # Order 1042 is out on an EasyRoutes route (matches easyroutes delivery_a
+            # in_transit); the tracking url is the customer-clickable live page (FR-20).
+            fulfillment=ShopifyFulfillment(
+                state="in_transit",
+                shipment_status="in_transit",
+                tracking=ShopifyTracking(
+                    number="ER-1042",
+                    url="https://api.easyroutes.app/orders/status/route-7-stop-4",
+                    company="EasyRoutes",
+                ),
             ),
         ),
     ),
@@ -121,6 +150,24 @@ def _require_verified_customer_id(context: ToolExecutionContext) -> str:
     return customer_id
 
 
+def _serialize_fulfillment(fulfillment: ShopifyFulfillment | None) -> dict[str, Any]:
+    """Same block the composio driver projects (parity). None -> honest unfulfilled."""
+    if fulfillment is None:
+        return {"state": "unfulfilled", "shipment_status": None, "tracking": None}
+    tracking = None
+    if fulfillment.tracking is not None:
+        tracking = {
+            "number": fulfillment.tracking.number,
+            "url": fulfillment.tracking.url,
+            "company": fulfillment.tracking.company,
+        }
+    return {
+        "state": fulfillment.state,
+        "shipment_status": fulfillment.shipment_status,
+        "tracking": tracking,
+    }
+
+
 def _serialize_order(order: ShopifyOrder) -> dict[str, Any]:
     return {
         "order_number": order.order_number,
@@ -128,6 +175,7 @@ def _serialize_order(order: ShopifyOrder) -> dict[str, Any]:
         "line_items": [
             {"sku": item.sku, "title": item.title} for item in order.line_items
         ],
+        "fulfillment": _serialize_fulfillment(order.fulfillment),
     }
 
 
@@ -138,6 +186,12 @@ def _to_public_product(product: ShopifyProduct) -> dict[str, Any]:
         "title": product.title,
         "product_url": product.product_url,
         "media_url": product.media_url,
+        # S31b: expose the variant sku(s) so the agent can pick the customer's size and
+        # feed its sku to Tier 3a get_product_promise. Same [{sku, option}] shape the
+        # composio driver projects (parity). ponytail: one product == one size here, so
+        # a single derived variant; seed multiple products (or add a variants field) when
+        # a scenario needs multi-size disambiguation under one product.
+        "variants": [{"sku": product.sku, "option": product.title}],
     }
 
 

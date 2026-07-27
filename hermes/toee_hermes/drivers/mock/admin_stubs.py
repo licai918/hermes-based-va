@@ -165,6 +165,86 @@ def create_admin_stub_mock_handlers() -> MockHandlerRegistry:
                 "chunk_count": 0,
                 "last_ingest_at": None,
                 "by_type": [],
+                # 0.0.4 S04: the `job` table is Postgres-only, so the mock has no
+                # re-ingest job to report either.
+                "last_ingest_job": None,
+            },
+            "enqueue_corpus_reingest": lambda params, context: {
+                "job_id": None,
+                "status": "unavailable",
+            },
+        },
+        # 0.0.4 S05 (FR-13): the dead-letter view + governed Replay. The `job`
+        # and `outbound_send` tables are Postgres-only, so the mock has nothing
+        # stuck to report and nothing to replay -- an honest empty view and an
+        # "unavailable" receipt, never a fabricated job id (same shape as
+        # enqueue_corpus_reingest above).
+        "toee_job_queue": {
+            "list_dead_letters": lambda params, context: {
+                "jobs": [],
+                "outbound": [],
+                "recent_replays": [],
+            },
+            "replay_job": lambda params, context: {
+                "job_id": _read_string(params, "job_id", "jobId", default=""),
+                "type": None,
+                "status": "unavailable",
+            },
+        },
+        # 0.0.4 S15 (FR-23): the /admin/integrations status read. Config presence is
+        # a live, env-backed question the datastore handler (hermes-runtime) answers;
+        # the mock backend makes no live external calls (INTEGRATION_DRIVER is not
+        # `composio` under a mock run), so it reports every integration as
+        # not_configured with an honest reason rather than a fabricated "healthy" --
+        # same discipline as enqueue_corpus_reingest returning "unavailable".
+        "toee_integrations": {
+            "get_integrations_status": lambda params, context: {
+                "active_driver": "mock",
+                "integrations": [
+                    {
+                        "key": key,
+                        "label": label,
+                        "kind": kind,
+                        "configured": False,
+                        "status": "not_configured",
+                        "pinned_version": None,
+                        "last_successful_call": None,
+                        "last_probe": None,
+                        "detail": "Mock backend: no live integration view.",
+                    }
+                    for key, label, kind in (
+                        ("shopify", "Shopify (Composio)", "composio_toolkit"),
+                        ("qbo", "QuickBooks (Composio)", "composio_toolkit"),
+                        ("square", "Square (Composio)", "composio_toolkit"),
+                        ("easyroutes", "EasyRoutes", "easyroutes"),
+                        ("simpletexting", "SimpleTexting", "simpletexting"),
+                        ("openrouter", "OpenRouter", "openrouter"),
+                        (
+                            "gadget",
+                            "Gadget mapping endpoint (paymentstatussync)",
+                            "gadget",
+                        ),
+                    )
+                ],
+            },
+            # 0.0.4 S17 (FR-25): the two reconnect actions. The mock backend makes no
+            # live external calls, so it can neither generate a real Composio re-auth
+            # link nor run a live probe -- it returns a deterministic "unavailable"
+            # receipt, never a fabricated redirect URL or a fake "ok" (same discipline
+            # as replay_job / enqueue_corpus_reingest returning "unavailable").
+            "initiate_reconnect": lambda params, context: {
+                "integration_key": _read_string(
+                    params, "integration_key", "integrationKey", default=""
+                ),
+                "redirect_url": None,
+                "status": "unavailable",
+            },
+            "reprobe_now": lambda params, context: {
+                "integration_key": _read_string(
+                    params, "integration_key", "integrationKey", default=""
+                ),
+                "status": "unavailable",
+                "reason": "Mock backend: no live probe.",
             },
         },
         "toee_eval_review": {

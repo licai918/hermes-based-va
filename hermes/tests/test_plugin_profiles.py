@@ -26,6 +26,7 @@ ADR_0034_EXTERNAL = {
     "toee_shopify_read",
     "toee_qbo_read",
     "toee_easyroutes_read",
+    "toee_delivery_promise",
     "toee_square_payment_link",
     "toee_sms_reply",
     "toee_case",
@@ -37,6 +38,7 @@ ADR_0035_INTERNAL = {
     "toee_shopify_read",
     "toee_qbo_read",
     "toee_easyroutes_read",
+    "toee_delivery_promise",
     "toee_identity_lookup",
     "toee_case_manage",
     "toee_copilot_draft",
@@ -57,6 +59,13 @@ ADR_0038_SUPERVISOR = {
     "toee_workbench_admin",
     "toee_workbench_read",
     "toee_knowledge_search",
+    # 0.0.4 S05 (FR-13): the dead-letter view + governed Replay -- an OPERATIONS
+    # surface reached over this profile's API by the admin BFF. Both actions are
+    # agent-excluded, so nothing here reaches a model's tool loop.
+    "toee_job_queue",
+    # 0.0.4 S15 (FR-23): the /admin/integrations status read -- a CREDENTIAL
+    # surface reached over this profile's API by the admin BFF. Agent-excluded.
+    "toee_integrations",
 }
 
 

@@ -136,3 +136,18 @@ end to end for one resource (`GET /api/copilot/cases`):
 Follow-ups (not in the tracer): the Postgres datastore (ADR-0140); the agent-turn
 path for chat/drafts; per-profile Cloud Run services in the deploy runbook; and
 migrating the remaining resource routes off the in-memory stores.
+
+## Superseded in part — 0.0.4 S09 (FR-1/FR-3)
+
+The env-gated **fallback** half of this contract is gone. `resolveProfileApiConfig`
+returning `null` (and every `if (apiConfig) ... else <in-memory store>` branch it
+fed) was removed together with the four in-memory stores, the gateway seed, and the
+TS chat/draft mock. `HERMES_COPILOT_API_URL/TOKEN` and `HERMES_ADMIN_API_URL/TOKEN`
+are now **required**: `assertHermesApiConfig` runs from `apps/workbench/
+instrumentation.ts` and refuses to boot, naming every missing variable. Everything
+else in this ADR — the `{ tool, action, params }` envelope, the per-profile bearer,
+`actor_account_id`, fail-open reads vs. fail-closed `dispatchWrite`, governed errors
+as thrown `HermesApiError` — is unchanged and is now the ONLY path.
+
+The follow-up this ADR listed last ("migrating the remaining resource routes off
+the in-memory stores") is complete.

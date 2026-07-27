@@ -23,6 +23,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from ...errors import ToolDriverError
+from ..base import resolve_integration_driver
+from ..gadget import QboAttribution, _canonical_qbo_id, build_qbo_attribution
+from ..qbo_ar import ar_summary
 
 if TYPE_CHECKING:
     from ...execute import ToolRequest
@@ -46,6 +49,49 @@ CONNECTED_ACCOUNT_ENV: dict[str, str] = {
     QBO: "COMPOSIO_QBO_CONNECTED_ACCOUNT_ID",
     SQUARE: "COMPOSIO_SQUARE_CONNECTED_ACCOUNT_ID",
 }
+
+# Toee toolkit key -> Composio's own toolkit slug. The two differ for QuickBooks
+# ("qbo" here, "quickbooks" upstream), and the version pin is keyed by the VENDOR
+# slug on both sides: the SDK resolves a call's version with
+# ``get_toolkit_version(tool.toolkit.slug, ...)`` and reads
+# ``COMPOSIO_TOOLKIT_VERSION_<SLUG>`` from the environment. So
+# COMPOSIO_TOOLKIT_VERSION_QBO would be silently ignored — hence this map rather
+# than upper-casing our own key (0.0.4 S12).
+TOOLKIT_SLUG: dict[str, str] = {SHOPIFY: "shopify", QBO: "quickbooks", SQUARE: "square"}
+
+TOOLKIT_VERSION_ENV: dict[str, str] = {
+    toolkit: f"COMPOSIO_TOOLKIT_VERSION_{slug.upper()}"
+    for toolkit, slug in TOOLKIT_SLUG.items()
+}
+
+# NFR-8: one backend call must be bounded by the *turn's* deadline, not the
+# vendor's. The SDK ships a 60s read timeout and retries on top, so an unbounded
+# Composio call can outlive the whole SMS turn it was serving. Overridable via
+# ``COMPOSIO_DEADLINE_MS``; on expiry the SDK raises, the driver converts it to a
+# governed ``composio_api_error``, and dispatch renders the Tool Unavailable
+# Response — never a fallback to mock.
+#
+# The budget is for ONE ``execute_action``, not one HTTP request — see
+# ``_ROUND_TRIPS_PER_EXECUTE``.
+DEADLINE_ENV = "COMPOSIO_DEADLINE_MS"
+DEFAULT_DEADLINE_MS = 8000.0
+
+# HTTP requests the SDK makes for one ``Tools.execute`` call (composio 0.15.0,
+# ``core/models/tools.py``), fix wave 1:
+#
+#   1. ``execute()``  -> ``client.tools.retrieve``  (cached in ``_tool_schemas``)
+#   2. ``_execute_tool()`` -> ``get_raw_composio_tool_by_slug`` -> a SECOND
+#      ``client.tools.retrieve``, which is NOT cached anywhere
+#   3. ``client.tools.execute`` -- the actual vendor call
+#
+# The SDK ``timeout`` bounds one request, so passing the whole deadline made the
+# real per-call bound 3x the advertised one (24 s at the 8 s default, since the
+# driver is rebuilt per turn and cache 1 is always cold). Divide instead, so
+# ``COMPOSIO_DEADLINE_MS`` is what NFR-8 says it is: the bound on one tool call.
+# Measured live against the pinned Shopify toolkit (fix wave 1): a metadata
+# retrieve is ~0.2-0.3 s and a full three-round-trip execute ~0.9 s, so the
+# resulting 2.67 s per-request slice is ~3x the observed whole-call cost.
+_ROUND_TRIPS_PER_EXECUTE = 3
 
 
 @runtime_checkable
@@ -80,9 +126,22 @@ class ActionSpec:
     """One-to-one mapping for a v1 ``(tool, action)`` (ADR-0130)."""
 
     app: str  # toolkit key -> connected account
-    action_slug: str  # Composio toolkit action; exact slugs verified at staging smoke
-    request_mapper: RequestMapper
-    response_mapper: ResponseMapper
+    action_slug: str  # Composio toolkit action; slugs verified live (0.0.4 S12)
+    request_mapper: RequestMapper | None = None
+    response_mapper: ResponseMapper | None = None
+    # QBO customer-scoped attribution mode (0.0.4 S27/S13). ``"single"`` / ``"list"``
+    # / ``"ar_summary"`` tell the driver to enforce ownership via the Gadget bridge
+    # AFTER the pure response mapper shapes the payload — these are the only actions
+    # that disclose per-customer financial data, and the shaped invoice carries the
+    # private ``qbo_customer_id`` the join needs. ``"ar_summary"`` scopes the list the
+    # same way, then aggregates the owned invoices into the AR summary shape.
+    ownership: str | None = None
+    # Set when the live toolkit cannot serve this action. The driver raises it
+    # INSTEAD of calling the backend, so the tool fails closed with a message
+    # naming the reason rather than a vendor 404 (or worse, a mock payload) —
+    # FR-21. The mappers are then dead and left unset; ``hermes_runtime.
+    # composio_smoke`` reads this field to know which slugs not to probe.
+    unavailable: ToolDriverError | None = None
 
 
 # --- shared mapping helpers --------------------------------------------------
@@ -102,6 +161,13 @@ def _shopify_numeric_customer_id(customer_id: str | None) -> str | None:
         return None
     prefix = "gid://shopify/Customer/"
     return customer_id[len(prefix) :] if customer_id.startswith(prefix) else customer_id
+
+
+def _to_customer_gid(customer_id: str | None) -> str | None:
+    """Normalize a raw/gid Shopify customer id to canonical gid form, or None."""
+    if not customer_id:
+        return None
+    return customer_id if customer_id.startswith("gid://") else f"gid://shopify/Customer/{customer_id}"
 
 
 def _shopify_customer_gid(order: dict[str, Any]) -> str | None:
@@ -150,18 +216,118 @@ def _shape_order(order: dict[str, Any]) -> dict[str, Any]:
             {"sku": item.get("sku"), "title": item.get("title")}
             for item in (order.get("line_items") or [])
         ],
+        # S30 (FR-20): native-Fulfillment delivery status. EasyRoutes writes
+        # shipment_status + tracking back to the Shopify order's fulfillment, so
+        # the order itself carries the delivery answer.
+        "fulfillment": _shape_fulfillment(order),
     }
+
+
+def _first_str(value: Any) -> str | None:
+    """First non-empty string from a scalar or a list (REST tracking_url[s])."""
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item:
+                return item
+    return None
+
+
+def _shape_tracking(fulfillment: dict[str, Any]) -> dict[str, Any] | None:
+    """The customer-facing tracking triple, or None when the order carries none.
+
+    REST fulfillments expose both singular (``tracking_number``/``tracking_url``)
+    and plural (``tracking_numbers``/``tracking_urls``) forms; the ``url`` is the
+    customer-clickable EasyRoutes live-tracking page (FR-20). A missing url just
+    omits the link — it is not an error.
+    """
+    number = _first_str(fulfillment.get("tracking_number")) or _first_str(
+        fulfillment.get("tracking_numbers")
+    )
+    url = _first_str(fulfillment.get("tracking_url")) or _first_str(
+        fulfillment.get("tracking_urls")
+    )
+    company = fulfillment.get("tracking_company")
+    company = company if isinstance(company, str) and company else None
+    if not (number or url or company):
+        return None
+    return {"number": number, "url": url, "company": company}
+
+
+def _shape_fulfillment(order: dict[str, Any]) -> dict[str, Any]:
+    """Project a REST Shopify order's delivery state (S30).
+
+    Distinguishes, from the REAL REST fields — top-level ``fulfillment_status`` and
+    ``fulfillments[].{shipment_status, tracking_*}`` — the customer-facing states:
+    ``unfulfilled`` (placed, not yet shipped) / ``in_transit`` / ``out_for_delivery``
+    / ``attempted_delivery`` / ``delivered`` / ``ready_for_pickup`` (pickup) /
+    ``fulfilled`` (shipped, no carrier status). Fail-closed: a placed-but-unshipped
+    order is the honest ``unfulfilled``, NEVER a fabricated ``delivered``; a real
+    backend fault never reaches here (the SDK client raises before shaping).
+    """
+    fulfillments = order.get("fulfillments")
+    fulfillments = fulfillments if isinstance(fulfillments, list) else []
+    status = order.get("fulfillment_status")
+    status = status if isinstance(status, str) and status else None
+    if not fulfillments and status is None:
+        return {"state": "unfulfilled", "shipment_status": None, "tracking": None}
+    # ponytail: last-wins — on a partially-delivered MULTI-shipment order this
+    # reports the newest shipment's status as the whole order's (honest per-shipment,
+    # potentially misleading per-order). Acceptable for Tier 1; upgrade to a
+    # per-shipment list / "partially delivered" rollup when multi-shipment matters.
+    latest = fulfillments[-1] if fulfillments else {}
+    if not isinstance(latest, dict):
+        latest = {}
+    shipment = latest.get("shipment_status")
+    shipment = shipment if isinstance(shipment, str) and shipment else None
+    return {
+        # shipment_status is the granular carrier state; fall back to the order-level
+        # fulfillment_status, then a plain "fulfilled" for a shipped order with no
+        # carrier update — never invent a delivered/in-transit the payload lacks.
+        "state": shipment or status or "fulfilled",
+        "shipment_status": shipment,
+        "tracking": _shape_tracking(latest),
+    }
+
+
+def _public_variants(product: dict[str, Any], sku: str | None, title: Any) -> list[dict[str, Any]]:
+    """A minimal per-variant list ``[{sku, option}]`` for size disambiguation (S31b).
+
+    A tire has one variant per size and its sku is per-variant, so the agent needs each
+    variant's sku (to feed Tier 3a ``get_product_promise{sku}``) and a human label to pick
+    the customer's size. ``option`` is the variant's own title/option label. Only the sku
+    and the label are exposed — never the internal variant id (no leak).
+    """
+    raw = product.get("variants")
+    out: list[dict[str, Any]] = []
+    if isinstance(raw, list):
+        for variant in raw:
+            if not isinstance(variant, dict):
+                continue
+            vsku = variant.get("sku")
+            option = variant.get("option") or variant.get("title") or variant.get("option1")
+            if vsku or option:
+                out.append({"sku": vsku, "option": option})
+    if out:
+        return out
+    # ponytail: derive one variant from the product-level sku/title when the payload
+    # carries no variants list. Upgrade to a real per-size list when a payload/scenario
+    # actually has multiple sizes under one product.
+    return [{"sku": sku, "option": title}] if sku else []
 
 
 def _shape_public_product(product: dict[str, Any]) -> dict[str, Any]:
     # Mock/eval fixtures already carry the public contract shape.
     if isinstance(product.get("product_id"), str) and product.get("product_url"):
+        sku = product.get("sku")
         return {
             "product_id": product.get("product_id"),
-            "sku": product.get("sku"),
+            "sku": sku,
             "title": product.get("title"),
             "product_url": product.get("product_url"),
             "media_url": product.get("media_url"),
+            "variants": _public_variants(product, sku, product.get("title")),
         }
     variants = product.get("variants") or []
     sku = variants[0].get("sku") if variants else product.get("sku")
@@ -178,6 +344,7 @@ def _shape_public_product(product: dict[str, Any]) -> dict[str, Any]:
         "title": product.get("title"),
         "product_url": product_url,
         "media_url": media_url,
+        "variants": _public_variants(product, sku, product.get("title")),
     }
 
 
@@ -193,10 +360,31 @@ def _shopify_get_order_request(
     return {"order_id": order_id}
 
 
-def _shopify_get_order_response(raw: dict[str, Any], _ctx: "ToolExecutionContext") -> Any:
+def _shopify_get_order_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
     payload = _unwrap_composio_payload(raw)
     order = payload.get("order", raw.get("order", raw))
-    return _shape_order(order)
+    shaped = _shape_order(order)
+    # Ownership (ADR-0043): get_order is by a model-supplied order number, which is
+    # NOT owner-scoped by the vendor query the way list_customer_orders is, and the
+    # external Tool Gate allows toee_shopify_read wholesale (get_product/search are
+    # public catalog reads), so THIS driver is the sole defense on get_order. The
+    # order carries line items + live delivery status + a tracking url, so it MUST
+    # fail closed for anyone who is not the verified owner. An absent identity
+    # (unmatched/ambiguous, or a verified snapshot missing its shopify id) must NOT
+    # fall through and leak — hence the explicit ``verified is None`` arm (the
+    # earlier ``verified is not None and …`` form failed OPEN for anonymous callers).
+    # Error classes mirror the mock (mock/shopify.py) EXACTLY so eval/replay exercise
+    # one contract: policy_blocked for both the unverified and the non-owned case.
+    verified = _to_customer_gid(_verified_customer_id(context))
+    if verified is None:
+        raise ToolDriverError(
+            "policy_blocked", "get_order requires a verified customer."
+        )
+    if shaped.get("customer_id") != verified:
+        raise ToolDriverError(
+            "policy_blocked", "No order owned by the verified customer."
+        )
+    return shaped
 
 
 def _shopify_list_orders_request(
@@ -255,12 +443,53 @@ def _shopify_get_product_response(raw: dict[str, Any], context: "ToolExecutionCo
 # --- qbo mappers -------------------------------------------------------------
 
 
+# A normalized invoice carries the 4 public contract fields PLUS a private
+# ``qbo_customer_id`` (the invoice's ``CustomerRef.value``) used only for
+# attribution; :func:`_public_invoice` drops it before the result leaves the driver.
+_PUBLIC_INVOICE_KEYS = (
+    "invoice_number",
+    "shopify_customer_id",
+    "customer_email",
+    "balance",
+)
+
+
+def _public_invoice(invoice: dict[str, Any]) -> dict[str, Any]:
+    return {key: invoice.get(key) for key in _PUBLIC_INVOICE_KEYS}
+
+
+def _qbo_customer_id_of(invoice: dict[str, Any]) -> str | None:
+    """The QBO customer id an invoice is billed to (``CustomerRef.value`` live), or None."""
+    ref = invoice.get("CustomerRef")
+    if isinstance(ref, dict) and ref.get("value"):
+        return str(ref["value"])
+    for key in ("qbo_customer_id", "customer_ref_value"):
+        value = invoice.get(key)
+        if isinstance(value, (str, int)) and str(value):
+            return str(value)
+    return None
+
+
+def _direct_owner_gid(invoice: dict[str, Any]) -> str | None:
+    """The invoice's Shopify owner in canonical gid form, when carried DIRECTLY.
+
+    Present on mock/recorded/eval invoices (the mock sets ``shopify_customer_id``);
+    absent on live QBO invoices, which carry only a QBO ``CustomerRef`` — those need
+    the Gadget join instead. ``None`` here means "not directly attributable".
+    """
+    value = invoice.get("shopify_customer_id")
+    if not isinstance(value, str) or not value:
+        return None
+    return value if value.startswith("gid://") else f"gid://shopify/Customer/{value}"
+
+
 def _shape_invoice(invoice: dict[str, Any]) -> dict[str, Any]:
     return {
         "invoice_number": invoice.get("invoice_number"),
         "shopify_customer_id": invoice.get("shopify_customer_id"),
         "customer_email": invoice.get("customer_email"),
         "balance": invoice.get("balance"),
+        "qbo_customer_id": _qbo_customer_id_of(invoice),
     }
 
 
@@ -276,6 +505,7 @@ def _qbo_invoice_from_raw(invoice: dict[str, Any]) -> dict[str, Any]:
         "shopify_customer_id": invoice.get("shopify_customer_id"),
         "customer_email": email,
         "balance": invoice.get("Balance", invoice.get("balance")),
+        "qbo_customer_id": _qbo_customer_id_of(invoice),
     }
 
 
@@ -289,16 +519,83 @@ def _qbo_invoices_from_raw(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return [_qbo_invoice_from_raw(invoice) for invoice in invoices]
 
 
-# The Composio QBO list actions are not customer-scoped at the vendor (no
-# Shopify->QBO CustomerRef bridge yet), so a verified customer could otherwise be
-# handed another customer's invoices. Scope the *response* to the authorized owner
-# by matching shopify_customer_id, and drop any invoice we cannot attribute to them
-# (fail-safe: never return unattributable financial data to a customer).
-def _invoice_owned_by_verified(
-    invoice: dict[str, Any], context: "ToolExecutionContext"
-) -> bool:
-    verified_id = _verified_customer_id(context)
-    return bool(verified_id) and invoice.get("shopify_customer_id") == verified_id
+def _require_verified_customer_id(context: "ToolExecutionContext") -> str:
+    """Verified customer's Shopify id (canonical gid), or a governed policy block.
+
+    QBO customer-scoped reads must never run unscoped; an unverified caller owns no
+    invoices, so refuse rather than disclose or fabricate (ADR-0043, FR-21).
+    """
+    verified = _verified_customer_id(context)
+    if not verified:
+        raise ToolDriverError(
+            "policy_blocked", "QuickBooks invoice reads require a verified customer."
+        )
+    return verified if verified.startswith("gid://") else f"gid://shopify/Customer/{verified}"
+
+
+# --- QBO ownership (0.0.4 S27) -----------------------------------------------
+#
+# Live QBO invoices carry NO Shopify id — only ``CustomerRef.value`` (a QBO customer
+# id). So ownership cannot be read off the invoice; it needs the authoritative
+# Shopify<->QBO join in the owner's Gadget ``qboCustomerMapping`` model, under the
+# owner's trust rule (CONFIRMED/AUTO_MATCHED only). Two paths, both fail closed:
+#   - DIRECT linkage (mock/recorded/eval): compare ``shopify_customer_id`` — no
+#     Gadget call, keeps the mock parity and existing recordings correct.
+#   - LIVE (no direct linkage): join through the Gadget bridge. If it cannot
+#     positively attribute (no trusted mapping / ambiguous / Gadget fault) it RAISES
+#     -> governed unavailable, NEVER an empty "you have no invoices" (the S27 bug was
+#     exactly that empty-success door).
+
+
+def _qbo_owned_invoice(
+    invoice: dict[str, Any],
+    context: "ToolExecutionContext",
+    attributor: "QboAttribution",
+) -> dict[str, Any]:
+    """Return the invoice's public shape if the verified customer owns it, else fail closed."""
+    verified = _require_verified_customer_id(context)
+    direct = _direct_owner_gid(invoice)
+    if direct is not None:
+        if direct == verified:
+            return _public_invoice(invoice)
+        raise ToolDriverError("not_found", "No matching invoice for this customer.")
+    qbo_id = _canonical_qbo_id(invoice.get("qbo_customer_id"))
+    if qbo_id is None:
+        # No Shopify linkage and no QBO customer ref: unattributable -> never disclose.
+        raise ToolDriverError("not_found", "Invoice ownership could not be verified.")
+    # Reverse join under the trust rule; raises on fault/missing/ambiguous mapping.
+    if attributor.invoice_owned_by(qbo_id, verified):
+        return _public_invoice(invoice)
+    raise ToolDriverError("not_found", "No matching invoice for this customer.")
+
+
+def _qbo_owned_invoices(
+    invoices: list[dict[str, Any]],
+    context: "ToolExecutionContext",
+    attributor: "QboAttribution",
+) -> list[dict[str, Any]]:
+    """The subset the verified customer owns, or fail closed if it cannot be attributed."""
+    verified = _require_verified_customer_id(context)
+    # Fast path: every invoice is directly attributable -> pure compare, no Gadget.
+    if invoices and all(_direct_owner_gid(inv) is not None for inv in invoices):
+        return [
+            _public_invoice(inv) for inv in invoices if _direct_owner_gid(inv) == verified
+        ]
+    # Live path (incl. an empty vendor page): resolve the verified customer's QBO id
+    # via the Gadget bridge and scope by it. Unresolvable -> RAISE (fail closed);
+    # returning [] here would be the empty-success bug narrated as "you have none".
+    qbo_id = attributor.qbo_customer_id_for(verified)
+    owned: list[dict[str, Any]] = []
+    for inv in invoices:
+        direct = _direct_owner_gid(inv)
+        if direct is not None:
+            if direct == verified:
+                owned.append(inv)
+            continue
+        inv_qbo = _canonical_qbo_id(inv.get("qbo_customer_id"))
+        if inv_qbo is not None and inv_qbo == qbo_id:
+            owned.append(inv)
+    return [_public_invoice(inv) for inv in owned]
 
 
 def _qbo_get_invoice_request(
@@ -315,91 +612,101 @@ def _qbo_get_invoice_request(
 
 
 def _qbo_get_invoice_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    # Shaping only (returns a normalized invoice); ownership is enforced by the driver
+    # via the Gadget attributor (spec.ownership == "single").
     if "invoice" in raw:
-        invoice = _shape_invoice(raw["invoice"])
-    else:
-        invoices = _qbo_invoices_from_raw(raw)
-        if invoices:
-            invoice = invoices[0]
-        elif raw.get("DocNumber") or raw.get("invoice_number"):
-            invoice = _qbo_invoice_from_raw(raw)
-        else:
-            invoice = _shape_invoice(raw.get("invoice", raw))
-    if not _invoice_owned_by_verified(invoice, context):
-        raise ToolDriverError("not_found", "No matching invoice for this customer.")
-    return invoice
+        return _shape_invoice(raw["invoice"])
+    invoices = _qbo_invoices_from_raw(raw)
+    if invoices:
+        return invoices[0]
+    if raw.get("DocNumber") or raw.get("invoice_number"):
+        return _qbo_invoice_from_raw(raw)
+    return _shape_invoice(raw.get("invoice", raw))
 
 
 def _qbo_list_invoices_request(
     _params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    # Response is scoped to the verified owner (see _qbo_list_invoices_response); the
-    # capped fetch just bounds the page the vendor returns.
+    # Response is scoped to the verified owner via the Gadget bridge (see
+    # _qbo_owned_invoices); the capped fetch just bounds the page the vendor returns.
     _verified_customer_id(context)
     return {"max_results": 50}
 
 
 def _qbo_list_invoices_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    # Shaping only (returns normalized invoices); ownership is enforced by the driver
+    # via the Gadget attributor (spec.ownership == "list").
     if "invoices" in raw and all(
         isinstance(invoice, dict) and "invoice_number" in invoice
         for invoice in raw["invoices"]
     ):
-        invoices = [_shape_invoice(invoice) for invoice in raw["invoices"]]
-    else:
-        invoices = _qbo_invoices_from_raw(raw)
-    return [inv for inv in invoices if _invoice_owned_by_verified(inv, context)]
+        return [_shape_invoice(invoice) for invoice in raw["invoices"]]
+    return _qbo_invoices_from_raw(raw)
 
 
-# Fail-closed: the QBO Aged Receivables report is an all-customer aggregate, so a
-# per-customer AR summary cannot be derived from it without misattributing other
-# customers' balances. Gate the Composio path off until a customer-scoped QBO
-# report (or an invoice-level Shopify->QBO bridge) exists; the mock driver still
-# serves a correctly scoped summary for dev/eval.
-_AR_SUMMARY_UNAVAILABLE = ToolDriverError(
+# AR summary (0.0.4 S13, FR-19) is NOT derived from
+# QUICKBOOKS_GET_AGED_RECEIVABLES_REPORT: that report is an ALL-customer aggregate
+# and cannot be scoped to one customer without misattributing another customer's
+# balance -- the exact disclosure S27 exists to prevent. Instead it reuses the S27
+# per-customer list path (QUICKBOOKS_LIST_INVOICES + the Gadget attribution
+# primitive) and aggregates the verified customer's OWN owned invoices via
+# ``ar_summary``. All of S27's fail-closed arms (no mapping / unconfirmed /
+# ambiguous / collision / Gadget fault or timeout) are inherited unchanged, so an
+# unattributable summary is a governed unavailable, never a fabricated/empty "$0".
+# See the ``ownership == "ar_summary"`` branch in ``ComposioDriver.execute``.
+
+# Still fail-closed, but for a DIFFERENT reason than S12's (0.0.4 S26).
+#
+# The owner's 2026-07-22 decision moved this tool from create to RETRIEVE
+# semantics: payment links are pre-created in the Square console and the agent
+# only ever fetches an existing one. The action that implements that is real —
+# ``SQUARE_RETRIEVE_PAYMENT_LINK`` resolves live at pin ``20260616_00`` and takes
+# exactly one parameter, ``{"required": ["id"]}`` (S26 probe). So the ACTION is no
+# longer the blocker. Two things still are, and both are product decisions rather
+# than code:
+#
+#  1. LINK IDENTITY. Retrieve is by the Square-assigned payment link id
+#     ("PAY_LINK_ID_123"). Nothing the agent legitimately holds maps to one — not
+#     the verified ``shopify_customer_id``, not the QBO ``invoice_number``, not the
+#     conversation id — and the toolkit exposes no list/search action to resolve
+#     one at the pin (``SQUARE_LIST_PAYMENT_LINKS`` 404s), so not even a console
+#     naming convention would help. The id can only come from owner-maintained
+#     configuration, whose shape (one fixed link, or a per-invoice map) is the
+#     owner's call. Letting the model supply the id is not an option: retrieving
+#     the WRONG link texts a verified customer someone else's amount (ADR-0148 —
+#     identity- and money-bearing values come from framework context, never the
+#     model).
+#  2. AMOUNT. The public contract returns ``amount`` and ADR-0066 has Hermes
+#     confirm the amount before send. The retrieved ``PaymentLink`` carries only
+#     ``orderId`` — no money field — so the amount needs a SECOND call
+#     (``SQUARE_RETRIEVE_ORDER``), which ADR-0130 forbids for one v1 action.
+#
+# One more trap for whoever wires the mappers: the S26 probe's live execute
+# returned ``successful: true`` with ``data = {"errors": [...], "payment_link":
+# null}`` (the connected account is missing Square's ORDERS_READ scope). Composio
+# calls a vendor-level error a success, and ``data`` IS a dict, so
+# ``_ComposioSdkClient`` passes it straight through. The response mapper must fail
+# closed on ``data["errors"]`` / a null link rather than shape an all-``None``
+# result (ADR-0020). Note also that the live envelope is snake_case
+# (``payment_link``) while the published schema says ``paymentLink``.
+#
+# ponytail: the ceiling is "Composio can retrieve a Square payment link, but
+# nothing in this system knows WHICH one". Upgrade path: the owner names the
+# link-identity source, after which this is an ordinary mapping (request mapper ->
+# ``{"id": ...}``, response mapper -> ``payment_link.url``). Until then it fails
+# closed: a customer must never be sent a fabricated, mock, or wrong-invoice
+# payment link (ADR-0020, FR-21).
+_SQUARE_PAYMENT_LINK_UNAVAILABLE = ToolDriverError(
     "configuration_missing",
-    "Customer-scoped QuickBooks AR summary is unavailable on the live backend "
-    "until a per-customer QBO report is wired.",
+    "Square payment links are unavailable on the live backend: the pre-created "
+    "link to retrieve is not identified by anything this system knows.",
 )
-
-
-def _qbo_ar_summary_request(
-    _params: dict[str, Any], _ctx: "ToolExecutionContext"
-) -> dict[str, Any]:
-    raise _AR_SUMMARY_UNAVAILABLE
-
-
-def _qbo_ar_summary_response(raw: dict[str, Any], ctx: "ToolExecutionContext") -> Any:
-    raise _AR_SUMMARY_UNAVAILABLE  # unreachable (request fails closed); defense in depth
-
-
-# --- square mappers ----------------------------------------------------------
-
-
-def _square_payment_link_request(
-    params: dict[str, Any], _ctx: "ToolExecutionContext"
-) -> dict[str, Any]:
-    return {
-        "invoice_number": _read(params, "invoice_number", "invoiceNumber"),
-        "amount": params.get("amount"),
-    }
-
-
-def _square_payment_link_response(raw: dict[str, Any], context: "ToolExecutionContext") -> Any:
-    link = raw.get("payment_link", raw)
-    # The thread the link is delivered on is a Toee SMS-channel concept, not a Square
-    # field: take it from the bound turn context (ADR-0022/0107), falling back to a
-    # model-supplied param for the unbound path.
-    conversation_id = getattr(context, "conversation_id", None)
-    return {
-        "payment_link_url": link.get("url"),
-        "conversation_id": conversation_id,
-        "amount": link.get("amount"),
-    }
 
 
 # --- one-to-one mapping table (ADR-0130) -------------------------------------
 #
-# Composio toolkit action slugs verified against live Shopify toolkit (staging smoke).
+# Every slug below resolves against the live toolkit at its pinned version —
+# verified by `python -m hermes_runtime.composio_smoke` phase 2 (0.0.4 S12).
 ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ("toee_shopify_read", "get_order"): ActionSpec(
         SHOPIFY,
@@ -423,25 +730,37 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
         SHOPIFY, "SHOPIFY_GET_PRODUCT", _shopify_get_product_request, _shopify_get_product_response
     ),
     ("toee_qbo_read", "get_invoice"): ActionSpec(
-        QBO, "QUICKBOOKS_QUERY_INVOICES", _qbo_get_invoice_request, _qbo_get_invoice_response
+        QBO,
+        "QUICKBOOKS_QUERY_INVOICES",
+        _qbo_get_invoice_request,
+        _qbo_get_invoice_response,
+        ownership="single",
     ),
     ("toee_qbo_read", "list_customer_invoices"): ActionSpec(
         QBO,
         "QUICKBOOKS_LIST_INVOICES",
         _qbo_list_invoices_request,
         _qbo_list_invoices_response,
+        ownership="list",
     ),
     ("toee_qbo_read", "get_ar_summary"): ActionSpec(
         QBO,
-        "QUICKBOOKS_GET_AGED_RECEIVABLES_REPORT",
-        _qbo_ar_summary_request,
-        _qbo_ar_summary_response,
+        # NOT the all-customer aged-receivables report (see note above): compute the
+        # per-customer summary from the SAME list action + attribution S27 built, then
+        # aggregate. Same slug, request mapper, and response mapper as
+        # list_customer_invoices; ownership="ar_summary" scopes + aggregates.
+        "QUICKBOOKS_LIST_INVOICES",
+        _qbo_list_invoices_request,
+        _qbo_list_invoices_response,
+        ownership="ar_summary",
     ),
     ("toee_square_payment_link", "send_payment_link"): ActionSpec(
         SQUARE,
-        "SQUARE_CREATE_PAYMENT_LINK",
-        _square_payment_link_request,
-        _square_payment_link_response,
+        # Retrieve, not create (0.0.4 S26 owner decision). This slug DOES resolve
+        # at the pin — the smoke's surface phase probes it like any other — but the
+        # action stays gated off until the link id has a governed source.
+        "SQUARE_RETRIEVE_PAYMENT_LINK",
+        unavailable=_SQUARE_PAYMENT_LINK_UNAVAILABLE,
     ),
 }
 
@@ -457,11 +776,17 @@ class ComposioDriver:
         *,
         user_id: str | None,
         connected_accounts: dict[str, str],
+        attributor: "QboAttribution | None" = None,
     ) -> None:
         self._client = client
         self._user_id = user_id
         # toolkit key (shopify/qbo/square) -> connected_account_id
         self._connected_accounts = dict(connected_accounts)
+        # QBO Shopify<->QBO attribution bridge (0.0.4 S27). Defaults to an
+        # unconfigured attributor that fails closed per call, so a driver built
+        # without a Gadget key still serves Shopify/Square and only QBO
+        # customer-scoped reads that need the live join fail closed.
+        self._attributor = attributor or _UNCONFIGURED_ATTRIBUTION
 
     def execute(self, request: "ToolRequest", context: "ToolExecutionContext") -> Any:
         spec = ACTION_MAPPING.get((request.tool, request.action))
@@ -472,6 +797,12 @@ class ComposioDriver:
                 "configuration_missing",
                 f"No Composio Layer 1 mapping for '{request.tool}.{request.action}'.",
             )
+
+        if spec.unavailable is not None:
+            # The live toolkit cannot serve this action; never reach the backend and
+            # never fall through to a mock (FR-21). Checked before the connected
+            # account so the message names the real reason, not a missing account.
+            raise spec.unavailable
 
         connected_account_id = self._connected_accounts.get(spec.app)
         if not connected_account_id:
@@ -499,7 +830,38 @@ class ComposioDriver:
                 f"Composio action '{spec.action_slug}' failed: {err}",
             ) from err
 
-        return spec.response_mapper(raw, context)
+        shaped = spec.response_mapper(raw, context)
+        # QBO customer-scoped attribution runs AFTER shaping (0.0.4 S27): the shaped
+        # invoice carries the private qbo_customer_id the Gadget join needs. Both
+        # arms fail closed on an unattributable read rather than disclosing or
+        # emitting an empty success.
+        if spec.ownership == "single":
+            return _qbo_owned_invoice(shaped, context, self._attributor)
+        if spec.ownership == "list":
+            return _qbo_owned_invoices(shaped, context, self._attributor)
+        if spec.ownership == "ar_summary":
+            # Compute the AR summary from the verified customer's OWN owned invoices
+            # (0.0.4 S13). _qbo_owned_invoices reuses S27's attribution and RAISES on
+            # any unattributable read, so the summary fails closed exactly as listing
+            # does -- never a fabricated/empty "$0". A positively-attributed customer
+            # with zero open invoices yields an honest $0 (empty is not error here).
+            verified = _require_verified_customer_id(context)
+            owned = _qbo_owned_invoices(shaped, context, self._attributor)
+            return ar_summary(verified, owned)
+        return shaped
+
+
+# Default attributor for a driver built without a Gadget key (unit tests, or a
+# deployment where the owner-blocked Gadget key is not yet set). Any live-path QBO
+# attribution through it fails closed; direct-linkage (mock/recorded) never reaches it.
+_UNCONFIGURED_ATTRIBUTION = QboAttribution(
+    None,
+    config_error=ToolDriverError(
+        "configuration_missing",
+        "Gadget attribution is not configured; QuickBooks customer-scoped reads are "
+        "unavailable until GADGET_API_KEY is set.",
+    ),
+)
 
 
 def build_composio_driver() -> ComposioDriver:
@@ -508,7 +870,8 @@ def build_composio_driver() -> ComposioDriver:
     This is the ONLY place that imports the optional ``composio`` SDK, lazily, so
     ``import toee_hermes`` works without the SDK installed. A missing
     ``COMPOSIO_API_KEY`` (or absent SDK) is a governed ``configuration_missing``
-    failure rather than a raw crash (ADR-0136).
+    failure rather than a raw crash (ADR-0136) — and, since 0.0.4 S12, so is a
+    missing toolkit-version pin for any configured toolkit.
     """
     api_key = os.environ.get("COMPOSIO_API_KEY")
     if not api_key:
@@ -519,32 +882,314 @@ def build_composio_driver() -> ComposioDriver:
 
     user_id = os.environ.get("COMPOSIO_USER_ID")
     connected_accounts = {
-        toolkit: os.environ.get(env_var)
+        toolkit: value
         for toolkit, env_var in CONNECTED_ACCOUNT_ENV.items()
+        if (value := os.environ.get(env_var))
     }
-    client = _build_sdk_client(api_key)
+    if not connected_accounts:
+        # 0.0.4 S12 fix wave 2: with zero *_CONNECTED_ACCOUNT_ID set,
+        # pinned_toolkit_versions({}) iterates nothing and finds nothing missing,
+        # so this used to return a driver that boots clean and then raises
+        # "configuration_missing" on every single tool call in ComposioDriver.execute
+        # (line ~515) -- exactly the class of bug the boot gate exists to catch
+        # (review Finding 4). A composio driver connected to no vendor account is
+        # unusable, so fail closed here instead of on the first customer turn.
+        raise ToolDriverError(
+            "configuration_missing",
+            "INTEGRATION_DRIVER=composio but no Composio connected account is "
+            "configured; set at least one of: "
+            f"{', '.join(sorted(CONNECTED_ACCOUNT_ENV.values()))}.",
+        )
+    client = _build_sdk_client(api_key, pinned_toolkit_versions(connected_accounts))
     return ComposioDriver(
         client,
         user_id=user_id,
-        connected_accounts={k: v for k, v in connected_accounts.items() if v},
+        connected_accounts=connected_accounts,
+        # Total build (never raises): a missing Gadget key yields an attributor that
+        # fails QBO customer-scoped reads closed per call, not a boot failure (S27,
+        # mirrors the EasyRoutes owner-blocked token, S14).
+        attributor=build_qbo_attribution(),
     )
 
 
-def _toolkit_versions_from_env() -> dict[str, str]:
-    """Read ``COMPOSIO_TOOLKIT_VERSION_<TOOLKIT>`` env vars (staging-smoke verified)."""
-    prefix = "COMPOSIO_TOOLKIT_VERSION_"
-    return {
-        key[len(prefix) :].lower(): value
-        for key, value in os.environ.items()
-        if key.startswith(prefix) and value
-    }
+def pinned_toolkit_versions(connected_accounts: dict[str, str]) -> dict[str, str]:
+    """Version pin per *configured* toolkit, keyed by Composio's toolkit slug.
+
+    Fails closed on a missing pin (0.0.4 S12). Left unpinned, the SDK resolves the
+    toolkit to ``"latest"`` and then raises ``ToolVersionRequiredError`` from inside
+    ``tools.execute`` — a governed failure, but one that arrives on a customer's
+    turn and names neither the toolkit nor the env var. Raising here moves it off
+    the customer's turn; :func:`require_composio_configuration`, called from every
+    composition root, is what actually moves it to process boot.
+    """
+    versions: dict[str, str] = {}
+    missing: list[str] = []
+    for toolkit in connected_accounts:
+        value = (os.environ.get(TOOLKIT_VERSION_ENV[toolkit]) or "").strip()
+        if not value or value == "latest":
+            missing.append(TOOLKIT_VERSION_ENV[toolkit])
+        else:
+            versions[TOOLKIT_SLUG[toolkit]] = value
+    if missing:
+        raise ToolDriverError(
+            "configuration_missing",
+            "Composio toolkit version pin missing or 'latest': "
+            f"{', '.join(sorted(missing))}. Pin each configured toolkit to an "
+            "exact version from the Composio dashboard.",
+        )
+    return versions
 
 
-def _build_sdk_client(api_key: str) -> ComposioClient:
+def composio_config_status() -> dict[str, dict[str, Any]]:
+    """Per-toolkit config presence for the S15/S16 status surface. TOTAL, no secrets.
+
+    Returns ``{toolkit_key: {configured, pinned_version, connected, api_key_present,
+    account_env, version_env}}`` for each Layer-1 toolkit. Reports ONLY booleans and
+    the version-pin STRING (a Composio toolkit version like ``"20250101"`` — a
+    version, not a credential); it NEVER returns the API key or the connected-account
+    id value (NFR-6, secret-scan gate).
+
+    Deliberately never raises (unlike :func:`pinned_toolkit_versions`): a status read
+    must SHOW a half-configured toolkit, not fail closed on it. ``configured`` mirrors
+    exactly what a live call needs — the API key, that toolkit's connected account,
+    and a real (non-``latest``) version pin — so green here means the tool would
+    actually run, not merely that the code path exists.
+    """
+    api_key_present = bool(os.environ.get("COMPOSIO_API_KEY"))
+    result: dict[str, dict[str, Any]] = {}
+    for toolkit in TOOLKIT_SLUG:
+        account_env = CONNECTED_ACCOUNT_ENV[toolkit]
+        version_env = TOOLKIT_VERSION_ENV[toolkit]
+        connected = bool(os.environ.get(account_env))
+        pin = (os.environ.get(version_env) or "").strip()
+        has_pin = bool(pin) and pin != "latest"
+        result[toolkit] = {
+            "configured": api_key_present and connected and has_pin,
+            "pinned_version": pin if has_pin else None,
+            "connected": connected,
+            "api_key_present": api_key_present,
+            "account_env": account_env,
+            "version_env": version_env,
+        }
+    return result
+
+
+def probe_composio_toolkit(toolkit_key: str) -> None:
+    """S16 health probe for one Composio Layer-1 toolkit (FR-24).
+
+    A cheap AUTHENTICATED connected-account status read -- NOT an action execution,
+    so no vendor cost and no customer data crosses. Raises the governed
+    :class:`ToolDriverError` on any fault (missing key/account, SDK absent, vendor
+    error, or a connected account the vendor no longer reports). ``toolkit_key`` is
+    one of ``shopify``/``qbo``/``square``.
+
+    Owner-blocked today (needs ``COMPOSIO_API_KEY`` + the toolkit's connected
+    account). UNVERIFIED wire: the SDK connected-account read surface
+    (``client.connected_accounts.get``) must be confirmed against the live API at
+    cutover -- isolated here, exactly like the ``_ComposioSdkClient`` execute path.
+    The per-call deadline is applied by the S16 probe runner's ThreadPool wrapper.
+    """
+    account_env = CONNECTED_ACCOUNT_ENV[toolkit_key]
+    connected_account_id = os.environ.get(account_env)
+    if not connected_account_id:
+        raise ToolDriverError(
+            "configuration_missing",
+            f"No Composio connected account for '{toolkit_key}': set {account_env}.",
+        )
+    api_key = os.environ.get("COMPOSIO_API_KEY")
+    if not api_key:
+        raise ToolDriverError(
+            "configuration_missing", "COMPOSIO_API_KEY is not set."
+        )
+    try:
+        from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
+    except ImportError as err:
+        raise ToolDriverError(
+            "configuration_missing",
+            "The composio SDK is not installed in this environment.",
+        ) from err
+    try:
+        account = Composio(api_key=api_key).connected_accounts.get(connected_account_id)
+    except Exception as err:  # noqa: BLE001 - convert ANY vendor/SDK error to governed
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio connected-account read failed for '{toolkit_key}': {err}",
+        ) from err
+    _assert_connected_account_active(account, toolkit_key)
+
+
+# CUTOVER ITEM (owner-blocked, no live Composio): the EXACT active-status string is
+# UNVERIFIED. Composio still returns the account record — with a status like INACTIVE/
+# EXPIRED/INITIATED — after a grant is revoked, so checking EXISTENCE would read a dead
+# connection as "Healthy" (the FR-24 expired-credential case, a fail-OPEN the track
+# forbids). So default FAIL-CLOSED: only a status we affirmatively recognize as active
+# passes; anything else (unknown/inactive/None) -> failed. Confirm the real value against
+# a live connected account and widen this set at cutover.
+_ACTIVE_ACCOUNT_STATUSES: frozenset[str] = frozenset({"ACTIVE"})
+
+
+def _connected_account_status(account: Any) -> str:
+    """The account's status as an upper-cased string, or '' if absent/unreadable."""
+    if account is None:
+        return ""
+    status = getattr(account, "status", None)
+    if status is None and isinstance(account, dict):
+        status = account.get("status")
+    return str(status or "").strip().upper()
+
+
+def _assert_connected_account_active(account: Any, toolkit_key: str) -> None:
+    """Fail closed unless the connected account reports an affirmatively-active status.
+
+    An absent account, or one whose status we don't recognize as active (revoked/
+    expired/inactive/unknown), is a FAULT, not a healthy read — never ``ok`` (FR-24).
+    """
+    if account is None:
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio returned no connected account for '{toolkit_key}'.",
+        )
+    status = _connected_account_status(account)
+    if status not in _ACTIVE_ACCOUNT_STATUSES:
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio connected account for '{toolkit_key}' is not active "
+            f"(status={status or 'unknown'}).",
+        )
+
+
+def initiate_composio_reconnect(toolkit_key: str, *, callback_url: str) -> str:
+    """S17 OAuth reconnect (FR-25): generate the connected-account re-auth link.
+
+    A governed admin action (attributed + audited by the datastore handler) asks
+    Composio for a fresh provider authorization URL for THIS toolkit's connected
+    account; the browser is redirected there, re-grants, and the provider returns to
+    ``callback_url`` (which carries the state bound to the admin session). No token
+    ever touches the workbench -- Composio holds the credentials; we only hand the
+    admin a link and get one back (the track's spine).
+
+    Fails closed: a missing key/account, an absent SDK, a vendor error, or a response
+    without a usable redirect URL raises the governed :class:`ToolDriverError` -- the
+    admin sees "couldn't start reconnect", never a fabricated success. ``toolkit_key``
+    is one of ``shopify``/``qbo``/``square`` (only Composio-managed connections have an
+    OAuth flow; the static-token integrations reconnect via guided env rotation +
+    re-probe, S17's other shape).
+
+    UNVERIFIED live wire (owner-blocked, no live Composio): the EXACT SDK re-auth
+    surface is confirmed at cutover -- isolated in :func:`_reauth_redirect_url`,
+    exactly like the ``_ComposioSdkClient`` execute path and ``probe_composio_toolkit``.
+    A wrong guess raises here and fails closed; it can never invent a link.
+    """
+    if toolkit_key not in CONNECTED_ACCOUNT_ENV:
+        raise ToolDriverError(
+            "unexpected_error",
+            f"'{toolkit_key}' is not a Composio-managed connection.",
+        )
+    account_env = CONNECTED_ACCOUNT_ENV[toolkit_key]
+    connected_account_id = os.environ.get(account_env)
+    if not connected_account_id:
+        raise ToolDriverError(
+            "configuration_missing",
+            f"No Composio connected account for '{toolkit_key}': set {account_env}.",
+        )
+    api_key = os.environ.get("COMPOSIO_API_KEY")
+    if not api_key:
+        raise ToolDriverError("configuration_missing", "COMPOSIO_API_KEY is not set.")
+    try:
+        from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
+    except ImportError as err:
+        raise ToolDriverError(
+            "configuration_missing",
+            "The composio SDK is not installed in this environment.",
+        ) from err
+    try:
+        redirect_url = _reauth_redirect_url(
+            Composio(api_key=api_key), connected_account_id, callback_url
+        )
+    except Exception as err:  # noqa: BLE001 - any vendor/SDK/attribute fault -> governed
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio re-auth link generation failed for '{toolkit_key}': {err}",
+        ) from err
+    if not isinstance(redirect_url, str) or not redirect_url:
+        # Fail closed: no usable URL means the reconnect cannot proceed. Never
+        # return the callback_url itself (that would land the admin back on the page
+        # as if reconnected without ever re-granting).
+        raise ToolDriverError(
+            "composio_api_error",
+            f"Composio returned no re-auth redirect URL for '{toolkit_key}'.",
+        )
+    return redirect_url
+
+
+# CUTOVER ITEM (owner-blocked, no live Composio): the EXACT re-auth SDK surface is
+# UNVERIFIED. Composio's connected-account re-authorization returns a hosted provider
+# authorization URL; the attribute/method spelling below is a best guess against the
+# 0.15.0 SDK and MUST be confirmed against a live connected account at cutover. Any
+# mismatch raises (caught by the caller -> governed composio_api_error), so a wrong
+# guess fails closed and never fabricates a link.
+def _reauth_redirect_url(
+    client: Any, connected_account_id: str, callback_url: str
+) -> str | None:
+    """Best-guess SDK call for a connected-account re-auth URL. UNVERIFIED."""
+    request = client.connected_accounts.initiate(
+        connected_account_id=connected_account_id,
+        callback_url=callback_url,
+    )
+    # Defensive extraction: the SDK envelope may be a model or a dict.
+    for attr in ("redirect_url", "redirectUrl"):
+        value = getattr(request, attr, None)
+        if value is None and isinstance(request, dict):
+            value = request.get(attr)
+        if value:
+            return str(value)
+    return None
+
+
+def require_composio_configuration() -> None:
+    """Boot gate: refuse to start a tool-executing process on a broken Composio config.
+
+    ``build_composio_driver`` is reached from ``_build_driver_selector``, which runs
+    per ``boot_profile()`` — i.e. once per TURN, not once per process. So without
+    this, a missing ``COMPOSIO_TOOLKIT_VERSION_*`` produced a clean boot followed by
+    a first-turn crash: the ``ToolDriverError`` escapes ``register_turn`` as a raw
+    exception, where dispatch expects a governed result. The runbook told operators
+    to "watch for ``configuration_missing`` at boot"; this is what makes that true
+    (fix wave 1, review Finding 4).
+
+    Also fails closed on ``INTEGRATION_DRIVER=composio`` with zero
+    ``*_CONNECTED_ACCOUNT_ID`` variables set (fix wave 2, review Finding 5) --
+    without a connected account, ``pinned_toolkit_versions({})`` has nothing to
+    check, so this case used to boot clean and then fail every single tool call.
+
+    Called from every composition root that can execute a tool: the gateway, the
+    turn worker, the background worker, and the per-profile dispatch server. No-op
+    unless ``INTEGRATION_DRIVER=composio``.
+    """
+    if resolve_integration_driver() == "composio":
+        build_composio_driver()
+
+
+def deadline_seconds() -> float:
+    """Per-call backend deadline in seconds (``COMPOSIO_DEADLINE_MS``, NFR-8)."""
+    raw = os.environ.get(DEADLINE_ENV, "").strip()
+    try:
+        return (float(raw) if raw else DEFAULT_DEADLINE_MS) / 1000
+    except ValueError:
+        return DEFAULT_DEADLINE_MS / 1000
+
+
+def _build_sdk_client(api_key: str, toolkit_versions: dict[str, str]) -> ComposioClient:
     """Lazily import the Composio SDK and wrap it behind :class:`ComposioClient`.
 
-    Kept out of module import so ``toee_hermes`` stays dependency-free (ADR-0137);
-    the exact SDK call surface and response envelope are verified at staging smoke.
+    Kept out of module import so ``toee_hermes`` stays dependency-free (ADR-0137).
+    ``max_retries=0`` is deliberate: the SDK's default retries multiply the
+    timeout, so retries would make ``deadline_seconds()`` a per-attempt bound
+    instead of a per-call one (NFR-8). A transient 5xx therefore fails closed on
+    this turn rather than eating the turn's whole budget. The timeout is the
+    deadline divided by ``_ROUND_TRIPS_PER_EXECUTE`` for the same reason: the SDK
+    makes three HTTP requests per ``execute``, so an undivided budget would be a
+    3x-larger bound than the one NFR-8 states.
     """
     try:
         from composio import Composio  # type: ignore  # optional dep, lazy (ADR-0137)
@@ -554,21 +1199,34 @@ def _build_sdk_client(api_key: str) -> ComposioClient:
             "The composio SDK is not installed in this environment.",
         ) from err
 
-    kwargs: dict[str, Any] = {"api_key": api_key}
-    toolkit_versions = _toolkit_versions_from_env()
-    if toolkit_versions:
-        kwargs["toolkit_versions"] = toolkit_versions
-    return _ComposioSdkClient(Composio(**kwargs))
+    return _ComposioSdkClient(
+        Composio(
+            api_key=api_key,
+            toolkit_versions=toolkit_versions,
+            timeout=deadline_seconds() / _ROUND_TRIPS_PER_EXECUTE,
+            max_retries=0,
+        )
+    )
 
 
 class _ComposioSdkClient:
     """Thin adapter from the Composio SDK to the :class:`ComposioClient` Protocol.
 
-    The exact SDK method, argument names, and response envelope
-    (``successful``/``data``/``error``) are confirmed during staging smoke; any
-    failure is translated to a governed :class:`ToolDriverError` so no raw vendor
-    or Composio error leaks (ADR-0136). Untested here by design: it requires the
-    SDK + network, which is a documented MANUAL smoke step, not a unit test.
+    Pinned against ``composio`` 0.15.0 (the hermes-runtime dependency), 0.0.4 S12:
+
+    - call surface — ``Tools.execute(slug, arguments, *, connected_account_id=None,
+      user_id=None, version=None, ...)``. ``slug`` and ``arguments`` are positional;
+      everything else is keyword-only.
+    - envelope — ``ToolExecutionResponse``, a plain ``dict`` with exactly
+      ``{"data": dict, "error": str | None, "successful": bool}``. The SDK
+      ``model_dump()``s the HTTP response before returning, so it is never a model.
+    - version — resolved per call from the SDK-level ``toolkit_versions`` map
+      (see :func:`pinned_toolkit_versions`); an unpinned toolkit raises
+      ``ToolVersionRequiredError`` here rather than silently drifting to latest.
+
+    Every failure is translated to a governed :class:`ToolDriverError` so no raw
+    vendor or Composio error leaks (ADR-0136). Not unit-tested: it needs the SDK
+    plus network, which is what ``hermes_runtime.composio_smoke`` covers.
     """
 
     def __init__(self, sdk: Any) -> None:
@@ -582,20 +1240,56 @@ class _ComposioSdkClient:
         connected_account_id: str | None,
         user_id: str | None,
     ) -> dict[str, Any]:
-        # ponytail: SDK surface verified at staging smoke; upgrade path is to pin the
-        # exact Composio v3 method + envelope once confirmed against live toolkits.
         result = self._sdk.tools.execute(
             action,
-            user_id=user_id,
+            params,
             connected_account_id=connected_account_id,
-            arguments=params,
+            user_id=user_id,
         )
-        if isinstance(result, dict):
-            if result.get("successful") is False:
-                raise ToolDriverError(
-                    "composio_api_error",
-                    f"Composio reported failure for '{action}': {result.get('error')}",
-                )
-            data = result.get("data")
-            return data if isinstance(data, dict) else result
-        return result  # type: ignore[return-value]
+        if not result.get("successful", False):
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio reported failure for '{action}': {result.get('error')}",
+            )
+        data = result.get("data")
+        if not isinstance(data, dict):
+            # Fail closed rather than hand a mapper an envelope it would silently
+            # shape into an all-``None`` "result" (ADR-0020: never fabricate data).
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio returned no data object for '{action}'.",
+            )
+        # Composio calls a VENDOR-level error a transport success: the S26 Square
+        # probe returned ``successful: true`` with ``data = {"errors": [...],
+        # "payment_link": null}`` (missing scope). ``successful`` and a dict ``data``
+        # both pass the checks above, so without this guard a vendor fault would flow
+        # to the mapper and be shaped into an all-``None`` result narrated as fact
+        # (ADR-0020). Inspect both ``data`` and any nested ``response_data`` for a
+        # non-empty ``errors``/``error``/``Fault`` and fail closed. Today only Square
+        # emits this shape (and it is gated off), so this is latent — but it stops the
+        # class at the single chokepoint both ``execute`` and the ack path route through.
+        vendor_error = _vendor_error_in_payload(data)
+        if vendor_error is not None:
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio reported a vendor error for '{action}': {vendor_error}",
+            )
+        return data
+
+
+def _vendor_error_in_payload(data: dict[str, Any]) -> Any | None:
+    """A non-empty ``errors``/``error``/``Fault`` in ``data`` or nested ``response_data``.
+
+    Returns the offending value (for the audit message) or ``None`` when the payload
+    carries no vendor-level error.
+    """
+    nested = data.get("response_data")
+    containers = [data]
+    if isinstance(nested, dict):
+        containers.append(nested)
+    for container in containers:
+        for key in ("errors", "error", "Fault"):
+            value = container.get(key)
+            if value:  # non-empty list / dict / string
+                return value
+    return None

@@ -574,6 +574,58 @@ def test_clear_preference_verified_external_customer_clears_own_slot_and_audits(
     assert details["initiator"] == "customer"
 
 
+# --- self-service-usage counter (0.0.4 S21, FR-30) --------------------------
+
+
+def _self_service_metric_count(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM metric_event WHERE metric = 'self_service_usage'"
+        )
+        return cur.fetchone()[0]
+
+
+def test_customer_clear_emits_exactly_one_self_service_counter(datastore) -> None:
+    # S21/FR-30: a verified-customer clear that actually removes a slot emits
+    # one self_service_usage counter, in the SAME transaction (pooled conn).
+    driver, conn, _ = datastore
+    identity = VERIFIED
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+    assert _self_service_metric_count(conn) == 0
+
+    cleared = _run(driver, "clear_preference", {"key": "channel_preference"}, identity=identity)
+    assert cleared.ok
+    assert _self_service_metric_count(conn) == 1
+
+
+def test_rep_clear_emits_no_self_service_counter(datastore) -> None:
+    # Only a CUSTOMER-initiated clear is self-service; a rep clear does not count.
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550096"}
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+
+    cleared = _run(
+        driver, "clear_preference", {"key": "channel_preference"},
+        identity=identity, profile="internal_copilot", user_id="acct_sup_1",
+    )
+    assert cleared.ok
+    assert _self_service_metric_count(conn) == 0
+
+
+def test_customer_clear_counter_does_not_double_count_on_replay(datastore) -> None:
+    # Once-only fence: a redelivered clear of an already-empty slot deletes 0
+    # rows (rowcount gate) and emits no second counter.
+    driver, conn, _ = datastore
+    identity = VERIFIED
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+    assert _run(driver, "clear_preference", {"key": "channel_preference"}, identity=identity).ok
+    assert _run(driver, "clear_preference", {"key": "channel_preference"}, identity=identity).ok  # replay
+    assert _self_service_metric_count(conn) == 1
+
+
 def test_clear_preference_unverified_external_caller_is_policy_blocked(datastore) -> None:
     # FR-21/US13: a provisional (unmatched/ambiguous) EXTERNAL caller must
     # still be policy_blocked -- a resolvable provisional binding is not

@@ -28,7 +28,53 @@ Pagination, field selection, and minor response normalization inside one Composi
 | `toee_shopify_read.get_order` | one Shopify order-read toolkit action |
 | `toee_shopify_read.search_products` | one Shopify product-search toolkit action |
 | `toee_qbo_read.get_invoice` | one QuickBooks invoice-read toolkit action |
-| `toee_square_payment_link.send_payment_link` | one Square payment-link toolkit action |
+| `toee_square_payment_link.send_payment_link` | one Square payment-link **retrieve** toolkit action — mapped but still gated, see the correction and resolution below |
+
+> **Correction (0.0.4 S12, 2026-07-22).** The last row was never true. Composio's
+> Square toolkit exposes **no create-payment-link action at any version**: the live
+> surface probe found only `SQUARE_RETRIEVE_PAYMENT_LINK` at pin `20260616_00`, the
+> previously mapped `SQUARE_CREATE_PAYMENT_LINK` 404s at `latest` too, and a
+> catalog-wide search returns a create action for Flutterwave, Razorpay, Stripe and
+> Poof but not Square. `toee_square_payment_link.send_payment_link` therefore fails
+> closed on the Composio backend (`ActionSpec.unavailable`) rather than mapping to
+> anything.
+>
+> The mapping RULE this ADR decides is unaffected — this records a fact about the
+> vendor, not a change of decision. The ADR's own escape hatch ("if Composio does
+> not expose one toolkit action that can satisfy a required v1 `action`, that action
+> uses direct REST in the adapter implementation instead") is the path this gap
+> would take. **Which path to take is the owner's product decision and is still
+> pending**; nothing is decided here.
+
+> **Resolution (0.0.4 S26, 2026-07-22).** The owner chose **retrieve semantics**:
+> payment links are pre-created in the Square console, and the agent only ever
+> fetches an existing link and sends it — it never creates one. The row above now
+> names `SQUARE_RETRIEVE_PAYMENT_LINK`, which the S26 live probe confirms resolves
+> at pin `20260616_00` and takes exactly one parameter, `{"required": ["id"]}`.
+> Neither the direct-REST escape hatch nor a one-to-many exception is needed for
+> the retrieve itself: it is one Composio call for one v1 action, exactly what this
+> ADR's rule allows.
+>
+> **The action nevertheless stays gated off** (`ActionSpec.unavailable`), for two
+> reasons this ADR cannot decide:
+>
+> - **Link identity.** Retrieve is by the Square-assigned payment link id. Nothing
+>   the agent legitimately holds — the verified `shopify_customer_id`, the QBO
+>   `invoice_number`, the conversation id — maps to one, and the toolkit exposes no
+>   list/search action at the pin (`SQUARE_LIST_PAYMENT_LINKS` 404s), so even a
+>   console naming convention could not be resolved to an id. The id can therefore
+>   only come from owner-maintained configuration. Taking it from the model is not
+>   an option: a wrong id texts a verified customer a real link for someone else's
+>   amount — exactly what ADR-0148 forbids.
+> - **Amount.** The public contract returns `amount`, and ADR-0066 has Hermes
+>   confirm the amount before send. The retrieved `PaymentLink` carries only
+>   `orderId` — no money field — so recovering the amount needs a second call
+>   (`SQUARE_RETRIEVE_ORDER`), which **this ADR forbids** for one v1 action. Either
+>   the owner accepts a send with no confirmed amount, or this action needs the
+>   documented one-to-many exception under "Future exceptions" below.
+>
+> Both are owner decisions. Until they land, the Square row records the action the
+> driver *would* call and the driver fails closed instead of calling it.
 
 ## Eval and mock stability
 

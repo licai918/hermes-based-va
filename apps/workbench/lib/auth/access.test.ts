@@ -38,6 +38,29 @@ describe("canAccess", () => {
     expect(canAccess(admin, "/api/admin/accounts")).toBe(true);
   });
 
+  it("gates the integrations page to admin-only, not supervisor (0.0.4 S15, FR-23)", () => {
+    // A credential surface: narrower than the rest of /admin/* on purpose.
+    expect(canAccess(rep, "/admin/integrations")).toBe(false);
+    expect(canAccess(supervisor, "/admin/integrations")).toBe(false);
+    expect(canAccess(supervisor, "/api/admin/integrations")).toBe(false);
+    expect(canAccess(admin, "/admin/integrations")).toBe(true);
+    expect(canAccess(admin, "/api/admin/integrations")).toBe(true);
+  });
+
+  it("keeps the S17 reconnect + callback subpaths admin-only (FR-25)", () => {
+    // The reconnect/reprobe routes and the externally-reachable OAuth callback all
+    // sit under /api/admin/integrations, so they inherit the admin-only gate -- a
+    // supervisor cannot start a reconnect or drive the callback.
+    for (const path of [
+      "/api/admin/integrations/reconnect",
+      "/api/admin/integrations/reprobe",
+      "/api/admin/integrations/callback",
+    ]) {
+      expect(canAccess(supervisor, path)).toBe(false);
+      expect(canAccess(admin, path)).toBe(true);
+    }
+  });
+
   it("allows everyone on ungated paths", () => {
     for (const role of [rep, supervisor, admin]) {
       expect(canAccess(role, "/login")).toBe(true);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { hashPassword, validatePassword, verifyPassword } from "./password";
+import { hashPassword, validatePassword } from "./password";
 
 describe("validatePassword", () => {
   it("rejects passwords shorter than 12 characters", () => {
@@ -40,25 +40,11 @@ describe("validatePassword", () => {
   });
 });
 
-describe("hashPassword / verifyPassword", () => {
-  it("round-trips: verify is true for the correct password", () => {
-    const stored = hashPassword("Workbench123!");
-    expect(verifyPassword("Workbench123!", stored)).toBe(true);
-  });
-
-  it("is false for the wrong password", () => {
-    const stored = hashPassword("Workbench123!");
-    expect(verifyPassword("WrongPassword9", stored)).toBe(false);
-  });
-
-  it("returns false (never throws) for malformed stored strings", () => {
-    expect(verifyPassword("x", "not-a-valid-hash")).toBe(false);
-    expect(verifyPassword("x", "")).toBe(false);
-    expect(verifyPassword("x", "scrypt$onlytwo")).toBe(false);
-    expect(verifyPassword("x", "bcrypt$aa$bb")).toBe(false);
-    expect(verifyPassword("x", "scrypt$zz$zz")).toBe(false);
-  });
-
+// 0.0.4 S09: verification moved to toee_workbench_admin.authenticate, so the only
+// thing left to pin here is that admin-created accounts are hashed in the format
+// the Python side parses (ADR-0144; hermes-runtime's TS_GENERATED_HASH test is the
+// other half of that contract).
+describe("hashPassword", () => {
   it("uses a random salt so two hashes of the same password differ", () => {
     expect(hashPassword("Workbench123!")).not.toBe(hashPassword("Workbench123!"));
   });

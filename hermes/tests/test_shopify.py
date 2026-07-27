@@ -85,6 +85,17 @@ def test_get_order_returns_order_for_verified_owner() -> None:
     assert result.data["line_items"] == [
         {"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}
     ]
+    # S30 parity: get_order carries the same fulfillment block the composio driver
+    # projects, so the agent answers delivery status from the order.
+    assert result.data["fulfillment"] == {
+        "state": "in_transit",
+        "shipment_status": "in_transit",
+        "tracking": {
+            "number": "ER-1042",
+            "url": "https://api.easyroutes.app/orders/status/route-7-stop-4",
+            "company": "EasyRoutes",
+        },
+    }
 
 
 def test_get_order_blocks_unmatched_caller() -> None:
@@ -122,6 +133,16 @@ def test_list_customer_orders_returns_only_owned_orders() -> None:
             "line_items": [
                 {"sku": "TIRE-225-60R16", "title": "All-Season 225/60R16"}
             ],
+            # S30: order 1042's native fulfillment (in_transit, EasyRoutes tracking).
+            "fulfillment": {
+                "state": "in_transit",
+                "shipment_status": "in_transit",
+                "tracking": {
+                    "number": "ER-1042",
+                    "url": "https://api.easyroutes.app/orders/status/route-7-stop-4",
+                    "company": "EasyRoutes",
+                },
+            },
         }
     ]
 
@@ -193,6 +214,15 @@ def test_get_product_matches_by_sku() -> None:
 
     assert result.ok is True
     assert result.data["product_id"] == BASELINE_PRODUCT_ID
+
+
+def test_get_product_exposes_variants_with_sku_for_delivery_promise() -> None:
+    # S31b: the agent picks a size from `variants` and feeds its sku to Tier 3a
+    # get_product_promise{sku}. Each variant carries its sku + a human option label.
+    result = _call("get_product", {"sku": "TIRE-225-60R16"})
+    assert result.ok is True
+    variants = result.data["variants"]
+    assert variants == [{"sku": "TIRE-225-60R16", "option": "All-Season 225/60R16"}]
 
 
 def test_get_product_not_found_is_unexpected_error() -> None:

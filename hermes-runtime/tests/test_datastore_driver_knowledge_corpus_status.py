@@ -144,7 +144,15 @@ def test_get_corpus_status_is_read_only_no_audit_row_on_the_business_conn(datast
         driver=driver,
     )
     assert result.ok is True
-    assert set(result.data) == {"doc_count", "chunk_count", "last_ingest_at", "by_type"}
+    # last_ingest_job (0.0.4 S04) is the re-ingest panel's status readback -- the
+    # only key here read from the BUSINESS conn, and still a pure read.
+    assert set(result.data) == {
+        "doc_count",
+        "chunk_count",
+        "last_ingest_at",
+        "by_type",
+        "last_ingest_job",
+    }
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM workbench_audit_log")
         assert cur.fetchone()[0] == 0

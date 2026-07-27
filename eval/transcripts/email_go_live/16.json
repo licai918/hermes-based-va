@@ -1,0 +1,40 @@
+{
+  "final_response": "Thank you for your interest. We're not pursuing new marketing services at this time, but I've noted your outreach for our records.\n\nToee Tire Customer Support",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nSubject: Marketing services inquiry\n\nHi, I'm from Best SEO Services and wanted to offer you a marketing package."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": null,
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_0",
+          "call_id": "call_0",
+          "response_item_id": "fc_0",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"sales_outreach\", \"summary\": \"Best SEO Services marketing outreach; low priority.\", \"urgency\": \"low\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_6b138302\", \"status\": \"open\", \"contact_reason\": \"sales_outreach\", \"urgency\": \"low\", \"summary\": \"Best SEO Services marketing outreach; low priority.\"}",
+      "tool_call_id": "call_0"
+    },
+    {
+      "role": "assistant",
+      "content": "Thank you for your interest. We're not pursuing new marketing services at this time, but I've noted your outreach for our records.\n\nToee Tire Customer Support",
+      "reasoning": null,
+      "finish_reason": "stop"
+    }
+  ]
+}

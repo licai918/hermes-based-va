@@ -31,6 +31,9 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_shopify_read",
             "toee_qbo_read",
             "toee_easyroutes_read",
+            # 0.0.4 S31b: live delivery-promise endpoint (Tier 2 order status +
+            # Tier 3a product promise) — a verified customer's own delivery reads.
+            "toee_delivery_promise",
             "toee_square_payment_link",
             "toee_sms_reply",
             "toee_case",
@@ -45,6 +48,8 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_shopify_read",
             "toee_qbo_read",
             "toee_easyroutes_read",
+            # 0.0.4 S31b: copilot answers the same delivery questions as external.
+            "toee_delivery_promise",
             "toee_identity_lookup",
             "toee_case_manage",
             "toee_copilot_draft",
@@ -72,6 +77,22 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             "toee_workbench_admin",
             "toee_workbench_read",
             "toee_knowledge_search",
+            # 0.0.4 S05 (FR-13): the dead-letter view + governed Replay. An
+            # OPERATIONS surface, so the workbench gates it to supervisor+admin
+            # (ADR-0093 gives /admin/* exactly that) rather than admin-only --
+            # deliberately different from a credential surface. Both actions are
+            # in _AGENT_EXCLUDED_ACTIONS, so registering the toolset here exposes
+            # nothing to a live agent's tool loop; it is what lets the admin BFF's
+            # deterministic tools:dispatch reach it over this profile's API.
+            "toee_job_queue",
+            # 0.0.4 S15 (FR-23): the /admin/integrations status read. A CREDENTIAL
+            # surface, so the workbench gates it to admin-only (lib/auth/access.ts),
+            # deliberately NARROWER than the supervisor+admin dead-letter operations
+            # view above -- integrations touch credentials, dead letters touch
+            # operations (gap-review P4). Allowlisted here because the admin BFF
+            # dispatches it over this profile's API, mirroring toee_job_queue; the
+            # single action is agent-excluded, so nothing reaches a model tool loop.
+            "toee_integrations",
         }
     ),
 }

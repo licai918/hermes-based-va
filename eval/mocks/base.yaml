@@ -31,6 +31,15 @@ shopify:
       line_items:
         - sku: "TIRE-225-60R16"
           title: "All-Season 225/60R16"
+      # S30 (FR-20): delivery status from the order's native Shopify fulfillment
+      # (EasyRoutes writes it back). Matches easyroutes.delivery_a (in_transit).
+      fulfillment:
+        state: in_transit
+        shipment_status: in_transit
+        tracking:
+          number: "ER-1042"
+          url: "https://api.easyroutes.app/orders/status/route-7-stop-4"
+          company: EasyRoutes
 
 qbo:
   email_links:

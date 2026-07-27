@@ -1,132 +1,24 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { WORKBENCH_ROLES } from "@toee/shared";
-import { createInMemoryAccountStore } from "../../auth/account-store";
-import type { WorkbenchSession } from "../../auth/session";
-import { createInMemoryEvalStore } from "../../gateway/eval-store";
-import {
-  createInMemoryKnowledgeStore,
-  type KnowledgeStore,
-  type PolicySlot,
-} from "../../gateway/knowledge-store";
+import { describe, expect, it } from "vitest";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
-import type { AdminDeps } from "./deps";
 import {
   handleGetCorpusStatusViaApi,
-  handleListSlots,
   handleListSlotsViaApi,
   handleProbeQueryViaApi,
-  handleRollbackSlot,
   handleRollbackSlotViaApi,
-  handleSaveDraft,
   handleSaveDraftViaApi,
-  handleSubmitSlot,
   handleSubmitSlotViaApi,
+  handleTriggerReingestViaApi,
+  mapCorpusStatus,
+  mapReingestQueued,
+  type PolicySlot,
 } from "./knowledge";
 
-const NOW = 1_700_000_000_000;
-
-// Eval + account stores are never read or mutated by the knowledge handlers, so
-// build them once (the account store seeds via scrypt, which is slow).
-const evalStore = createInMemoryEvalStore([]);
-const accounts = createInMemoryAccountStore(0);
-
-let knowledge: KnowledgeStore;
-
-beforeEach(() => {
-  knowledge = createInMemoryKnowledgeStore();
-});
-
-const session: WorkbenchSession = {
-  accountId: "seed-supervisor",
-  username: "supervisor",
-  role: WORKBENCH_ROLES.supervisor,
-  lastActivityAt: NOW,
-};
-
-function deps(): AdminDeps {
-  return { knowledge, evalStore, accounts, session, now: NOW };
-}
-
-function putReq(body: unknown): Request {
-  return new Request("http://localhost/api/admin/knowledge/slots/x", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-}
-
-describe("handleListSlots", () => {
-  it("returns every required policy slot", async () => {
-    const res = handleListSlots(deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { slots: PolicySlot[] };
-    expect(body.slots).toHaveLength(6);
-    expect(body.slots.map((s) => s.slotId)).toContain("business-hours");
-  });
-});
-
-describe("handleSaveDraft", () => {
-  it("saves draft text and flips an empty slot to draft", async () => {
-    const res = await handleSaveDraft(
-      putReq({ draftText: "Returns accepted within 30 days." }),
-      "returns-exchanges",
-      deps(),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { slot: PolicySlot };
-    expect(body.slot.draftText).toBe("Returns accepted within 30 days.");
-    expect(body.slot.status).toBe("draft");
-  });
-
-  it("404s an unknown slot", async () => {
-    const res = await handleSaveDraft(
-      putReq({ draftText: "anything" }),
-      "ghost-slot",
-      deps(),
-    );
-    expect(res.status).toBe(404);
-  });
-});
-
-describe("handleSubmitSlot", () => {
-  it("submits a draft slot for eval", async () => {
-    const res = handleSubmitSlot("order-delivery", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { slot: PolicySlot };
-    expect(body.slot.status).toBe("pending_eval");
-  });
-
-  it("409s when the slot has no draft", async () => {
-    const res = handleSubmitSlot("returns-exchanges", deps());
-    expect(res.status).toBe(409);
-    expect((await res.json()) as { error: string }).toEqual({
-      error: "slot has no draft to submit",
-    });
-  });
-
-  it("404s an unknown slot", () => {
-    expect(handleSubmitSlot("ghost-slot", deps()).status).toBe(404);
-  });
-});
-
-describe("handleRollbackSlot", () => {
-  it("rolls a published slot back to its previous version", async () => {
-    const res = handleRollbackSlot("business-hours", deps());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { slot: PolicySlot };
-    expect(body.slot.status).toBe("published");
-    expect(body.slot.publishedText).toBe("Open Mon–Fri 9am–5pm.");
-  });
-
-  it("409s when there is no previous published version", async () => {
-    const res = handleRollbackSlot("payment-methods", deps());
-    expect(res.status).toBe(409);
-  });
-
-  it("404s an unknown slot", () => {
-    expect(handleRollbackSlot("ghost-slot", deps()).status).toBe(404);
-  });
-});
+// 0.0.4 S09 deleted the in-memory KnowledgeStore. Slot state transitions
+// (empty->draft on first text, draft->pending_eval on submit, rollback to the
+// previous published version) are datastore behavior now and surface as governed
+// verdicts; what stays here is the BFF's own contract: the dispatched envelope,
+// the snake_case -> PolicySlot mapping + its contract-violation rejections, and
+// the per-class status.
 
 // --- Per-profile API cutover (ADR-0141/0145 Increment 6) ---------------------
 // The knowledge-slot routes dispatch toee_knowledge_ops to the per-profile API
@@ -391,6 +283,8 @@ describe("handleGetCorpusStatusViaApi", () => {
         { pageType: "faq", count: 40 },
         { pageType: "policy", count: 127 },
       ],
+      // 0.0.4 S04: null until a re-ingest has been queued.
+      lastIngestJob: null,
     });
     const s = sent as SentDispatch | null;
     expect(s?.tool).toBe("toee_knowledge_ops");
@@ -485,5 +379,102 @@ describe("handleProbeQueryViaApi", () => {
     );
     const res = await handleProbeQueryViaApi(probeReq({ query: "x" }), client);
     expect(res.status).toBe(502);
+  });
+});
+
+// --- 0.0.4 S04: real re-ingest enqueue + status readback (FR-11) --------------
+
+describe("handleTriggerReingestViaApi", () => {
+  it("dispatchWrites enqueue_corpus_reingest and returns the job receipt", async () => {
+    let sent: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      sent = JSON.parse(init.body as string) as SentDispatch;
+      return new Response(
+        JSON.stringify({ ok: true, data: { job_id: "job_ing1", status: "queued" } }),
+        { status: 200 },
+      );
+    }, WRITE_ACTOR);
+
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jobId: "job_ing1", status: "queued" });
+    const s2 = sent as SentDispatch | null;
+    expect(s2?.tool).toBe("toee_knowledge_ops");
+    expect(s2?.action).toBe("enqueue_corpus_reingest");
+    // A corpus wipe-and-reload never lands unattributed.
+    expect(s2?.actor_account_id).toBe(WRITE_ACTOR);
+  });
+
+  it("refuses a write with no attributed actor before the network call", async () => {
+    const client = apiClient(
+      async () => new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 }),
+      "",
+    );
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(403);
+  });
+
+  it("accepts the mock backend's null job id (there is no `job` table behind it)", async () => {
+    const client = apiClient(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: { job_id: null, status: "unavailable" } }), {
+          status: 200,
+        }),
+      WRITE_ACTOR,
+    );
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ jobId: null, status: "unavailable" });
+  });
+
+  it("rejects a receipt with no status instead of defaulting it to 'queued'", async () => {
+    // S04 fix wave 1, finding 5: aligned with retention.ts's mapRetentionSweepQueued.
+    // A defaulted status would show a plausible "queued" panel over a backend that
+    // never queued anything.
+    const client = apiClient(
+      async () =>
+        new Response(JSON.stringify({ ok: true, data: { job_id: "job_x" } }), { status: 200 }),
+      WRITE_ACTOR,
+    );
+    const res = await handleTriggerReingestViaApi(client);
+    expect(res.status).toBe(502);
+  });
+});
+
+describe("get_corpus_status's last_ingest_job readback", () => {
+  it("maps the queued job so the panel can show it", async () => {
+    const client = apiClient(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            doc_count: 0,
+            chunk_count: 0,
+            last_ingest_at: null,
+            by_type: [],
+            last_ingest_job: {
+              job_id: "job_ing1",
+              status: "dead",
+              attempts: 1,
+              last_error: "RuntimeError: fastembed OOM",
+              queued_at: "2026-07-21T08:00:00+00:00",
+              updated_at: "2026-07-21T08:01:00+00:00",
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const res = await handleGetCorpusStatusViaApi(client);
+    const body = (await res.json()) as { status: { lastIngestJob: unknown } };
+    expect(body.status.lastIngestJob).toEqual({
+      jobId: "job_ing1",
+      status: "dead",
+      attempts: 1,
+      lastError: "RuntimeError: fastembed OOM",
+      queuedAt: "2026-07-21T08:00:00+00:00",
+      updatedAt: "2026-07-21T08:01:00+00:00",
+    });
   });
 });

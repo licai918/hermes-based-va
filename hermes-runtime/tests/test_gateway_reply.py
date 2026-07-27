@@ -114,7 +114,7 @@ def test_gateway_turn_runner_sends_the_derived_reply_to_the_context_conversation
         ),
     )
 
-    runner(SimpleNamespace(conversation_id="conv-A"), "Where is my order?")
+    runner(SimpleNamespace(event_id="evt-A", conversation_id="conv-A"), "Where is my order?", "job-A")
 
     assert sent == [("conv-A", "Shipped!")]
 
@@ -128,7 +128,7 @@ def test_gateway_turn_runner_delivers_fallback_not_the_blocked_body() -> None:
         ),
     )
 
-    runner(SimpleNamespace(conversation_id="conv-A"), "Where is my order?")
+    runner(SimpleNamespace(event_id="evt-A", conversation_id="conv-A"), "Where is my order?", "job-A")
 
     assert sent == [("conv-A", "Sorry.")]
     assert "LEAK" not in sent[0][1]
@@ -143,9 +143,9 @@ def test_gateway_turn_runner_invokes_on_reply_sent_after_delivery() -> None:
         ),
         on_reply_sent=lambda ctx, text: mirrored.append((ctx, text)),
     )
-    ctx = SimpleNamespace(conversation_id="conv-A")
+    ctx = SimpleNamespace(event_id="evt-A", conversation_id="conv-A")
 
-    runner(ctx, "Where is my order?")
+    runner(ctx, "Where is my order?", "job-A")
 
     assert mirrored == [(ctx, "Shipped!")]
 
@@ -178,6 +178,7 @@ def test_email_turn_mirrors_its_reply_without_a_provider_send() -> None:
     context = SimpleNamespace(
         # An email payload can carry a phone-shaped conversation_id; the SMS
         # sender would happily dial it.
+        event_id="evt-email-1",
         conversation_id="+15551234567",
         channel="simulated_email",
     )

@@ -26,6 +26,13 @@ STUB_TOOLS = (
     "toee_knowledge_ops",
     "toee_eval_review",
     "toee_workbench_admin",
+    # 0.0.4 S05 (FR-13): the dead-letter view. Postgres-only tables behind it, so
+    # the twin reports an honest empty view / "unavailable" replay receipt.
+    "toee_job_queue",
+    # 0.0.4 S15 (FR-23): the /admin/integrations status read. Live config presence
+    # is the datastore handler's job; the mock twin reports every integration
+    # not_configured with an honest reason, never a fabricated "healthy".
+    "toee_integrations",
 )
 
 # A superset of the snake_case identifiers any stub action might echo back.
@@ -74,7 +81,7 @@ def test_every_stub_action_is_callable_and_deterministic(tool: str, action: str)
     assert first.data == second.data
 
 
-def test_registry_covers_exactly_the_six_tools_and_all_catalog_actions() -> None:
+def test_registry_covers_exactly_the_stub_tools_and_all_catalog_actions() -> None:
     registry = create_admin_stub_mock_handlers()
 
     assert set(registry) == set(STUB_TOOLS)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -23,11 +24,7 @@ from fastapi import FastAPI, Request, Response
 
 from toee_hermes.drivers.mock import MockDriver, create_all_mock_handlers
 from toee_hermes.execute import ToolDriver
-from toee_hermes.gateway.agent_turn import (
-    AgentJobPayload,
-    AgentTurnContext,
-    to_job_payload,
-)
+from toee_hermes.gateway.agent_turn import AgentJobPayload, AgentTurnContext
 from toee_hermes.gateway.normalize import (
     InboundChannelEvent,
     SmsInboundFields,
@@ -42,12 +39,15 @@ from toee_hermes.gateway.rate_limit import (
 )
 
 from hermes_runtime.agent_turn_job import AgentJobOutcome, execute_agent_turn_job
-from hermes_runtime.gateway_store import (
-    GatewayStore,
-    InMemoryGatewayStore,
-    InMemoryJobQueue,
-    JobQueue,
+from hermes_runtime.gateway_store import GatewayStore, InMemoryGatewayStore
+from hermes_runtime.outbound_send import (
+    OPT_OUT_SLOT,
+    InMemoryOutboundSendLog,
+    OutboundSendBurned,
+    deliver_once,
 )
+
+logger = logging.getLogger(__name__)
 
 # SimpleTexting does not sign webhook payloads (ADR-0153): authenticity is a
 # shared secret token in the registered webhook URL, read from this query param.
@@ -67,7 +67,10 @@ ReplySender = Callable[[str, str], None]
 # production runner boots the External profile agent with the loaded session
 # context and replies via governed toee_sms_reply (ADR-0107); tests inject a
 # fake. run_live_turn is the eval harness, not this production seam.
-TurnRunner = Callable[[AgentTurnContext, str], None]
+# The third argument is the durable queue's job id (0.0.4 S03): half the outbound
+# idempotency key, so it is framework context, never payload or model output
+# (ADR-0148). None on this app's ADR-0106 parity route, which has no job row.
+TurnRunner = Callable[[AgentTurnContext, str, Optional[str]], None]
 
 # resolved_at clock for the Session Identity Snapshot (injectable for determinism).
 Clock = Callable[[], str]
@@ -152,37 +155,65 @@ def create_app(
     is_duplicate: Optional[DuplicateCheck] = None,
     clock: Optional[Clock] = None,
     store: Optional[GatewayStore] = None,
-    queue: Optional[JobQueue] = None,
     internal_job_secret: Optional[str] = None,
     turn_runner: Optional[TurnRunner] = None,
+    outbound_log: Optional[Any] = None,
 ) -> FastAPI:
     """Build the SMS/email gateway app from its injected collaborators.
 
     Defaults are mock-first (ADR-0137) and in-memory (ADR-0140 dev substrate): an
     unconfigured app boots against the mock driver, a fresh in-process rate limiter,
-    and an in-memory store/queue. The deployment composition root injects the
-    resolved integration driver, the durable idempotency check, the real SimpleTexting
-    reply client, and the Postgres-backed store and Cloud Tasks queue.
+    and an in-memory store. The deployment composition root injects the resolved
+    integration driver, the durable idempotency check, the real SimpleTexting reply
+    client, the Postgres-backed store, and the durable ``outbound_log`` that fences
+    the opt-out confirmation against a webhook redelivery (FR-12).
+
+    There is no ``queue`` seam: enqueuing the turn job is the store's job, so that
+    it shares the persist transaction (see :meth:`GatewayStore.persist_accepted_inbound`).
+    To observe or run the enqueued turn in a test, inject the queue into the store
+    (``InMemoryGatewayStore(queue=...)``).
     """
     driver = driver or MockDriver(create_all_mock_handlers())
     rate_limiter = rate_limiter or create_inbound_rate_limiter()
     is_duplicate = is_duplicate or _never_duplicate
     clock = clock or _utc_now_iso
     store = store or InMemoryGatewayStore()
-    queue = queue or InMemoryJobQueue()
+    # FR-12: the opt-out confirmation is an outbound send too, so it needs the same
+    # record. Defaults in-memory for the DB-free callers, same reasoning as
+    # make_gateway_turn_runner -- never an unguarded branch.
+    outbound_log = outbound_log if outbound_log is not None else InMemoryOutboundSendLog()
 
     app = FastAPI()
 
     def _dispatch_decision(decision) -> Response:
         # Shared tail for both ingress routes (SMS + simulated email): send the one
-        # fixed opt-out confirmation when required, then persist + enqueue an accepted
-        # turn before acking (memory is the source of truth, ADR-0105/0107). Only
+        # fixed opt-out confirmation when required, then hand an accepted turn to the
+        # store before acking (memory is the source of truth, ADR-0105/0107). Only
         # opt-out and enqueue decisions act here; duplicate/rate-limited/retry/reject
         # just map their status.
-        # Claim before sending, not after: the provider does not sign webhooks, so
-        # a captured request replays verbatim, and this branch persists no context
-        # for is_duplicate to catch. claim_event is the compare-and-set that makes
-        # the confirmation at-most-once (ADR-0016) instead of one SMS per replay.
+        #
+        # persist_accepted_inbound persists AND enqueues, in one transaction. The
+        # route deliberately does not enqueue: an enqueue here is a second commit
+        # boundary, and a crash inside it loses a message this response has already
+        # acked -- with no redelivery to save it, since the persisted context makes
+        # the retry a `duplicate` upstream of this function (US3, S02 fix wave 1).
+        #
+        # The confirmation goes through the SAME deliver_once wrap as the agent
+        # reply (FR-12, fix wave 1 finding 2). It is not covered by the
+        # `idempotency` stage upstream: that stage's `is_duplicate` reads
+        # `agent_turn_context`, and the opt_out branch returns before
+        # persist_accepted_inbound ever writes such a row -- so a redelivered STOP
+        # is NOT seen as a duplicate and used to text a second confirmation. There
+        # is no job here, so the key is derived from the event identity alone
+        # (`no-job:{event_id}:opt-out`), which is the same fencing the ADR-0106
+        # parity route already relies on: enforcement is on `event_id`.
+        #
+        # `claim_event` (main, ADR-0153) stays in front of it and is not redundant:
+        # SimpleTexting does not sign webhooks, so a captured request replays
+        # verbatim, and this branch persists no context for is_duplicate to catch.
+        # It is the compare-and-set that stops the replay before it reaches the
+        # sender; deliver_once is the durable record that the send itself is
+        # at-most-once. Both, because they fail closed on different failures.
         if (
             decision.action == "opt_out"
             and reply_sender is not None
@@ -190,11 +221,36 @@ def create_app(
             and decision.reply is not None
             and store.claim_event(decision.event.event_id)
         ):
-            reply_sender(decision.event.conversation_id, decision.reply)
+            event, confirmation = decision.event, decision.reply
+            try:
+                deliver_once(
+                    log=outbound_log,
+                    job_id=None,
+                    event_id=event.event_id,
+                    conversation_id=event.conversation_id,
+                    channel=event.channel,
+                    slot=OPT_OUT_SLOT,
+                    deliver=lambda: reply_sender(event.conversation_id, confirmation),
+                )
+            except OutboundSendBurned:
+                # Fix wave 2 finding 1: a burned key is non-retryable by
+                # definition. process_inbound short-circuits at the opt_out
+                # stage on every redelivery of this STOP -- the customer IS
+                # opted out and no turn is ever enqueued -- so 500ing forever
+                # only risks the provider backing off or disabling this
+                # endpoint for every OTHER customer's inbound webhook (ADR-0103
+                # rejects non-200 for a post-decision outbound failure;
+                # ADR-0104 assigns opt-out 200). The failed row is the durable
+                # record an operator reads (S05's dead-letter/audit view).
+                logger.error(
+                    "Customer %s (event %s) is opted out but never received "
+                    "the ADR-0016 confirmation text -- the send failed and "
+                    "the outbound_send key is now permanently spent",
+                    event.conversation_id,
+                    event.event_id,
+                )
         if decision.action == "enqueue":
-            context, created = store.persist_accepted_inbound(decision)
-            if created:
-                queue.enqueue(to_job_payload(context))
+            store.persist_accepted_inbound(decision)
         return Response(status_code=decision.status)
 
     @app.get("/healthz")
@@ -229,10 +285,19 @@ def create_app(
         if is_ignored_simpletexting_webhook(payload):
             return Response(status_code=200)
 
+        fields = parse_simpletexting_fields(payload)
+        if not fields.event_id:
+            # Fix wave 2 finding 2: every outbound_send row is keyed on
+            # event_id alone (migration 0012, UNIQUE(event_id)). A blank id --
+            # missing `id`/`post.uuid` -- would collapse a different customer's
+            # STOP confirmation or reply onto this same row. Fail closed, same
+            # shape as the signature/staleness checks above.
+            return Response(status_code=401)
+
         decision = process_inbound(
             token=token,
             secret=webhook_secret,
-            fields=parse_simpletexting_fields(payload),
+            fields=fields,
             driver=driver,
             rate_limiter=rate_limiter,
             resolved_at=clock(),
@@ -259,10 +324,15 @@ def create_app(
         if not verify_webhook_token(token=token, secret=webhook_secret):
             return Response(status_code=401)
 
+        event = parse_simulated_email_event(payload)
+        if not event.event_id:
+            # Fix wave 2 finding 2 (same guard as the SMS route above).
+            return Response(status_code=401)
+
         decision = process_inbound(
             token=token,
             secret=webhook_secret,
-            event=parse_simulated_email_event(payload),
+            event=event,
             driver=driver,
             rate_limiter=rate_limiter,
             resolved_at=clock(),

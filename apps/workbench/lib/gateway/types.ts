@@ -1,13 +1,13 @@
 // Workbench Gateway domain types (ADR-0027 Copilot Gateway, ADR-0029 assignment +
 // audit, ADR-0079 case queue, ADR-0082 thread context, ADR-0037 auto-handled,
-// ADR-0085/0086 audit views). These back the in-memory GatewayStore that is the
-// Slice-2 source of truth; Slice 3 swaps the store for Postgres without changing
-// these shapes.
-import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/domain-adapters";
+// ADR-0085/0086 audit views). These are the workbench's WIRE shapes: hermes-map.ts
+// validates each snake_case datastore row onto them (0.0.4 S09 deleted the
+// in-memory store they were originally written for; the shapes did not change).
+import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/shared";
 
 // Re-exported so the rest of the BFF/gateway layer imports the slot union from
-// "./types" alongside everything else, without drifting from the domain-adapters
-// driver's own slot names (ADR-0111).
+// "./types" alongside everything else, without drifting from the @toee/shared
+// contract's own slot names (ADR-0111, S07/FR-6).
 export type { MemoryPreferenceSlot };
 
 export type CaseChannel = "sms" | "email" | "voice";
@@ -118,9 +118,9 @@ export interface CaseListFilter {
 // preference slots as read/corrected from the Workbench; any slot not yet set is
 // simply absent rather than present with an empty value.
 //
-// Re-exported (not re-declared) from domain-adapters (S09, FR-7): the mock
-// driver's MEMORY_PREFERENCE_SLOTS is the single source, so a fifth slot can't
-// silently drift between the two copies.
+// Re-exported (not re-declared) from @toee/shared (S07, FR-6; formerly
+// domain-adapters until S09, FR-7): MEMORY_PREFERENCE_SLOTS is the single
+// source, so a fifth slot can't silently drift between the two copies.
 export const PREFERENCE_SLOTS: readonly MemoryPreferenceSlot[] = MEMORY_PREFERENCE_SLOTS;
 
 export type CustomerPreferences = Partial<Record<MemoryPreferenceSlot, string>>;

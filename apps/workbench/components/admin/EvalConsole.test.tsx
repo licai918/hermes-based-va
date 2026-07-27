@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { EvalRunReport, EvalRunSummary } from "@/lib/gateway/eval-store";
+import type { EvalRunReport, EvalRunSummary } from "@/lib/bff/admin/eval";
 import { ErrorBannerProvider } from "@/components/shell/error-banner";
 import { EvalConsole, EvalConsoleView } from "./EvalConsole";
 

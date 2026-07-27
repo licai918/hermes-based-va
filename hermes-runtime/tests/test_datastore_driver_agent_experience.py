@@ -312,6 +312,46 @@ def test_confirm_experience_on_unknown_id_is_not_found(datastore) -> None:
     assert result.error_class == "not_found"
 
 
+def _l6_metric_count(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM metric_event WHERE metric = 'l6_confirmed_entries'"
+        )
+        return cur.fetchone()[0]
+
+
+def test_confirm_experience_emits_exactly_one_l6_counter(datastore) -> None:
+    # S21/FR-30: a real confirm event emits one l6_confirmed_entries counter,
+    # in the SAME transaction as the status transition (pooled conn, atomic).
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="Route 12 prefers mornings.")
+    assert _l6_metric_count(conn) == 0
+
+    result = _confirm(driver, user_id="acct_admin_1", id=proposed.data["id"])
+    assert result.ok
+    assert _l6_metric_count(conn) == 1
+
+
+def test_reject_experience_emits_no_l6_counter(datastore) -> None:
+    # Only a confirm counts; a reject is not an L6-confirmed entry.
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="x")
+    result = _reject(driver, user_id="acct_admin_2", id=proposed.data["id"])
+    assert result.ok
+    assert _l6_metric_count(conn) == 0
+
+
+def test_confirm_counter_does_not_double_count_on_replay(datastore) -> None:
+    # Once-only fence: a redelivered confirm hits the already-decided no-op
+    # branch (WHERE status='proposed' matches nothing) and emits no second row.
+    driver, conn, _ = datastore
+    proposed = _propose(driver, kind="note", content="x")
+    entry_id = proposed.data["id"]
+    assert _confirm(driver, user_id="acct_admin_1", id=entry_id).ok
+    assert _confirm(driver, user_id="acct_admin_1", id=entry_id).ok  # replay
+    assert _l6_metric_count(conn) == 1
+
+
 def test_confirm_experience_on_already_decided_entry_is_a_safe_no_op(datastore) -> None:
     # Idempotency-safe against real Postgres: a second decision never
     # re-decides or corrupts the persisted row.

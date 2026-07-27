@@ -66,18 +66,6 @@ def _insert_audit_log(conn, *, action: str, details: dict) -> None:
     conn.commit()
 
 
-def _insert_agent_experience(conn, *, status: str) -> None:
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO agent_experience (id, kind, status, content, source)
-            VALUES (%s, 'note', %s, 'x', 'copilot_agent')
-            """,
-            (f"aexp_{uuid.uuid4().hex}", status),
-        )
-    conn.commit()
-
-
 def _insert_metric_event(conn, *, metric: str, flag: bool) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -99,10 +87,11 @@ def test_empty_datastore_returns_zeroed_metrics_not_an_error(datastore) -> None:
     assert data["merge_count"] == 0
     assert data["correction_count"] == 0
     assert data["proposal_outcomes"] == {"accepted": 0, "dismissed": 0, "rate": None}
-    assert data["self_service_usage"]["count"] == 0
-    assert data["self_service_usage"]["proxy"] is True
-    assert data["l6_confirmed_entries"]["count"] == 0
-    assert data["l6_confirmed_entries"]["proxy"] is True
+    # S21/FR-30: real once-per-action counters, plain ints, no proxy wrapper.
+    assert data["self_service_usage"] == 0
+    assert data["l6_confirmed_entries"] == 0
+    assert "proxy" not in repr(data["self_service_usage"])
+    assert "proxy" not in repr(data["l6_confirmed_entries"])
     # Advisory, judge-sampled, never gating -- honestly labeled non-live.
     assert data["honored_rate"]["live"] is False
     assert data["honored_rate"]["rate"] is None
@@ -123,11 +112,6 @@ def test_aggregate_metrics_over_seeded_rows(datastore) -> None:
     _insert_merge_audit(conn)
 
     _insert_audit_log(conn, action="proposal_dismissed", details={"slot": "x"})
-    _insert_audit_log(conn, action="preference_cleared", details={"initiator": "customer"})
-    _insert_audit_log(conn, action="preference_cleared", details={"initiator": "rep"})  # not self-service
-
-    _insert_agent_experience(conn, status="confirmed")
-    _insert_agent_experience(conn, status="proposed")  # excluded
 
     _insert_metric_event(conn, metric="memory_injection", flag=True)
     _insert_metric_event(conn, metric="memory_injection", flag=True)
@@ -135,6 +119,10 @@ def test_aggregate_metrics_over_seeded_rows(datastore) -> None:
     _insert_metric_event(conn, metric="knowledge_search", flag=True)
     _insert_metric_event(conn, metric="knowledge_search", flag=False)
     _insert_metric_event(conn, metric="knowledge_search", flag=False)
+    # S21/FR-30: real governed-action counters -- plain totals over metric_event.
+    _insert_metric_event(conn, metric="self_service_usage", flag=True)
+    _insert_metric_event(conn, metric="l6_confirmed_entries", flag=True)
+    _insert_metric_event(conn, metric="l6_confirmed_entries", flag=True)
 
     result = _get_metrics(driver)
     assert result.ok, result
@@ -148,5 +136,5 @@ def test_aggregate_metrics_over_seeded_rows(datastore) -> None:
     assert data["proposal_outcomes"]["dismissed"] == 1
     # accept is inferred from employee_confirmed writes (no distinct audit action).
     assert data["proposal_outcomes"]["accepted"] == 1
-    assert data["self_service_usage"]["count"] == 1  # only the customer-initiated clear
-    assert data["l6_confirmed_entries"]["count"] == 1  # only the confirmed row
+    assert data["self_service_usage"] == 1  # one emitted self-service-usage event
+    assert data["l6_confirmed_entries"] == 2  # two emitted L6-confirm events

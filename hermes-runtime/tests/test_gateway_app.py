@@ -18,7 +18,6 @@ from hermes_runtime.gateway_app import (
     create_app,
 )
 from hermes_runtime.gateway_store import InMemoryGatewayStore, InMemoryJobQueue
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 from toee_hermes.gateway.opt_out import SMS_OPT_OUT_CONFIRMATION
 
@@ -97,9 +96,9 @@ def test_webhook_accepts_a_request_with_the_registered_token() -> None:
 
 
 def test_webhook_accepts_live_incoming_message_report() -> None:
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     raw = _inbound_payload(
         body="Hi", from_phone="7786803250", event_id="evt-st-live"
@@ -136,6 +135,97 @@ def test_opt_out_inbound_acks_200_and_sends_one_fixed_confirmation() -> None:
     assert sent == [("+14165550188", SMS_OPT_OUT_CONFIRMATION)]
 
 
+def test_a_redelivered_stop_sends_exactly_one_confirmation() -> None:
+    # FR-12, fix wave 1 finding 2. The opt-out branch returns from process_inbound
+    # BEFORE persist_accepted_inbound, so no agent_turn_context row is ever written
+    # for a STOP -- which means `is_duplicate` (which reads exactly that table)
+    # never sees a redelivered STOP as a duplicate. Until this fix, a webhook
+    # redelivery -- which providers do routinely -- texted the customer a second
+    # confirmation. The guard is the same deliver_once wrap the agent reply uses,
+    # keyed off the event identity; no job row required.
+    sent: list[tuple[str, str]] = []
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
+    )
+    client = TestClient(app)
+    raw = _inbound_payload(
+        body="STOP", event_id="evt-stop-redelivered", from_phone="+14165550199"
+    )
+
+    first = _post(client, raw)
+    redelivery = _post(client, raw)
+
+    assert (first.status_code, redelivery.status_code) == (200, 200)
+    assert sent == [("+14165550199", SMS_OPT_OUT_CONFIRMATION)]
+
+
+def test_a_burned_opt_out_confirmation_acks_200_and_does_not_retry_the_send() -> None:
+    # Fix wave 2 finding 1. The FIRST send raising burns the outbound_send row
+    # (status='failed') -- that first request's own 500 is the real failure and
+    # is unchanged. Every REDELIVERY of that same STOP after the burn must not
+    # 500 forever (ADR-0104 assigns opt-out 200; ADR-0103 rejects non-200 for a
+    # post-decision outbound failure) and must never call reply_sender again --
+    # process_inbound already short-circuits at opt_out on every delivery, so the
+    # customer is opted out either way; only the confirmation text is lost.
+    calls: list[str] = []
+
+    def failing_reply_sender(conversation_id: str, text: str) -> None:
+        calls.append(conversation_id)
+        raise RuntimeError("provider outage")
+
+    app = create_app(webhook_secret=WEBHOOK_SECRET, reply_sender=failing_reply_sender)
+    client = TestClient(app, raise_server_exceptions=False)
+    raw = _inbound_payload(
+        body="STOP", event_id="evt-stop-burned", from_phone="+14165550199"
+    )
+
+    first = _post(client, raw)
+    redelivery = _post(client, raw)
+
+    assert first.status_code == 500  # the genuine first-send failure, unchanged
+    assert redelivery.status_code == 200  # burned key must not 500 forever
+    assert calls == ["+14165550199"]  # exactly one send attempt, never retried
+
+
+def test_webhook_rejects_an_event_with_a_blank_event_id() -> None:
+    # Fix wave 2 finding 2. Every outbound_send row is keyed on event_id alone
+    # (migration 0012, UNIQUE(event_id)) -- a blank id collapses two different
+    # customers' events onto one row, silently losing the second customer's
+    # opt-out confirmation or reply. Reject at parse time, same fail-closed
+    # shape (401, no body) as the URL-token check in this route.
+    #
+    # `parse_simpletexting_fields` falls back to `reportId` when `messageId` is
+    # missing, so a blank id means BOTH are blank -- which is what this builds by
+    # hand rather than through _inbound_payload.
+    sent: list[tuple[str, str]] = []
+    app = create_app(
+        webhook_secret=WEBHOOK_SECRET,
+        reply_sender=lambda conversation_id, text: sent.append((conversation_id, text)),
+    )
+    client = TestClient(app)
+    raw = json.dumps(
+        {
+            "reportId": "",
+            "webhookId": "wh-1",
+            "type": "INCOMING_MESSAGE",
+            "values": {
+                "messageId": "",
+                "text": "STOP",
+                "accountPhone": "9053378266",
+                "contactPhone": "+15551230000",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "category": "SMS",
+            },
+        }
+    ).encode("utf-8")
+
+    response = _post(client, raw)
+
+    assert response.status_code == 401
+    assert sent == []
+
+
 def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
     # A non-opt-out inbound is acked (ADR-0103 fast-ack); the gateway sends no
     # compliance reply itself — the agent turn (enqueued) owns any response.
@@ -158,9 +248,9 @@ def test_normal_inbound_acks_200_without_sending_a_compliance_reply() -> None:
 def test_accepted_inbound_persists_context_and_enqueues_one_job() -> None:
     # ADR-0105/0107: an accepted turn is persisted (memory is the source of truth)
     # and a minimal job (eventId + conversationId) is enqueued for the async run.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     raw = _inbound_payload(
         body="Do you have 225/65R17 in stock?",
@@ -190,9 +280,9 @@ def test_accepted_inbound_persists_context_and_enqueues_one_job() -> None:
 def test_opt_out_inbound_persists_no_context_and_enqueues_nothing() -> None:
     # Only accepted (enqueue) decisions start a turn (ADR-0115): opt-out persists no
     # AgentTurnContext and enqueues no job.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     raw = _inbound_payload(body="STOP", event_id="evt-stop")
 
@@ -233,7 +323,7 @@ def test_internal_agent_turn_requires_the_internal_job_secret() -> None:
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
-        turn_runner=lambda context, body: runs.append(context.event_id),
+        turn_runner=lambda context, body, job_id: runs.append(context.event_id),
     )
     client = TestClient(app)
 
@@ -250,15 +340,14 @@ def test_internal_agent_turn_runs_the_turn_for_a_matching_authed_job() -> None:
     # End-to-end: a webhook persists + enqueues, then the internal job route reloads
     # the context by eventId, verifies the binding (ADR-0107), and runs the turn
     # with the loaded session context and inbound body.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
+    store = InMemoryGatewayStore(queue=queue)
     runs: list[tuple[str, str, str]] = []
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=queue,
-        turn_runner=lambda context, body: runs.append(
+        turn_runner=lambda context, body, job_id: runs.append(
             (context.event_id, context.conversation_id, body)
         ),
     )
@@ -290,7 +379,7 @@ def test_internal_agent_turn_404_when_context_is_unknown() -> None:
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
-        turn_runner=lambda context, body: runs.append(context.event_id),
+        turn_runner=lambda context, body, job_id: runs.append(context.event_id),
     )
     client = TestClient(app)
 
@@ -310,8 +399,8 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
     # is derived and delivered to the inbound turn's conversation. The model is the
     # only fake (scripted provider); the agent loop, governed dispatch, and turn
     # binding are all real.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
+    store = InMemoryGatewayStore(queue=queue)
     sent: list[tuple[str, str]] = []
     reply_body = "Your order TOEE-1001 shipped today - tracking to follow."
 
@@ -340,7 +429,6 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=queue,
         turn_runner=make_gateway_turn_runner(
             reply_sender=lambda conv, text: sent.append((conv, text)),
             run_turn=run_turn,
@@ -367,64 +455,6 @@ def test_internal_agent_turn_runs_a_real_bound_turn_and_delivers_the_reply() -> 
     assert sent == [("+14165550101", reply_body)]
 
 
-def test_webhook_alone_drives_the_reply_through_the_local_dispatcher() -> None:
-    # ADR-0105 local substrate: with the in-process LocalDispatchingJobQueue there is
-    # no Cloud Tasks and no manual internal-route call -- a single tokened webhook
-    # fast-acks and the dispatcher runs the bound turn, deriving + delivering the
-    # reply. This is the end-to-end loop a locally-booted app actually executes.
-    store = InMemoryGatewayStore()
-    sent: list[tuple[str, str]] = []
-    reply_body = "We have 225/65R17 in stock - want me to text a payment link?"
-
-    def run_turn(context, inbound_body):
-        return run_gateway_turn(
-            conversation_id=context.conversation_id,
-            inbound_body=inbound_body,
-            system_message="You are Toee Tire support.",
-            scripted_completions=[
-                {
-                    "tool_calls": [
-                        {
-                            "name": "toee_sms_reply__send_message",
-                            "arguments": {
-                                "conversation_id": context.conversation_id,
-                                "body": reply_body,
-                            },
-                        }
-                    ]
-                },
-                {"content": "Done - texted them the stock update."},
-            ],
-        )
-
-    turn_runner = make_gateway_turn_runner(
-        reply_sender=lambda conv, text: sent.append((conv, text)),
-        run_turn=run_turn,
-    )
-    app = create_app(
-        webhook_secret=WEBHOOK_SECRET,
-        internal_job_secret=JOB_SECRET,
-        store=store,
-        # Synchronous dispatch keeps the assertion deterministic; the daemon-thread
-        # default is exercised in test_job_dispatch.
-        queue=LocalDispatchingJobQueue(
-            store=store, turn_runner=turn_runner, dispatch=lambda work: work()
-        ),
-        turn_runner=turn_runner,
-    )
-    client = TestClient(app)
-    raw = _inbound_payload(
-        body="Do you have 225/65R17?",
-        from_phone="+14165550101",
-        event_id="evt-local",
-    )
-
-    assert _post(client, raw).status_code == 200
-
-    # No internal-route call: the dispatcher alone drove the bound turn + reply.
-    assert sent == [("+14165550101", reply_body)]
-
-
 # --- verify-before-ignore (ADR-0021 fail-closed) ------------------------------
 
 
@@ -437,9 +467,9 @@ def test_ignored_report_type_with_bad_token_is_rejected() -> None:
 def test_ignored_report_types_with_valid_token_still_ack_200() -> None:
     # One webhook registration can carry several triggers; only INCOMING_MESSAGE
     # starts a turn — delivery/outgoing/unsubscribe reports ack without agent work.
-    store = InMemoryGatewayStore()
     queue = InMemoryJobQueue()
-    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store, queue=queue)
+    store = InMemoryGatewayStore(queue=queue)
+    app = create_app(webhook_secret=WEBHOOK_SECRET, store=store)
     client = TestClient(app)
     for report_type in ("OUTGOING_MESSAGE", "DELIVERY_REPORT", "UNSUBSCRIBE_REPORT"):
         raw = _inbound_payload(body="x", report_type=report_type)

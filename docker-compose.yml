@@ -1,8 +1,49 @@
-# Local-first Toee Business Datastore (ADR-0140 system-of-record, ADR-0142
-# local-first). Brings up a Postgres equivalent to the deferred Cloud SQL target
-# so the datastore, migrations, and per-profile API servers run end-to-end
-# locally. Apply schema with:  uv run python -m hermes_runtime.datastore.migrate
-# (prefix HERMES_APPLY_DEV_SEED=1 to also seed the local-dev demo accounts + cases).
+# Local-first Toee stack (ADR-0140 system-of-record, ADR-0142 local-first).
+#
+# THE ENTRY POINT IS `pnpm dev` (scripts/dev-up.mjs), not this file directly.
+# That script sequences the phases below, waits on real readiness signals, and
+# then starts the workbench dev server on the host. See apps/workbench/README.md.
+#
+# Phases (what `pnpm dev` does with this file):
+#   1. `docker compose up -d --wait postgres`        -> pg_isready healthcheck
+#   2. `docker compose run --rm --build migrate`     -> both DBs, dev seed
+#   3. `docker compose up -d --wait <the rest>`      -> /healthz healthchecks
+#
+# Running `docker compose up -d` by hand skips phase 2, so the servers come up
+# against an unmigrated database. Run the `migrate` service first if you do.
+#
+# Every hermes-runtime service shares ONE image (`toee-hermes-runtime:local`) so
+# the uv sync is paid once; they differ only by command and environment.
+x-hermes-runtime: &hermes-runtime
+  build:
+    context: .
+    dockerfile: hermes-runtime/Dockerfile
+  image: toee-hermes-runtime:local
+  env_file:
+    # Secrets + integration config (OPENROUTER_API_KEY, COMPOSIO_*, INTERNAL_JOB_SECRET).
+    # Optional so `docker compose up postgres` still works on a checkout nobody
+    # has configured yet. Note `environment:` below WINS over this file.
+    - path: ./hermes-runtime/.env
+      required: false
+  restart: unless-stopped
+
+# In-network DSNs (they override the localhost-shaped ones in hermes-runtime/.env)
+# plus the 0.0.4 S02 boot requirement. Every process that touches the durable path
+# needs all three: the gateway persists a turn context and a *different* process
+# reloads it, which only the shared datastore backend allows.
+x-datastore-env: &datastore-env
+  DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_va
+  # The SEPARATE knowledge database (S-ISO). Unset it and knowledge retrieval
+  # inside a container resolves the localhost default, which is not this Postgres.
+  KNOWLEDGE_DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_knowledge
+  TOOL_BACKEND: datastore
+  # 0.0.4 S18 (FR-26): compose is NEVER prod, so every service here gets an explicit
+  # non-prod label. This is what lets the scripted-eval seam ARM under its allowlist
+  # guard (scripted_eval.require_scripted_eval_prod_inert) -- both the gateway and the
+  # turn-worker read EVAL_SCRIPTED_MODE from env_file, so both hit that guard. Defaults
+  # to `development` locally; the CI harness job overrides it to `ci` via the shell env.
+  DEPLOY_ENVIRONMENT: ${DEPLOY_ENVIRONMENT:-development}
+
 services:
   postgres:
     image: postgres:16
@@ -24,6 +65,211 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Turn worker (0.0.4 S02, FR-9/FR-10, ADR-0155). Claims `agent_turn` jobs only --
+  # FR-9 isolation IS the claim allowlist, so a slow background job (S04) can never
+  # queue ahead of a customer turn. Same image as the gateway, different command;
+  # the gateway process now only enqueues.
+  #
+  #   docker compose up -d turn-worker      (needs a configured hermes-runtime/.env)
+  turn-worker:
+    <<: *hermes-runtime
+    container_name: toee-va-turn-worker
+    command: ["uv", "run", "--frozen", "python", "-m", "hermes_runtime.turn_worker"]
+    environment:
+      # DSNs + the TOOL_BACKEND=datastore boot requirement: the worker reloads the
+      # context the gateway persisted (ADR-0107), which an in-memory store cannot cross.
+      <<: *datastore-env
+      # One turn at a time -- see turn_worker.WORKER_POOL_MAX_SIZE for the reasoning.
+      DATABASE_POOL_MAX_SIZE: "4"
+      # Local dev never posts to a real SMS provider. Also unlocks the simulator's
+      # simulated-only actions (tool_dispatch_composition._SIMULATED_ONLY_ACTIONS).
+      REPLY_SENDER: ${REPLY_SENDER:-simulated}
+      # 0.0.4 S18 (FR-26): EVAL_SCRIPTED_MODE arms the scripted-eval harness seam
+      # (hermes_runtime/scripted_eval.py). It is read from env_file (.env) via the
+      # *hermes-runtime anchor -- NOT declared here, because a compose `environment:`
+      # entry with an unset shell var would set it to "" and WIN over the .env value,
+      # silently disarming it. Off by default (empty .env); the CI harness job sets
+      # EVAL_SCRIPTED_MODE=1 in .env, and the arming guard refuses a prod config.
+    volumes:
+      # The scripted run_turn loads the scenario fixtures + recorded transcripts, which
+      # are NOT copied into the image (they stay out of the prod image on purpose --
+      # a mis-armed prod worker has nothing to run). Mounted read-only, local/CI only.
+      - ./eval:/app/eval:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The graceful-stop budget, and the thing that makes turn_worker's SIGTERM
+    # handler more than decoration. SIGTERM only sets a flag; the in-flight turn
+    # then has this long to finish and release its lease before Docker SIGKILLs.
+    # Docker's default is 10s -- well under a live LLM turn -- so without this every
+    # `docker compose restart` landing mid-turn kills the worker anyway and strands
+    # that customer's job for the full lease. Exactly what the handler exists to stop.
+    # Keep this ABOVE job_queue.DEFAULT_LEASE_SECONDS (300s -- the longest turn the
+    # lease is sized for). The two move together: change the lease, change this.
+    stop_grace_period: 310s
+
+  # Background worker (0.0.4 S04, FR-9 background half / FR-11, ADR-0155). Claims
+  # `l6_review`, `retention` and `ingest` -- never `agent_turn`. That allowlist IS
+  # the isolation: a corpus re-ingest that runs for minutes cannot queue ahead of
+  # a customer's turn, because the two processes claim disjoint type sets.
+  #
+  # It also runs the SCHEDULE TICK (background_worker.SCHEDULES). There is no cron
+  # in this repo: if this service is not up, no recurring job type ever runs.
+  #
+  #   docker compose up -d background-worker
+  background-worker:
+    <<: *hermes-runtime
+    container_name: toee-va-background-worker
+    command: ["uv", "run", "--frozen", "python", "-m", "hermes_runtime.background_worker"]
+    environment:
+      # DSNs (ingest reads/writes the SEPARATE knowledge database, S-ISO) plus the
+      # same TOOL_BACKEND=datastore boot requirement as the turn worker: the job
+      # bodies read and write the shared store. main() fails closed without it.
+      <<: *datastore-env
+      # One job at a time -- see background_worker.WORKER_POOL_MAX_SIZE. The heavy
+      # ingest work lives on the knowledge pool, not this one.
+      DATABASE_POOL_MAX_SIZE: "4"
+      REPLY_SENDER: ${REPLY_SENDER:-simulated}
+      # Stage A's pull artifact, for a queued re-ingest. Left unset here on purpose:
+      # an operator mounts the corpus and sets this, and an ingest job with nothing
+      # to ingest fails loudly naming this variable rather than wiping the corpus.
+      # INGEST_CORPUS_PATH: /corpus/corpus.json
+      #
+      # The L6 review fork EXECUTES here but is ENQUEUED by the copilot/dispatch
+      # process, so these two must be set the same on both. Default OFF, so unset
+      # means no `l6_review` job is ever created and this worker never needs them.
+      # The day the flag goes on in the dispatch process it must go on here too:
+      # otherwise every l6_review job dead-letters with L6ReviewMisconfigured
+      # (deliberately loud -- the alternative is a job reporting `succeeded`
+      # having written no agent_experience row). Usually supplied via the
+      # hermes-runtime/.env above; named here so the coupling is visible.
+      # AGENT_EXPERIENCE_LEARNING: "on"
+      # OPENROUTER_API_KEY: sk-or-...
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Same coupling as turn-worker: keep this ABOVE job_queue.DEFAULT_LEASE_SECONDS
+    # (300s). SIGTERM only sets a flag, so the in-flight job -- which for `ingest`
+    # is the longest thing this process runs -- gets this long to finish and release
+    # its lease before Docker SIGKILLs. Change the lease, change this.
+    stop_grace_period: 310s
+
+  # ---------------------------------------------------------------------------
+  # 0.0.4 S10 (FR-5/NFR-5): the rest of the stack `pnpm dev` brings up.
+  # ---------------------------------------------------------------------------
+
+  # One-shot schema application for BOTH databases. Idempotent via each database's
+  # own `schema_migrations` table, so re-running it against a populated dev DB is
+  # a no-op -- that is what makes `pnpm dev` safe to run every morning.
+  #
+  # HERMES_APPLY_DEV_SEED=1 opts in to migration 0005_dev_bootstrap (the rep /
+  # supervisor / admin accounts and the demo cases). It is LOCAL-DEV-ONLY: a
+  # cloud migrate omits this variable and therefore never seeds demo data.
+  #
+  #   docker compose run --rm migrate
+  migrate:
+    <<: *hermes-runtime
+    container_name: toee-va-migrate
+    restart: "no"
+    command:
+      - sh
+      - -c
+      - >-
+        uv run --frozen python -m hermes_runtime.datastore.migrate &&
+        uv run --frozen python -m hermes_runtime.knowledge.migrate
+    environment:
+      <<: *datastore-env
+      HERMES_APPLY_DEV_SEED: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Per-profile tool-dispatch servers (ADR-0141). One process per profile, each
+  # with its own bearer token; the workbench BFF routes /api/copilot/* to 8091 and
+  # /api/admin/* (plus login) to 8092. Tokens must equal the workbench's
+  # HERMES_COPILOT_API_TOKEN / HERMES_ADMIN_API_TOKEN -- scripts/dev-up.mjs reads
+  # apps/workbench/.env.local and exports them here so the two cannot drift.
+  dispatch-copilot:
+    <<: *hermes-runtime
+    container_name: toee-va-dispatch-copilot
+    command: ["uv", "run", "--frozen", "uvicorn",
+              "hermes_runtime.tool_dispatch_composition:build_tool_dispatch_app",
+              "--factory", "--host", "0.0.0.0", "--port", "8091"]
+    environment:
+      <<: *datastore-env
+      TOEE_HERMES_PROFILE: internal_copilot
+      DISPATCH_API_TOKEN: ${HERMES_COPILOT_API_TOKEN:-dev-copilot-token}
+      REPLY_SENDER: ${REPLY_SENDER:-simulated}
+    ports:
+      - "8091:8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Readiness, not start order: /healthz only answers after build_tool_dispatch_app
+    # returned, so an unhealthy container here means the fail-closed boot rejected the
+    # profile/token. `python` is the image's system interpreter -- no curl in slim.
+    healthcheck: &dispatch-healthcheck
+      test: ["CMD", "python", "-c",
+             "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=3).status == 200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  dispatch-admin:
+    <<: *hermes-runtime
+    container_name: toee-va-dispatch-admin
+    command: ["uv", "run", "--frozen", "uvicorn",
+              "hermes_runtime.tool_dispatch_composition:build_tool_dispatch_app",
+              "--factory", "--host", "0.0.0.0", "--port", "8092"]
+    environment:
+      <<: *datastore-env
+      TOEE_HERMES_PROFILE: supervisor_admin
+      DISPATCH_API_TOKEN: ${HERMES_ADMIN_API_TOKEN:-dev-admin-token}
+      REPLY_SENDER: ${REPLY_SENDER:-simulated}
+    ports:
+      - "8092:8092"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      <<: *dispatch-healthcheck
+      test: ["CMD", "python", "-c",
+             "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8092/healthz', timeout=3).status == 200 else 1)"]
+
+  # Inbound SMS gateway. The workbench's External Profile Simulator posts a tokened
+  # webhook here (SIMULATOR_GATEWAY_URL), the gateway fast-acks by writing one `job`
+  # row, and turn-worker runs the turn -- so the simulator round trip needs all three.
+  #
+  # REPLY_SENDER=simulated is the dev default on purpose: it skips the real provider
+  # POST (so no SIMPLETEXTING_API_TOKEN is needed and a dev box can never text a real
+  # customer) while still mirroring the reply into `message_turn` for the simulator.
+  gateway:
+    <<: *hermes-runtime
+    container_name: toee-va-gateway
+    command: ["uv", "run", "--frozen", "uvicorn",
+              "hermes_runtime.gateway_composition:build_gateway_app",
+              "--factory", "--host", "0.0.0.0", "--port", "8080"]
+    environment:
+      <<: *datastore-env
+      # Must equal the workbench's SIMPLETEXTING_WEBHOOK_TOKEN or every simulated
+      # inbound is a 401. dev-up.mjs exports both from apps/workbench/.env.local.
+      SIMPLETEXTING_WEBHOOK_TOKEN: ${SIMPLETEXTING_WEBHOOK_TOKEN:-dev-webhook-token}
+      INTERNAL_JOB_SECRET: ${INTERNAL_JOB_SECRET:-dev-internal-job-secret}
+      REPLY_SENDER: ${REPLY_SENDER:-simulated}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      <<: *dispatch-healthcheck
+      test: ["CMD", "python", "-c",
+             "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
+      # The gateway warms the fastembed model at boot (warm_knowledge_embedder),
+      # so it takes longer than the dispatch servers to answer.
+      start_period: 30s
 
 volumes:
   toee_pgdata:

@@ -28,12 +28,19 @@ export interface SlotsPopulatedDistribution {
   "4": number;
 }
 
-// Advisory, judge-sampled (S27, C7 core question) -- NEVER gating. `live:
-// false` is the honest label for "not yet sampled in this deployment", never
-// a silent zero (S26 discipline).
+// Advisory, judge-sampled (S22/S27, C7 core question) -- NEVER gating. The
+// scheduled honored_rate job (FR-31) persists an aggregate; `live: true` carries
+// the rate plus provenance (sample size, eligible population, window, `asOf`).
+// `live: false` is the honest "not yet computed" state -- never a silent zero,
+// never a fabricated rate; the provenance fields are null then.
 export interface HonoredRate {
   live: boolean;
   rate: number | null;
+  sampleSize: number | null;
+  candidateTotal: number | null;
+  undetermined: number | null;
+  windowSeconds: number | null;
+  asOf: string | null;
   label: string;
 }
 
@@ -41,14 +48,6 @@ export interface ProposalOutcomes {
   accepted: number;
   dismissed: number;
   rate: number | null;
-}
-
-// A proxy tile: `proxy: true` + `label` explain what it actually counts, so
-// the panel never presents an uninstrumented number as if it were exact.
-export interface ProxyCount {
-  count: number;
-  proxy: boolean;
-  label: string;
 }
 
 export interface AggregateMetrics {
@@ -59,28 +58,11 @@ export interface AggregateMetrics {
   mergeCount: number;
   correctionCount: number;
   proposalOutcomes: ProposalOutcomes;
-  selfServiceUsage: ProxyCount;
-  l6ConfirmedEntries: ProxyCount;
+  // S21/FR-30: real once-per-action counters, no longer proxied -- plain totals
+  // like mergeCount/correctionCount.
+  selfServiceUsage: number;
+  l6ConfirmedEntries: number;
 }
-
-// Fallback for an unconfigured backend (mirrors admin/agent-experience.ts's
-// `{ entries: [] }` degrade) -- structurally correct zero shape, not a
-// fabricated number: an unconfigured API has literally computed nothing.
-export const EMPTY_AGGREGATE_METRICS: AggregateMetrics = {
-  memoryInjection: { injected: 0, total: 0, rate: null },
-  knowledgeSearch: { found: 0, total: 0, rate: null },
-  slotsPopulatedDistribution: { "1": 0, "2": 0, "3": 0, "4": 0 },
-  honoredRate: {
-    live: false,
-    rate: null,
-    label: "Honored rate is advisory and judge-sampled (S27) -- never gating.",
-  },
-  mergeCount: 0,
-  correctionCount: 0,
-  proposalOutcomes: { accepted: 0, dismissed: 0, rate: null },
-  selfServiceUsage: { count: 0, proxy: true, label: "proxy: clears only (uninstrumented reads)" },
-  l6ConfirmedEntries: { count: 0, proxy: true, label: "proxy: confirmed L6 rows (uninstrumented per-turn events)" },
-};
 
 function malformed(detail: string): never {
   throw new HermesApiError("unexpected_error", `malformed aggregate metrics payload: ${detail}`);
@@ -94,6 +76,19 @@ function requireNumber(value: unknown, field: string): number {
 function optionalNumber(value: unknown, field: string): number | null {
   if (value === null) return null;
   return requireNumber(value, field);
+}
+
+// Provenance fields are genuinely absent before the first honored_rate run, so a
+// missing (undefined) value reads as null, same as an explicit null -- unlike the
+// strict optionalNumber above, which malforms on undefined.
+function nullableNumber(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) return null;
+  return requireNumber(value, field);
+}
+
+function nullableString(value: unknown, field: string): string | null {
+  if (value === null || value === undefined) return null;
+  return requireString(value, field);
 }
 
 function requireBoolean(value: unknown, field: string): boolean {
@@ -119,8 +114,6 @@ export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
   const dist = requireObject(r.slots_populated_distribution, "slots_populated_distribution");
   const honored = requireObject(r.honored_rate, "honored_rate");
   const outcomes = requireObject(r.proposal_outcomes, "proposal_outcomes");
-  const selfService = requireObject(r.self_service_usage, "self_service_usage");
-  const l6 = requireObject(r.l6_confirmed_entries, "l6_confirmed_entries");
 
   return {
     memoryInjection: {
@@ -142,6 +135,11 @@ export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
     honoredRate: {
       live: requireBoolean(honored.live, "honored_rate.live"),
       rate: optionalNumber(honored.rate, "honored_rate.rate"),
+      sampleSize: nullableNumber(honored.sample_size, "honored_rate.sample_size"),
+      candidateTotal: nullableNumber(honored.candidate_total, "honored_rate.candidate_total"),
+      undetermined: nullableNumber(honored.undetermined_count, "honored_rate.undetermined_count"),
+      windowSeconds: nullableNumber(honored.window_seconds, "honored_rate.window_seconds"),
+      asOf: nullableString(honored.as_of, "honored_rate.as_of"),
       label: requireString(honored.label, "honored_rate.label"),
     },
     mergeCount: requireNumber(r.merge_count, "merge_count"),
@@ -151,16 +149,8 @@ export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
       dismissed: requireNumber(outcomes.dismissed, "proposal_outcomes.dismissed"),
       rate: optionalNumber(outcomes.rate, "proposal_outcomes.rate"),
     },
-    selfServiceUsage: {
-      count: requireNumber(selfService.count, "self_service_usage.count"),
-      proxy: requireBoolean(selfService.proxy, "self_service_usage.proxy"),
-      label: requireString(selfService.label, "self_service_usage.label"),
-    },
-    l6ConfirmedEntries: {
-      count: requireNumber(l6.count, "l6_confirmed_entries.count"),
-      proxy: requireBoolean(l6.proxy, "l6_confirmed_entries.proxy"),
-      label: requireString(l6.label, "l6_confirmed_entries.label"),
-    },
+    selfServiceUsage: requireNumber(r.self_service_usage, "self_service_usage"),
+    l6ConfirmedEntries: requireNumber(r.l6_confirmed_entries, "l6_confirmed_entries"),
   };
 }
 

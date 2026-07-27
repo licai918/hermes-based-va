@@ -53,7 +53,7 @@ def test_runs_the_turn_with_the_loaded_context_and_body_for_a_matching_job() -> 
 
     outcome = execute_agent_turn_job(
         store=store,
-        turn_runner=lambda ctx, body: runs.append(
+        turn_runner=lambda ctx, body, job_id: runs.append(
             (ctx.event_id, ctx.conversation_id, body)
         ),
         payload=payload,
@@ -70,7 +70,7 @@ def test_returns_context_not_found_and_runs_nothing_when_context_is_absent() -> 
 
     outcome = execute_agent_turn_job(
         store=store,
-        turn_runner=lambda ctx, body: runs.append(ctx.event_id),
+        turn_runner=lambda ctx, body, job_id: runs.append(ctx.event_id),
         payload=payload,
     )
 
@@ -85,7 +85,7 @@ def test_returns_binding_mismatch_and_runs_nothing_when_conversation_differs() -
 
     outcome = execute_agent_turn_job(
         store=store,
-        turn_runner=lambda ctx, body: runs.append(ctx.event_id),
+        turn_runner=lambda ctx, body, job_id: runs.append(ctx.event_id),
         payload=payload,
     )
 

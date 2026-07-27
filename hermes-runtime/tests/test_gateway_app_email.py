@@ -1,10 +1,13 @@
 """S17: the simulated-email webhook drives the same governed turn + reply (FR-18).
 
-Mirrors ``test_gateway_app``'s ``test_webhook_alone_drives_the_reply_through_the_
-local_dispatcher`` in the email flavor: a single signed POST to
-``/webhooks/simulated-email`` fast-acks and the in-process dispatcher runs the bound
-External turn, deriving + delivering the reply through the S01 reply-sender gate.
-The email reply is NOT SMS-clipped (RK-4 / constraint d).
+A single tokened POST to ``/webhooks/simulated-email`` fast-acks and enqueues via
+``store.queue``. In production that is the durable Postgres queue the separate
+turn-worker process claims (0.0.4 S02, ADR-0155); here a test-only
+``_InlineTurnQueue`` runs the same shared ``execute_agent_turn_job`` inline instead,
+so the test stays DB-free and synchronous while covering the S17 email-channel
+binding (subject folded into the turn body, reply mirrored onto the email thread
+key), not the queue substrate. The email reply is NOT SMS-clipped (RK-4 /
+constraint d).
 """
 
 from __future__ import annotations
@@ -13,9 +16,9 @@ import json
 
 from starlette.testclient import TestClient
 
+from hermes_runtime.agent_turn_job import execute_agent_turn_job
 from hermes_runtime.gateway_app import create_app
 from hermes_runtime.gateway_store import InMemoryGatewayStore
-from hermes_runtime.job_dispatch import LocalDispatchingJobQueue
 from hermes_runtime.turn_runner import make_gateway_turn_runner, run_gateway_turn
 
 WEBHOOK_SECRET = "test-simpletexting-url-token"
@@ -36,6 +39,26 @@ def _email_payload(*, from_address="accounts@acme-fleet.example", subject="Order
             "type": "email.received",
         }
     ).encode("utf-8")
+
+
+class _InlineTurnQueue:
+    """Test-only ``JobQueue`` that runs the shared bound-turn job body inline.
+
+    Production writes a durable row inside the store's persist transaction and the
+    turn-worker process claims it (0.0.4 S02, ADR-0155); this test is about the S17
+    email channel binding, not the substrate, so running the job body inline keeps
+    it synchronous and DB-free. Injected into the store, which is where the enqueue
+    lives now.
+    """
+
+    def __init__(self, *, store, turn_runner) -> None:
+        self._store = store
+        self._turn_runner = turn_runner
+
+    def enqueue(self, payload) -> None:
+        execute_agent_turn_job(
+            store=self._store, turn_runner=self._turn_runner, payload=payload
+        )
 
 
 def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
@@ -64,13 +87,13 @@ def test_simulated_email_webhook_drives_the_reply_and_does_not_clip() -> None:
         run_turn=run_turn,
         on_reply_sent=lambda ctx, text: mirrored.append((ctx.conversation_id, text)),
     )
+    # The inline queue needs the turn runner, which needs the store -- so it is
+    # attached after construction rather than passed to __init__.
+    store.queue = _InlineTurnQueue(store=store, turn_runner=turn_runner)
     app = create_app(
         webhook_secret=WEBHOOK_SECRET,
         internal_job_secret=JOB_SECRET,
         store=store,
-        queue=LocalDispatchingJobQueue(
-            store=store, turn_runner=turn_runner, dispatch=lambda work: work()
-        ),
         turn_runner=turn_runner,
     )
     client = TestClient(app)
@@ -99,5 +122,17 @@ def test_simulated_email_webhook_rejects_a_forged_token() -> None:
     raw = _email_payload()
     resp = client.post(
         "/webhooks/simulated-email?token=deadbeef", content=raw
+    )
+    assert resp.status_code == 401
+
+
+def test_simulated_email_webhook_rejects_a_blank_event_id() -> None:
+    # Fix wave 2 finding 2. Same collapse risk as the SMS route: a blank id
+    # would key every such email onto the same outbound_send row.
+    app = create_app(webhook_secret=WEBHOOK_SECRET)
+    client = TestClient(app)
+    raw = _email_payload(event_id="")
+    resp = client.post(
+        f"/webhooks/simulated-email?token={WEBHOOK_SECRET}", content=raw
     )
     assert resp.status_code == 401

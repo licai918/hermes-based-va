@@ -1,55 +1,35 @@
 // KnowledgeOps slot handlers for the Admin BFF (ADR-0087 master-detail policy
-// authoring over the six Required Operational Policy Slots, ADR-0003). Pure and
-// dependency-injected; the thin app/api/admin/knowledge route files wrap these
-// with withSession and inject the real KnowledgeStore singleton.
+// authoring over the six Required Operational Policy Slots, ADR-0003). API-only
+// (0.0.4 S09): the thin app/api/admin/knowledge route files wrap these with
+// withSession and inject the Supervisor Admin Profile API client.
 import { HermesApiClient, HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
-import type { PolicySlot, SlotStatus } from "../../gateway/knowledge-store";
 import { json, problem } from "../respond";
-import { type AdminDeps, readJsonBody } from "./deps";
+import { readJsonBody } from "./deps";
 
-export function handleListSlots(deps: AdminDeps): Response {
-  return json({ slots: deps.knowledge.listSlots() });
+// The wire shape of one of the six Required Operational Policy Slots (ADR-0003).
+// Declared here, next to the mapper that produces it, since 0.0.4 S09 deleted the
+// in-memory KnowledgeStore this used to live in.
+export type SlotStatus = "empty" | "draft" | "pending_eval" | "published" | "gap";
+
+export interface PolicySlot {
+  slotId: string;
+  title: string;
+  status: SlotStatus;
+  draftText: string | null;
+  publishedText: string | null;
+  owner: string | null;
+  reviewDate: string | null;
+  hasGapPrompt: boolean;
 }
 
-export async function handleSaveDraft(
-  req: Request,
-  slotId: string,
-  deps: AdminDeps,
-): Promise<Response> {
-  const body = await readJsonBody(req);
-  const patch: { draftText?: string; owner?: string; reviewDate?: string } = {};
-  if (typeof body?.draftText === "string") patch.draftText = body.draftText;
-  if (typeof body?.owner === "string") patch.owner = body.owner;
-  if (typeof body?.reviewDate === "string") patch.reviewDate = body.reviewDate;
-
-  const slot = deps.knowledge.saveDraft(slotId, patch);
-  if (!slot) return problem(404, "slot not found");
-  return json({ slot });
-}
-
-export function handleSubmitSlot(slotId: string, deps: AdminDeps): Response {
-  const result = deps.knowledge.submitForEval(slotId);
-  if (result.ok) return json({ slot: result.slot });
-  if (result.reason === "not_found") return problem(404, "slot not found");
-  return problem(409, "slot has no draft to submit");
-}
-
-export function handleRollbackSlot(slotId: string, deps: AdminDeps): Response {
-  const result = deps.knowledge.rollbackPublished(slotId);
-  if (result.ok) return json({ slot: result.slot });
-  if (result.reason === "not_found") return problem(404, "slot not found");
-  return problem(409, "slot has no previous published version");
-}
-
-// --- Per-profile API cutover (ADR-0141/0145 Increment 6) ---------------------
+// --- Per-profile API (ADR-0141/0145 Increment 6) ------------------------------
 // The Supervisor Admin knowledge-slot routes dispatch toee_knowledge_ops over the
-// per-profile Hermes API when HERMES_ADMIN_API_URL/TOKEN are configured (else the
-// in-memory KnowledgeStore). The list read uses dispatch (fail-open); the three
+// per-profile Hermes API. The list read uses dispatch (fail-open); the three
 // governed mutations use dispatchWrite (fail-closed on the acting supervisor baked
 // into the client), so a write can never land a NULL-actor audit row — the
 // datastore enforces the same rule. The per-class error mapping turns a governed
-// not_found/conflict into 404/409 (store-path status parity).
+// not_found/conflict into 404/409.
 
 const SLOT_STATUSES = new Set<SlotStatus>([
   "empty",
@@ -171,11 +151,23 @@ export async function handleRollbackSlotViaApi(
 // isn't configured (see createAdminApiClient), so these handlers can assume a
 // real client.
 
+// 0.0.4 S04 (FR-11): the re-ingest panel's status readback. Null when no
+// re-ingest has ever been queued, or on a backend with no durable queue.
+export type IngestJobStatus = {
+  jobId: string;
+  status: string;
+  attempts: number;
+  lastError: string | null;
+  queuedAt: string | null;
+  updatedAt: string | null;
+};
+
 export type CorpusStatus = {
   docCount: number;
   chunkCount: number;
   lastIngestAt: string | null;
   byType: { pageType: string; count: number }[];
+  lastIngestJob: IngestJobStatus | null;
 };
 
 // Maps the snake_case toee_knowledge_ops.get_corpus_status payload onto the wire
@@ -198,7 +190,58 @@ export function mapCorpusStatus(raw: unknown): CorpusStatus {
         count: typeof rr.count === "number" ? rr.count : 0,
       };
     }),
+    lastIngestJob: mapIngestJob(r.last_ingest_job),
   };
+}
+
+function mapIngestJob(raw: unknown): IngestJobStatus | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.job_id !== "string" || typeof r.status !== "string") return null;
+  const orNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
+  return {
+    jobId: r.job_id,
+    status: r.status,
+    attempts: typeof r.attempts === "number" ? r.attempts : 0,
+    lastError: orNull(r.last_error),
+    queuedAt: orNull(r.queued_at),
+    updatedAt: orNull(r.updated_at),
+  };
+}
+
+export type ReingestQueued = { jobId: string | null; status: string };
+
+// Strict, matching mapRetentionSweepQueued in admin/retention.ts (S04 fix wave 1,
+// finding 5): the two sibling enqueue actions return the same receipt shape and
+// now police it the same way. Defaulting a missing `status` to "queued" would
+// have shown a plausible panel over a broken backend contract -- the house
+// malformed() pattern exists to make that loud. A NULL `job_id` is legitimate
+// (the mock twin has no `job` table) and stays accepted; a missing key is not.
+function malformedReingest(detail: string): never {
+  throw new HermesApiError("unexpected_error", `malformed reingest payload: ${detail}`);
+}
+
+export function mapReingestQueued(raw: unknown): ReingestQueued {
+  if (typeof raw !== "object" || raw === null) malformedReingest("root");
+  const r = raw as Record<string, unknown>;
+  if (typeof r.status !== "string") malformedReingest("status");
+  if (r.job_id !== null && typeof r.job_id !== "string") malformedReingest("job_id");
+  return { jobId: r.job_id as string | null, status: r.status };
+}
+
+// S04 (FR-11): the re-ingest trigger 0.0.3 S11 shipped as a display-only stub.
+// A governed dispatchWrite -- it TRUNCATEs and reloads the whole corpus, so it is
+// fail-closed on the acting supervisor and audited on the Hermes side; the panel
+// then reads the job back through get_corpus_status.
+export async function handleTriggerReingestViaApi(
+  client: HermesApiClient,
+): Promise<Response> {
+  try {
+    const data = await client.dispatchWrite("toee_knowledge_ops", "enqueue_corpus_reingest", {});
+    return json(mapReingestQueued(data) satisfies ReingestQueued);
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
 }
 
 export async function handleGetCorpusStatusViaApi(

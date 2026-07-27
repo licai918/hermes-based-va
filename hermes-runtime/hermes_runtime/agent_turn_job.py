@@ -41,6 +41,7 @@ def execute_agent_turn_job(
     store: _ContextStore,
     turn_runner: Optional[Any],
     payload: AgentJobPayload,
+    job_id: Optional[str] = None,
 ) -> AgentJobOutcome:
     """Reload + verify the binding, then run the turn (ADR-0107 source of truth).
 
@@ -48,6 +49,20 @@ def execute_agent_turn_job(
     ``BINDING_MISMATCH`` when the delivered conversation does not match the stored
     record (neither runs a turn), else ``COMPLETED`` after running ``turn_runner``
     (skipped when ``turn_runner`` is None, e.g. an unconfigured app).
+
+    ``job_id`` is the durable queue's job id (0.0.4 S03): it is half the outbound
+    idempotency key, so it must come from the framework -- the row the worker
+    claimed -- and never from the payload or the model (ADR-0148). ``None`` on the
+    ADR-0106 parity route, which delivers a turn with no job row behind it.
+
+    **Why the ``None`` default is not a trap.** A caller that forgets to pass a
+    job id does not escape the outbound guard: the key simply becomes
+    ``no-job:{event_id}:reply``, and the guard is not the key. Enforcement is
+    ``UNIQUE (event_id)`` on ``outbound_send`` (migration 0012), so an omitted job
+    id changes only the *lineage* recorded on the row, never whether a second
+    delivery is admitted. That is the whole reason the unique index is on the
+    event rather than on the derived key -- every path is fenced by construction,
+    including the ones nobody remembered to wire.
     """
     context = store.load_context(payload.event_id)
     if context is None:
@@ -56,5 +71,5 @@ def execute_agent_turn_job(
         return AgentJobOutcome.BINDING_MISMATCH
     inbound_body = store.load_inbound_body(context.inbound_body_ref) or ""
     if turn_runner is not None:
-        turn_runner(context, inbound_body)
+        turn_runner(context, inbound_body, job_id)
     return AgentJobOutcome.COMPLETED

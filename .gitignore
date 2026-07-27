@@ -30,6 +30,9 @@ next-env.d.ts
 # Launch Eval run artifacts (ADR-0074); reports are generated per run
 eval/reports/
 
+# Gate-report artifacts read live by the QualityGatesPanel (S23, FR-32)
+.reports/
+
 # Python (hermes/ uv project)
 __pycache__/
 *.py[cod]

@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
+from ..gate_report_artifact import write_report
 from .driver import DEFAULT_DEADLINE_MS
 from .retriever import RetrievedChunk, get_query_embedder, retrieve
 
@@ -236,6 +237,21 @@ def _cmd_recall(argv: list[str]) -> int:
         f"recall@3 = {hits}/{len(report.results)} = {report.recall_at_3:.0%}  "
         f"[bar {RECALL_BAR:.0%}: {'PASS' if report.passed else 'FAIL'}]"
     )
+    # Emit the live artifact the QualityGatesPanel reads (S23, FR-32) -- same
+    # numbers, machine-readable, newest-per-kind.
+    write_report(
+        "recall",
+        "python -m hermes_runtime.knowledge.gates recall",
+        [
+            {
+                "name": "Recall@3 (FR-7)",
+                "command": "python -m hermes_runtime.knowledge.gates recall",
+                "result": f"{hits}/{len(report.results)} = {report.recall_at_3:.0%} (bar: {RECALL_BAR:.0%})",
+                "passed": report.passed,
+                "note": None,
+            }
+        ],
+    )
     return 0 if report.passed else 1
 
 
@@ -254,6 +270,36 @@ def _cmd_latency(argv: list[str]) -> int:
         f"governed_miss={degrade.governed_miss} elapsed={degrade.elapsed_ms:.0f}ms"
     )
     print(f"  [FR-7b deadline degrade] slow path -> found=false, no hang: {'PASS' if degrade.passed else 'FAIL'}")
+
+    # Emit the live artifact the QualityGatesPanel reads (S23, FR-32).
+    write_report(
+        "latency",
+        "python -m hermes_runtime.knowledge.gates latency",
+        [
+            {
+                "name": "Hybrid in-turn latency p95 (FR-7b)",
+                "command": "python -m hermes_runtime.knowledge.gates latency",
+                "result": (
+                    f"p95 {report.p95:.1f}ms @{len(report.samples_ms)} samples "
+                    f"(bar: <{LATENCY_P95_BUDGET_MS:.0f}ms), embedding inference included"
+                ),
+                "passed": report.passed,
+                "note": None,
+            },
+            {
+                "name": "Deadline degrade (FR-7b, forced-slow path)",
+                "command": "python -m hermes_runtime.knowledge.gates latency",
+                "result": (
+                    f"governed miss in {degrade.elapsed_ms:.0f}ms, bounded by the "
+                    f"{degrade.deadline_ms:.0f}ms deadline"
+                    if degrade.governed_miss
+                    else f"NO governed miss ({degrade.elapsed_ms:.0f}ms)"
+                ),
+                "passed": degrade.passed,
+                "note": None,
+            },
+        ],
+    )
 
     return 0 if (report.passed and degrade.passed) else 1
 

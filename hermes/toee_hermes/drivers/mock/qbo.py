@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ...errors import ToolDriverError
+from ..qbo_ar import ar_summary
 from .driver import MockHandlerRegistry
 
 if TYPE_CHECKING:
@@ -109,14 +110,11 @@ def _list_customer_invoices(
 def _get_ar_summary(
     data: QboMockData, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
+    # Same shape and "open = balance > 0" semantics as the live Composio path, via
+    # the shared aggregator (0.0.4 S13). A None owner owns nothing -> honest $0.
     customer_id = _owner_id(context)
     owned = [invoice for invoice in data.invoices if _owned_by(invoice, customer_id)]
-    total_balance = sum(invoice.get("balance", 0) for invoice in owned)
-    return {
-        "shopify_customer_id": customer_id,
-        "open_invoice_count": len(owned),
-        "total_balance": total_balance,
-    }
+    return ar_summary(customer_id, owned)
 
 
 def create_qbo_mock_handlers(
