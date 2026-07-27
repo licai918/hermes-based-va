@@ -330,8 +330,15 @@ instructions". It is a structural escape, not a semantic one.
 **Decision — fix it at the root, in two places, both already owned:**
 
 - **Write side (S01).** `scan_injection` treats **fence-delimiter tokens as an injection
-  pattern class** and hard-rejects them. Because every layer's write path calls that one shared
-  resolver, this covers L4 (S08), L6, and L7 in a single change rather than three.
+  pattern class** and hard-rejects them.
+  **Correction (found by the S01 review — this decision originally overstated the reach):**
+  adding the pattern to the shared resolver does NOT by itself cover L4. Only L6 and L7 call
+  `scan_injection` today; **L4's write path does not call it at all**, which is precisely what
+  S08 exists to wire. So the honest statement is: **L6 and L7 are covered as of S01; L4 is
+  covered when S08 lands.** Any ledger, docstring or comment that says otherwise is wrong and
+  must be reworded — the boundary ledger is the one file in the repo whose entire purpose is
+  honest accounting, and an aspirational claim there is worse than no claim, because the next
+  reviewer will believe it.
 - **Render side (S06).** S06 owns the prompt seam, so it escapes or strips fence-delimiter
   tokens at render time as defence in depth. A value that somehow reached the store before the
   write-side guard existed must still not be able to break the fence.
