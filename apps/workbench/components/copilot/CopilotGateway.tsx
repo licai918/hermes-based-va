@@ -196,8 +196,14 @@ export function CopilotGateway({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [draftBody, setDraftBody] = useState<string | null>(null);
+  // The draft AS GENERATED (0.0.4 S09), kept separate from draftBody above:
+  // editing the draft card's textarea mutates draftBody in place, so without
+  // this the modal would have no way to tell an untouched send from an edited
+  // one. Set together with draftBody at both production points below and
+  // never mutated afterward.
+  const [generatedDraftBody, setGeneratedDraftBody] = useState<string | null>(null);
   // The draft kind + a client-minted correlation id travel alongside the draft
-  // body, set together at both places a draft is produced below. S09 will share
+  // body, set together at both places a draft is produced below. S09 shares
   // this same id with the implicit send-outcome row for the same draft.
   const [draftKind, setDraftKind] = useState<DraftKind | null>(null);
   const [draftCorrelationId, setDraftCorrelationId] = useState<string | null>(null);
@@ -234,6 +240,7 @@ export function CopilotGateway({
       setTurns((t) => [...t, { author: "copilot", text: res.reply }]);
       if (res.draftCard) {
         setDraftBody(res.draftCard.body);
+        setGeneratedDraftBody(res.draftCard.body);
         setDraftKind(res.draftCard.channel);
         setDraftCorrelationId(globalThis.crypto.randomUUID());
       }
@@ -248,7 +255,9 @@ export function CopilotGateway({
     if (busy) return;
     setBusy(true);
     try {
-      setDraftBody(await draft(kind));
+      const body = await draft(kind);
+      setDraftBody(body);
+      setGeneratedDraftBody(body);
       setDraftKind(kind);
       setDraftCorrelationId(globalThis.crypto.randomUUID());
     } catch (err) {
@@ -260,6 +269,7 @@ export function CopilotGateway({
 
   function handleSent() {
     setDraftBody(null);
+    setGeneratedDraftBody(null);
     setDraftKind(null);
     setDraftCorrelationId(null);
     setModalOpen(false);
@@ -379,6 +389,9 @@ export function CopilotGateway({
           body={draftBody}
           accountId={accountId}
           identitySummary={workbenchCase.identitySummary}
+          originalBody={generatedDraftBody ?? draftBody}
+          draftCorrelationId={draftCorrelationId}
+          draftKind={draftKind}
           onSent={handleSent}
           onClose={() => setModalOpen(false)}
         />

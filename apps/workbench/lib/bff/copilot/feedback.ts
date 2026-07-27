@@ -1,10 +1,12 @@
-// Draft feedback BFF for the Copilot Gateway (0.0.4 S07, FR-8/FR-10). POST
-// /api/copilot/feedback dispatches toee_feedback.submit_draft_rating (S06) -- a
+// Draft feedback BFF for the Copilot Gateway (0.0.4 S07/S09, FR-7/FR-8/FR-9/
+// FR-10). POST /api/copilot/feedback discriminates by `kind` (defaulting to
+// "rating"): "rating" dispatches toee_feedback.submit_draft_rating (S06) -- a
 // rep's thumbs up/down on a copilot draft, requiring draft_text and (on a down
-// verdict) at least one INTERNAL reason tag. The body discriminates by `kind`
-// (defaulting to "rating" since that's the only kind this slice ships) so
-// S09's outcome branch (record_draft_outcome, fired from a successful governed
-// send) can land on this SAME route later without reworking this branch.
+// verdict) at least one INTERNAL reason tag. "outcome" dispatches
+// toee_feedback.record_draft_outcome (S08) -- the IMPLICIT sent_as_is/
+// sent_edited capture fired fire-and-forget from a successful governed send
+// (GovernedSendModal.tsx), sharing the SAME draft_correlation_id the rating
+// branch uses so both mechanisms' rows can be joined per draft.
 //
 // ROLE: this route sits under /api/copilot/ but NOT /api/copilot/audit/, so by
 // canAccess's prefix rules (lib/auth/access.ts) it is open to any authenticated
@@ -25,6 +27,7 @@ import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import { mapDraftRating } from "../../gateway/hermes-map";
 import type {
   DraftKind,
+  DraftOutcome,
   DraftRatingVerdict,
   InternalReviewReasonTag,
 } from "../../gateway/types";
@@ -121,6 +124,88 @@ async function handleDraftRating(
   }
 }
 
+// record_draft_outcome (S08's write path; S09 wires it up here) -- the
+// IMPLICIT counterpart to a rating: did the rep send the generated draft
+// untouched or edit it first. Same required trio as the rating branch
+// (case_id, draft_correlation_id, draft_kind, draft_text) plus outcome +
+// edit_distance_ratio, which is required exactly when outcome is
+// "sent_edited" and rejected outright otherwise -- mirrors the Python
+// driver's own "reject, don't coerce" validation
+// (hermes/toee_hermes/drivers/mock/feedback.py's _read_edit_distance_ratio)
+// so a malformed request 400s here instead of round-tripping to a 502.
+const DRAFT_OUTCOMES: readonly DraftOutcome[] = ["sent_as_is", "sent_edited"];
+
+function readOutcome(body: Record<string, unknown> | null): DraftOutcome | null {
+  const value = body?.outcome;
+  return (DRAFT_OUTCOMES as readonly unknown[]).includes(value)
+    ? (value as DraftOutcome)
+    : null;
+}
+
+// null means "reject the request"; undefined means "absent, and that's fine
+// for this outcome"; a number is the validated ratio for a sent_edited row.
+function readEditDistanceRatio(
+  body: Record<string, unknown> | null,
+  outcome: DraftOutcome,
+): number | undefined | null {
+  const raw = body?.edit_distance_ratio;
+  if (outcome === "sent_edited") {
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+  }
+  return raw === undefined || raw === null ? undefined : null;
+}
+
+async function handleDraftOutcome(
+  body: Record<string, unknown> | null,
+  client: HermesApiClient,
+): Promise<Response> {
+  const caseId = readNonEmpty(body, "case_id");
+  if (!caseId) return problem(400, "case_id is required");
+
+  const draftCorrelationId = readNonEmpty(body, "draft_correlation_id");
+  if (!draftCorrelationId) return problem(400, "draft_correlation_id is required");
+
+  const draftKind = readDraftKind(body);
+  if (!draftKind) {
+    return problem(400, `draft_kind must be one of ${DRAFT_KINDS.join(", ")}`);
+  }
+
+  const draftText = readNonEmpty(body, "draft_text");
+  if (!draftText) return problem(400, "draft_text is required");
+
+  const outcome = readOutcome(body);
+  if (!outcome) {
+    return problem(400, `outcome must be one of ${DRAFT_OUTCOMES.join(", ")}`);
+  }
+
+  const editDistanceRatio = readEditDistanceRatio(body, outcome);
+  if (editDistanceRatio === null) {
+    return problem(
+      400,
+      outcome === "sent_edited"
+        ? "sent_edited requires a numeric edit_distance_ratio"
+        : "sent_as_is must not include edit_distance_ratio",
+    );
+  }
+
+  try {
+    await client.dispatchWrite("toee_feedback", "record_draft_outcome", {
+      case_id: caseId,
+      draft_correlation_id: draftCorrelationId,
+      draft_kind: draftKind,
+      draft_text: draftText,
+      outcome,
+      ...(editDistanceRatio !== undefined ? { edit_distance_ratio: editDistanceRatio } : {}),
+    });
+    // ponytail: no response mapper -- the caller fires this and forgets (S09),
+    // and the ratio has no consumer yet (Phase 2). Add mapDraftOutcome the day
+    // something reads this response body.
+    return json({ recorded: true });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
 export async function handleSubmitDraftFeedbackViaApi(
   req: Request,
   client: HermesApiClient,
@@ -130,6 +215,8 @@ export async function handleSubmitDraftFeedbackViaApi(
   switch (kind) {
     case "rating":
       return handleDraftRating(body, client);
+    case "outcome":
+      return handleDraftOutcome(body, client);
     default:
       return problem(400, `unknown feedback kind: ${String(kind)}`);
   }

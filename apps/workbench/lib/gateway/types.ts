@@ -5,6 +5,7 @@
 // in-memory store they were originally written for; the shapes did not change).
 import {
   MEMORY_PREFERENCE_SLOTS,
+  type DraftOutcome,
   type DraftRatingVerdict,
   type ExternalReviewReasonTag,
   type InteractionReviewVerdict,
@@ -26,6 +27,11 @@ export type { ExternalReviewReasonTag, InteractionReviewVerdict };
 // Tag vocabulary + verdict from "./types" alongside everything else, same
 // discipline as the EXTERNAL pair above (ADR-0154).
 export type { InternalReviewReasonTag, DraftRatingVerdict };
+
+// Re-exported so 0.0.4 S09's implicit outcome-capture code (feedback.ts's
+// record_draft_outcome branch) imports it from "./types" alongside everything
+// else, same discipline as DraftRatingVerdict above (ADR-0154).
+export type { DraftOutcome };
 
 export type CaseChannel = "sms" | "email" | "voice";
 

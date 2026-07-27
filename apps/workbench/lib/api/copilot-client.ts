@@ -27,6 +27,9 @@ export type ListCasesQuery = {
 
 export type DraftKind = "sms" | "email" | "note";
 
+// toee_feedback.record_draft_outcome's implicit outcome (0.0.4 S09).
+export type DraftOutcome = "sent_as_is" | "sent_edited";
+
 export type ChatResponse = {
   state: "needs_case" | "ready";
   reply: string;
@@ -204,6 +207,32 @@ export function submitDraftFeedback(input: {
     verdict: input.verdict,
     reason_tags: input.reasonTags ?? [],
     ...(input.comment ? { comment: input.comment } : {}),
+  });
+}
+
+// The implicit sent_as_is/sent_edited capture (0.0.4 S09, FR-7/FR-9), fired
+// fire-and-forget by GovernedSendModal after a successful governed send. Rides
+// the SAME draft_correlation_id as submitDraftFeedback above so the two rows
+// for one draft can be joined. `kind: "outcome"` picks this branch of the
+// feedback BFF route.
+export function recordDraftOutcome(input: {
+  caseId: string;
+  draftCorrelationId: string;
+  draftKind: DraftKind;
+  draftText: string;
+  outcome: DraftOutcome;
+  editDistanceRatio?: number;
+}): Promise<unknown> {
+  return sendJson("POST", `${BASE}/feedback`, {
+    kind: "outcome",
+    case_id: input.caseId,
+    draft_correlation_id: input.draftCorrelationId,
+    draft_kind: input.draftKind,
+    draft_text: input.draftText,
+    outcome: input.outcome,
+    ...(input.editDistanceRatio !== undefined
+      ? { edit_distance_ratio: input.editDistanceRatio }
+      : {}),
   });
 }
 
