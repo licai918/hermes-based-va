@@ -56,6 +56,8 @@ from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import INTERNAL
 
 from hermes_runtime.boot import boot_profile
+from hermes_runtime.datastore.handlers._common import new_id
+from hermes_runtime.injection_ledger import injected_entry_refs, record_injection
 from hermes_runtime.job_queue import L6_REVIEW_JOB_TYPE, PostgresJobQueue
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
 from hermes_runtime.openrouter import (
@@ -550,6 +552,28 @@ def make_copilot_run_turn(
         user_message = (
             f"{injected}\n\n{base_user_message}" if injected else base_user_message
         )
+        # S09 (FR-11): the copilot half of the provenance ledger. Same posture as
+        # the external turn (openrouter.py): written from the CALLER, only when
+        # something was injected, gated on the eval axis inside record_injection,
+        # and fire-and-forget so it can never fail the draft (NFR-5).
+        #
+        # ponytail: the draft turn has no durable turn id -- it is transient and
+        # nothing else in the schema names it -- so the turn ref is minted here.
+        # It exists to keep the grain honest (two drafts on ONE case are two
+        # turns, not one merged row); the joinable identifier is
+        # case_or_binding_ref. Swap in a real id the day a draft turn persists one.
+        if injected:
+            resolved_binding = binding_key_from_identity(identity) if identity else None
+            record_injection(
+                store,
+                turn_ref=new_id("copilot_turn"),
+                case_or_binding_ref=case_id,
+                entries=injected_entry_refs(
+                    binding_key=resolved_binding[0] if resolved_binding else None,
+                    memory=memory,
+                    experience=experience,
+                ),
+            )
 
         if scripted_completions is not None:
             # Tests/eval: a real AIAgent loop with no model, network, or key.

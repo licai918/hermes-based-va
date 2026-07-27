@@ -97,11 +97,17 @@ mix"). Honest accounting, three buckets:
   purpose: the honest assertion (render a tag-bearing value, expect it neutered)
   requires ``_render_memory`` to escape or reject the tag first, which is a
   runtime behaviour change and belongs to its own slice, not to a tripwire
-  slice. **Half-closed by 0.0.5 S01 (D19):** ``scan_injection`` now hard-rejects
-  fence-delimiter tokens on the WRITE side of every layer, so a value carrying
-  one can no longer be stored (``hermes/tests/test_content_scan.py``). The RENDER
-  side is still unescaped and still owns the residual risk for anything already
-  stored -- S06 closes it and extends this file's composition test.
+  slice. **Partly closed by 0.0.5 S01 (D19) -- on two layers out of three.**
+  ``scan_injection`` hard-rejects fence-delimiter tokens, and the write paths
+  that CALL it are **L6 (``scan_agent_experience_content``) and L7
+  (``scan_lexicon_write``) only**, so a value carrying one can no longer be
+  stored *in those two* (``hermes/tests/test_content_scan.py``). **L4 does not
+  call ``scan_injection`` at all** -- wiring it is S08's slice -- so the value
+  described above, the customer-authored slot value that is the REACHABLE one,
+  is still storable today. Sharing a resolver covers its callers and nothing
+  more. The RENDER side is unescaped for EVERY layer and owns the residual risk
+  for anything already stored -- S06 closes it and extends this file's
+  composition test.
 - *Nothing pins a value to the RIGHT fence.* The two composition tests assert
   "each layer has exactly one fence" and "each declared value appears in its own
   fence and nowhere outside any fence". A value duplicated into a SECOND layer's

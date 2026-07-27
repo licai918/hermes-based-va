@@ -83,6 +83,13 @@ def _propose_lexicon_entry(
             "surface_form": fields["surface_form"],
             "provenance": fields["provenance"],
             "pii_redacted": fields["pii_redacted"],
+            # A WAIVED redaction, named (S01 review finding 2). The keep
+            # exemption exists so an entry's own digit-shaped forms survive in
+            # its evidence, but a model-supplied surface_form gets no PII scan,
+            # so the waiver must not be silent. Spans here equal this entry's
+            # own forms -- `surface_form` is already in these details, so this
+            # records the fact of the waiver, not a new class of data.
+            "pii_keep_exempt": list(fields["pii_keep_exempt"]),
         },
     )
     return {
@@ -94,6 +101,7 @@ def _propose_lexicon_entry(
         "status": "proposed",
         "provenance": fields["provenance"],
         "pii_redacted": fields["pii_redacted"],
+        "pii_keep_exempt": fields["pii_keep_exempt"],
         "proposed": True,
     }
 

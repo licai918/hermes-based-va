@@ -22,9 +22,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from ...content_scan import redact_pii, scan_injection
+from ...content_scan import (
+    context_strings,
+    read_proposer_context,
+    redact_pii,
+    redact_pii_tree,
+    scan_injection,
+)
 from ...errors import ToolDriverError
-from .agent_experience import _context_strings, _read_proposer_context
 from .driver import MockHandlerRegistry
 
 if TYPE_CHECKING:
@@ -134,7 +139,7 @@ def scan_lexicon_write(
     canonical_form: str,
     evidence: Optional[str],
     proposer_context: Optional[dict[str, Any]],
-) -> tuple[Optional[str], Optional[dict[str, Any]], bool]:
+) -> tuple[Optional[str], Optional[dict[str, Any]], bool, tuple[str, ...]]:
     """Apply D2's per-field write-scan policy; return the storable values.
 
     ONE resolver for both twins (NFR-7), so the mock and Postgres paths cannot
@@ -144,30 +149,37 @@ def scan_lexicon_write(
       PII leg is NOT applied: ``_PHONE_RE`` matches ``205 55 16``, the flagship
       seeded surface form, so running it here would ``policy_blocked`` the
       headline demo of the whole iteration.
-    * ``evidence`` / ``proposer_context`` -- injection hard-rejects; PII is
-      REDACTED IN PLACE and the entry is kept. The evidence is exactly what an
-      admin needs in order to decide; throwing the entry away over a phone
-      number in a quoted exchange is the wrong trade. The entry's own forms are
-      exempt from redaction (see :func:`redact_pii`'s ``keep``).
+    * ``evidence`` / ``proposer_context`` -- injection hard-rejects at every
+      depth (:func:`context_strings`); PII is REDACTED IN PLACE and the entry is
+      kept. The evidence is exactly what an admin needs in order to decide;
+      throwing the entry away over a phone number in a quoted exchange is the
+      wrong trade. The entry's own forms are exempt from redaction (see
+      :func:`redact_pii`'s ``keep``).
 
-    Returns ``(evidence, proposer_context, pii_redacted)``.
+    Returns ``(evidence, proposer_context, pii_redacted, pii_keep_exempt)``.
+    ``pii_keep_exempt`` names the spans the exemption spared, so a waived
+    redaction is auditable instead of silent: ``surface_form`` is model-supplied
+    and PII-unscanned by design, so a proposal CAN arrive with
+    ``surface_form="416-555-0199"`` quoted in its own evidence and keep the
+    number. That is the mechanism working as designed -- but it must leave a
+    trace. ``pii_redacted`` deliberately does NOT flip for it: it means "text was
+    removed", the thing an admin cannot see for themselves. The spared spans
+    equal this entry's own forms, which are already on the row in front of them.
     """
     scan_injection(surface_form, canonical_form)
-    scan_injection(evidence, *_context_strings(proposer_context))
+    scan_injection(evidence, *context_strings(proposer_context))
 
     keep = (surface_form, canonical_form)
-    scrubbed_evidence, redacted = redact_pii(evidence, keep=keep)
-    scrubbed_context = proposer_context
-    if proposer_context:
-        # ponytail: shallow, top-level string values only -- the same convention
-        # _context_strings already scans by. Deepen if a nested shape becomes
-        # common (it would need to be scanned deeper too, not just redacted).
-        scrubbed_context = dict(proposer_context)
-        for key, value in proposer_context.items():
-            if isinstance(value, str):
-                scrubbed_context[key], hit = redact_pii(value, keep=keep)
-                redacted = redacted or hit
-    return scrubbed_evidence, scrubbed_context, redacted
+    scrubbed_evidence, redacted, spared = redact_pii(evidence, keep=keep)
+    scrubbed_context, context_hit, context_spared = redact_pii_tree(
+        proposer_context, keep=keep
+    )
+    return (
+        scrubbed_evidence,
+        scrubbed_context,
+        redacted or context_hit,
+        spared + context_spared,
+    )
 
 
 def resolve_lexicon_provenance(context: "ToolExecutionContext") -> str:
@@ -179,13 +191,29 @@ def resolve_lexicon_provenance(context: "ToolExecutionContext") -> str:
     model (or a compromised fork) cannot claim ``admin_manual`` for a proposal
     it invented. Any ``provenance`` in ``params`` is ignored outright.
 
-    ``toee_semantic_lexicon`` is allowlisted on ``internal_copilot`` only, and
-    within it the context's attributed actor is the discriminator:
+    ``toee_semantic_lexicon`` is allowlisted on ``internal_copilot`` only, so the
+    profile alone cannot separate the two writers that share that home. The
+    discriminator is the DISPATCH ROUTE, i.e. which surface reached dispatch:
 
-    * an attributed ``user_id`` -- the admin BFF's deterministic
-      ``tools:dispatch`` call, i.e. an admin at the keyboard -> ``admin_manual``;
-    * no actor -- an unbound agent fork reflecting on a conversation in which
-      the customer confirmed the mapping (S04) -> ``conversation_confirmed``.
+    * ``context.dispatch_route == TOOLS_DISPATCH_ROUTE`` -- the admin BFF's
+      deterministic ``tools:dispatch`` request (ADR-0141), a human at the
+      keyboard -> ``admin_manual``;
+    * anything else -- inside an agent turn (S04's capture fork), eval, a job
+      -> ``conversation_confirmed``.
+
+    **NOT ``user_id``** (S01 review finding 1). The L6 twin
+    ``resolve_agent_experience_source`` deliberately ignores it, for the reason
+    that bites here: ``plugin/__init__.py`` reads ``user_id`` straight out of the
+    framework's runtime kwargs, and ADR-0141 puts a rep's account on an
+    internal_copilot session -- so a capture fork running on that session would
+    stamp every guess the AGENT invented with ``admin_manual``, the one value
+    whose entire meaning is "a human admin typed this". The console queue would
+    then be unable to tell a guess from a decision, destroying the exact
+    discrimination D3 exists to provide. An actor says WHO, not WHICH PATH.
+
+    The marker is unforgeable from a turn: the dispatch app sets it as a literal
+    behind the shared bearer, and the agent path's context provider never reads
+    it from kwargs -- so it is framework-derived, not a caller parameter.
 
     ``feedback_derived`` is the third legal value (D3) and is reachable only
     from S25's aggregator job, which owns introducing the branch keyed on its
@@ -193,13 +221,14 @@ def resolve_lexicon_provenance(context: "ToolExecutionContext") -> str:
     declared here so the store, the schema and every queue can already carry it.
     """
     from ...plugin.profiles import INTERNAL
+    from ...tool_gate import TOOLS_DISPATCH_ROUTE
 
     if context.profile != INTERNAL:
         raise ToolDriverError(
             "policy_blocked",
             f'semantic_lexicon writes are not permitted for profile "{context.profile}".',
         )
-    if context.user_id:
+    if context.dispatch_route == TOOLS_DISPATCH_ROUTE:
         return LEXICON_PROVENANCE_ADMIN_MANUAL
     return LEXICON_PROVENANCE_CONVERSATION_CONFIRMED
 
@@ -212,14 +241,18 @@ def read_lexicon_proposal(
     Returns the framework-derived, storable field set. Everything a caller could
     forge -- ``status``, ``provenance``, ``decider_account_id``, ``hit_count`` --
     is derived here or fixed, never read from ``params``.
+
+    ``pii_keep_exempt`` rides along but is NOT a column: both twins report it on
+    the propose response and the Postgres twin records it in the audit row's
+    ``details``. It is per-write governance evidence, not entry state.
     """
     domain = _require_domain(params)
     entry_kind = _require_choice(params, "entry_kind", LEXICON_ENTRY_KINDS)
     surface_form = _require_form(params, "surface_form")
     canonical_form = _require_form(params, "canonical_form")
     evidence = _read_evidence(params)
-    proposer_context = _read_proposer_context(params)
-    evidence, proposer_context, pii_redacted = scan_lexicon_write(
+    proposer_context = read_proposer_context(params)
+    evidence, proposer_context, pii_redacted, pii_keep_exempt = scan_lexicon_write(
         surface_form=surface_form,
         canonical_form=canonical_form,
         evidence=evidence,
@@ -233,6 +266,7 @@ def read_lexicon_proposal(
         "evidence": evidence,
         "proposer_context": proposer_context,
         "pii_redacted": pii_redacted,
+        "pii_keep_exempt": pii_keep_exempt,
         "provenance": resolve_lexicon_provenance(context),
     }
 
@@ -259,6 +293,9 @@ def create_semantic_lexicon_mock_handlers() -> MockHandlerRegistry:
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
         fields = read_lexicon_proposal(params, context)
+        # Per-write governance evidence, not entry state -- kept off the stored
+        # row so the mock and the (column-less) Postgres row stay in lockstep.
+        pii_keep_exempt = fields.pop("pii_keep_exempt")
         for existing in store:
             if (
                 existing["domain"] == fields["domain"]
@@ -279,7 +316,7 @@ def create_semantic_lexicon_mock_handlers() -> MockHandlerRegistry:
             "updated_at": now,
         }
         store.append(entry)
-        return {**entry, "proposed": True}
+        return {**entry, "pii_keep_exempt": pii_keep_exempt, "proposed": True}
 
     def list_lexicon_entries(
         params: dict[str, Any], context: "ToolExecutionContext"

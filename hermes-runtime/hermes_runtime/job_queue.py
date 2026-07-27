@@ -94,6 +94,12 @@ INTEGRATION_PROBE_JOB_TYPE = "integration_probe"
 # replay/concurrency dicts below): a judge/API fault should retry then dead-letter,
 # never silently produce a wrong rate.
 HONORED_RATE_JOB_TYPE = "honored_rate"
+# S09 (0.0.5, FR-11): the injection-ledger prune. The ledger gains rows every
+# governed turn, so retention is not optional; this is a windowed DELETE on the
+# same schedule tick retention rides. Plain default retry/dead-letter -- the
+# DELETE is idempotent, so a retry is free and a persistently failing prune must
+# be visible rather than quietly letting the table grow.
+INJECTION_LEDGER_PRUNE_JOB_TYPE = "injection_ledger_prune"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

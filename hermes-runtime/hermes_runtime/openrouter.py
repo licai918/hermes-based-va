@@ -36,6 +36,7 @@ from toee_hermes.plugin.hooks import render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
+from hermes_runtime.injection_ledger import injected_entry_refs, record_injection
 from hermes_runtime.live import run_agent_turn
 from hermes_runtime.tool_backend import (
     _gateway_store,
@@ -515,6 +516,26 @@ def make_openrouter_run_turn(
         )
         injected = render_injection(identity, memory, experience)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
+        # S09 (FR-11): record WHICH entries this turn's prompt carried. Written
+        # HERE, from the caller, never from render_injection -- that function is
+        # pure, store-less, and shared with the eval record path (D4.2). Only
+        # when something was actually injected; the gate on "is this an eval
+        # path" lives in record_injection (D4.1), and the write itself is
+        # fire-and-forget -- it cannot raise into or delay this turn (NFR-5).
+        if injected:
+            resolved_binding = binding_key_from_identity(identity)
+            record_injection(
+                store,
+                # The turn's durable idempotency key (ADR-0107), so a ledger row
+                # joins back to agent_turn_context / its message_turn.
+                turn_ref=getattr(context, "event_id", None),
+                case_or_binding_ref=resolved_binding[0] if resolved_binding else None,
+                entries=injected_entry_refs(
+                    binding_key=resolved_binding[0] if resolved_binding else None,
+                    memory=memory,
+                    experience=experience,
+                ),
+            )
         booted = boot_profile(
             EXTERNAL,
             conversation_id=context.conversation_id,

@@ -15,7 +15,7 @@ shared ``datastore`` fixture.
 from __future__ import annotations
 
 from toee_hermes.execute import execute_tool
-from toee_hermes.tool_gate import ToolExecutionContext
+from toee_hermes.tool_gate import TOOLS_DISPATCH_ROUTE, ToolExecutionContext
 
 _CORE = {
     "domain": "tire",
@@ -25,12 +25,17 @@ _CORE = {
 }
 
 
-def _propose(driver, *, profile="internal_copilot", user_id=None, **params):
+def _propose(driver, *, profile="internal_copilot", user_id=None, route=None, **params):
+    # `route` is the dispatch-route marker the deterministic admin surface sets
+    # (ADR-0141); default None is the agent route. Provenance keys on THIS, not
+    # on user_id -- an internal_copilot session carries a rep's account too.
     return execute_tool(
         tool="toee_semantic_lexicon",
         action="propose_lexicon_entry",
         params={**_CORE, **params},
-        context=ToolExecutionContext(profile=profile, user_id=user_id),
+        context=ToolExecutionContext(
+            profile=profile, user_id=user_id, dispatch_route=route
+        ),
         driver=driver,
     )
 
@@ -172,9 +177,9 @@ def test_provenance_cannot_be_forged(datastore) -> None:
         assert cur.fetchone()[0] == "conversation_confirmed"
 
 
-def test_an_attributed_admin_writes_admin_manual(datastore) -> None:
+def test_the_deterministic_dispatch_route_writes_admin_manual(datastore) -> None:
     driver, conn, _ = datastore
-    result = _propose(driver, user_id="acct_admin_1")
+    result = _propose(driver, user_id="acct_admin_1", route=TOOLS_DISPATCH_ROUTE)
     assert result.ok
     with conn.cursor() as cur:
         cur.execute(
@@ -182,6 +187,20 @@ def test_an_attributed_admin_writes_admin_manual(datastore) -> None:
             (result.data["id"],),
         )
         assert cur.fetchone()[0] == "admin_manual"
+
+
+def test_an_agent_route_write_carrying_a_rep_account_is_not_admin_manual(datastore) -> None:
+    # ADR-0141 puts a rep's account on an internal_copilot session, so a capture
+    # fork can run attributed. An actor is not evidence a human authored this.
+    driver, conn, _ = datastore
+    result = _propose(driver, user_id="acct_rep_7")
+    assert result.ok
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT provenance FROM semantic_lexicon WHERE id = %s",
+            (result.data["id"],),
+        )
+        assert cur.fetchone()[0] == "conversation_confirmed"
 
 
 def test_status_cannot_be_forged(datastore) -> None:
@@ -201,7 +220,7 @@ def test_status_cannot_be_forged(datastore) -> None:
 
 def test_propose_writes_an_audit_row(datastore) -> None:
     driver, conn, _ = datastore
-    result = _propose(driver, user_id="acct_admin_1")
+    result = _propose(driver, user_id="acct_admin_1", route=TOOLS_DISPATCH_ROUTE)
     assert result.ok
 
     with conn.cursor() as cur:
@@ -217,6 +236,34 @@ def test_propose_writes_an_audit_row(datastore) -> None:
     assert target_id == result.data["id"]
     assert details["provenance"] == "admin_manual"
     assert details["surface_form"] == "2055516"
+    assert details["pii_keep_exempt"] == []
+
+
+def test_a_waived_redaction_is_recorded_in_the_audit_details(datastore) -> None:
+    # Review finding 2: surface_form is model-supplied and PII-unscanned by
+    # design, so a phone-shaped one waives its own redaction inside the evidence.
+    # The entry is kept (correctly) -- but the waiver must leave a trace.
+    driver, conn, _ = datastore
+    result = _propose(
+        driver, surface_form="416-555-0199", evidence="call me at 416-555-0199"
+    )
+    assert result.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT evidence, pii_redacted FROM semantic_lexicon WHERE id = %s",
+            (result.data["id"],),
+        )
+        evidence, flagged = cur.fetchone()
+        cur.execute(
+            "SELECT details FROM workbench_audit_log WHERE target_id = %s",
+            (result.data["id"],),
+        )
+        details = cur.fetchone()[0]
+    # The number survived, by design -- and the audit says a redaction was waived.
+    assert evidence == "call me at 416-555-0199"
+    assert flagged is False
+    assert details["pii_keep_exempt"] == ["416-555-0199"]
 
 
 # --- the split write scan: a governed rejection persists nothing ---------------

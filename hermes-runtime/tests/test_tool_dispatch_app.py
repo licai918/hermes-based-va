@@ -14,6 +14,7 @@ from __future__ import annotations
 from starlette.testclient import TestClient
 
 from hermes_runtime.tool_dispatch_app import create_tool_dispatch_app
+from toee_hermes.tool_gate import TOOLS_DISPATCH_ROUTE
 
 API_TOKEN = "test-copilot-api-token"
 
@@ -169,6 +170,27 @@ def test_dispatch_without_actor_runs_with_no_actor() -> None:
 
     assert driver.context is not None
     assert driver.context.user_id is None
+
+
+def test_dispatch_marks_the_context_with_its_own_route() -> None:
+    # This route IS the deterministic admin surface, and governed writes whose
+    # attribution turns on "was a human driving this" (L7 provenance) read the
+    # marker rather than user_id -- an internal_copilot agent session carries a
+    # rep's account too, so an actor cannot tell the two paths apart. Set as a
+    # literal here, so nothing in the request body can produce or suppress it.
+    driver = _CapturingDriver()
+    _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_read",
+            "action": "list_cases",
+            "dispatch_route": "something-the-caller-made-up",
+        },
+    )
+
+    assert driver.context is not None
+    assert driver.context.dispatch_route == TOOLS_DISPATCH_ROUTE
 
 
 class _FakeIdentityStore:

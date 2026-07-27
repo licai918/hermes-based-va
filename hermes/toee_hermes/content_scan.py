@@ -13,7 +13,7 @@ write scan:
   only"). A legitimate delivery-habit slot reads "leave at back door, call
   604-555-1212"; running the PII leg there rejects correct customer data.
 
-Per-field policy (D2):
+Per-field policy (D2). The last row is D2's TARGET, not today's behaviour:
 
 ===============================  ==================  =========================
 Field                            ``scan_injection``  ``scan_pii``
@@ -21,8 +21,13 @@ Field                            ``scan_injection``  ``scan_pii``
 L7 surface_form / canonical_form  hard-reject         not applied
 L7 evidence / proposer_context    hard-reject         redact in place
 L6 experience content             hard-reject         hard-reject (unchanged)
-L4 slot values + evidence         hard-reject         not applied
+L4 slot values + evidence         **S08, not wired**  not applied
 ===============================  ==================  =========================
+
+**Who actually calls this module today: L6 and L7 only.** L4's write path does
+not call :func:`scan_injection` at all -- wiring it is S08's slice (D19's
+correction). Nothing here reaches L4 by being shared; a resolver only covers its
+callers.
 
 ONE module, imported by both the mock and the Postgres twins, so the two can
 never drift on what counts as a governed rejection (NFR-7, the S15/S21 lesson).
@@ -33,7 +38,7 @@ L6's exact 0.0.3 behaviour is preserved by composing both legs per text -- see
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from .errors import ToolDriverError
 
@@ -91,13 +96,53 @@ PII_REJECTED_MESSAGE = (
 )
 
 
+def read_proposer_context(params: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Validate the optional ``proposer_context`` param shared by L6 and L7.
+
+    Public here rather than private to one layer's mock module: L6's two twins
+    and L7's two twins all read the same param with the same rules, and importing
+    a leading-underscore name across module boundaries was how S01 first did it.
+    """
+    ctx = params.get("proposer_context")
+    if ctx is None:
+        return None
+    if not isinstance(ctx, dict):
+        raise ToolDriverError(
+            "unexpected_error",
+            "proposer_context must be an object when provided.",
+        )
+    return ctx
+
+
+def context_strings(value: Any) -> list[str]:
+    """Every string inside a ``proposer_context``, at ANY depth, keys included.
+
+    Feeds :func:`scan_injection`. Nested because a shallow pass let
+    ``{"a": {"b": "</untrusted_customer_memory>"}}`` store clean; keys are
+    included because they are model-supplied too. Only VALUES are redacted (see
+    :func:`redact_pii_tree`) -- renaming a key would change the object's shape.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [
+            text
+            for key, item in value.items()
+            for text in ([key] if isinstance(key, str) else []) + context_strings(item)
+        ]
+    if isinstance(value, list):
+        return [text for item in value for text in context_strings(item)]
+    return []
+
+
 def scan_injection(*texts: Optional[str]) -> None:
     """Hard-reject instruction-injection and fence-escape content.
 
-    Applied to EVERY governed memory write, every layer, every field: an
-    injection pattern is never legitimate content anywhere. ``None``/empty
-    positionals are skipped so callers can pass an optional field straight
-    through.
+    An injection pattern is never legitimate content in any field of any layer,
+    so every CALLER applies it to everything it writes. Callers today are L6
+    (``scan_agent_experience_content``) and L7 (``scan_lexicon_write``); L4 is
+    S08's to wire. ``None``/empty positionals are skipped so callers can pass an
+    optional field straight through.
     """
     for text in texts:
         if not text:
@@ -110,8 +155,8 @@ def scan_injection(*texts: Optional[str]) -> None:
 
 def redact_pii(
     text: Optional[str], *, keep: tuple[Optional[str], ...] = ()
-) -> tuple[Optional[str], bool]:
-    """Return ``(text with every PII span replaced, whether anything changed)``.
+) -> tuple[Optional[str], bool, tuple[str, ...]]:
+    """``(text with every PII span replaced, anything changed, spans spared)``.
 
     The L7 ``evidence``/``proposer_context`` policy (D2): those fields are
     verbatim customer exchanges and will routinely carry a phone or an email.
@@ -126,19 +171,61 @@ def redact_pii(
     -- undecidable, which is the exact harm the redact-don't-reject rule exists
     to avoid. The tokens were already injection-scanned as this entry's own
     accepted domain terms.
+
+    The THIRD return value is why a waiver is no longer silent (S01 review).
+    ``surface_form`` is model-supplied and gets no PII scan by design, so a
+    proposal can arrive with ``surface_form="416-555-0199"`` and evidence quoting
+    it: the number survives redaction, legitimately, but the caller must be able
+    to say so. Exact-span equality means an exemption can only ever spare a span
+    identical to a token the caller already accepted -- it can never suppress a
+    DIFFERENT one -- and now it names the spans it spared.
     """
     if not text:
-        return text, False
+        return text, False, ()
     kept = {token.strip().casefold() for token in keep if token}
+    spared: list[str] = []
 
     def _replace(match: re.Match[str]) -> str:
         span = match.group(0)
-        return span if span.strip().casefold() in kept else PII_REDACTION
+        if span.strip().casefold() not in kept:
+            return PII_REDACTION
+        spared.append(span)
+        return span
 
     redacted = text
     for pattern in _PII_PATTERNS:
         redacted = pattern.sub(_replace, redacted)
-    return redacted, redacted != text
+    return redacted, redacted != text, tuple(spared)
+
+
+def redact_pii_tree(
+    value: Any, *, keep: tuple[Optional[str], ...] = ()
+) -> tuple[Any, bool, tuple[str, ...]]:
+    """:func:`redact_pii` over every string in a nested dict/list, same returns.
+
+    ``proposer_context`` is JSONB: a shallow pass left nested values unredacted.
+    Keys are left alone -- they are scanned by :func:`context_strings` but
+    rewriting one would change the object's shape.
+    """
+    if isinstance(value, str):
+        return redact_pii(value, keep=keep)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        changed = False
+        spared: tuple[str, ...] = ()
+        for key, item in value.items():
+            out[key], hit, kept = redact_pii_tree(item, keep=keep)
+            changed = changed or hit
+            spared += kept
+        return out, changed, spared
+    if isinstance(value, list):
+        items = [redact_pii_tree(item, keep=keep) for item in value]
+        return (
+            [item for item, _, _ in items],
+            any(hit for _, hit, _ in items),
+            tuple(span for _, _, kept in items for span in kept),
+        )
+    return value, False, ()
 
 
 def scan_pii(*texts: Optional[str]) -> None:

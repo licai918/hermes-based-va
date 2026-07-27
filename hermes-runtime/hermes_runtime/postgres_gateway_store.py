@@ -9,7 +9,7 @@ as the per-profile dispatch servers, ADR-0142).
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -434,7 +434,8 @@ class PostgresGatewayStore:
         ``rejected`` are never injected into any turn -- newest-confirmed first,
         capped at :data:`_CONFIRMED_EXPERIENCE_LIMIT`. Returns the
         ``[{"content": ..., "kind": ...}, ...]`` shape ``hooks._render_experience``
-        expects.
+        expects, plus ``id`` (S09): the provenance ledger's L6 ``entry_ref`` IS the
+        entry id, and the renderer ignores the extra key.
         # ponytail: fixed cap is fine at current volume; make it relevance-ranked
         # only if the confirmed set ever outgrows the prompt budget (post-launch
         # real-traffic calibration, FR-27 -- see ADR-0152)."""
@@ -442,7 +443,7 @@ class PostgresGatewayStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT content, kind FROM agent_experience
+                    SELECT id, content, kind FROM agent_experience
                     WHERE status = 'confirmed'
                     ORDER BY decided_at DESC NULLS LAST, created_at DESC
                     LIMIT %s
@@ -450,7 +451,46 @@ class PostgresGatewayStore:
                     (_CONFIRMED_EXPERIENCE_LIMIT,),
                 )
                 rows = cur.fetchall()
-        return [{"content": content, "kind": kind} for content, kind in rows]
+        return [
+            {"id": entry_id, "content": content, "kind": kind}
+            for entry_id, content, kind in rows
+        ]
+
+    def record_injection_ledger(
+        self,
+        *,
+        turn_ref: str,
+        case_or_binding_ref: Optional[str],
+        entries: Sequence[tuple[str, str]],
+    ) -> None:
+        """Append this turn's injected ``(layer, entry_ref)`` pairs (S09, FR-11).
+
+        ONE batched insert per turn. ``ON CONFLICT DO NOTHING`` on the
+        ``(turn_ref, layer, entry_ref)`` primary key -- the grain -- so a
+        redelivered turn cannot double-count an entry into S26's per-entry
+        score. Ids and slot NAMES only; no memory value ever reaches this table
+        (NFR-6, and the column list has nowhere to put one).
+
+        Reached only through
+        :func:`hermes_runtime.injection_ledger.record_injection`, which owns the
+        eval gate and swallows any failure -- so a raise here never reaches the
+        turn (NFR-5).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO injection_ledger
+                        (turn_ref, layer, entry_ref, case_or_binding_ref)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (turn_ref, layer, entry_ref) DO NOTHING
+                    """,
+                    [
+                        (turn_ref, layer, entry_ref, case_or_binding_ref)
+                        for layer, entry_ref in entries
+                    ],
+                )
+            conn.commit()
 
     def list_channel_identities_for_customer(
         self, shopify_customer_id: str

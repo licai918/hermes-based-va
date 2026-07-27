@@ -25,7 +25,12 @@ from fastapi.responses import JSONResponse
 
 from toee_hermes.execute import ToolDriver, execute_tool
 from toee_hermes.plugin.profiles import allowlisted_tools
-from toee_hermes.tool_gate import GateDecision, ToolExecutionContext, ToolGate
+from toee_hermes.tool_gate import (
+    TOOLS_DISPATCH_ROUTE,
+    GateDecision,
+    ToolExecutionContext,
+    ToolGate,
+)
 
 from .tool_backend import (
     _gateway_store,
@@ -213,7 +218,16 @@ def create_tool_dispatch_app(
             action=action,
             params=params,
             context=ToolExecutionContext(
-                profile=profile, user_id=actor_account_id, identity=identity
+                profile=profile,
+                user_id=actor_account_id,
+                identity=identity,
+                # This route IS the deterministic admin surface: a hardcoded
+                # literal, not anything the request body can influence. Governed
+                # writes whose attribution depends on "was a human driving this"
+                # (L7 provenance) read this, not user_id -- the BFF also asserts
+                # a rep's account on agent-side sessions, so an actor alone
+                # cannot tell an admin's decision from an agent's guess.
+                dispatch_route=TOOLS_DISPATCH_ROUTE,
             ),
             driver=knowledge_overrides.get(tool, active_driver),
             gate=active_gate,

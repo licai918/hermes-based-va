@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from ...content_scan import scan_injection, scan_pii
+from ...content_scan import context_strings, read_proposer_context, scan_injection, scan_pii
 from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
 
@@ -93,27 +93,6 @@ def _require_content(params: dict[str, Any]) -> str:
             f"{AGENT_EXPERIENCE_CONTENT_MAX_LENGTH} characters.",
         )
     return content
-
-
-def _read_proposer_context(params: dict[str, Any]) -> Optional[dict[str, Any]]:
-    ctx = params.get("proposer_context")
-    if ctx is None:
-        return None
-    if not isinstance(ctx, dict):
-        raise ToolDriverError(
-            "unexpected_error",
-            "proposer_context must be an object when provided.",
-        )
-    return ctx
-
-
-def _context_strings(ctx: Optional[dict[str, Any]]) -> list[str]:
-    # ponytail: shallow scan only (top-level string values) -- proposer_context
-    # is a flat redacted operational snapshot by convention, not nested prose.
-    # Deepen if a nested shape becomes common.
-    if not ctx:
-        return []
-    return [value for value in ctx.values() if isinstance(value, str)]
 
 
 def resolve_agent_experience_source(context: "ToolExecutionContext") -> str:
@@ -193,8 +172,8 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
     ) -> dict[str, Any]:
         kind = _require_kind(params)
         content = _require_content(params)
-        proposer_context = _read_proposer_context(params)
-        scan_agent_experience_content(content, *_context_strings(proposer_context))
+        proposer_context = read_proposer_context(params)
+        scan_agent_experience_content(content, *context_strings(proposer_context))
         # RK-1: source is framework-derived from context.profile, never the
         # model-supplied params -- any "source" the caller passed is ignored.
         source = resolve_agent_experience_source(context)

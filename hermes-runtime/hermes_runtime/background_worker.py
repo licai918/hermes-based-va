@@ -46,6 +46,7 @@ from .job_queue import (
     DEFAULT_LEASE_SECONDS,
     HONORED_RATE_JOB_TYPE,
     INGEST_JOB_TYPE,
+    INJECTION_LEDGER_PRUNE_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
     RETENTION_JOB_TYPE,
@@ -66,6 +67,7 @@ BACKGROUND_JOB_TYPES = (
     INGEST_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
+    INJECTION_LEDGER_PRUNE_JOB_TYPE,
 )
 
 # ponytail: 5 s, against the turn worker's 250 ms. Nothing here has a latency
@@ -123,6 +125,14 @@ INTEGRATION_PROBE_INTERVAL_SECONDS = 15 * 60
 # worth the linear judge cost.
 HONORED_RATE_INTERVAL_SECONDS = 24 * 60 * 60
 
+# ponytail: 24 h for the injection-ledger prune (0.0.5 S09, FR-11), matching
+# retention -- and for the same reason: the window it enforces is
+# `injection_ledger.PRUNE_WINDOW_SECONDS` (180 DAYS), so anything under a day
+# buys nothing but write load. The window is floor(epoch/86400), so a worker down
+# for a UTC day misses that day rather than replaying a backlog; the DELETE is
+# idempotent, so a missed day just deletes slightly more on the next run.
+INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule(job_type=RETENTION_JOB_TYPE, interval_seconds=RETENTION_INTERVAL_SECONDS),
     Schedule(
@@ -132,6 +142,10 @@ SCHEDULES: tuple[Schedule, ...] = (
     Schedule(
         job_type=HONORED_RATE_JOB_TYPE,
         interval_seconds=HONORED_RATE_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=INJECTION_LEDGER_PRUNE_JOB_TYPE,
+        interval_seconds=INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS,
     ),
 )
 
@@ -228,6 +242,7 @@ def job_bodies() -> dict[str, JobBody]:
     should pay for them once at startup, not on import of this module."""
     from .copilot_turn import run_l6_review_job
     from .honored_rate import run_honored_rate_job
+    from .injection_ledger import run_injection_ledger_prune_job
     from .integration_probe import run_integration_probe_job
     from .retention_sweep import run_retention_sweep_job
 
@@ -247,6 +262,7 @@ def job_bodies() -> dict[str, JobBody]:
         INGEST_JOB_TYPE: _run_ingest,
         INTEGRATION_PROBE_JOB_TYPE: run_integration_probe_job,
         HONORED_RATE_JOB_TYPE: run_honored_rate_job,
+        INJECTION_LEDGER_PRUNE_JOB_TYPE: run_injection_ledger_prune_job,
     }
 
 

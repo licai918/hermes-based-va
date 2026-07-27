@@ -16,9 +16,8 @@ from typing import TYPE_CHECKING, Any, Optional
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from toee_hermes.content_scan import context_strings, read_proposer_context
 from toee_hermes.drivers.mock.agent_experience import (
-    _context_strings,
-    _read_proposer_context,
     _require_content,
     _require_id,
     _require_kind,
@@ -43,10 +42,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     kind = _require_kind(params)
     content = _require_content(params)
-    proposer_context = _read_proposer_context(params)
+    proposer_context = read_proposer_context(params)
     # S22 write-side scan (the S09 hardening discipline floor): rejected
     # content never reaches the INSERT below.
-    scan_agent_experience_content(content, *_context_strings(proposer_context))
+    scan_agent_experience_content(content, *context_strings(proposer_context))
     # RK-1 parity: source is framework-derived from context.profile, never the
     # model-supplied params -- any "source" the caller passed is ignored.
     source = resolve_agent_experience_source(context)

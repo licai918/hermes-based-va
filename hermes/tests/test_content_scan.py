@@ -18,8 +18,15 @@ by ``test_agent_experience.py``, which this slice does not touch.
 D19 additionally puts FENCE-DELIMITER tokens in the injection class: a stored
 value carrying ``</untrusted_customer_memory>`` closes its own prompt fence early
 and lands the rest of itself outside it. That is a STRUCTURAL escape, not a
-semantic one, so none of the S22 patterns see it. Every layer's write path calls
-this one resolver, so fixing it here covers L4, L6 and L7 at once.
+semantic one, so none of the S22 patterns see it.
+
+**Reach, stated honestly (corrected by the S01 review).** Putting the pattern in
+this shared resolver covers exactly the layers that CALL the resolver, which today
+is **L6 and L7 only** -- ``scan_agent_experience_content`` and
+``scan_lexicon_write``. **L4's write path does not call ``scan_injection`` at
+all**; wiring it is S08's job (D19), and until S08 lands, a customer-authored slot
+value can still carry a fence token into the store. The render side stays
+unescaped until S06 either way.
 """
 
 from __future__ import annotations
@@ -31,7 +38,10 @@ import pytest
 from toee_hermes.content_scan import (
     FENCE_TAGS,
     PII_REDACTION,
+    context_strings,
+    read_proposer_context,
     redact_pii,
+    redact_pii_tree,
     scan_injection,
     scan_pii,
 )
@@ -151,8 +161,11 @@ def test_redact_pii_replaces_the_matched_span_and_reports_it() -> None:
     # routinely carry a phone or an email. Rejecting the entry throws away the
     # governance evidence the admin needs, so the span is redacted IN PLACE and
     # the fact of the redaction is recorded (D2).
-    text, redacted = redact_pii("Customer said: text me at jane.doe@example.com about 2055516")
+    text, redacted, kept = redact_pii(
+        "Customer said: text me at jane.doe@example.com about 2055516"
+    )
     assert redacted is True
+    assert kept == ()
     assert "jane.doe@example.com" not in text
     assert PII_REDACTION in text
     # The surrounding evidence survives -- that is what makes it decidable.
@@ -160,14 +173,52 @@ def test_redact_pii_replaces_the_matched_span_and_reports_it() -> None:
 
 
 def test_redact_pii_leaves_clean_text_untouched() -> None:
-    text, redacted = redact_pii("Customer confirmed 20555r16 means 205/55R16.")
+    text, redacted, kept = redact_pii("Customer confirmed 20555r16 means 205/55R16.")
     assert redacted is False
+    assert kept == ()
     assert text == "Customer confirmed 20555r16 means 205/55R16."
 
 
 def test_redact_pii_passes_through_none_and_empty() -> None:
-    assert redact_pii(None) == (None, False)
-    assert redact_pii("") == ("", False)
+    assert redact_pii(None) == (None, False, ())
+    assert redact_pii("") == ("", False, ())
+
+
+def test_redact_pii_names_the_spans_a_keep_exemption_spared() -> None:
+    # Review finding 2: `keep` is sound (exact span equality, so it can never
+    # suppress a DIFFERENT span) but it was silent. surface_form is model-supplied
+    # and PII-unscanned by design, so a phone-shaped one waives its own redaction.
+    # Returning the spared spans is what makes the waiver auditable.
+    text, redacted, kept = redact_pii("call me at 416-555-0199", keep=("416-555-0199",))
+    assert text == "call me at 416-555-0199"
+    assert redacted is False
+    assert kept == ("416-555-0199",)
+
+
+def test_redact_pii_tree_walks_nested_dicts_and_lists() -> None:
+    value, redacted, kept = redact_pii_tree(
+        {"a": {"b": "mail a.b@example.com"}, "c": ["x", {"d": "clean"}], "n": 7}
+    )
+    assert redacted is True
+    assert kept == ()
+    assert value == {"a": {"b": f"mail {PII_REDACTION}"}, "c": ["x", {"d": "clean"}], "n": 7}
+
+
+def test_context_strings_reaches_every_depth_including_keys() -> None:
+    # Shared by L6 and L7 as the set of strings the injection leg must see. Keys
+    # are model-supplied too, so they are scanned; only VALUES are redacted (a
+    # renamed key would change the object's shape).
+    assert sorted(context_strings({"a": {"b": "deep"}, "c": ["one", 2]})) == [
+        "a", "b", "c", "deep", "one",
+    ]
+    assert context_strings(None) == []
+
+
+def test_read_proposer_context_rejects_a_non_object() -> None:
+    assert read_proposer_context({}) is None
+    assert read_proposer_context({"proposer_context": {"a": 1}}) == {"a": 1}
+    with pytest.raises(ToolDriverError):
+        read_proposer_context({"proposer_context": "not an object"})
 
 
 # --- L6 composition: identical behaviour, no test of its own edited ------------
