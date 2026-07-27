@@ -49,11 +49,23 @@ DECLARABLE_LAYERS: frozenset[Optional[str]] = frozenset({*MEMORY_LAYERS, None})
 # equality, not uniqueness.
 LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # --- L1 Identity Graph -------------------------------------------------
-    # The three matches are lookups against the graph, not writes to it.
-    ("toee_identity_lookup", "match_phone"): None,
+    # match_phone is NOT a pure lookup on the datastore (system-of-record)
+    # backend: when no local identity_link row exists, `_match` falls through to
+    # `_shopify_phone_fallback` (hermes-runtime/hermes_runtime/datastore/
+    # handlers/identity.py), and a SINGLE Shopify phone match calls
+    # `_upsert_identity_link`, persisting the identity_link row that
+    # memory-layers.md counts as L1 ("Shopify/cross-system links, match
+    # history"). Proven by hermes-runtime/tests/test_datastore_driver_identity
+    # .py::test_match_phone_shopify_fallback_creates_identity_link. The mock
+    # twin's match_phone is read-only; the declaration follows the backend that
+    # actually persists.
+    ("toee_identity_lookup", "match_phone"): "L1",
+    # The other two really are reads. match_email_sender reaches the same
+    # `_shopify_phone_fallback` but exits at its `channel != "sms"` guard before
+    # any upsert; get_email_link_status is a bare SELECT.
     ("toee_identity_lookup", "match_email_sender"): None,
     ("toee_identity_lookup", "get_email_link_status"): None,
-    # Persists an identity_link row -- the one L1 write in the catalog.
+    # Upserts an identity_link row directly -- the one EXPLICIT L1 write.
     ("toee_identity_lookup", "link_identity"): "L1",
     # --- L5 Knowledge reads ------------------------------------------------
     ("toee_knowledge_search", "search_public_site"): None,
@@ -165,4 +177,16 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     ("toee_integrations", "get_integrations_status"): None,
     ("toee_integrations", "initiate_reconnect"): None,
     ("toee_integrations", "reprobe_now"): None,
+    # --- quality feedback (outside the layer model) -------------------------
+    # ADR-0154's two stores (`interaction_review`, `draft_feedback`) hold
+    # judgments ABOUT the system's output, never content the system reads back
+    # into a turn. memory-layers.md enumerates L3 Operational as Follow-up Case
+    # / Workbench Audit Log / auto-handled evidence / eval records -- these
+    # tables are none of those and appear nowhere in the layer map, so the three
+    # writes declare no layer (see hermes-runtime/hermes_runtime/datastore/
+    # handlers/feedback.py). list_feedback is a bounded read over both tables.
+    ("toee_feedback", "submit_interaction_review"): None,
+    ("toee_feedback", "record_draft_outcome"): None,
+    ("toee_feedback", "submit_draft_rating"): None,
+    ("toee_feedback", "list_feedback"): None,
 }

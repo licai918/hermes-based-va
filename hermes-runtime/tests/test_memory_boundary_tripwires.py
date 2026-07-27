@@ -14,6 +14,9 @@ longer exists. There is deliberately NO read/write classification logic --
 ``TOOL_CATALOG`` is action names only, so any derivation of "the writes" would be
 a name-prefix heuristic that silently mis-files ``dismiss_proposal`` and silently
 misses the next write that breaks the pattern. See ``toee_hermes.memory_layers``.
+Scope limit: ``TOOL_CATALOG`` is the only source, so a memory write reached
+outside a catalog action -- ingress identity resolution, the background job
+worker, the CLI entrypoints, inbound webhooks -- is invisible to this tripwire.
 
 FR-16 -- injection composition. ``render_injection`` must give each layer at most
 one fence and let no memory content escape one. S06 extends this section with the
@@ -47,6 +50,15 @@ mix"). Honest accounting, three buckets:
 - *L6 shared content is operational-only/no-PII* -- write-side scan:
   ``scan_agent_experience_content`` in ``toee_hermes.drivers.mock
   .agent_experience``, tested in ``hermes/tests/test_agent_experience.py``.
+- *``match_phone`` is an L1 WRITE, not a lookup* -- the fact behind that
+  declaration is asserted behaviourally by ``hermes-runtime/tests/
+  test_datastore_driver_identity.py::
+  test_match_phone_shopify_fallback_creates_identity_link`` (the single-match
+  Shopify fallback persists an ``identity_link`` row). Nothing is re-asserted
+  here: a test comparing ``LAYER_OF_ACTION`` to its own value would restate the
+  map rather than check it. This pairing is also the standing caveat on FR-15 --
+  the completeness tripwire forces an ENTRY for every action, never a CORRECT
+  one; only a behavioural test elsewhere can pin a value.
 
 **Doc-only -- no assertion exists or can honestly be written**
 
@@ -58,6 +70,33 @@ mix"). Honest accounting, three buckets:
   assert-nothing test.
 - *L7 write-side scan.* L7 does not exist yet (S01 builds it). No entry declares
   L7 in ``LAYER_OF_ACTION``; the FR-15 tripwire is what forces S01/S02 to.
+- *A fence can be closed by the content it is fencing.*
+  ``toee_hermes.plugin.hooks._render_memory`` interpolates the raw slot value
+  into the block (``f"- {name}: {value}"``) with no escaping of the fence tag.
+  A customer-authored value that contains the literal
+  ``</untrusted_customer_memory>`` followed by a newline therefore CLOSES the
+  fence early, and everything the customer wrote after that token lands OUTSIDE
+  it -- in the same unfenced region as the framework-derived Session Identity
+  Snapshot, where it reads as trusted narration instead of untrusted data. That
+  is exactly the persistent prompt-injection surface ``_render_memory``'s own
+  comment names, and it is reachable by anyone who can set a preference slot.
+  ``test_no_memory_content_escapes_its_fence`` below does NOT catch it: it
+  checks that KNOWN-GOOD values sit inside their fence and nowhere outside,
+  which a malicious value's *prefix* still satisfies -- nothing asserts that a
+  fence survives its own body. ``_render_experience`` has the identical shape
+  with ``</confirmed_operational_learnings>``, though its content is
+  human-confirmed rather than customer-authored. Recorded and NOT asserted on
+  purpose: the honest assertion (render a tag-bearing value, expect it neutered)
+  requires ``_render_memory`` to escape or reject the tag first, which is a
+  runtime behaviour change and belongs to its own slice, not to a tripwire
+  slice.
+- *Nothing pins a value to the RIGHT fence.* The two composition tests assert
+  "each layer has exactly one fence" and "each declared value appears in its own
+  fence and nowhere outside any fence". A value duplicated into a SECOND layer's
+  fence -- an L4 slot value also rendered into the L6 block -- satisfies both
+  and passes. Not asserted here: the rendered fences carry no provenance, so a
+  checker would have to re-derive which layer a string came from, which is the
+  classification machinery this file deliberately does without.
 """
 
 from __future__ import annotations
@@ -150,7 +189,13 @@ def test_composition_gives_each_layer_exactly_one_fence() -> None:
 
 def test_no_memory_content_escapes_its_fence() -> None:
     text = _all_layers_populated()
-    bodies = dict(_fenced_blocks(text))
+    blocks = _fenced_blocks(text)
+    bodies = dict(blocks)
+    # dict() keeps only the LAST block per tag, so a duplicate fence would be
+    # silently dropped here and the lookups below would still pass. The sibling
+    # test above is what makes that safe -- assert it locally rather than depend
+    # on another test having run.
+    assert len(blocks) == len(bodies)
 
     for slot in _MEMORY:
         assert slot["value"] in bodies[FENCE_TAG_OF_LAYER["L4"]]
