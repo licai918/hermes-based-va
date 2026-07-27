@@ -281,3 +281,25 @@ def test_get_sales_outreach_rejects_non_sales_case(datastore) -> None:
     result = _run(driver, "get_sales_outreach", {"case_id": "case_not_sales"})
     assert result.ok
     assert result.data["case"] is None
+
+
+def test_list_auto_handled_result_is_json_serializable(datastore) -> None:
+    """The dispatch server JSON-encodes every tool result, so a raw ``datetime``
+    in the record is a hard HTTP 500 -- not a governed error, an unhandled
+    exception.
+
+    This escaped every prior test because they assert on the Python dict, which
+    holds a ``datetime`` happily, and because a fresh dev DB has NO auto-handled
+    records at all (the list is empty, so nothing ever serialized). It only
+    fires once a real fully-auto thread exists -- found by driving the live
+    stack. ``json.dumps`` is exactly what the server does.
+    """
+    import json
+
+    driver, conn, _ = datastore
+    _seed_auto_thread(conn, "thread_json_safe")
+
+    result = _run(driver, "list_auto_handled")
+    assert result.ok
+    assert result.data["records"], "expected the seeded auto-handled record"
+    json.dumps(result.data)  # raises TypeError if any field is not JSON-safe

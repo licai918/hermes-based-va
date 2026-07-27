@@ -485,7 +485,13 @@ def _build_auto_handled_record(
     }
     if include_timeline:
         record["timeline"] = _thread_messages(conn, thread_id, channel)
-    return record
+    # ``last_activity_at`` comes off the thread row as a raw ``datetime``, which
+    # is not JSON-serializable -- returning it as-is makes the dispatch server
+    # 500 the moment an auto-handled record actually exists (the list is empty
+    # in a fresh dev DB, which is why this went unnoticed). Same JSON-safing
+    # every other read here already does; ``timeline``/``tool_calls`` entries
+    # are serialized by their own builders.
+    return serialize_row(record)
 
 
 def _reviewed_subject_ids(
