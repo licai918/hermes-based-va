@@ -80,6 +80,12 @@ export const mutedStyle: CSSProperties = { color: "#666", fontSize: "0.8rem" };
 
 export const failureStyle: CSSProperties = { color: "#8a1c1c", fontWeight: 600 };
 
+// Reviewed/Not-reviewed status column badge (0.0.4 S05, FR-6). Reviewed pairs
+// with failureStyle's weight/contrast convention; Not-reviewed reuses
+// mutedStyle -- same "falsy state reads quiet" pattern as the tool-failure
+// column's em-dash.
+export const reviewedStyle: CSSProperties = { color: "#1c6b2f", fontWeight: 600 };
+
 export const dlStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "auto 1fr",

@@ -67,6 +67,13 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # reached over this profile's API by the admin BFF -- same
             # precedent as toee_metrics/get_memory_audit above.
             "toee_retention",
+            # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell.
+            # The three write actions (submit_interaction_review,
+            # record_draft_outcome, submit_draft_rating) are dispatched from
+            # copilot/review-fork surfaces. All four actions are in
+            # _AGENT_EXCLUDED_ACTIONS, so this only opens the dispatch gate --
+            # never the model's tool-calling surface.
+            "toee_feedback",
         }
     ),
     # ADR-0038 Supervisor Admin Profile (governance only).
@@ -93,6 +100,10 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # dispatches it over this profile's API, mirroring toee_job_queue; the
             # single action is agent-excluded, so nothing reaches a model tool loop.
             "toee_integrations",
+            # 0.0.4 S02 (ADR-0154): list_feedback -- the supervisor read over
+            # both feedback tables (S10). Reached over this profile's API by
+            # the admin BFF; agent-excluded like every action on this tool.
+            "toee_feedback",
         }
     ),
 }

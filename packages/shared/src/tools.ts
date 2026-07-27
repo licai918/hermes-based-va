@@ -66,6 +66,17 @@ export const TOOL_CATALOG = {
     "confirm_experience",
     "reject_experience",
   ],
+  // 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- see
+  // hermes/toee_hermes/tool_catalog.py for the full rationale. Fixed
+  // four-action enum; no handlers/UI yet (S03/S06/S08/S10 add those). Every
+  // action is agent-excluded on the Python side, so it is dispatch-reachable
+  // (internal_copilot + supervisor_admin) but never model-callable.
+  toee_feedback: [
+    "submit_interaction_review",
+    "record_draft_outcome",
+    "submit_draft_rating",
+    "list_feedback",
+  ],
 } as const satisfies Record<string, readonly string[]>;
 
 export type ToolName = keyof typeof TOOL_CATALOG;

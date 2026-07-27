@@ -30,6 +30,7 @@ vi.mock("@/lib/api/copilot-client", () => ({
   sendSms: vi.fn(),
   normalizeDraft: (x: unknown) => String(x),
   proposalsFromDraft: vi.fn().mockReturnValue([]),
+  submitDraftFeedback: vi.fn(),
 }));
 
 const NOW = 1_000_000_000_000;

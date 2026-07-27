@@ -100,6 +100,18 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         # drafting a reply about delivery needs it), registered like the other
         # read toolsets, not a send toolset.
         "toee_delivery_promise",
+        # 0.0.4 S02 (ADR-0154): reviewed addition. toee_feedback's three write
+        # actions (submit_interaction_review, record_draft_outcome,
+        # submit_draft_rating) never contact the customer and never move
+        # money, so they do not weaken the no-auto-send invariant this
+        # tripwire guards. ALL FOUR of its catalog actions (including
+        # list_feedback) are WHOLLY excluded from LLM registration
+        # (_AGENT_EXCLUDED_ACTIONS) -- it never registers a handler and never
+        # appears in a booted tool_names() set (see _wholly_excluded_toolsets
+        # below). Declared here purely so the allowlist gate lets the copilot
+        # review fork's / admin BFF's deterministic tools:dispatch calls
+        # reach it (ADR-0140 precedent: toee_metrics/toee_retention above).
+        "toee_feedback",
     }
 )
 

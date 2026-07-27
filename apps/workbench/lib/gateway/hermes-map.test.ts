@@ -9,6 +9,17 @@ import {
   mapWorkbenchCase,
 } from "./hermes-map";
 
+const myReviewRow = {
+  id: "irev_1",
+  subject_kind: "auto_handled_record",
+  subject_id: "ah_1",
+  verdict: "fail",
+  reason_tags: ["factual_error"],
+  comment: "gave the wrong ETA",
+  reviewer_account_id: "acct_super_1",
+  created_at: "2026-07-20T09:00:00+00:00",
+};
+
 const fullCaseRow = {
   id: "case_1",
   case_id: "case_1",
@@ -71,6 +82,20 @@ describe("mapWorkbenchCase", () => {
 
   it("rejects a non-object payload", () => {
     expect(() => mapWorkbenchCase(null)).toThrow(HermesApiError);
+  });
+
+  // US-7/FR-5 (gap fix): get_sales_outreach's own-latest-review lookup.
+  it("maps a present my_review onto myReview", () => {
+    const c = mapWorkbenchCase({ ...fullCaseRow, my_review: myReviewRow });
+    expect(c.myReview).not.toBeNull();
+    expect(c.myReview?.verdict).toBe("fail");
+    expect(c.myReview?.reasonTags).toEqual(["factual_error"]);
+    expect(c.myReview?.comment).toBe("gave the wrong ETA");
+  });
+
+  it("maps an absent my_review to null", () => {
+    const c = mapWorkbenchCase(fullCaseRow);
+    expect(c.myReview).toBeNull();
   });
 });
 
@@ -214,6 +239,26 @@ describe("mapAutoHandledRecord", () => {
     expect(record.channel).toBe("sms");
     expect(record.toolFailure).toBe(false);
     expect(record.lastActivityAt).toBe(Date.parse("2026-06-01T12:00:00+00:00"));
+    expect(record.myReview).toBeNull();
+  });
+
+  // US-7/FR-5 (gap fix): get_auto_handled's own-latest-review lookup.
+  it("maps a present my_review onto myReview", () => {
+    const record = mapAutoHandledRecord({
+      record_id: "ah_1",
+      channel: "sms",
+      identity_summary: "Verified: cust",
+      last_message_preview: "Thanks",
+      last_activity_at: "2026-06-01T12:00:00+00:00",
+      outcome: "auto_resolved",
+      tool_summary: "match_phone",
+      tool_failure: false,
+      timeline: [],
+      tool_calls: [],
+      my_review: myReviewRow,
+    });
+    expect(record.myReview?.verdict).toBe("fail");
+    expect(record.myReview?.reasonTags).toEqual(["factual_error"]);
   });
 });
 

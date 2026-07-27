@@ -4,3 +4,4 @@ export * from "./tools";
 export * from "./channel-events";
 export * from "./identity";
 export * from "./memory";
+export * from "./feedback";

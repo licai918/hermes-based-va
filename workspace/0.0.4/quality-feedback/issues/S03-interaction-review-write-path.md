@@ -5,7 +5,7 @@
 - **Size:** M
 - **Depends on:** S02
 - **Delivers:** FR-1, FR-2, FR-4, NFR-2, NFR-5
-- **Surface:** migration (next free number, re-checked at PR time — 0017 provisional); mock + Postgres handlers for
+- **Surface:** migration (next free number, re-checked at PR time — 0018 provisional); mock + Postgres handlers for
   `submit_interaction_review`; no UI
 
 ## Goal
@@ -20,7 +20,7 @@ nothing.**
 
 ## Approach
 
-- Migration (next free — see S01; 0017 provisional): `interaction_review` table — subject kind
+- Migration (next free — see S01; 0018 provisional): `interaction_review` table — subject kind
   (`auto_handled_record` | `sales_outreach_case`), subject id, verdict
   (`pass` | `fail`), reason tags, optional comment, reviewer account, created-at.
   A DB-level CHECK enforces that a `fail` carries at least one tag. Append-only:

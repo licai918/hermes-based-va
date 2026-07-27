@@ -128,3 +128,91 @@ describe("CopilotGateway active state", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Ready to send");
   });
 });
+
+// 0.0.4 S07: thumbs rating on the draft card. Rating is an ADJACENT control --
+// the key behavior under test is that it never blocks or breaks the
+// draft/send flow, even when the rating call itself fails.
+describe("CopilotGateway draft rating", () => {
+  it("thumbs-up submits immediately with verdict up and no tags", async () => {
+    const draft = vi.fn().mockResolvedValue("Generated SMS body");
+    const rateDraft = vi.fn().mockResolvedValue({});
+    renderGateway({ draft, rateDraft });
+    fireEvent.click(screen.getByRole("button", { name: /draft sms/i }));
+    await screen.findByLabelText(/draft/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /thumbs up/i }));
+
+    await waitFor(() => expect(rateDraft).toHaveBeenCalledTimes(1));
+    const call = rateDraft.mock.calls[0]![0];
+    expect(call.caseId).toBe("c1");
+    expect(call.draftKind).toBe("sms");
+    expect(call.draftText).toBe("Generated SMS body");
+    expect(call.verdict).toBe("up");
+    expect(call.reasonTags).toEqual([]);
+    expect(typeof call.draftCorrelationId).toBe("string");
+    expect(call.draftCorrelationId.length).toBeGreaterThan(0);
+  });
+
+  it("thumbs-down expands internal reason tags and submits verdict + tags", async () => {
+    const draft = vi.fn().mockResolvedValue("Generated SMS body");
+    const rateDraft = vi.fn().mockResolvedValue({});
+    renderGateway({ draft, rateDraft });
+    fireEvent.click(screen.getByRole("button", { name: /draft sms/i }));
+    await screen.findByLabelText(/draft/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /thumbs down/i }));
+    // Internal tag chips only -- an external-only tag label must not appear.
+    expect(screen.getByRole("button", { name: /wrong tone/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /tone inappropriate/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /wrong tone/i }));
+    fireEvent.click(screen.getByRole("button", { name: /submit rating/i }));
+
+    await waitFor(() => expect(rateDraft).toHaveBeenCalledTimes(1));
+    const call = rateDraft.mock.calls[0]![0];
+    expect(call.verdict).toBe("down");
+    expect(call.reasonTags).toEqual(["wrong_tone"]);
+  });
+
+  it("a rating failure shows an inline error and leaves the draft editable and sendable", async () => {
+    const draft = vi.fn().mockResolvedValue("Ready to send");
+    const rateDraft = vi.fn().mockRejectedValue(new Error("rating service down"));
+    renderGateway({ case: makeCase(), draft, rateDraft });
+    fireEvent.click(screen.getByRole("button", { name: /draft sms/i }));
+    await screen.findByLabelText(/draft/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /thumbs up/i }));
+    await waitFor(() => expect(rateDraft).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/failed to submit rating/i);
+
+    // The draft is untouched: still editable and still has a working send path.
+    const draftField = screen.getByLabelText(/draft message/i) as HTMLTextAreaElement;
+    expect(draftField).toHaveValue("Ready to send");
+    fireEvent.change(draftField, { target: { value: "Edited after rating failure" } });
+    expect(draftField).toHaveValue("Edited after rating failure");
+
+    fireEvent.click(screen.getByRole("button", { name: /send via sms/i }));
+    expect(screen.getByRole("dialog")).toHaveTextContent("Edited after rating failure");
+  });
+
+  it("mints a correlation id for a chat draftCard too", async () => {
+    const chat = vi.fn(
+      async (_message: string): Promise<ChatResponse> => ({
+        state: "ready",
+        reply: "Here is a draft.",
+        draftCard: { channel: "sms", body: "Your tires are ready." },
+      }),
+    );
+    const rateDraft = vi.fn().mockResolvedValue({});
+    renderGateway({ chat, rateDraft });
+    fireEvent.change(screen.getByLabelText(/message copilot/i), {
+      target: { value: "draft an sms" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
+    await screen.findByLabelText(/draft/i);
+
+    fireEvent.click(screen.getByRole("button", { name: /thumbs up/i }));
+    await waitFor(() => expect(rateDraft).toHaveBeenCalledTimes(1));
+    expect(rateDraft.mock.calls[0]![0].draftKind).toBe("sms");
+  });
+});

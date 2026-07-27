@@ -33,11 +33,14 @@ closed on the actor check regardless of registration.
 
 **2. The reserved migration number keeps rotting — stop hardcoding it.** This
 module has now lost `0012` → `0016` → `0017` to concurrent landings
-(`0012_outbound_send`, then `0016_scripted_eval_turn`). Migrations are landing on
-this branch faster than this module ships, so **the migration slices (S03, S06)
-take "the next free number, re-checked immediately before the migration PR"**,
-not a fixed value. At the time of writing the next free number is **`0017`**;
-treat that as provisional. ADR-0154 already landed and needs no renumber.
+(`0012_outbound_send`, then `0016_scripted_eval_turn`, then
+`0017_honored_rate_aggregate` — confirmed via `ls hermes-runtime/migrations/`).
+Migrations are landing on this branch faster than this module ships, so **the
+migration slices (S03, S06) take "the next free number, re-checked immediately
+before the migration PR"**, not a fixed value. At the time of writing the next
+free number is **`0018`** (S03's `interaction_review`), with `0019` next in
+line (S06's `draft_feedback`); treat both as provisional. ADR-0154 already
+landed and needs no renumber.
 
 ## Approach
 

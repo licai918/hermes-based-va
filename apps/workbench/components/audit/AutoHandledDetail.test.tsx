@@ -1,4 +1,5 @@
 import { render, screen, within } from "@testing-library/react";
+import { WORKBENCH_ROLES } from "@toee/shared";
 import type {
   AutoHandledRecord,
   ThreadMessage,
@@ -99,5 +100,32 @@ describe("AutoHandledDetail", () => {
     render(<AutoHandledDetail recordId="missing" />);
     expect(await screen.findByText(/not found/i)).toBeInTheDocument();
     expect(screen.queryByText("Verified: Jane Doe")).toBeNull();
+  });
+
+  // US-7/FR-5: a supervisor reopening this record sees their own prior verdict,
+  // seeded into ReviewBar via `initialReview` from the fetched record.
+  it("passes the fetched myReview through to ReviewBar as the prior verdict", async () => {
+    stubFetch({
+      record: {
+        ...RECORD,
+        myReview: {
+          reviewId: "irev_1",
+          subjectKind: "auto_handled_record",
+          subjectId: "rec-1",
+          verdict: "fail",
+          reasonTags: ["factual_error", "policy_violation"],
+          comment: "gave the wrong ETA",
+          reviewerAccountId: "acct_1",
+          createdAt: Date.now(),
+        },
+      },
+    });
+    render(<AutoHandledDetail recordId="rec-1" role={WORKBENCH_ROLES.supervisor} />);
+
+    const region = await screen.findByRole("region", { name: "Review" });
+    expect(region).toHaveTextContent(/Reviewed:\s*Fail/);
+    expect(region).toHaveTextContent("Factual error");
+    expect(region).toHaveTextContent("Policy violation");
+    expect(region).toHaveTextContent("gave the wrong ETA");
   });
 });
