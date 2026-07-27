@@ -114,6 +114,11 @@ That is currently impossible in two independent ways:
   branch in `resolve_agent_experience_source`, keyed on the **aggregator job's own execution
   context**. The existing INTERNAL → `copilot_agent` branch and its forged-param tests stay
   exactly as they are; S25 adds the matching forged-param test for the new branch.
+  **Amendment (S01 landed the mechanism):** "the job's own execution context" now has a concrete
+  shape — S01 added a framework-set `ToolExecutionContext.dispatch_route`, written as a literal
+  only by the dispatch app's own route handler, never a parameter and never a runtime kwarg.
+  **S25 keys `feedback_derived` on that same axis.** Do not invent a fourth discriminator; one
+  provenance axis that every layer shares is the whole point.
 
 Without this, feedback-derived proposals are indistinguishable from agent-proposed ones in
 every queue — the one thing FR-32 exists to provide.
@@ -348,3 +353,26 @@ instructions". It is a structural escape, not a semantic one.
 
 Do not "fix" this by widening the composition test alone — a test that asserts a broken
 renderer is still broken is not a fix.
+
+## D20. `admin_manual` must be attributable, or it is not admin_manual
+
+Raised by the S01 fix. Provenance is now keyed on `dispatch_route`, which is correct — but a
+write arriving on the admin route **with no actor** still persists as `admin_manual` with a
+`NULL` decider, because ADR-0141's actor resolution fails open.
+
+`admin_manual` means exactly one thing: a human administrator typed this. A row asserting that
+with nobody attached is unfalsifiable provenance — the precise failure the governance model
+exists to prevent, and the reason `decider_account_id` is on the table at all. It is also
+inconsistent with the house pattern: everywhere else in this codebase a missing actor on a
+governed write is a fail-closed `policy_blocked`, not a silent write with a null field.
+
+**Decision: on the admin route, a write with no resolvable actor is `policy_blocked`. It must
+not persist an unattributed `admin_manual` row.** Assigned to **S02**, which owns manual-add
+and the decide/CRUD actions — the paths where admin attribution carries the most weight, and
+which already assert `policy_blocked` without an actor. S02 extends that assertion to the
+provenance path and adds the regression test.
+
+**Interim exposure, stated rather than hidden:** between S01 and S02 an unattributed
+`admin_manual` row is possible. It is reachable only through the internal dispatch route behind
+the bearer, not from any customer-facing path, so the risk is bounded — but it is real until
+S02 lands, and it must not be discovered later as a surprise.

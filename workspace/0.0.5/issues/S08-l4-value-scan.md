@@ -16,6 +16,13 @@
   legitimate customer data. Call **`scan_injection` only** on L4 slot values and evidence.
 - S01 lands `scan_injection` / `scan_pii` as separate shared resolvers; this slice consumes
   `scan_injection`, it does not build the split.
+- **You make three "L4 is not covered yet" statements false — update all of them in your diff.**
+  S01 verified by grep that only L6 and L7 call `scan_injection`, and worded the truth into
+  three places: the boundary-tripwire ledger docstring, `hermes/tests/test_content_scan.py`, and
+  `content_scan.py`'s own policy table plus the `scan_injection` docstring. The moment you wire
+  L4, each of those becomes wrong. The tripwire ledger in particular is the one file in the repo
+  whose entire purpose is honest accounting of what is and is not asserted — leaving a stale
+  "L4 when S08 wires it" there after S08 has wired it is the same defect in the other direction.
 
 ## Goal
 

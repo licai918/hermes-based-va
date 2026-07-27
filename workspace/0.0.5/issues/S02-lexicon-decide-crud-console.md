@@ -21,6 +21,23 @@
 - **D17** — you are the only catalog-touching slice in flight while you run.
 - Declare your new actions in the `LAYER_OF_ACTION` map (0.0.5 S12) in this same diff, or the
   completeness test fails CI.
+- **D20 — you close an open governance hole: `admin_manual` must be attributable.** S01 landed
+  provenance keyed on a framework-set `dispatch_route`, but a write arriving on the admin route
+  with **no resolvable actor** still persists as `admin_manual` with a `NULL` decider, because
+  ADR-0141's actor resolution fails open. `admin_manual` means "a human administrator typed
+  this"; a row asserting that with nobody attached is unfalsifiable provenance, and everywhere
+  else in this codebase a missing actor on a governed write is a fail-closed `policy_blocked`.
+  Extend your existing no-actor `policy_blocked` assertion to the provenance path and add the
+  regression test. The hole is live between S01 and S02 — it is reachable only through the
+  internal dispatch route behind the bearer, but it is real until you close it.
+- **Inherited from S01 (not signed off there):** S01's ② browser layer could not be discharged
+  because no human surface existed yet — you are that surface, so PAC-2's console walkthrough
+  covers both slices. S01 also shipped `list_lexicon_entries` (its acceptance needed a read);
+  **extend it, do not add a second read action.**
+- **Two known mock/Postgres divergences to fix while you are here** (found in the S01 review,
+  deliberately left for you): the mock `list` returns insertion order while Postgres uses
+  `ORDER BY created_at DESC` — your queue will inherit the disagreement; and the mock id scheme
+  `f"lex_{len(store)+1}"` starts colliding the moment deletion exists, which is this slice.
 
 ## Goal
 

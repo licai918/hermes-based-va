@@ -17,6 +17,11 @@
   its forged-param tests stay exactly as they are; add the equivalent forged-param test for the
   new branch (a forged `source` param must not produce `feedback_derived` from any other call
   path).
+  **The mechanism now exists — reuse it, do not invent a fourth.** S01 added a framework-set
+  `ToolExecutionContext.dispatch_route`, written as a literal only by the dispatch app's own
+  route handler: not a parameter, not a runtime kwarg, and its only writer sits behind the
+  bearer. That is precisely "the job's own execution context". Key `feedback_derived` on the
+  same axis, so every layer shares ONE provenance discriminator instead of three that drift.
 - **D13** — "job failure leaves queues clean" means idempotent-on-retry via the watermark, not
   transactional rollback (each propose dispatch is its own transaction). A propose that returns
   `policy_blocked` — routine, since a rep comment can carry a customer name or phone — must be
