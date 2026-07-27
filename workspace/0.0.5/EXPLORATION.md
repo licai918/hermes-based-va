@@ -10,6 +10,44 @@
 > before grilling, since several lean on infrastructure 0.0.4 may have changed (scheduled
 > jobs, workers, admin panels). Theme of the iteration: **complete the memory architecture**
 > (L7 + latency SLO + memory-ops UX + systemic boundary enforcement).
+>
+> ---
+>
+> **GRILL OUTCOMES (2026-07-21, gate satisfied at 0.0.4 closeout; owner: “全按推荐” — locked):**
+>
+> *Seven owner decisions:* ① L7 external capture = **gateway-side post-turn fork** (external
+> agent still writes nothing; ADR-0152 superseding note). ② Memory SLO = **≤150ms p95** total
+> pre-turn reads. ③ Lexicon-shaped L6 proposals = **annotate-only**, human re-files.
+> ④ L4 value injection scan = **hard-reject**. ⑤ Privacy complaint rate = **forget-me proxy**,
+> honestly labeled, until a business intake channel exists. ⑥ **0.0.3’s S32 debt folds into
+> the T6 eval track** (recall@3 ≥80% on the owner’s ~30 real questions — the question set
+> remains the ONE owner input dependency of 0.0.5). ⑦ Supervisor fail-review with a
+> preference-shaped cause = **one-click L4 correction prefill** (resolves C6 open q#2).
+>
+> *Board calls made in-grill:* C1 season source = date-derived + admin-overridable
+> `default_rule` row; normalizer output validated against the live Shopify catalog; glossary
+> starts newest-20 (hit-ranked later on real data); confirm policy = rule in L7, phrasing in
+> persona. C3 hub sits ABOVE the consoles (deep links stay); triage annotator = scheduled
+> batch + per-item on-demand. C4 graduation sweep = scheduled (S04 worker pattern), not
+> event-driven. C5 safety leg: any injected-instruction-obeyed = red, zero tolerance.
+> C6 thresholds start **N=3 same-tag fails / M=3 similar diffs** (calibrate on Phase 1
+> distribution); C6 is the LAST track. **The Memory Control Loop** (grill continuation): the
+> scoring system is the sensor suite, memory actions are the actuators, and the wiring law is
+> *scores sense, humans actuate, every actuation is a governed proposal* — see §6.6 for the
+> deltas this locked in (knob tuning, injection-stratified judge sampling, per-entry
+> effectiveness scores).
+>
+> *Re-grounding corrections from the closeout inventory:* `agent_turn_trace` is **NOT on
+> main** (a rebased-away dev artifact) → the injection provenance ledger (S-M2) is a **new
+> table** and doubles as the scoring system’s locator (score × ledger). The “three-in-sync
+> catalog” set changed after 0.0.4 S11 deleted the TS mock packages — re-list sync points at
+> slicing. ADR/migration numbering restarts at ~0155/~0020 — moving targets, re-check at land
+> time (qf lands 0018/0019).
+>
+> *Track shape (≈20-22 slices):* T1 L7 (S-A→S-B→S-C, the long pole) · T2 lifecycle core
+> (S-M1/M2/M5, parallel to T1) · T3 enforcement (S-G1 early cheap → S-G2 → S-G3) · T4 UX
+> (S-U1→S-U2→S-U3) · T5 latency (S-L1 early → S-L2 on evidence) · T6 eval+feedback LAST
+> (S-M3/M4 + S32 fold-in + S-F1..F4). Early birds: S-G1 + S-L1.
 
 ---
 
@@ -586,22 +624,42 @@ On the existing metrics panel: **feedback→proposal conversion rate**, **post-f
 feedback-sourced correction counts on the per-customer memory-health strip (C5.8). The loop
 closes measurably: score → aggregate → propose → confirm → inject → next scores move.
 
+### 6.6 Memory Control Loop deltas (grill continuation, 2026-07-21 — locked)
+
+Three additions the “scoring applied to memory TUNING” grill locked beyond 6.1-6.5:
+
+1. **Knob tuning is an actuator class of its own.** Signals like a week-over-week global
+   honored-rate decline route not to entry-level proposals but to the TUNING KNOBS: glossary
+   bounded-N (C1), L6 bounded-20, injection phrasing, retention windows. Knobs get an
+   admin-visible read-only panel (values + change path via config); every knob change is
+   audited. Content never auto-changes; knobs change only by admin action — same law, one
+   level up.
+2. **Injection-stratified judge sampling.** The judge has a cost budget; the ledger (S-M2)
+   makes turns WITH memory injections targetable, so the S22 scheduled job stratifies its
+   sample toward them — judge spend concentrates where memory actually appeared. Small change
+   to the existing job.
+3. **Per-entry effectiveness scores are a first-class deliverable** (not a by-product):
+   ledger × judge verdicts → per-entry honored / misapplied / stale rates, joined with
+   hit_count into ONE entry-health score that drives the retirement queue. S-M2’s acceptance
+   gains a clause: the ledger’s grain MUST support this join (turn_id × layer × entry_id).
+
 ### Draft slices
 1. **S-F1 aggregator job + routing table + thresholds** — the scheduled propose-only job over
    both feedback tables. (M; needs qf Phase 1 shipped + a real distribution)
-2. **S-F2 score × ledger join** — per-entry attribution + retirement/repair review items.
+2. **S-F2 score × ledger join** — per-entry attribution + effectiveness scores +
+   retirement/repair review items; includes the stratified-sampling change to the S22 job.
    (M; needs C5.7's ledger)
 3. **S-F3 edit-diff mining → L6/L7 proposal shapes.** (M)
-4. **S-F4 loop-closure metrics.** (S)
+4. **S-F4 loop-closure metrics + knob panel.** (S)
 
-### Open questions (grill fodder)
-- Threshold initial values (N same-tag fails / M similar diffs) — start crude, calibrate.
-- Should a supervisor fail-review with a preference-shaped cause pre-fill an L4 correction in
-  the Memory Audit console (one click from verdict to fix)?
-- Where do OUT-of-memory signals (persona/tone) land operationally — an inbox item kind, given
-  no ticket system exists?
-- Sequencing: this candidate needs BOTH qf Phase 1 data accumulation AND the 0.0.5 grill —
-  likely the LAST 0.0.5 track to slice.
+### Open questions (grill outcomes applied)
+- ~~Threshold initial values~~ **RESOLVED (grill): start N=3 same-tag fails / M=3 similar
+  diffs**, calibrate on Phase 1’s real distribution.
+- ~~Supervisor fail-review → L4 prefill~~ **RESOLVED (owner decision ⑦): yes** — one click
+  from verdict to fix.
+- ~~Sequencing~~ **RESOLVED: C6 is the LAST 0.0.5 track** (T6).
+- Still open: where do OUT-of-memory signals (persona/tone) land operationally — an inbox
+  item kind, given no ticket system exists? (PRD decides the item shape.)
 
 ---
 
