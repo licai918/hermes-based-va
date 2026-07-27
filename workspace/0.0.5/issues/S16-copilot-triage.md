@@ -7,6 +7,14 @@
 - **Delivers:** FR-23
 - **Surface:** background annotator job (fork pattern) + inbox rendering
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D8** — the "governed annotation field" below is the `annotations` JSONB column S13 declares
+  (migration 0025) on the proposal row, and S15 mirrors on `review_item`. You write ONLY the
+  `copilot` top-level key, as a whole-key assignment — never a partial merge into the object,
+  and never touching S13's `heuristic` key. Writing the union of both keys or read-modify-write
+  over the whole column risks clobbering S13's advisory in a race.
+
 ## Goal
 
 FR-23 (grill-locked: scheduled batch + per-item on-demand; the chat-copilot-with-admin-reads

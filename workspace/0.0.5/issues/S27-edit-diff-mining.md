@@ -7,6 +7,18 @@
 - **Delivers:** FR-33
 - **Surface:** the aggregator's diff arm; optional advisory annotator
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D11 (owner-flagged, default taken)** — the Goal's "generated snapshot vs sent text" diff has
+  no second operand today: `draft_feedback` stores only `draft_text` (the ORIGINAL generated
+  draft) plus a scalar `edit_distance_ratio`; the SENT text is persisted nowhere queryable
+  (`outbound_send` has no body column or draft-correlation id). Default taken: this slice ships
+  migration **0029** adding a nullable `sent_text` column to `draft_feedback`, written at
+  governed-send time, with NO backfill — mining only sees rows created after this lands, and the
+  slice's surface says so honestly rather than implying historical coverage. The edited-send
+  stream this feeds is SMS-only by construction today. The owner may instead cut this slice from
+  0.0.5 entirely rather than fund the new column.
+
 ## Goal
 
 FR-33 (C6 §6.4 — the deliberately-scoped hard part): mine the `sent_edited` stream (generated

@@ -7,6 +7,21 @@
 - **Delivers:** FR-34 (lifecycle half)
 - **Surface:** metrics panel extensions; Memory Audit strip; knob panel (+control-loop ADR section)
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D14 (owner-flagged, default taken)** — the Goal's "audited config change path" is dropped.
+  A panel that just renders env-var names is not an audited change path, so the knob panel ships
+  honestly labelled READ-ONLY this iteration, and 0.0.5 records that NFR-3's knob clause is
+  satisfied by deploy-time config only (knob changes are git-auditable because they are
+  code/config commits), with no in-app enforcement. The owner may instead fund a real governed
+  config action + audit row + config table as a follow-up; until then, do not build a fake
+  toggle to satisfy the letter of the Goal.
+- **D16** — the panel renders the named module constants earlier slices already introduced
+  (S06's glossary-N, S20's zero-hit/prune windows, S25's N=3/M=3) by importing them, not by
+  re-typing their current values. If an earlier slice shipped a bare literal instead of a
+  constant, that is a defect in that slice, not something to work around here with a hardcoded
+  display value.
+
 ## Goal
 
 FR-34a (C5 §5.8 + C6 §6.6): the lifecycle metric set on the panel — conflict rate (S07's

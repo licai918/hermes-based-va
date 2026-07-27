@@ -6,9 +6,16 @@ implementable and reviewable, names its own acceptance, and carries the **three-
 (0.0.3 convention): ① technical ② browser E2E ③ owner PAC — pure-refactor/test-only
 carve-outs named per slice.
 
+**[../DECISIONS.md](../DECISIONS.md) is a binding overlay** produced by an adversarial
+pre-flight scan of this plan — where a decision conflicts with a slice's text, the decision
+governs. **D0 rule:** inside `workspace/0.0.5/`, a bare `Sxx` ALWAYS means the 0.0.5 slice; a
+reference to an earlier iteration's slice is always written `Sxx-0.0.3` or `Sxx-0.0.4`.
+
 **Numbering is iteration-scoped** (0.0.5 S-numbers; 0.0.3/0.0.4 had their own lists).
 **Moving targets:** ADR ~0155+ / migration ~0020+ — re-verify at every land time.
-**Precondition:** 0.0.4 fully merged (incl. quality-feedback Phase 1: tables 0018/0019).
+**Precondition:** 0.0.4 fully merged (incl. quality-feedback Phase 1: tables 0018/0019) —
+**SATISFIED**: quality-feedback merged via PR #68 and this branch carries it. The 0.0.5
+migration floor is therefore **0020**.
 **The ONE owner input:** S24 (knowledge final gate) needs the owner's ~30 real questions.
 
 ## Dependency graph
@@ -39,6 +46,12 @@ Note (gap-audit): the **`review_item` store ships in S15** — S10 (blast_radius
 (graduation/retirement), and S25 (persona_review) all emit into it; none of them defines its
 own item storage. Aggregator/sweep emissions go THROUGH the governed propose actions (scans
 apply to feedback-derived content).
+
+**Catalog-sync serialization (D17):** the nine-file catalog sync set (tool_catalog.py,
+plugin.yaml, schemas.py, profiles.py, plugin/__init__.py, mock/__init__.py,
+handlers/__init__.py, tools.ts, drift tests) has exactly one touching slice in flight at a
+time, in order **S01 → S02 → S15 → S11 → S10** (plus S16 if it adds a governed annotate
+action).
 
 Suggested sequence: **S12 + S18 first (early birds), then T1 S01→S06 (the long pole) with T2
 S07/S08/S09/S11 in parallel** → T4 S14→S17 → S10/S13/S20 → T5 S19 → T6 (S21→S28), with
@@ -93,8 +106,9 @@ FR-34→S22(lifecycle)+S28(loop). **All 34 covered; no orphans.**
 
 **NFR → enforcement:**
 NFR-1 (three-layer gate) → every slice's Acceptance block; test-only carve-outs named in
-S12/S21/S23 · NFR-2 (ADR-0148 invariants) → asserted in S01/S02/S07/S08/S11 acceptance +
-existing tripwires re-run branch-wide · NFR-3 (propose→confirm absolute) → S04/S13/S16/S20/
+S12/S21/S23/S09 (S09's ledger has no human surface until S10 lands, so it takes the carve-out
+while shipping a migration and new runtime write sites — D15) · NFR-2 (ADR-0148 invariants) →
+asserted in S01/S02/S07/S08/S11 acceptance + existing tripwires re-run branch-wide · NFR-3 (propose→confirm absolute) → S04/S13/S16/S20/
 S25/S27 all propose-only; knob changes admin-only in S22 · NFR-4 (eval determinism) →
 S06/S09/S18 eval-neutral clauses; ONLY S21's safety leg gates · NFR-5 (never stall a reply) →
 S09/S18/S19 fail-open clauses · NFR-6 (no-PII shared layers) → S01 scan, S08, S16 PII-suspect ·

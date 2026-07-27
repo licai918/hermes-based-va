@@ -7,6 +7,30 @@
 - **Delivers:** FR-11
 - **Surface:** new migration; both turn paths (openrouter + copilot_turn)
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D1** — migration prefix **0021**.
+- **D4.1 — the gate is the EVAL axis, not the injection axis.** The Approach below says "gate on
+  the same axes the injections themselves are gated on" AND "never on the record/replay path".
+  Those are different axes: `eval_record.py` **does** call `render_injection` with a scenario
+  memory preset, so obeying the first clause literally writes ledger rows during record and
+  breaks the replay gate inside this slice's own acceptance. Gate explicitly on **"not an eval
+  path"** (the way the existing eval-neutral emits are gated), and additionally skip when
+  nothing was injected.
+- **D4.2 — do NOT write from `render_injection`.** It is a pure, store-less function in the
+  plugin package with three callers (`openrouter.py`, `copilot_turn.py`, `eval_record.py`).
+  Putting DB I/O in or around it is a layering violation that drags a DB dependency into the
+  eval-record path. **Write from the callers**, with an explicit injected-entry-ref list.
+- **D4.3 — `entry_ref` is a stable natural key, not a row id**: `binding_key + slot_name` for
+  L4, entry id for L6/L7. The cross-channel merge path DELETEs and re-INSERTs L4 rows with new
+  ids, so a row id would silently break S10's blast-radius join and S26's per-entry score.
+- **D12** — your prune window and S20's zero-hit window are coupled. Both are named constants
+  and **`prune_window >= zero_hit_window`** must be asserted in a test. If the prune window is
+  shorter, garbage collection silently manufactures retirement candidates for entries that are
+  actively in use.
+- **D15** — this slice's ①-only carve-out is accepted (the ledger has no human surface until
+  S10) but must be declared; the README's NFR-1 audit now names S09 alongside S12/S21/S23.
+
 ## Goal
 
 FR-11 (closes verified gap 3; `agent_turn_trace` is NOT on main — this is its OWN table): per

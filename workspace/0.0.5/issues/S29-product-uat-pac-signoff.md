@@ -8,6 +8,15 @@
 - **Delivers:** PAC-1..9 sign-off; the iteration's DONE definition
 - **Surface:** owner-driven browser walkthrough; docs final state; CURRENT pointer
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D18** — the quality-feedback work folded into this branch's base carries two undischarged
+  PAC items of its own: a human browser DOM pass over ReviewBar/thumbs/send-modal, and a
+  simulator-driven PAC-1 subject (see `workspace/0.0.4/quality-feedback/PAC-CHECKLIST.md`).
+  Folding qf into the 0.0.5 base makes them this sign-off's problem, not a thing already
+  covered by 0.0.4's own close. List both explicitly as inherited items in the owner-driven
+  walkthrough below, so they cannot ride along unnoticed as already signed off.
+
 ## Goal
 
 The owner walks every PAC scenario end-to-end on the real stack and signs the iteration off.

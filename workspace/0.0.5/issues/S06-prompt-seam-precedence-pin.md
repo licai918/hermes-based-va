@@ -7,6 +7,29 @@
 - **Delivers:** FR-6, FR-7
 - **Surface:** render_injection composition; both turn paths; L7 ADR + memory-layers.md
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D16** — ship "newest-20" as a named module constant (e.g. `LEXICON_GLOSSARY_LIMIT = 20`),
+  not a literal inline in the selection query. S22's knob panel, much later, must read this
+  constant to render the glossary-N value; if it is a bare `20` buried in this slice, S22 has to
+  go hunting for a magic number instead of importing a name. Define it once here, at the slice
+  that first uses it.
+- **D19 — you own the render-side fix for a live fence-escape injection surface.**
+  `_render_memory` interpolates raw customer-authored slot values with no escaping, so a value
+  containing `</untrusted_customer_memory>` closes the fence early and puts the rest of itself
+  OUTSIDE the fence. S12's composition test passes anyway, because it only asserts that known
+  content sits inside its fence; S12 has ledgered the gap and **this slice closes it**. Escape
+  or strip fence-delimiter tokens at render time, and extend S12's composition test with the
+  case it currently cannot catch: a slot value carrying a closing token must render with the
+  fence structure intact. S01 hard-rejects these tokens on the write side; you are the defence
+  in depth for values that predate that guard. Widening the test without fixing the renderer is
+  not a fix.
+- **D0** — "(S25 discipline)" in the Goal below means **S25-0.0.3**, as does the "two-flag
+  precedent" in the Approach. Neither refers to the 0.0.5 S25.
+- **D14** — the hit-ranked selection toggle that S26 later adds is flipped by a **deploy-time
+  config commit**, not an in-app action; keep this slice's constant shaped so that reading it
+  from config is a one-line change, and do not build an in-app mutation path.
+
 ## Goal
 
 FR-6: bounded newest-20 confirmed entries rendered as a fenced `<confirmed_lexicon>` block on

@@ -7,6 +7,15 @@
 - **Delivers:** FR-31
 - **Surface:** join view/aggregate; S22-judge-job sampling change; retirement feed upgrade
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D1** — the effectiveness rollup migration is allocated prefix **0028**. Re-verify by
+  listing the migrations directory before writing yours.
+- **D6** — `hit_count` going into the entry-health formula is the MATERIALIZED column S05's
+  scheduled rollup maintains (migration 0026) — read it, don't recompute it from raw hit events
+  or re-derive it from the ledger yourself. Ledger-derived honored/misapplied/stale rates come
+  from the join you build here; hits come from the already-materialized column.
+
 ## Goal
 
 FR-31 (C6 §§6.1/6.6 — the join that makes scoring the memory system's sensory organ): judge

@@ -7,6 +7,22 @@
 - **Delivers:** FR-26
 - **Surface:** duration emits at each memory-read site; metrics-panel tiles
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D5.1 — you need a migration; the Surface line saying otherwise is corrected to prefix
+  0023.** `metric_event` is `(id, metric TEXT, flag BOOLEAN, created_at)` — there is **no
+  numeric column**, so p50/p95 over it is arithmetically impossible. Encoding a duration into
+  the metric *name*, or degrading it to a boolean "was slow", satisfies the letter of the
+  Approach below and is a defect. Ship either a latency-sample table or a nullable numeric
+  column on `metric_event`; pick one and document why.
+- **D5.2 — the 150ms p95 SLO covers NON-L5 pre-turn reads only.** L5's own shipped budget is
+  800ms (`knowledge/driver.py DEFAULT_DEADLINE_MS = 800.0`), so a total that includes L5 can
+  never meet 150ms. FR-27 already scopes enforcement to non-L5 reads. Measure and tile L5 —
+  against its own 800ms budget — but exclude it from the SLO total.
+- **D5.3 — `merge` is a write, not a read.** Instrument it (it is on the pre-turn path and it
+  matters) but give it its own tile outside the read-SLO total. S19 excludes it from
+  parallelization for the same reason.
+
 ## Goal
 
 FR-26 (C2, measure-first): per-layer read-duration emits (eval-neutral, fire-and-forget — the

@@ -7,6 +7,25 @@
 - **Delivers:** FR-32
 - **Surface:** scheduled background job; inbox item emission
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D3** — `resolve_agent_experience_source` is framework-derived and today returns only
+  `copilot_agent` for INTERNAL, ignoring caller params by design (ADR-0148, unchanged). This
+  slice adds `feedback_derived` to the L6 `source` enum and a matching framework-derived branch
+  in `resolve_agent_experience_source`, keyed on the AGGREGATOR JOB'S OWN execution context —
+  never on a parameter the caller can set. The existing INTERNAL → `copilot_agent` branch and
+  its forged-param tests stay exactly as they are; add the equivalent forged-param test for the
+  new branch (a forged `source` param must not produce `feedback_derived` from any other call
+  path).
+- **D13** — "job failure leaves queues clean" means idempotent-on-retry via the watermark, not
+  transactional rollback (each propose dispatch is its own transaction). A propose that returns
+  `policy_blocked` — routine, since a rep comment can carry a customer name or phone — must be
+  swallowed and counted into a metric, never fail the job and never silently vanish. Test both.
+- **D16** — N=3/M=3 must be named module constants from this slice on, not inline literals —
+  S22's knob panel later reads them by name.
+- **D1** — this slice's watermark migration is allocated prefix **0027**. Re-verify by listing
+  the migrations directory before writing yours.
+
 ## Goal
 
 FR-32 (C6 §§6.2-6.3): ONE background-worker job reads both feedback tables since the

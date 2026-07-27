@@ -7,6 +7,13 @@
 - **Delivers:** FR-2
 - **Surface:** pure normalizer functions (dependency-free package); seed entries; season rule
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D1** — this slice's seed migration is allocated prefix **0024** (the 0.0.5 floor is 0020,
+  with 0021-0023 already spoken for by S09/S15/S18). Re-verify by listing the migrations
+  directory before writing yours; if reality has moved past this number, take the next free one
+  and say so in the report.
+
 ## Goal
 
 FR-2: the three entry kinds become real — `alias` rows, `normalizer` code toggled per domain,

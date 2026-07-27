@@ -7,6 +7,17 @@
 - **Delivers:** FR-5
 - **Surface:** shared helper called by product-read handlers (mock + real twins)
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D6** — the "hit accounting" clause below must NOT be an in-turn UPDATE of `hit_count`. A
+  per-turn UPDATE over a small hot set of confirmed entries is textbook row-lock contention,
+  and NFR-5 forbids adding anything to the reply path that can stall it. Emit an append-only hit
+  event instead; `hit_count` on the lexicon row becomes a materialized column maintained by a
+  scheduled rollup (the shipped `honored_rate_aggregate` pattern), never written from this
+  helper. S20 and S26 read the materialized column, not this write path.
+- **D1** — the hit-event migration is allocated prefix **0026**. Re-verify by listing the
+  migrations directory before writing yours.
+
 ## Goal
 
 FR-5 (grill-locked hook point): a shared PER-HANDLER helper — NOT dispatch middleware —

@@ -7,6 +7,21 @@
 - **Delivers:** FR-3 (decide side), FR-8
 - **Surface:** governed decide/CRUD actions; admin BFF routes; lexicon console
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D7 — the edit either/or is WITHDRAWN. `edit` is an in-place UPDATE and the entry id is
+  stable.** The Approach below offers "in-place UPDATE … or retire-old-then-write-new"; those
+  are not interchangeable. They diverge on entry id stability, `hit_count` continuity, and on
+  whether S09's `entry_ref`, S10's blast-radius join, and S26's per-entry health score survive
+  an edit — shipping "either" guarantees one downstream join is wrong. In-place UPDATE, an
+  `old → new` audit row, `hit_count` continues (an edited entry is the same entry).
+  Retire-then-write stays available as the semantically different admin intent "that mapping
+  was wrong, kill it and start a new one" — it is not an implementation choice for `edit`.
+- **D0** — "S24's `_decide_experience`" below means **S24-0.0.3**, not the 0.0.5 S24.
+- **D17** — you are the only catalog-touching slice in flight while you run.
+- Declare your new actions in the `LAYER_OF_ACTION` map (0.0.5 S12) in this same diff, or the
+  completeness test fails CI.
+
 ## Goal
 
 FR-3/FR-8: the human gate — approve / edit / reject / retire / manual-add on lexicon entries,

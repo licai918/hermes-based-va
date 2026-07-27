@@ -7,6 +7,16 @@
 - **Delivers:** FR-27
 - **Surface:** pre-turn load sites in both turn paths
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D5** — the SLO this slice enforces is narrower than "every pre-turn memory read." The
+  150ms p95 total covers non-L5 pre-turn READS only: L5 already ships its own 800ms budget
+  (`knowledge/driver.py DEFAULT_DEADLINE_MS = 800.0`) and stays measured against that budget,
+  excluded from the 150ms total. `merge` is a WRITE, not a read — instrument and tile it
+  separately, outside the read-SLO total, and keep it out of the parallel pool since its
+  ordering semantics matter. Enforcing a 150ms deadline over L5 or over merge would fail by
+  construction; don't.
+
 ## Goal
 
 FR-27 (C2, grill-locked mechanisms): every pre-turn memory read is deadline-bounded +

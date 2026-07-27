@@ -7,6 +7,18 @@
 - **Delivers:** FR-12
 - **Surface:** ledger query (admin read); inbox item kind
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D4** — S09's `entry_ref` is a stable NATURAL key, not a row id: `binding_key + slot_name`
+  for L4, the entry id for L6/L7. The cross-channel merge path DELETEs and re-INSERTs L4 rows
+  with new ids, so your affected-cases join must key on `entry_ref` as defined, never on an L4
+  row id — joining on a row id silently drops or misattributes cases after any merge.
+- **D17** — you are the LAST slice in the serialized catalog-touching order (S01 → S02 → S15 →
+  S11 → S10). Confirm the nine-file catalog sync set (tool_catalog.py, plugin.yaml, schemas.py,
+  profiles.py, plugin/__init__.py, mock/__init__.py, handlers/__init__.py, tools.ts, drift
+  tests) is clear of in-flight work from the earlier slices before you touch it, and re-list it
+  in your report as the earlier slices did.
+
 ## Goal
 
 FR-12: when an entry is corrected/retired/cleared, the ledger answers "which turns did it

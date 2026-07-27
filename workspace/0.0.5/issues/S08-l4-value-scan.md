@@ -7,6 +7,16 @@
 - **Delivers:** FR-10
 - **Surface:** `_require_value` / upsert path (mock+PG); shared scanner
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D2 — the PII leg does NOT apply to L4.** The Goal below says "injection/PII scanner"; that
+  widening is **rejected**. FR-10 asks only for injection hard-reject, and **L4 is the PII layer
+  by design** (NFR-6: "L4 PII stays bound to its customer only"). Its slots hold things like
+  `leave at back door, call 604-555-1212` — running the PII leg would `policy_blocked`
+  legitimate customer data. Call **`scan_injection` only** on L4 slot values and evidence.
+- S01 lands `scan_injection` / `scan_pii` as separate shared resolvers; this slice consumes
+  `scan_injection`, it does not build the split.
+
 ## Goal
 
 FR-10 (closes verified gap 2; owner decision ④): L4 slot VALUES pass the shared injection/PII

@@ -7,6 +7,16 @@
 - **Delivers:** FR-18
 - **Surface:** both propose handlers (annotation fields only)
 
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D8** — the Approach line below ("decide at implementation... declaring no migration") is
+  corrected: this slice DOES ship a migration. Declare ONE `annotations` JSONB column on the
+  proposal row with two reserved top-level keys, `heuristic` (yours) and `copilot` (S16's,
+  landing later). Write only your own `heuristic` key — never touch `copilot` — so the two
+  slices never lost-update each other's advisories on the same row.
+- **D1** — the `annotations` column migration is allocated prefix **0025**. Re-verify by
+  listing the migrations directory before writing yours.
+
 ## Goal
 
 Tier-3 enforcement (C4; owner decision ③ — **annotate-only**): `propose_experience` runs a
