@@ -210,9 +210,23 @@ designed in up front rather than retrofitted.
 | Customer Memory (L4) | live facts, policy text, consent state | tools / policy slots / Identity Graph (L1) |
 | Any layer | model-supplied write attribution | `source` + `actor_account_id` are framework-derived |
 
+**Machine-checked half (0.0.5 S12, FR-15/16/17).** `toee_hermes/memory_layers.py`'s
+`LAYER_OF_ACTION` declares, for **every** catalog action, the layer it writes — or `None` when it
+writes no memory-layer content. `hermes-runtime/tests/test_memory_boundary_tripwires.py` asserts
+that map against the catalog in both directions (an undeclared new action fails CI), asserts the
+injection composition (≤1 fence per layer, no memory content outside a fence), and turns the
+matrix rows above into tests. Its docstring is the honest ledger of which rows are asserted there,
+which are asserted elsewhere, and which remain **doc-only** — read it before assuming a row is
+enforced.
+
 ---
 
 ## Change log
+
+- **2026-07-27 (0.0.5 S12)** — the boundary section gained a machine-checked half:
+  `LAYER_OF_ACTION` (a declaration per catalog action) plus the tripwire suite that keeps it
+  complete, asserts injection-fence composition, and tests the matrix rows it honestly can.
+  Declarative + tests only; no runtime behavior changed, no layer decision revised.
 
 - **2026-07-21 (0.0.5 exploration)** — L7 Semantic lexicon opened (🔬 exploring): admin-governed,
   conversation-fed domain language (aliases / normalizers / contextual defaults) applied
