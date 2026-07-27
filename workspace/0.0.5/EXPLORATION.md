@@ -511,7 +511,101 @@ the closeout inventory before slicing.
 
 ---
 
-## Candidate slots 6+ — deliberately empty
+## Candidate 6 — Feedback Ingress: 0.0.4's scoring becomes the memory system's sensory input
+
+Owner framing (2026-07-21): how does 0.0.4's scoring mechanism combine with the 0.0.5 memory
+system into ONE feedback entry point (反馈入口)? Answer: this is **quality-feedback Phase 2**
+— explicitly deferred by that module's PRD with its shape already decided ("builds nothing
+new: feeds L6, KnowledgeOps, metrics") — now completed against the FULL 0.0.5 architecture
+(L7, the lifecycle governance of Candidate 5, the unified inbox of Candidate 3).
+
+### 6.0 Inventory — the two scoring arms 0.0.4 shipped (verified)
+
+| Arm | What it captures | Key properties |
+| --- | --- | --- |
+| **Human scoring** (quality-feedback module, ADR-0154) | `interaction_review`: supervisor pass/fail + fixed reason tags on auto-handled / sales-outreach records; `draft_feedback`: rep 👍/👎 + tags, PLUS the implicit signal — `sent_as_is` / `sent_edited` + edit-distance ratio, correlation id, generated-draft snapshot | dispatch-only tool in NO allowlist → **the AI structurally cannot score itself**; append-only; actor-attributed; fail-closed; Phase 1 = capture only |
+| **Automated scoring** (judge) | S20 advisory-forever PR reports (honored / no-unprompted-recall legs); S22 scheduled honored-rate job over **real recent memory injections**; S23 QualityGatesPanel live artifacts with staleness honesty | advisory, never gating; background-worker scheduled; per-injection verdicts are the raw material |
+
+### 6.1 The grilled core insight — two feedback DIRECTIONS, one join
+
+- **Scores about OUTPUT** (human reviews/ratings/edits) → propose memory **ADDITIONS and
+  corrections** (something was missing or wrong → candidate L5/L6/L7 content).
+- **Scores about MEMORY USE** (judge legs: honored / misapplied / stale — Candidate 5.2) →
+  propose memory **RETIREMENT and repair** (an entry exists and is hurting).
+- **The join is Candidate 5.7's injection provenance ledger**: without it, a score attaches to
+  a CONVERSATION; with it, `score × ledger` attaches to the **memory entries injected into that
+  turn** — per-entry quality attribution. A failed review + the ledger = a suspect-entry list.
+  This is what makes the scoring system the memory system's sensory organ rather than a
+  separate dashboard.
+
+### 6.2 The Signal Routing Table (the artifact the grill must pin)
+
+| Signal | Routed to | Mechanism |
+| --- | --- | --- |
+| `factual_error` (ext/int) | L5 knowledge-slot draft via existing KnowledgeOps `submit_for_eval`, OR an L7 alias fix | aggregator clusters; human decides in the inbox |
+| `missed_information` / `missing_context` | L5 gap or L4 injection-miss review item | inbox item with the conversation as evidence |
+| `tool_misuse` / `wrong_action` / `should_have_escalated` | L6 procedure proposal | `propose_experience`, `source=feedback_derived` |
+| **consistent `sent_edited` diffs** (the highest-volume signal) | L6 procedure or **L7 alias** proposals — repeated rep rewrites of the same surface form are lexicon gold (e.g. reps keep rewriting a product name → alias candidate) | edit-diff mining (6.4) |
+| `wrong_tone` / `too_verbose` / `tone_inappropriate` | **OUT of memory** → persona-change inbox item (separate governance: prompt change + eval re-record) | routed, not stored as memory |
+| `policy_violation` | **OUT of memory layers** → policy slots via the existing publish gate | existing KnowledgeOps flow |
+| judge low-honored on a specific entry | retirement review item for that entry | score × ledger (6.1) |
+| judge stale-use | L4 drift review item | Candidate 5.2 leg |
+| zero-hit (L6/L7) | retirement | already designed (C3/C4) |
+
+Routing law: **every signal terminates in a queue a human already works** (the C3 unified
+inbox, KnowledgeOps, or Memory Audit) — no new approval surface (qf-PRD NFR-4 upheld).
+
+### 6.3 The Feedback Aggregator — one scheduled job, propose-only
+
+One background-worker job (0.0.4's S04 worker + S22 job pattern): read feedback since the last
+watermark → cluster (tag × subject × correlation id) → when a threshold trips (N same-tag
+fails on similar subjects; M similar edit-diffs) → emit **`proposed` rows into the EXISTING
+queues** (agent_experience with a distinguishing `feedback_derived` source, lexicon proposals,
+knowledge-slot drafts), carrying the feedback row ids as evidence → the C3 inbox → human
+decides. **Nothing auto-writes memory** — the propose→confirm law is absolute (qf-PRD US-19/26,
+§8's anti-self-modification stance).
+
+**Eval-neutrality resolved** (qf-PRD NFR-3's re-open clause): the aggregator writes
+proposed-only rows (inert by construction); the only turn-reaching path is confirmed entries,
+which are already eval-pinned (S25). No new eval sensitivity.
+
+### 6.4 Edit-diff mining (the deliberately-scoped hard part)
+
+The `sent_edited` stream carries the correction itself (generated snapshot vs sent text).
+Mining it: deterministic diff + clustering first (same-span rewrites recurring across drafts);
+an LLM-assisted clustering pass is allowed ONLY as a fork-pattern advisory annotator (the C3
+triage posture) — its output is a proposal draft, never a write. Grill question: threshold and
+cluster-similarity knobs start crude and calibrate on Phase 1's real distribution (qf-PRD §9's
+volume note: implicit outcomes vastly outnumber explicit ratings — weight accordingly).
+
+### 6.5 Loop-closure metrics (proving the feedback entry works)
+
+On the existing metrics panel: **feedback→proposal conversion rate**, **post-fix re-fail rate**
+(the same tag recurring on the same subject AFTER a confirmed fix — the single most honest
+"did the loop work" number), per-entry honored-rate trend after a replacement, and
+feedback-sourced correction counts on the per-customer memory-health strip (C5.8). The loop
+closes measurably: score → aggregate → propose → confirm → inject → next scores move.
+
+### Draft slices
+1. **S-F1 aggregator job + routing table + thresholds** — the scheduled propose-only job over
+   both feedback tables. (M; needs qf Phase 1 shipped + a real distribution)
+2. **S-F2 score × ledger join** — per-entry attribution + retirement/repair review items.
+   (M; needs C5.7's ledger)
+3. **S-F3 edit-diff mining → L6/L7 proposal shapes.** (M)
+4. **S-F4 loop-closure metrics.** (S)
+
+### Open questions (grill fodder)
+- Threshold initial values (N same-tag fails / M similar diffs) — start crude, calibrate.
+- Should a supervisor fail-review with a preference-shaped cause pre-fill an L4 correction in
+  the Memory Audit console (one click from verdict to fix)?
+- Where do OUT-of-memory signals (persona/tone) land operationally — an inbox item kind, given
+  no ticket system exists?
+- Sequencing: this candidate needs BOTH qf Phase 1 data accumulation AND the 0.0.5 grill —
+  likely the LAST 0.0.5 track to slice.
+
+---
+
+## Candidate slots 7+ — deliberately empty
 
 0.0.4 (job queue, worker cutover, scoring mechanism, TS cleanup) is heavy and in flight.
 Further 0.0.5 candidates land here only after 0.0.4 ships or an owner decision reprioritizes.
