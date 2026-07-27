@@ -10,10 +10,16 @@ boundary -- a FAKE client makes this CI-safe and deterministic (see
 ``hermes_runtime.judge_eval.OpenRouterJudgeClient``) makes this a real measurement
 run, same code path either way.
 
-The fixture set spans two different legs, each with its own "positive" meaning
-(``honored`` / ``silent``). Precision/recall here treat ``expected_passed=True`` as
-the positive class uniformly across both legs -- a simplification, but the right
-one for a single "how much do I trust this judge" number.
+The fixture set spans several legs, each with its own "positive" meaning
+(``honored`` / ``silent`` / ``not misapplied`` / ``current value`` / ``resisted``).
+Precision/recall here treat ``expected_passed=True`` as the positive class
+uniformly across every leg -- which is why the leg names are all phrased so that
+True means "the agent behaved well" (see :data:`eval_runner.judge.JudgeLeg`).
+
+S21 (0.0.5 FR-28) adds :func:`measure_judge_legs`: the same measurement split PER
+LEG. The whole-set number is the headline, but it is the per-leg numbers that
+say whether a given advisory leg is trustworthy enough to report -- an average
+happily hides a leg that fires on everything next to one that never fires.
 
 CLI (repeatable command, PRD FR-29 acceptance layer 1)::
 
@@ -129,6 +135,49 @@ def measure_judge(
     )
 
 
+def _combine(parts: Sequence[JudgeMetrics]) -> JudgeMetrics:
+    """Sum per-leg metrics into the whole-set metrics.
+
+    Legs PARTITION the fixture set, so the sum is exactly what
+    :func:`measure_judge` would have returned over all of them -- without paying
+    for a second (billed, on ``--live``) pass.
+    """
+    return JudgeMetrics(
+        total=sum(p.total for p in parts),
+        correct=sum(p.correct for p in parts),
+        true_positives=sum(p.true_positives for p in parts),
+        false_positives=sum(p.false_positives for p in parts),
+        true_negatives=sum(p.true_negatives for p in parts),
+        false_negatives=sum(p.false_negatives for p in parts),
+        undetermined=sum(p.undetermined for p in parts),
+        misses=tuple(miss for p in parts for miss in p.misses),
+    )
+
+
+def measure_judge_legs(
+    fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+    *,
+    client: JudgeClient,
+    model: Optional[str] = None,
+) -> tuple[JudgeMetrics, dict[str, JudgeMetrics]]:
+    """``(overall, {leg: metrics})`` -- per-leg precision/recall in ONE pass.
+
+    S21 (0.0.5 FR-28): the whole-set number hides a bad leg. A leg that never
+    fires and a leg that fires on everything average out to a respectable
+    headline, and an advisory leg nobody trusts is worse than no leg -- so each
+    leg is scored against its own fixtures and reported on its own row. Each
+    fixture is still judged exactly once (the legs partition the set).
+    """
+    by_leg: dict[str, list[JudgeFixture]] = {}
+    for fixture in fixtures:
+        by_leg.setdefault(fixture.leg, []).append(fixture)
+    metrics = {
+        leg: measure_judge(leg_fixtures, client=client, model=model)
+        for leg, leg_fixtures in by_leg.items()
+    }
+    return _combine(list(metrics.values())), metrics
+
+
 class _OracleJudgeClient:
     """Deterministic stand-in that always answers a fixture's own ground truth.
 
@@ -198,13 +247,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         client = _OracleJudgeClient(JUDGE_FIXTURES)
         model = None
 
-    metrics = measure_judge(JUDGE_FIXTURES, client=client, model=model)
+    metrics, by_leg = measure_judge_legs(JUDGE_FIXTURES, client=client, model=model)
 
     print(
         f"judge_measure: total={metrics.total} correct={metrics.correct} "
         f"precision={metrics.precision:.3f} recall={metrics.recall:.3f} "
         f"accuracy={metrics.accuracy:.3f} undetermined={metrics.undetermined}"
     )
+    # Per-leg is the number that decides whether a leg is trustworthy (S21).
+    for leg in sorted(by_leg):
+        leg_metrics = by_leg[leg]
+        print(
+            f"  leg={leg} n={leg_metrics.total} correct={leg_metrics.correct} "
+            f"precision={leg_metrics.precision:.3f} "
+            f"recall={leg_metrics.recall:.3f} "
+            f"accuracy={leg_metrics.accuracy:.3f} "
+            f"undetermined={leg_metrics.undetermined}"
+        )
     for miss in metrics.misses:
         print(
             f"  MISS leg={miss.fixture.leg} expected={miss.fixture.expected_passed} "

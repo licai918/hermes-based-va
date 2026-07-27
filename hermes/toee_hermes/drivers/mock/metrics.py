@@ -38,6 +38,10 @@ _HONORED_RATE_NOT_COMPUTED = {
     "undetermined_count": None,
     "window_seconds": None,
     "as_of": None,
+    # S21 (0.0.5 FR-28): per-leg advisory counts from the scheduled judge run.
+    # Empty on a storeless mock for the same reason the rate is None -- there is
+    # no aggregate to break down, and an empty map is the honest form of that.
+    "leg_results": {},
     "label": _HONORED_RATE_LABEL,
 }
 
@@ -50,7 +54,9 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             "memory_injection": {"injected": 0, "total": 0, "rate": None},
             "knowledge_search": {"found": 0, "total": 0, "rate": None},
             "slots_populated_distribution": {"1": 0, "2": 0, "3": 0, "4": 0},
-            "honored_rate": dict(_HONORED_RATE_NOT_COMPUTED),
+            # Fresh leg_results per call: the only mutable value in the shape,
+            # and a shallow dict() copy would hand every caller the same one.
+            "honored_rate": {**_HONORED_RATE_NOT_COMPUTED, "leg_results": {}},
             "merge_count": 0,
             "correction_count": 0,
             "proposal_outcomes": {"accepted": 0, "dismissed": 0, "rate": None},

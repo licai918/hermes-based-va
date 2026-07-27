@@ -20,6 +20,7 @@ import pytest
 from hermes_runtime.background_worker import BACKGROUND_JOB_TYPES, SCHEDULES, job_bodies
 from hermes_runtime.datastore.handlers.metrics import _get_aggregate_metrics
 from hermes_runtime.honored_rate import (
+    JUDGE_LEGS,
     HonoredRateAggregate,
     Transcript,
     honored_rate_metric,
@@ -101,6 +102,99 @@ def test_rate_is_none_when_nothing_scored_determinate() -> None:
     )
     assert agg.rate is None
     assert agg.sample_size == 0 and agg.undetermined_count == 1
+
+
+# --------------------------------------------------------------------------
+# S21 (0.0.5 FR-28): the new legs ride the same sample into the aggregate
+# --------------------------------------------------------------------------
+
+
+def test_every_judge_leg_is_scored_over_the_same_sample() -> None:
+    transcripts = [Transcript("ZZQ_A reply", {"contact_time_preference": "after 2pm"})]
+    judge = _ScriptedJudge({"ZZQ_A": "yes"})
+
+    agg = measure_honored_rate(transcripts, client=judge, candidate_total=1)
+
+    assert set(agg.leg_results) == set(JUDGE_LEGS)
+    for leg in JUDGE_LEGS:
+        assert agg.leg_results[leg] == {
+            "passed": 1,
+            "determinate": 1,
+            "undetermined": 0,
+        }, leg
+    # The honored columns stay the honored leg's own counts (no drift).
+    assert agg.honored_count == agg.leg_results["honored"]["passed"]
+    assert agg.sample_size == agg.leg_results["honored"]["determinate"]
+
+
+def test_a_leg_the_judge_cannot_score_is_undetermined_not_a_failure() -> None:
+    # Per-leg undetermined never inflates or deflates the leg's own rate -- the
+    # same honesty rule the honored leg already holds to.
+    transcripts = [Transcript("ZZQ_B reply", {"channel_preference": "sms"})]
+
+    class _OnlyHonored:
+        def complete(self, prompt: str, *, model: str) -> str:
+            if "Leg: honored" in prompt:
+                return '{"verdict": "no", "reason": "scripted"}'
+            return "not json at all"
+
+    agg = measure_honored_rate(transcripts, client=_OnlyHonored(), candidate_total=1)
+
+    assert agg.leg_results["honored"] == {
+        "passed": 0,
+        "determinate": 1,
+        "undetermined": 0,
+    }
+    assert agg.leg_results["injection_resisted"] == {
+        "passed": 0,
+        "determinate": 0,
+        "undetermined": 1,
+    }
+
+
+def test_leg_results_round_trip_through_the_aggregate_row(datastore) -> None:
+    _driver, conn, _schema = datastore
+    legs = {leg: {"passed": 2, "determinate": 3, "undetermined": 1} for leg in JUDGE_LEGS}
+    with conn.cursor() as cur:
+        record_honored_rate_aggregate(
+            cur,
+            HonoredRateAggregate(
+                honored_count=2,
+                sample_size=3,
+                undetermined_count=1,
+                candidate_total=9,
+                window_seconds=604800,
+                leg_results=legs,
+            ),
+        )
+    conn.commit()
+
+    with conn.cursor() as cur:
+        metric = honored_rate_metric(cur)
+
+    assert metric["leg_results"] == legs
+    # Pre-S21 rows (no leg_results) read as an honest empty map, never a zero rate.
+    with conn.cursor() as cur:
+        record_honored_rate_aggregate(
+            cur, HonoredRateAggregate(1, 1, 0, 1, 604800)
+        )
+    conn.commit()
+    with conn.cursor() as cur:
+        assert honored_rate_metric(cur)["leg_results"] == {}
+
+
+def test_never_run_state_still_carries_the_leg_results_key(datastore) -> None:
+    # The mock twin and the Postgres twin feed the same BFF mapper, so the
+    # not-yet-computed shape must carry every key the live shape does (NFR-7).
+    _driver, conn, _schema = datastore
+    with conn.cursor() as cur:
+        metric = honored_rate_metric(cur)
+    assert metric["leg_results"] == {}
+
+    from toee_hermes.drivers.mock.metrics import create_metrics_mock_handlers
+
+    mock = create_metrics_mock_handlers()["toee_metrics"]["get_aggregate_metrics"]
+    assert set(mock({}, _CTX)["honored_rate"]) == set(metric)
 
 
 # --------------------------------------------------------------------------

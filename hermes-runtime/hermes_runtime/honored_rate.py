@@ -32,15 +32,25 @@ aggregate and its (now stale) "as of" survive.
 
 **No silent truncation (FR-31).** The eligible population is counted BEFORE the
 per-run cap; the job logs sampled-vs-skipped when the cap bites.
+
+**S21 (0.0.5, FR-28) -- more legs, same sample.** The job now runs every leg in
+:data:`JUDGE_LEGS` over the SAME sampled transcripts: the honored leg (unchanged,
+still the tile's number and still in its own columns) plus the two new advisory
+legs and the adversarial safety leg. Per-leg counts persist in the aggregate's
+``leg_results`` for 0.0.5 S22/S26 to read. Nothing here gates -- including the
+safety leg: a stored score can only ever report. The safety leg's gating half is
+the deterministic marker check inside the CI replay gate
+(``eval_runner.assertions._eval_safety``), which makes no model call.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
-from eval_runner.judge import JudgeClient, judge_reply, resolve_judge_model
+from eval_runner.judge import JudgeClient, JudgeLeg, judge_reply, resolve_judge_model
 
 from .datastore.config import database_url
 from .datastore.pool import get_database_pool
@@ -56,11 +66,28 @@ logger = logging.getLogger(__name__)
 # staying "recent". Widen if a run's candidate population is routinely too small.
 DEFAULT_WINDOW_SECONDS = 7 * 24 * 60 * 60
 
-# The COST BOUND (FR-31): at most this many judge calls per run. Each sampled
-# transcript is one billed OpenRouter completion, so this caps the run's spend and
-# latency. The eligible population is counted before the cap and the gap is logged
-# (no silent truncation); raise it only if a wider sample is worth the linear cost.
+# The COST BOUND (FR-31): at most this many TRANSCRIPTS per run. Each transcript
+# costs one billed OpenRouter completion PER LEG (S21), so a run's spend is
+# `cap * len(JUDGE_LEGS)` completions -- 200 at today's values, up from 50 when
+# the honored leg ran alone. The cap stays expressed in transcripts because that
+# is what the sample means; the eligible population is counted before it and the
+# gap is logged (no silent truncation). Raise it only if a wider sample is worth
+# the linear cost, and remember the multiplier when you do.
 SAMPLE_CAP = 50
+
+# Every leg the scheduled job scores, in report order (S21, 0.0.5 FR-28). The
+# honored leg keeps its dedicated aggregate columns; all legs (honored included)
+# also land in `leg_results` so a reader never has to special-case one of them.
+# Each name is phrased so a PASS means the agent behaved well, so a
+# misapplication/stale-use RATE is `1 - passed/determinate` (see JudgeLeg).
+JUDGE_LEGS: tuple[JudgeLeg, ...] = (
+    "honored",
+    "no_misapplication",
+    "no_stale_use",
+    "injection_resisted",
+)
+
+HONORED_LEG: JudgeLeg = "honored"
 
 
 @dataclass(frozen=True)
@@ -76,13 +103,20 @@ class Transcript:
 @dataclass(frozen=True)
 class HonoredRateAggregate:
     """One run's aggregate. ``rate`` is derived (honored / sample_size), ``None``
-    when no transcript scored determinate."""
+    when no transcript scored determinate.
+
+    ``leg_results`` (S21) is ``{leg: {"passed", "determinate", "undetermined"}}``
+    over the same sample, for every leg in :data:`JUDGE_LEGS` -- advisory data
+    for 0.0.5 S22/S26, never a gate. It defaults to empty so a caller that only
+    cares about the honored leg (and every pre-S21 row) still constructs.
+    """
 
     honored_count: int
     sample_size: int
     undetermined_count: int
     candidate_total: int
     window_seconds: int
+    leg_results: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
 
     @property
     def rate(self) -> Optional[float]:
@@ -189,34 +223,43 @@ def measure_honored_rate(
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
     model: Optional[str] = None,
 ) -> HonoredRateAggregate:
-    """Run the judge's HONORED leg over ``transcripts``; aggregate the verdicts.
+    """Run EVERY leg in :data:`JUDGE_LEGS` over ``transcripts``; aggregate them.
 
     An ``undetermined`` verdict (the judge could not score it) is counted but does
-    NOT enter the rate's denominator -- the rate is over the transcripts scored
-    determinately, never inflated or deflated by a verdict the judge itself
-    declined to make.
+    NOT enter that leg's denominator -- each leg's rate is over the transcripts it
+    scored determinately, never inflated or deflated by a verdict the judge itself
+    declined to make. The honored leg's counts additionally fill the aggregate's
+    dedicated columns, so the shipped tile reads exactly as it did before S21.
+
+    Named for the honored rate it has always produced; S21 widened what it scores
+    rather than adding a second near-identical sweep over the same sample.
     """
-    honored = determinate = undetermined = 0
+    counts = {
+        leg: {"passed": 0, "determinate": 0, "undetermined": 0} for leg in JUDGE_LEGS
+    }
     for transcript in transcripts:
-        verdict = judge_reply(
-            reply=transcript.reply,
-            leg="honored",
-            injected_memory=transcript.injected_memory or None,
-            client=client,
-            model=model,
-        )
-        if verdict.passed is None:
-            undetermined += 1
-        else:
-            determinate += 1
-            if verdict.passed:
-                honored += 1
+        for leg in JUDGE_LEGS:
+            verdict = judge_reply(
+                reply=transcript.reply,
+                leg=leg,
+                injected_memory=transcript.injected_memory or None,
+                client=client,
+                model=model,
+            )
+            if verdict.passed is None:
+                counts[leg]["undetermined"] += 1
+            else:
+                counts[leg]["determinate"] += 1
+                if verdict.passed:
+                    counts[leg]["passed"] += 1
+    honored = counts[HONORED_LEG]
     return HonoredRateAggregate(
-        honored_count=honored,
-        sample_size=determinate,
-        undetermined_count=undetermined,
+        honored_count=honored["passed"],
+        sample_size=honored["determinate"],
+        undetermined_count=honored["undetermined"],
         candidate_total=candidate_total,
         window_seconds=window_seconds,
+        leg_results=counts,
     )
 
 
@@ -230,8 +273,8 @@ def record_honored_rate_aggregate(cur, agg: HonoredRateAggregate) -> None:
         """
         INSERT INTO honored_rate_aggregate
             (honored_count, sample_size, undetermined_count, candidate_total,
-             window_seconds)
-        VALUES (%s, %s, %s, %s, %s)
+             window_seconds, leg_results)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb)
         """,
         (
             agg.honored_count,
@@ -239,6 +282,9 @@ def record_honored_rate_aggregate(cur, agg: HonoredRateAggregate) -> None:
             agg.undetermined_count,
             agg.candidate_total,
             agg.window_seconds,
+            # Serialized here rather than via a driver adapter so the one INSERT
+            # behaves identically on any psycopg configuration.
+            json.dumps(dict(agg.leg_results)),
         ),
     )
 
@@ -255,7 +301,7 @@ def honored_rate_metric(cur) -> dict[str, Any]:
     cur.execute(
         """
         SELECT honored_count, sample_size, undetermined_count, candidate_total,
-               window_seconds, computed_at
+               window_seconds, computed_at, leg_results
         FROM honored_rate_aggregate
         ORDER BY computed_at DESC
         LIMIT 1
@@ -271,9 +317,21 @@ def honored_rate_metric(cur) -> dict[str, Any]:
             "undetermined_count": None,
             "window_seconds": None,
             "as_of": None,
+            # S21: advisory per-leg counts; empty is the honest "no breakdown",
+            # the same stance as a None rate. Key present in BOTH branches (and
+            # in the mock twin) so the BFF mapper never sees a missing field.
+            "leg_results": {},
             "label": NOT_COMPUTED_LABEL,
         }
-    honored_count, sample_size, undetermined_count, candidate_total, window_seconds, computed_at = row
+    (
+        honored_count,
+        sample_size,
+        undetermined_count,
+        candidate_total,
+        window_seconds,
+        computed_at,
+        leg_results,
+    ) = row
     agg = {
         "live": True,
         "rate": round(honored_count / sample_size, 4) if sample_size else None,
@@ -282,6 +340,7 @@ def honored_rate_metric(cur) -> dict[str, Any]:
         "undetermined_count": undetermined_count,
         "window_seconds": window_seconds,
         "as_of": computed_at.isoformat(),
+        "leg_results": leg_results if isinstance(leg_results, dict) else {},
     }
     agg["label"] = _live_label(agg)
     return agg
@@ -377,11 +436,17 @@ def _sample_judge_persist(conn, judge, model, window_seconds, cap) -> None:
     conn.commit()
     logger.info(
         "honored_rate computed: honored=%s/%s (undetermined=%s) over %s of %s "
-        "candidates; rate=%s",
+        "candidates; rate=%s; legs=%s",
         agg.honored_count,
         agg.sample_size,
         agg.undetermined_count,
         len(transcripts),
         candidate_total,
         agg.rate,
+        # Advisory per-leg breakdown (S21) in the same line, so a run's legs are
+        # legible from the worker log without querying the aggregate.
+        {
+            leg: f"{c['passed']}/{c['determinate']} (u={c['undetermined']})"
+            for leg, c in agg.leg_results.items()
+        },
     )

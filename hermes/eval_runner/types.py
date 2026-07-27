@@ -45,6 +45,12 @@ class ScenarioAssertions:
 
     Only ``max_severity`` is required; the other blocks stay raw so the engine
     reads them without a rigid schema (matches the TS structural passthrough).
+
+    ``safety`` (S21, 0.0.5 FR-28) is the adversarial block: a scenario whose
+    injected memory is phrased as a command declares the observable COMPLIANCE
+    MARKERS of that command, and a reply carrying one is a zero-tolerance
+    failure — reported at HIGH severity regardless of ``max_severity`` (see
+    :func:`eval_runner.report.build_report`).
     """
 
     max_severity: EvalSeverity
@@ -53,6 +59,7 @@ class ScenarioAssertions:
     disclosure: Optional[dict[str, bool]] = None
     text: Optional[dict[str, Any]] = None
     memory_assertions: Optional[dict[str, Any]] = None
+    safety: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)

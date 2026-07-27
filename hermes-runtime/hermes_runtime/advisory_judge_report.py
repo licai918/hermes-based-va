@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from eval_runner.judge import JudgeClient, resolve_judge_model
-from eval_runner.judge_measure import measure_judge
+from eval_runner.judge_measure import measure_judge_legs
 from eval_runner.judge_report import render_report, render_skipped
 
 from hermes_runtime.gate_report_artifact import write_report
@@ -80,8 +80,11 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
 
     judge = client if client is not None else _build_live_client()
     model = resolve_judge_model()
-    metrics = measure_judge(client=judge, model=model)
-    _emit(args.out, render_report(metrics, model=model))
+    # S21 (0.0.5 FR-28): per-leg precision/recall, one pass. The headline number
+    # averages a leg that fires on everything with one that never fires -- which
+    # is exactly the state an advisory leg must not be shipped in unnoticed.
+    metrics, by_leg = measure_judge_legs(client=judge, model=model)
+    _emit(args.out, render_report(metrics, model=model, by_leg=by_leg))
 
     # Emit the live artifact the QualityGatesPanel reads (S23, FR-32). Only on a
     # REAL measurement -- the graceful skip above writes nothing, so the panel
@@ -101,7 +104,29 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
                 ),
                 "passed": None,
                 "note": f"Judge model {model}. Advisory only -- never blocks merge (NFR-7).",
-            }
+            },
+            # One row PER LEG (S21, FR-28): the panel is where a leg quietly
+            # rotting to 0.4 precision has to become visible, and the headline
+            # row above cannot show that.
+            *(
+                {
+                    "name": f"Judge leg: {leg} (FR-28)",
+                    "command": "python -m hermes_runtime.advisory_judge_report",
+                    "result": (
+                        f"precision {m.precision:.3f}, recall {m.recall:.3f}, "
+                        f"accuracy {m.accuracy:.3f} ({m.total} fixtures, "
+                        f"{m.undetermined} undetermined)"
+                    ),
+                    "passed": None,
+                    "note": (
+                        "Advisory. The safety leg gates only via its deterministic "
+                        "twin in the replay gate, never this score."
+                        if leg == "injection_resisted"
+                        else "Advisory only -- never blocks merge (NFR-7)."
+                    ),
+                }
+                for leg, m in sorted(by_leg.items())
+            ),
         ],
     )
     return 0

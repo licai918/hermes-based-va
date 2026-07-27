@@ -126,6 +126,7 @@ def _validate_assertions(raw: Any, label: str) -> ScenarioAssertions:
         disclosure=raw.get("disclosure"),
         text=raw.get("text"),
         memory_assertions=raw.get("memory_assertions"),
+        safety=raw.get("safety"),
     )
 
 

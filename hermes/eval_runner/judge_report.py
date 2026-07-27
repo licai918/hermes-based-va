@@ -19,7 +19,7 @@ face so a reader never mistakes an advisory miss for a merge blocker.
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from .judge import JudgeLeg
 from .judge_fixtures import JUDGE_FIXTURES, JudgeFixture
@@ -29,11 +29,31 @@ from .judge_measure import JudgeMetrics
 # edits the one advisory comment instead of posting a new one each time.
 MARKER = "<!-- s20-advisory-judge-report -->"
 
-_LEG_ORDER: tuple[JudgeLeg, ...] = ("honored", "no_unprompted_recall")
+_LEG_ORDER: tuple[JudgeLeg, ...] = (
+    "honored",
+    "no_unprompted_recall",
+    "no_misapplication",
+    "no_stale_use",
+    "injection_resisted",
+)
 
 _ADVISORY_BANNER = (
     "**Advisory only — this never blocks merge.** The scripted replay gate stays the "
     "only required eval check (NFR-7). Flakes are data, not failures to suppress (FR-29)."
+)
+
+# S21 (0.0.5 FR-28). The banner above must not be read as "nothing about these
+# legs can ever fail a build": the adversarial safety leg DOES gate — but via its
+# deterministic twin in the replay gate (`assertions.safety.forbid_injected_
+# instruction_obeyed`), not via this model-scored report. Spelling that out here
+# keeps a reader from concluding either "the model gates CI" (it does not) or
+# "an obeyed injection is advisory" (it is not).
+_SAFETY_LEG_NOTE = (
+    "The `injection_resisted` row is CALIBRATION for the one leg allowed to gate "
+    "(NFR-4): an obeyed injected instruction is red with zero tolerance, enforced "
+    "deterministically in the replay gate by the scenario's declared compliance "
+    "markers, never by this model score. Its numbers here say how well a model "
+    "reads that same property — nothing here gates."
 )
 
 
@@ -56,8 +76,15 @@ def render_report(
     *,
     model: str,
     fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+    by_leg: Optional[Mapping[str, JudgeMetrics]] = None,
 ) -> str:
-    """Render a completed advisory judge run to markdown (verdicts, legs, misses)."""
+    """Render a completed advisory judge run to markdown (verdicts, legs, misses).
+
+    ``by_leg`` (S21, from :func:`eval_runner.judge_measure.measure_judge_legs`)
+    adds per-leg precision/recall to the Legs table. It is optional so the
+    pre-S21 single-metrics call still renders; without it the table falls back to
+    judged/correct/miss counts only.
+    """
     totals = _leg_totals(fixtures)
     leg_misses = _leg_misses(metrics)
 
@@ -76,13 +103,31 @@ def render_report(
         "",
         "### Legs",
         "",
-        "| Leg | Judged | Judge-correct | Misses |",
-        "| --- | ---: | ---: | ---: |",
+        _SAFETY_LEG_NOTE,
+        "",
     ]
+    if by_leg is None:
+        lines += [
+            "| Leg | Judged | Judge-correct | Misses |",
+            "| --- | ---: | ---: | ---: |",
+        ]
+    else:
+        lines += [
+            "| Leg | Judged | Judge-correct | Misses | Precision | Recall |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
     for leg in _LEG_ORDER:
         judged = totals.get(leg, 0)
         misses = leg_misses.get(leg, 0)
-        lines.append(f"| `{leg}` | {judged} | {judged - misses} | {misses} |")
+        row = f"| `{leg}` | {judged} | {judged - misses} | {misses} |"
+        if by_leg is not None:
+            leg_metrics = by_leg.get(leg)
+            row += (
+                f" {leg_metrics.precision:.3f} | {leg_metrics.recall:.3f} |"
+                if leg_metrics is not None
+                else " — | — |"
+            )
+        lines.append(row)
 
     lines += ["", "### Misses (advisory — data, not a gate)", ""]
     if metrics.misses:
@@ -132,7 +177,7 @@ def render_skipped(reason: str, *, marker: str = MARKER) -> str:
 
 def demo() -> None:  # ponytail: one runnable self-check, no framework
     """Self-check: render both paths from a mock-driven metrics object."""
-    from .judge_measure import measure_judge
+    from .judge_measure import measure_judge_legs
 
     class _MockJudge:
         # A recorded/mock judge response: always "yes" — wrong on the ground-truth
@@ -140,13 +185,14 @@ def demo() -> None:  # ponytail: one runnable self-check, no framework
         def complete(self, prompt: str, *, model: str) -> str:
             return '{"verdict": "yes", "reason": "mock always-positive"}'
 
-    metrics = measure_judge(client=_MockJudge(), model="mock/judge")
-    report = render_report(metrics, model="mock/judge")
+    metrics, by_leg = measure_judge_legs(client=_MockJudge(), model="mock/judge")
+    report = render_report(metrics, model="mock/judge", by_leg=by_leg)
     assert MARKER in report
     assert "Advisory only" in report
     assert "precision `" in report
-    assert "| `honored` |" in report
-    assert "| `no_unprompted_recall` |" in report
+    for leg in _LEG_ORDER:
+        assert f"| `{leg}` |" in report
+    assert "| Precision | Recall |" in report
     # Always-positive judge misses every ground-truth negative -> a non-empty misses table.
     assert metrics.misses and "Judge said" in report
 

@@ -1,0 +1,29 @@
+-- 0021_honored_rate_leg_results
+--
+-- S21 (0.0.5, FR-28): the scheduled judge job scores MORE than the honored leg.
+-- Two new advisory legs -- `no_misapplication` (memory applied where the task
+-- did not call for it) and `no_stale_use` (a value the customer has since
+-- superseded) -- plus `injection_resisted`, the adversarial safety leg, now ride
+-- the SAME sampled transcripts as the honored leg. Their per-leg counts land
+-- here so the metrics panel (0.0.5 S22) and the per-entry effectiveness score
+-- (0.0.5 S26) read one row per run instead of re-judging.
+--
+-- Shape: {"<leg>": {"passed": int, "determinate": int, "undetermined": int}}.
+--   passed       -- determinate verdicts where the leg's positive criterion held.
+--   determinate  -- the leg's rate denominator (passed + not-passed).
+--   undetermined -- verdicts the judge declined to make; counted, NEVER folded
+--                   into the denominator, so a leg that scored nothing
+--                   determinate reads as an honest absence rather than a 0.
+-- Every leg name is phrased so "passed" means the agent behaved well, uniformly
+-- (eval_runner.judge.JudgeLeg) -- a misapplication RATE is 1 - passed/determinate.
+--
+-- Additive and defaulted, so pre-S21 rows keep reading exactly as before: the
+-- honored columns stay the honored leg's authoritative counts (the panel tile is
+-- untouched) and an old row simply reports no per-leg breakdown. The advisory
+-- legs are advisory FOREVER (NFR-3/NFR-4); nothing read from this column may
+-- ever gate. The safety leg gates only through its deterministic twin in the CI
+-- replay gate, never through a stored score.
+--
+-- IF NOT EXISTS so a re-applied migration is a no-op.
+ALTER TABLE honored_rate_aggregate
+    ADD COLUMN IF NOT EXISTS leg_results JSONB NOT NULL DEFAULT '{}'::jsonb;
