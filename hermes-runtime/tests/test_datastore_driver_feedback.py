@@ -1243,3 +1243,70 @@ def test_record_draft_outcome_rep_cannot_be_forged(datastore) -> None:
             (result.data["id"],),
         )
         assert cur.fetchone()[0] == "acct_real"
+
+
+def test_list_feedback_rejects_an_unknown_verdict_instead_of_returning_empty(
+    datastore,
+) -> None:
+    """A typo'd verdict must ERROR, not silently read as "nothing matched".
+
+    The filter spans both mechanisms' vocabularies (pass/fail for reviews,
+    up/down for drafts) on purpose, so a valid verdict legitimately yields no
+    rows from the *other* table. But with no validation at all, verdict="faill"
+    returns empty lists from BOTH tables -- indistinguishable, to the Phase-2
+    aggregation this read exists to feed, from "no feedback in this window".
+    A silently-empty aggregate is worse than a loud rejection.
+    """
+    driver, _conn, _ = datastore
+    _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_typo_guard",
+        verdict="fail",
+        reason_tags=["factual_error"],
+    )
+
+    typo = _list(driver, verdict="faill")
+    assert typo.ok is False, "an unknown verdict must be rejected, not read as empty"
+
+    # A legitimate cross-vocabulary value still works, and still yields no rows
+    # from the table that does not use it -- that behaviour is intended.
+    ok = _list(driver, verdict="fail")
+    assert ok.ok is True
+    assert ok.data["draft_feedback"] == []
+    assert [r["subject_id"] for r in ok.data["interaction_reviews"]] == ["rec_typo_guard"]
+
+
+def test_list_feedback_is_refused_on_the_internal_copilot_profile(datastore) -> None:
+    """The supervisory read must not be reachable from the copilot profile.
+
+    Profile allowlisting is per-TOOL, not per-action, so ``toee_feedback`` sits
+    on internal_copilot (for the three writes) as well as supervisor_admin --
+    which left ``list_feedback`` dispatchable from the copilot profile. The
+    writes all fail closed without an attributed actor, but this read had no
+    gate at all, so a copilot-profile caller could read every review, every
+    rating, and every reviewer's comment.
+
+    Nothing routes there today (no BFF route maps to it), so this is
+    defence-in-depth -- but "no caller does this yet" is not a boundary.
+    """
+    driver, _conn, _ = datastore
+    _submit(
+        driver,
+        user_id="acct_super_1",
+        subject_kind="auto_handled_record",
+        subject_id="rec_profile_guard",
+        verdict="pass",
+    )
+
+    denied = _list(driver, profile="internal_copilot")
+    assert denied.ok is False
+    assert denied.error_class == "policy_blocked"
+
+    # ...and the supervisor profile still reads normally.
+    allowed = _list(driver)
+    assert allowed.ok is True
+    assert [r["subject_id"] for r in allowed.data["interaction_reviews"]] == [
+        "rec_profile_guard"
+    ]

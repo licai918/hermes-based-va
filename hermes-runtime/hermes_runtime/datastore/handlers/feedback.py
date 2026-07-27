@@ -30,19 +30,23 @@ the actual boundary, per the S10 brief). ``toee_feedback`` is allowlisted on
 BOTH ``internal_copilot`` (for the three writes above) and
 ``supervisor_admin`` (for ``list_feedback`` -- see ``toee_hermes.plugin.
 profiles.PROFILE_TOOL_ALLOWLIST``). That means ``list_feedback`` is
-*technically* dispatchable under the internal_copilot profile too, same as
-the three writes are technically dispatchable under supervisor_admin -- the
-allowlist alone does not separate them. It is not reachable in practice for
-the allowlist alone does not separate them. Today the ONLY enforced boundary
-is ``_AGENT_EXCLUDED_ACTIONS`` (``toee_hermes.plugin``): all four actions are
-in it, so none ever reaches a live agent's own tool-calling loop regardless of
-profile. The per-profile ROUTE separation that will make each action reachable
-from exactly one surface -- a copilot BFF route for the writes (S04/S07), the
-admin BFF's ``/admin`` surface for ``list_feedback`` -- is NOT yet built: as of
-this slice no BFF route dispatches any ``toee_feedback`` action at all. Once
-those routes land, the real restriction becomes which BFF route exists, not
-which profile's allowlist a tool name sits in -- so a future reader must check
-the routes, never the allowlist, to reason about who can reach an action.
+dispatchable under the internal_copilot profile by the allowlist alone, same
+as the three writes are by supervisor_admin -- the allowlist does not separate
+them.
+
+Two things do. ``_AGENT_EXCLUDED_ACTIONS`` (``toee_hermes.plugin``) holds all
+four actions, so none ever reaches a live agent's own tool-calling loop on any
+profile. And each action carries its OWN gate: the three writes fail closed
+without a framework-resolved actor, and ``list_feedback`` --  which needs no
+actor, being a read -- is gated on profile by
+:func:`resolve_list_feedback_authorization`. Without that gate the copilot
+profile could read every review, rating and reviewer comment; "no BFF route
+maps to it yet" describes today's callers, not a boundary.
+
+The per-profile ROUTE separation is a third layer still to come: a copilot BFF
+route for the writes (S04/S07 built these) and the admin ``/admin`` surface for
+``list_feedback`` (not built). A future reader should check the gates and the
+routes -- never the allowlist -- to reason about who can reach an action.
 """
 
 from __future__ import annotations
@@ -71,6 +75,7 @@ from toee_hermes.drivers.mock.feedback import (
     _require_verdict,
     resolve_draft_rating_authorization,
     resolve_interaction_review_authorization,
+    resolve_list_feedback_authorization,
 )
 from toee_hermes.errors import ToolDriverError
 
@@ -274,7 +279,11 @@ def _list_feedback(conn, params: dict[str, Any], context: "ToolExecutionContext"
     ``dead_letter._list_dead_letters`` -- see the module docstring for the
     per-tool-allowlist note this handler's registration relies on).
     """
-    del context
+    # Profile gate (shared with the mock twin): allowlisting is per-TOOL, so
+    # toee_feedback also sits on internal_copilot for the three writes -- which
+    # left this read reachable from that profile. No actor is required (read
+    # parity with list_agent_experience), but the profile axis is enforced.
+    resolve_list_feedback_authorization(context)
     since = _read_since_filter(params)
     verdict = _read_verdict_filter(params)
     limit = _read_list_limit(params)
@@ -286,7 +295,7 @@ def _list_feedback(conn, params: dict[str, Any], context: "ToolExecutionContext"
             FROM interaction_review
             WHERE (%(since)s::timestamptz IS NULL OR created_at >= %(since)s::timestamptz)
               AND (%(verdict)s::text IS NULL OR verdict = %(verdict)s)
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT %(limit)s
             """,
             {"since": since, "verdict": verdict, "limit": limit},
@@ -299,7 +308,7 @@ def _list_feedback(conn, params: dict[str, Any], context: "ToolExecutionContext"
             FROM draft_feedback
             WHERE (%(since)s::timestamptz IS NULL OR created_at >= %(since)s::timestamptz)
               AND (%(verdict)s::text IS NULL OR verdict = %(verdict)s)
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT %(limit)s
             """,
             {"since": since, "verdict": verdict, "limit": limit},

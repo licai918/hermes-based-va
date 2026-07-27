@@ -13,10 +13,11 @@ CREATE TABLE draft_feedback (
     case_id               TEXT NOT NULL REFERENCES cases(id),
     draft_correlation_id  TEXT NOT NULL,
     draft_kind            TEXT NOT NULL,
-    draft_text            TEXT, -- nullable here; submit_draft_rating (S06
-                                 -- review) enforces NOT NULL at the write path
-                                 -- since S08's record_draft_outcome doesn't
-                                 -- exist yet and also always has it in hand
+    draft_text            TEXT, -- nullable at the DB level, required at BOTH
+                                 -- write paths: submit_draft_rating (S06) and
+                                 -- record_draft_outcome (S08) each _require_
+                                 -- it, since a rated_only row has no outcome
+                                 -- row to join for the text a reviewer needs
     outcome               TEXT NOT NULL,
     edit_distance_ratio   REAL,
     verdict               TEXT,
@@ -50,3 +51,13 @@ CREATE TABLE draft_feedback (
 -- idx_interaction_review_subject's shape).
 CREATE INDEX idx_draft_feedback_case
     ON draft_feedback (case_id, created_at DESC);
+
+-- The correlation join: a rating (rated_only) and its send outcome
+-- (sent_as_is/sent_edited) are two rows sharing one draft_correlation_id, and
+-- pairing them is the whole point of minting that id -- it is what lets a
+-- reviewer see "they rated it down AND then edited it heavily". Phase 2's
+-- aggregation walks exactly this axis, so it gets its own index rather than
+-- riding the case-scoped one above (a draft's two rows are found by the
+-- correlation id, not by scanning the case's whole rating history).
+CREATE INDEX idx_draft_feedback_correlation
+    ON draft_feedback (draft_correlation_id, created_at DESC);

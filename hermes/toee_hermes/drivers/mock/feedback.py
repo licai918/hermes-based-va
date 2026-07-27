@@ -349,11 +349,16 @@ def _read_since_filter(params: dict[str, Any]) -> Optional[str]:
 def _read_verdict_filter(params: dict[str, Any]) -> Optional[str]:
     """Optional verdict filter spanning BOTH mechanisms' vocabularies at once.
 
-    Deliberately NOT enum-checked against either single set (unlike
-    ``_require_verdict``/``_require_draft_rating_verdict``): one param filters
-    both tables in the same call, and each table's own verdict column only
-    ever holds its own vocabulary anyway, so an unmatched value just yields no
-    rows from that table rather than needing a combined enum here.
+    Checked against the UNION of the two sets, not either one alone: a single
+    param filters both tables in the same call, so a value valid for one
+    mechanism (``fail``) legitimately matches nothing in the other -- that
+    cross-vocabulary emptiness is intended, and tested.
+
+    What is NOT intended is an unrecognised value passing silently. With no
+    check at all, ``verdict="faill"`` returned empty lists from BOTH tables,
+    which the Phase-2 aggregation this read exists to feed cannot tell apart
+    from "no feedback in this window". A silently-empty aggregate is worse than
+    a loud rejection, so a typo now fails closed.
     """
     verdict = params.get("verdict")
     if verdict is None:
@@ -361,6 +366,13 @@ def _read_verdict_filter(params: dict[str, Any]) -> Optional[str]:
     if not isinstance(verdict, str):
         raise ToolDriverError(
             "unexpected_error", "list_feedback requires verdict to be a string."
+        )
+    allowed = tuple(INTERACTION_REVIEW_VERDICTS) + tuple(DRAFT_RATING_VERDICTS)
+    if verdict not in allowed:
+        raise ToolDriverError(
+            "unexpected_error",
+            f"list_feedback verdict {verdict!r} is not a known verdict; "
+            f"{allowed} are allowed.",
         )
     return verdict
 
@@ -537,10 +549,12 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
     def list_feedback(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
-        # Read-only (S10): no actor required, no audit row -- see the module
-        # docstring and resolve_*_authorization's precedent for why a read
-        # isn't a governed action the way the three writes above are.
-        del context
+        # Read-only (S10): no actor required and no audit row -- a read is not
+        # a governed action the way the three writes above are. It IS gated on
+        # profile though, via the same shared resolver the Postgres twin uses:
+        # per-TOOL allowlisting otherwise leaves this supervisory read
+        # dispatchable from internal_copilot.
+        resolve_list_feedback_authorization(context)
         since = _read_since_filter(params)
         verdict = _read_verdict_filter(params)
         limit = _read_list_limit(params)
@@ -577,3 +591,31 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
             "list_feedback": list_feedback,
         }
     }
+
+
+def resolve_list_feedback_authorization(context: "ToolExecutionContext") -> None:
+    """Profile gate for the supervisory ``list_feedback`` read.
+
+    ONE shared gate for the mock and Postgres handlers, same "one resolver,
+    both twins" discipline as the write resolvers above.
+
+    Why a gate at all on a read: profile allowlisting is per-TOOL, not
+    per-action, so ``toee_feedback`` sits on internal_copilot (for the three
+    writes) as well as supervisor_admin. That left this read -- every review,
+    every rating, every reviewer's comment -- dispatchable from the copilot
+    profile. The writes all fail closed on a missing actor; the read had no
+    gate at all, and "no BFF route maps to it yet" is a fact about today's
+    callers, not a boundary.
+
+    Deliberately NOT an actor check: reads elsewhere (``list_agent_experience``,
+    the dead-letter read) do not require one, and the admin BFF reaches reads
+    through plain ``dispatch`` rather than the actor-bearing ``dispatchWrite``.
+    Profile is the axis that actually separates these two mechanisms.
+    """
+    from ...plugin.profiles import SUPERVISOR
+
+    if context.profile != SUPERVISOR:
+        raise ToolDriverError(
+            "policy_blocked",
+            f'list_feedback is not permitted for profile "{context.profile}".',
+        )

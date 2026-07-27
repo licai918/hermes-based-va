@@ -740,3 +740,19 @@ def test_record_draft_outcome_and_submit_draft_rating_share_correlation_id() -> 
         == outcome.data["draft_correlation_id"]
         == "draft_corr_join"
     )
+
+
+def test_list_feedback_profile_gate_holds_on_the_mock_twin_too() -> None:
+    """The mock twin must enforce the same profile gate as the Postgres one.
+
+    "One resolver, both twins" only holds if BOTH call it -- the shared
+    resolver being correct says nothing about whether this handler wired it in.
+    Without this, the mock could silently keep serving the copilot profile.
+    """
+    driver = _driver()
+
+    denied = _list(driver, context=ToolExecutionContext(profile="internal_copilot"))
+    assert denied.ok is False
+    assert denied.error_class == "policy_blocked"
+
+    assert _list(driver).ok is True  # supervisor_admin still reads

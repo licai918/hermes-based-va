@@ -99,28 +99,41 @@ export function GovernedSendModal({
   const { showError } = useErrorBanner();
   const [busy, setBusy] = useState(false);
 
-  // Fire-and-forget: intentionally not awaited by confirm() below. Any
-  // rejection is caught right here so it never becomes an unhandled rejection
-  // or a thrown error in the send flow -- the send already succeeded.
+  // Fire-and-forget: intentionally not awaited by confirm() below, and it must
+  // NEVER throw at its caller -- the send has already succeeded by the time
+  // this runs, so anything escaping here would report a false send failure to
+  // the rep (and invite a retry that double-sends to the customer).
+  //
+  // Two escape routes, both closed: the `.catch()` handles an async rejection,
+  // and the surrounding try/catch handles a SYNCHRONOUS throw -- from a
+  // non-async `recordOutcome` (it is an injectable prop, so its shape is not
+  // ours to assume) or from the ratio computation in the argument list. The
+  // guarantee lives here rather than at the call site so every future caller
+  // inherits it.
   function captureSendOutcome(sentBody: string) {
-    if (!draftCorrelationId || !draftKind || originalBody === undefined) return;
-    const trimmedOriginal = originalBody.trim();
-    const trimmedSent = sentBody.trim();
-    const outcome: DraftOutcome =
-      trimmedOriginal === trimmedSent ? "sent_as_is" : "sent_edited";
-    recordOutcome({
-      caseId,
-      draftCorrelationId,
-      draftKind,
-      draftText: originalBody,
-      outcome,
-      ...(outcome === "sent_edited"
-        ? { editDistanceRatio: editDistanceRatio(trimmedOriginal, trimmedSent) }
-        : {}),
-    }).catch((err) => {
+    try {
+      if (!draftCorrelationId || !draftKind || originalBody === undefined) return;
+      const trimmedOriginal = originalBody.trim();
+      const trimmedSent = sentBody.trim();
+      const outcome: DraftOutcome =
+        trimmedOriginal === trimmedSent ? "sent_as_is" : "sent_edited";
+      recordOutcome({
+        caseId,
+        draftCorrelationId,
+        draftKind,
+        draftText: originalBody,
+        outcome,
+        ...(outcome === "sent_edited"
+          ? { editDistanceRatio: editDistanceRatio(trimmedOriginal, trimmedSent) }
+          : {}),
+      }).catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("record_draft_outcome failed (swallowed, non-fatal)", err);
+      });
+    } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("record_draft_outcome failed (swallowed, non-fatal)", err);
-    });
+      console.error("record_draft_outcome threw (swallowed, non-fatal)", err);
+    }
   }
 
   async function confirm() {

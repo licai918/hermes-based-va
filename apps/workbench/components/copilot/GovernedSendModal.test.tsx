@@ -156,6 +156,31 @@ describe("GovernedSendModal implicit outcome capture (S09)", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("a SYNCHRONOUSLY throwing outcome call still does not fail the send", async () => {
+    // The .catch() on the returned promise only covers an ASYNC rejection. A
+    // recordOutcome that throws synchronously (a non-async injected impl, or a
+    // throw from the ratio computation in its argument list) escapes it, lands
+    // in confirm()'s try, and is caught by the SEND's error handler -- so the
+    // customer's message has already gone out, but the rep is told the send
+    // failed and the modal never closes. The rep then retries -> duplicate SMS.
+    const recordOutcome = vi.fn().mockImplementation(() => {
+      throw new Error("synchronous boom");
+    });
+    const { onSent, onClose } = renderModal({
+      body: GENERATED,
+      originalBody: GENERATED,
+      draftCorrelationId: "corr-sync",
+      draftKind: "sms",
+      recordOutcome,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
+
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("records no outcome when the send itself fails", async () => {
     const recordOutcome = vi.fn().mockResolvedValue({ recorded: true });
     const send = vi.fn().mockRejectedValue(new ApiError(502, "SMS provider unavailable"));
