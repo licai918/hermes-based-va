@@ -46,6 +46,10 @@ ADR_0035_INTERNAL = {
     "toee_customer_memory",
     # 0.0.3 S22 (FR-23): L6 Agent-experience proposals -- internal_copilot only.
     "toee_agent_experience",
+    # 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon -- internal_copilot only
+    # (S04's capture fork proposes; the admin BFF dispatches over this
+    # profile's API). list_lexicon_entries is agent-excluded.
+    "toee_semantic_lexicon",
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over this
     # profile's API by the admin BFF (same reason get_memory_audit lives here).
     "toee_metrics",

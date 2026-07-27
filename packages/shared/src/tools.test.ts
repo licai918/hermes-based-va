@@ -54,10 +54,11 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
   });
 
-  it("contains exactly the 17 v1 tool names", () => {
+  it("contains exactly the 18 v1 tool names", () => {
     expect([...TOOL_NAMES].sort()).toEqual(
       [
         "toee_agent_experience",
+        "toee_semantic_lexicon",
         "toee_case",
         "toee_case_manage",
         "toee_copilot_draft",
@@ -104,6 +105,23 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_agent_experience", "list_agent_experience")).toBe(true);
     expect(isToolAction("toee_agent_experience", "confirm_experience")).toBe(true);
     expect(isToolAction("toee_agent_experience", "reject_experience")).toBe(true);
+  });
+
+  it("exposes the L7 Semantic Lexicon store actions (0.0.5 S01, FR-1/FR-3)", () => {
+    expect(TOOL_CATALOG.toee_semantic_lexicon).toEqual([
+      "propose_lexicon_entry",
+      "list_lexicon_entries",
+    ]);
+    expect(isToolAction("toee_semantic_lexicon", "propose_lexicon_entry")).toBe(
+      true,
+    );
+    expect(isToolAction("toee_semantic_lexicon", "list_lexicon_entries")).toBe(
+      true,
+    );
+    // The decide/CRUD actions are S02's -- not in the catalog yet.
+    expect(isToolAction("toee_semantic_lexicon", "confirm_lexicon_entry")).toBe(
+      false,
+    );
   });
 });
 

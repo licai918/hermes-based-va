@@ -112,6 +112,15 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         # review fork's / admin BFF's deterministic tools:dispatch calls
         # reach it (ADR-0140 precedent: toee_metrics/toee_retention above).
         "toee_feedback",
+        # 0.0.5 S01 (FR-1/FR-3): reviewed addition. toee_semantic_lexicon's
+        # propose_lexicon_entry writes a status='proposed' L7 row (inert until
+        # an admin confirms it, S02) -- it never contacts the customer and never
+        # moves money, so it does not weaken the no-auto-send invariant this
+        # tripwire guards. Same shape as toee_agent_experience above: the write
+        # is model-callable because S04's capture fork is the agent that
+        # proposes, and list_lexicon_entries is admin-only and excluded from
+        # LLM registration entirely (_AGENT_EXCLUDED_ACTIONS).
+        "toee_semantic_lexicon",
     }
 )
 

@@ -66,6 +66,12 @@ export const TOOL_CATALOG = {
     "confirm_experience",
     "reject_experience",
   ],
+  // 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon store -- see
+  // hermes/toee_hermes/tool_catalog.py for the full rationale.
+  // propose_lexicon_entry writes status='proposed' only; list_lexicon_entries is
+  // agent-excluded on the Python side (admin BFF dispatch only). The decide/CRUD
+  // actions and the console are S02.
+  toee_semantic_lexicon: ["propose_lexicon_entry", "list_lexicon_entries"],
   // 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- see
   // hermes/toee_hermes/tool_catalog.py for the full rationale. Fixed
   // four-action enum; no handlers/UI yet (S03/S06/S08/S10 add those). Every

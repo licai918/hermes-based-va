@@ -37,8 +37,8 @@ from __future__ import annotations
 from typing import Optional
 
 # The documented layer model (docs/architecture/memory-layers.md "At a glance").
-# L7 is listed because the 0.0.5 semantic lexicon lands in this iteration; no
-# action declares it yet.
+# 0.0.5 S01 landed the L7 semantic lexicon, so all seven layers are now declared
+# by at least one action.
 MEMORY_LAYERS: tuple[str, ...] = ("L1", "L2", "L3", "L4", "L5", "L6", "L7")
 
 DECLARABLE_LAYERS: frozenset[Optional[str]] = frozenset({*MEMORY_LAYERS, None})
@@ -160,6 +160,13 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # permanently not) -- an L6 content-state change, not bookkeeping.
     ("toee_agent_experience", "confirm_experience"): "L6",
     ("toee_agent_experience", "reject_experience"): "L6",
+    # --- L7 Semantic Lexicon ------------------------------------------------
+    # 0.0.5 S01 (FR-1/FR-3): the governed propose write inserts a
+    # semantic_lexicon row -- L7 content, even though the row is inert until an
+    # admin confirms it (same reasoning as propose_experience above: the
+    # declaration follows the WRITE, not the injectability).
+    ("toee_semantic_lexicon", "propose_lexicon_entry"): "L7",
+    ("toee_semantic_lexicon", "list_lexicon_entries"): None,
     # --- metrics -----------------------------------------------------------
     ("toee_metrics", "get_aggregate_metrics"): None,
     # --- L4 retention ------------------------------------------------------

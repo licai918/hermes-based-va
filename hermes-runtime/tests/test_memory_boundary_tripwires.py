@@ -20,10 +20,11 @@ worker, the CLI entrypoints, inbound webhooks -- is invisible to this tripwire.
 
 FR-16 -- injection composition. ``render_injection`` must give each layer at most
 one fence and let no memory content escape one. S06 extends this section with the
-cross-layer PRECEDENCE assertion once L7 exists; ``_fenced_blocks`` already
-returns the blocks in document order for it. Not asserted here -- L7 does not
-exist yet, and an order assertion over two fences would pin S25's rendering, not
-a boundary.
+cross-layer PRECEDENCE assertion once L7 renders; ``_fenced_blocks`` already
+returns the blocks in document order for it. Not asserted here -- 0.0.5 S01
+landed the L7 STORE but nothing renders a lexicon entry yet (S06 adds the
+glossary fence), and an order assertion over two fences would pin S25's
+rendering, not a boundary.
 
 FR-17 -- boundary-matrix rows (memory-layers.md "Boundaries -- what must never
 mix"). Honest accounting, three buckets:
@@ -50,6 +51,15 @@ mix"). Honest accounting, three buckets:
 - *L6 shared content is operational-only/no-PII* -- write-side scan:
   ``scan_agent_experience_content`` in ``toee_hermes.drivers.mock
   .agent_experience``, tested in ``hermes/tests/test_agent_experience.py``.
+  0.0.5 S01 (D2) split its pattern sets into ``toee_hermes.content_scan``'s
+  ``scan_injection`` / ``scan_pii`` (L6 composes both and is unchanged), tested
+  in ``hermes/tests/test_content_scan.py``.
+- *L7 shared content is operational-only/no-PII* -- the same split scan under
+  L7's per-field policy (injection everywhere; PII redacted in place on
+  ``evidence``/``proposer_context``, never applied to the digit-shaped
+  ``surface_form``): ``scan_lexicon_write`` in ``toee_hermes.drivers.mock
+  .semantic_lexicon``, tested in ``hermes/tests/test_semantic_lexicon.py`` and
+  ``hermes-runtime/tests/test_datastore_driver_semantic_lexicon.py``.
 - *``match_phone`` is an L1 WRITE, not a lookup* -- the fact behind that
   declaration is asserted behaviourally by ``hermes-runtime/tests/
   test_datastore_driver_identity.py::
@@ -68,8 +78,6 @@ mix"). Honest accounting, three buckets:
   this repo executes Stage A and the Stage B boundary check has no PII scanner,
   so there is no code path to assert against. Writing one anyway would be an
   assert-nothing test.
-- *L7 write-side scan.* L7 does not exist yet (S01 builds it). No entry declares
-  L7 in ``LAYER_OF_ACTION``; the FR-15 tripwire is what forces S01/S02 to.
 - *A fence can be closed by the content it is fencing.*
   ``toee_hermes.plugin.hooks._render_memory`` interpolates the raw slot value
   into the block (``f"- {name}: {value}"``) with no escaping of the fence tag.
@@ -89,7 +97,11 @@ mix"). Honest accounting, three buckets:
   purpose: the honest assertion (render a tag-bearing value, expect it neutered)
   requires ``_render_memory`` to escape or reject the tag first, which is a
   runtime behaviour change and belongs to its own slice, not to a tripwire
-  slice.
+  slice. **Half-closed by 0.0.5 S01 (D19):** ``scan_injection`` now hard-rejects
+  fence-delimiter tokens on the WRITE side of every layer, so a value carrying
+  one can no longer be stored (``hermes/tests/test_content_scan.py``). The RENDER
+  side is still unescaped and still owns the residual risk for anything already
+  stored -- S06 closes it and extends this file's composition test.
 - *Nothing pins a value to the RIGHT fence.* The two composition tests assert
   "each layer has exactly one fence" and "each declared value appears in its own
   fence and nowhere outside any fence". A value duplicated into a SECOND layer's

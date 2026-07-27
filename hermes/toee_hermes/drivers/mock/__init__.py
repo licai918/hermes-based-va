@@ -51,6 +51,7 @@ from .qbo import (
     qbo_baseline_data,
 )
 from .retention import create_retention_mock_handlers
+from .semantic_lexicon import create_semantic_lexicon_mock_handlers
 from .shopify import (
     ShopifyMockData,
     create_shopify_mock_handlers,
@@ -83,6 +84,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_square_mock_handlers(),
         create_admin_stub_mock_handlers(),
         create_agent_experience_mock_handlers(),
+        create_semantic_lexicon_mock_handlers(),
         create_metrics_mock_handlers(),
         create_retention_mock_handlers(),
         create_feedback_mock_handlers(),
@@ -127,6 +129,7 @@ __all__ = [
     "square_baseline_data",
     "create_admin_stub_mock_handlers",
     "create_agent_experience_mock_handlers",
+    "create_semantic_lexicon_mock_handlers",
     "create_metrics_mock_handlers",
     "create_retention_mock_handlers",
     "create_feedback_mock_handlers",

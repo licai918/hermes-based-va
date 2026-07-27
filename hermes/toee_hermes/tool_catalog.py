@@ -115,6 +115,19 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "confirm_experience",
         "reject_experience",
     ),
+    # 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon -- the governed, admin-curated
+    # store of DOMAIN LANGUAGE ("TOEE" -> "TOEE TIRE"; "2055516"/"205 55 16" ->
+    # "205/55R16"), the seventh memory layer. propose_lexicon_entry is the
+    # governed write and always persists status='proposed': LLM-callable on
+    # internal_copilot only, because S04's capture fork is the agent that
+    # proposes -- exactly the propose_experience precedent above.
+    # list_lexicon_entries is admin-only (_AGENT_EXCLUDED_ACTIONS, the
+    # list_agent_experience precedent). The decide/CRUD actions and the console
+    # are S02; nothing APPLIES an entry until S03/S05/S06.
+    "toee_semantic_lexicon": (
+        "propose_lexicon_entry",
+        "list_lexicon_entries",
+    ),
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
     # over existing tables + the new metric_event counters (memory injection,
     # knowledge found/miss). Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the

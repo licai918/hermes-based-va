@@ -192,6 +192,60 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         },
         "required": ["id"],
     },
+    # 0.0.5 S01 (FR-1/FR-3): the governed L7 propose write. All FOUR core fields
+    # are declared and required -- name-guessing on a store whose whole job is
+    # exact surface->canonical mapping would be the S10 failure mode with a
+    # governance cost. Deliberately ABSENT: status, provenance, decider,
+    # hit_count. Those are framework-derived (ADR-0148) and a caller-supplied
+    # value is ignored, so advertising them would only invite a forged param.
+    ("toee_semantic_lexicon", "propose_lexicon_entry"): {
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": (
+                    "The vocabulary this term belongs to, e.g. 'tire' or "
+                    "'company'. Open vocabulary, not an enum."
+                ),
+            },
+            "entry_kind": {
+                "type": "string",
+                "enum": ["alias", "normalizer", "default_rule"],
+                "description": (
+                    "'alias' for an exact surface->canonical mapping, "
+                    "'normalizer' for a pattern class, 'default_rule' for a "
+                    "conditional default that must still be confirmed."
+                ),
+            },
+            "surface_form": {
+                "type": "string",
+                "description": (
+                    "Exactly what the customer wrote, e.g. '2055516' or 'TOEE'."
+                ),
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": (
+                    "What it means in Toee's own vocabulary, e.g. '205/55R16' "
+                    "or 'TOEE TIRE'."
+                ),
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Optional short excerpt of the exchange that confirms the "
+                    "mapping. Customer PII in it is redacted, not rejected."
+                ),
+            },
+            "proposer_context": {
+                "type": "object",
+                "description": (
+                    "Optional redacted operational context the proposal was "
+                    "drawn from."
+                ),
+            },
+        },
+        "required": ["domain", "entry_kind", "surface_form", "canonical_form"],
+    },
     # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
     # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still
     # goes through this schema/param validation, so params are declared explicitly.

@@ -107,6 +107,13 @@ DriverSelector = Callable[[str], ToolDriver]
 # above exist to withhold -- and the list read exposes other customers' job
 # payloads, so neither belongs in a live turn's tool loop.
 #
+# 0.0.5 S01 (FR-1/FR-3) adds toee_semantic_lexicon.list_lexicon_entries, for the
+# same reason as list_agent_experience: an admin-only read of the whole L7 store
+# (proposed/confirmed/rejected/retired entries plus their evidence and
+# proposer_context), meant only for the admin BFF's deterministic tools:dispatch
+# call. propose_lexicon_entry is deliberately NOT here -- it is the governed
+# write S04's capture fork calls, exactly like propose_experience.
+#
 # 0.0.4 S02 (ADR-0154) adds all four toee_feedback actions. This is the load-
 # bearing governance guarantee of the manual-scoring-feedback module: the tool
 # is allowlisted (internal_copilot for the three writes, supervisor_admin for
@@ -123,6 +130,7 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_agent_experience", "list_agent_experience"),
         ("toee_agent_experience", "confirm_experience"),
         ("toee_agent_experience", "reject_experience"),
+        ("toee_semantic_lexicon", "list_lexicon_entries"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
         ("toee_retention", "enqueue_retention_sweep"),

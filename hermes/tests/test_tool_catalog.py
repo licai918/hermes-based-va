@@ -33,6 +33,8 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_eval_review",
         "toee_workbench_admin",
         "toee_agent_experience",
+        # 0.0.5 S01 (FR-1/FR-3): the L7 Semantic Lexicon store.
+        "toee_semantic_lexicon",
         "toee_metrics",
         "toee_retention",
         # 0.0.4 S05 (FR-13): dead-letter view + governed Replay.
@@ -60,6 +62,21 @@ def test_agent_experience_actions_match_fr_23() -> None:
     assert is_tool_action("toee_agent_experience", "list_agent_experience") is True
     assert is_tool_action("toee_agent_experience", "confirm_experience") is True
     assert is_tool_action("toee_agent_experience", "reject_experience") is True
+
+
+def test_semantic_lexicon_actions_match_fr_1() -> None:
+    # 0.0.5 S01 (FR-1/FR-3): the L7 store's governed write (propose_lexicon_entry,
+    # writes status='proposed' ONLY) and its admin-only read
+    # (list_lexicon_entries, in _AGENT_EXCLUDED_ACTIONS -- the
+    # list_agent_experience precedent). The decide/CRUD actions are S02's.
+    assert TOOL_CATALOG["toee_semantic_lexicon"] == (
+        "propose_lexicon_entry",
+        "list_lexicon_entries",
+    )
+    assert is_tool_action("toee_semantic_lexicon", "propose_lexicon_entry") is True
+    assert is_tool_action("toee_semantic_lexicon", "list_lexicon_entries") is True
+    # Not yet in the catalog: an entry can only be decided from S02.
+    assert is_tool_action("toee_semantic_lexicon", "confirm_lexicon_entry") is False
 
 
 def test_metrics_actions_match_fr_28() -> None:
