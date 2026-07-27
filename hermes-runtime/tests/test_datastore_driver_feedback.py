@@ -45,6 +45,31 @@ def _audit_count(conn, *, action: str = "interaction_review_submitted") -> int:
         return cur.fetchone()[0]
 
 
+def _seed_account(conn, account_id: str, *, role: str) -> None:
+    """Seed one ``workbench_account`` row for the FR-4 role gate below."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role) "
+            "VALUES (%s, %s, 'x', %s)",
+            (account_id, account_id, role),
+        )
+    conn.commit()
+
+
+@pytest.fixture(autouse=True)
+def _seed_known_reviewer_accounts(datastore):
+    """``acct_super_1`` / ``acct_real`` are the reviewing actor throughout this
+    file's pre-existing ``submit_interaction_review`` tests. FR-4's role gate
+    (this handler) additionally requires the acting account to be a
+    supervisor/admin ``workbench_account`` row -- seed both here as
+    ``workbench_supervisor`` so those tests keep proving what they always
+    proved instead of turning into silent policy_blocked regressions.
+    """
+    _, conn, _ = datastore
+    _seed_account(conn, "acct_super_1", role="workbench_supervisor")
+    _seed_account(conn, "acct_real", role="workbench_supervisor")
+
+
 # --- happy path: real row, read back directly from Postgres -------------------
 
 
@@ -296,6 +321,72 @@ def test_submit_interaction_review_reviewer_cannot_be_forged(datastore) -> None:
             (result.data["id"],),
         )
         assert cur.fetchone()[0] == "acct_real"
+
+
+# --- FR-4 role gate: only a supervisor/admin account may submit a review ------
+
+
+def test_submit_interaction_review_by_a_rep_is_policy_blocked(datastore) -> None:
+    # FR-4 (PRD workspace/0.0.4/quality-feedback/PRD.md): "submit_interaction_
+    # review additionally requires a supervisor/admin role." A rep account is
+    # a real, attributed actor (resolve_interaction_review_authorization would
+    # happily accept it) -- the role gate is the SECOND, independent axis, and
+    # it must fail closed to policy_blocked with the SAME zero-rows guarantee
+    # as the missing-actor gate above.
+    driver, conn, _ = datastore
+    _seed_account(conn, "acct_rep_reviewer", role="customer_service_rep")
+
+    result = _submit(
+        driver,
+        user_id="acct_rep_reviewer",
+        subject_kind="auto_handled_record",
+        subject_id="rec_1",
+        verdict="pass",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _review_count(conn) == 0
+    assert _audit_count(conn) == 0
+
+
+def test_submit_interaction_review_by_an_unknown_account_is_policy_blocked(
+    datastore,
+) -> None:
+    # An account id with no workbench_account row at all must fail exactly
+    # like a rep's -- same error_class, same zero rows -- so a caller can't
+    # use the response to probe whether an account exists (mirrors
+    # _require_case_held_by's "no case" vs "not your case" indistinguishability).
+    driver, conn, _ = datastore
+
+    result = _submit(
+        driver,
+        user_id="acct_does_not_exist",
+        subject_kind="auto_handled_record",
+        subject_id="rec_1",
+        verdict="pass",
+    )
+    assert not result.ok
+    assert result.error_class == "policy_blocked"
+    assert _review_count(conn) == 0
+    assert _audit_count(conn) == 0
+
+
+@pytest.mark.parametrize("role", ["workbench_supervisor", "workbench_admin"])
+def test_submit_interaction_review_by_supervisor_or_admin_succeeds(
+    datastore, role
+) -> None:
+    driver, conn, _ = datastore
+    _seed_account(conn, "acct_reviewer_ok", role=role)
+
+    result = _submit(
+        driver,
+        user_id="acct_reviewer_ok",
+        subject_kind="auto_handled_record",
+        subject_id="rec_1",
+        verdict="pass",
+    )
+    assert result.ok
+    assert _review_count(conn) == 1
 
 
 # --- submit_draft_rating (S06): the INTERNAL mechanism -------------------------

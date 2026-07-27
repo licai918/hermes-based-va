@@ -11,6 +11,16 @@ by the Postgres handler (``hermes-runtime/hermes_runtime/datastore/handlers/
 feedback.py``) too, so the mock and real datastore can't silently drift on what
 counts as a governed rejection.
 
+FR-4 additionally requires the reviewing actor to hold a supervisor/admin
+role, not merely to exist -- that role lookup needs the real
+``workbench_account`` table, so (same split as ``submit_draft_rating``'s
+case-ownership gate two paragraphs down) it is enforced ONLY in the Postgres
+handler's ``_require_supervisor_or_admin``, never here: this mock has no
+account store to check a role against. ``resolve_interaction_review_
+authorization`` below still runs first in both handlers and stays exactly as
+it was -- actor/profile is one axis, role is a second, independent one added
+on top, not a replacement.
+
 ``submit_draft_rating`` (0.0.4 S06, ADR-0154, FR-1/2/4/NFR-2/5) is the
 INTERNAL mechanism: a rep's thumbs-up / thumbs-down judgment on one Copilot
 Draft Action draft, down carrying at least one INTERNAL Review Reason Tag.

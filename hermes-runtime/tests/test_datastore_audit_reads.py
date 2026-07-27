@@ -2,8 +2,27 @@
 
 from __future__ import annotations
 
+import pytest
+
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
+
+
+@pytest.fixture(autouse=True)
+def _seed_reviewing_account(datastore):
+    """FR-4's role gate (``hermes_runtime/datastore/handlers/feedback.py``)
+    requires ``submit_interaction_review``'s actor to be a supervisor/admin
+    ``workbench_account`` row. ``_submit_review`` below hardcodes
+    "acct_super_1" as that actor across this file's reviewed-flag tests --
+    seed it once here rather than at every call site.
+    """
+    _, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role) "
+            "VALUES ('acct_super_1', 'acct_super_1', 'x', 'workbench_supervisor')"
+        )
+    conn.commit()
 
 
 def _ctx(user_id: str = "acct_supervisor"):

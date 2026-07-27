@@ -2,10 +2,16 @@
 
 ``submit_interaction_review`` is the EXTERNAL mechanism's write: a supervisor's
 pass/fail judgment on one Auto-Handled Interaction record or one
-sales_outreach Follow-up Case. ``submit_draft_rating`` (S06) is the INTERNAL
-mechanism's write: a rep's thumbs-up/down on one Copilot Draft Action draft,
-PLUS a case-ownership gate (the acting rep must hold the case -- mirrors
-``_send_sms_message``'s assignee check in ``datastore/handlers/cases.py``).
+sales_outreach Follow-up Case, PLUS a role gate (FR-4: the acting account must
+be a supervisor/admin, checked here via ``_require_supervisor_or_admin`` --
+the mock twin has no ``workbench_account`` table to check a role against, see
+the module docstring in ``toee_hermes.drivers.mock.feedback``). ``submit_
+draft_rating`` (S06) is the INTERNAL mechanism's write: a rep's thumbs-up/down
+on one Copilot Draft Action draft, PLUS a case-ownership gate (the acting rep
+must hold the case -- mirrors ``_send_sms_message``'s assignee check in
+``datastore/handlers/cases.py``). Both additional gates share the same shape:
+DB-backed, Postgres-only, and ``policy_blocked`` without letting a caller
+distinguish "no such account/case" from "wrong role/not yours".
 ``record_draft_outcome`` (S08) is the IMPLICIT counterpart to
 ``submit_draft_rating``: writes into the SAME ``draft_feedback`` table
 whether the rep sent the generated draft untouched or edited it first,
@@ -89,6 +95,38 @@ _REVIEW_COLUMNS = (
     "reviewer_account_id, created_at"
 )
 
+# Workbench role ids allowed to submit an EXTERNAL interaction review (FR-4):
+# supervisor or admin, never a rep. TS keeps the canonical set at
+# packages/shared/src/profiles.ts::WORKBENCH_ROLES -- update both together so
+# the two runtimes can't silently drift.
+_REVIEWER_ROLES: tuple[str, ...] = ("workbench_supervisor", "workbench_admin")
+
+
+def _require_supervisor_or_admin(conn, *, account_id: str) -> None:
+    """FR-4 role gate for submit_interaction_review: supervisor/admin only.
+
+    Runs AFTER ``resolve_interaction_review_authorization`` has already
+    confirmed an attributed internal_copilot actor -- this is a SECOND,
+    independent axis (who the actor *is*, not just that one was resolved).
+    That lookup needs the real ``workbench_account`` table, so -- like
+    ``_require_case_held_by`` below -- it lives ONLY in this Postgres
+    handler; the mock has no account store to check a role against (see the
+    module docstring in ``toee_hermes.drivers.mock.feedback``).
+
+    Same "can't distinguish why" discipline as ``_require_case_held_by``: an
+    unknown ``account_id`` and a real rep account both fail closed to the
+    identical ``policy_blocked`` message, so a caller can't use this gate's
+    response to probe whether an account exists.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT role FROM workbench_account WHERE id = %s", (account_id,))
+        row = cur.fetchone()
+    if row is None or row[0] not in _REVIEWER_ROLES:
+        raise ToolDriverError(
+            "policy_blocked",
+            "interaction reviews require a supervisor or admin account.",
+        )
+
 
 def _submit_interaction_review(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
@@ -98,6 +136,11 @@ def _submit_interaction_review(
     # this line runs (and thus nothing is ever built to INSERT) when it raises --
     # this is the "AI cannot score itself" guarantee, structural not a prompt rule.
     reviewer_account_id = resolve_interaction_review_authorization(context)
+    # Second gate, same discipline, immediately after: WHO the actor is, not
+    # just that one was resolved (FR-4). Still runs before any payload is even
+    # read, so a rep's malformed submission and a rep's well-formed one fail
+    # identically on role, never on payload validation.
+    _require_supervisor_or_admin(conn, account_id=reviewer_account_id)
     subject_kind = _require_subject_kind(params)
     subject_id = _require_subject_id(params)
     verdict = _require_verdict(params)
