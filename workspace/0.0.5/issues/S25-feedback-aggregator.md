@@ -21,6 +21,10 @@ out-of-memory signals). Nothing auto-writes memory — propose→confirm absolut
 - Job skeleton = the 0.0.4 S22 honored-rate job pattern (worker + watermark + aggregate);
   proposals carry the feedback row ids as evidence; source `feedback_derived` distinguishes
   them in every queue.
+- **Emission goes THROUGH the governed propose actions** (gap-audit fix, security-relevant):
+  the job calls `propose_experience` / `propose_lexicon_entry` — NEVER direct table inserts —
+  so the write-side scans apply to feedback-derived content exactly as to fork-derived
+  content; `persona_review` items go to the S15 `review_item` store.
 - Implement the routing table EXACTLY as pinned in C6 §6.2 (including the OUT-of-memory rows:
   tone/persona → `persona_review` item; policy → the existing KnowledgeOps flow).
 - Thresholds are named constants on the knob panel (S22); weight implicit outcomes vs explicit

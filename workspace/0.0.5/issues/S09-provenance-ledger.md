@@ -28,8 +28,10 @@ both the blast-radius locator (S10) AND the effectiveness-score locator (S26).
   entry_ref, injected_at)` + the query indexes S10/S26 need.
 - Write sites: everywhere `render_injection` composes content — L4 slots, L6 entries, L7
   entries (when S06 lands; additive) — one batched insert per turn.
-- Retention: ledger rows join the S28-style sweep story (bounded growth) — document the
-  window; no sweep implementation here if the 0.0.4 retention framework can absorb it later.
+- **Retention (gap-audit fix — the ledger grows per turn, unbounded is not an option):** ship
+  a pruning path IN this slice — a windowed DELETE job on the scheduled-worker pattern (window
+  a named constant, long enough for S10/S26 joins — e.g. ≥ the judge-sampling horizon), with
+  last-run visibility alongside the existing sweep surfaces.
 
 ## Acceptance — three-layer gate (NFR-1)
 

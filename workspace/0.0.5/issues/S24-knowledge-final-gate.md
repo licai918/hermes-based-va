@@ -3,7 +3,9 @@
 - **Milestone:** 0.0.5 — complete the memory architecture
 - **Track:** T6 Memory Control Loop — **OWNER INPUT REQUIRED**
 - **Size:** S
-- **Depends on:** owner's ~30 real customer questions (THE one external input of 0.0.5)
+- **Depends on:** owner's ~30 real customer questions (THE one external input of 0.0.5);
+  soft: S05 (for the with/without-normalization synergy measurement — skip that measurement
+  if S05 hasn't landed, don't block the gate)
 - **Delivers:** FR-30
 - **Surface:** knowledge gates harness (exists); question set; possibly Shopify content fixes
 

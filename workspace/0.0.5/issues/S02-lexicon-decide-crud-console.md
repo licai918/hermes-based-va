@@ -18,8 +18,11 @@ S15 inbox). US1: an admin adds "TOEE ≡ TOEE TIRE" live with no deploy. Explora
 
 - Decide actions mirror S24's `_decide_experience` shared-UPDATE shape (only proposed rows
   transition; already-decided = safe no-op; decider framework-derived; no actor →
-  `policy_blocked`); `edit` produces a NEW confirmed row superseding the old (audit both);
-  `manual-add` writes provenance=admin_manual directly to `confirmed` (admin IS the gate).
+  `policy_blocked`); **mock+PG lockstep via ONE shared decision resolver** (NFR-7, gap-audit
+  explicit); `edit` supersedes WITHOUT violating `UNIQUE(domain, surface_form)` — in-place
+  UPDATE with an old→new audit row, or retire-old-then-write-new; either way both states are
+  audited (gap-audit fix: a naive insert would collide); `manual-add` writes
+  provenance=admin_manual directly to `confirmed` (admin IS the gate).
 - ALL these actions in `_AGENT_EXCLUDED_ACTIONS` (never LLM-callable; verify via
   `registered_names()` tests — the house precedent).
 - Admin BFF routes mirror `admin/agent-experience` (withSession/isAdminPath, actor from

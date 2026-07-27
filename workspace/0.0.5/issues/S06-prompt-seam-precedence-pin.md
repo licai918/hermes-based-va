@@ -17,13 +17,18 @@ cross-layer render precedence — L4 carries override standing; `default_rule` t
 
 ## Approach
 
-- `load_confirmed_lexicon(store)` mirror of `load_confirmed_experience` (bounded, fail-closed,
-  own default-OFF flag per turn path — the S25 two-flag shape if external needs independent
-  disable; decide at implementation, record in the ADR).
+- `load_confirmed_lexicon(store)` mirror of `load_confirmed_experience` (bounded, fail-closed)
+  behind **TWO independent default-OFF flags** — copilot + external, disable-able separately
+  (gap-audit fix: locked now, the S25-0.0.3 two-flag precedent; recorded in the ADR).
 - `render_injection` gains the lexicon block; composition order + precedence phrasing per the
-  locked rule; `default_rule` renders its confirm-required posture.
+  locked rule; **`default_rule` conditions are EVALUATED at render** (gap-audit fix — e.g.
+  `current_season(date)` from S03 resolves which default applies; admin override row wins)
+  and render with the confirm-required posture.
 - Extend S12's composition test with the precedence assertion (FR-16 extension clause).
-- Newest-20 now; hit-ranked upgrade documented as S26-follow-up in the ADR.
+- Newest-20 now; the hit-ranked selection TOGGLE ships in **S26** (assigned, not orphaned).
+- **memory-layers.md completion (gap-audit fix, NFR-8, same PR as the L7 ADR):** L7 row
+  exploring→shipped, PLUS the L1-L7 routing decision tree and the L7 boundary-matrix rows
+  from the exploration land in the map (the forgetting table lands with S22's ADR section).
 
 ## Acceptance — three-layer gate (NFR-1)
 

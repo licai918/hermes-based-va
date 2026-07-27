@@ -5,7 +5,7 @@
 - **Size:** M
 - **Depends on:** S02 (L7 queue), existing L6 queue
 - **Delivers:** FR-22
-- **Surface:** inbox page + merged queue read + Re-classify action
+- **Surface:** inbox page + merged queue read + Re-classify action + **`review_item` store**
 
 ## Goal
 
@@ -17,8 +17,15 @@ panel (reps in case context). Daily workflow: log in → inbox badge (N) → cle
 
 ## Approach
 
-- Merged read over the pending sets (admin-only); item kinds are typed (l6_proposal,
-  l7_proposal, graduation, blast_radius, persona_review) — later kinds land additively.
+- **`review_item` store (gap-audit fix — the non-proposal kinds need a home):** L6/L7
+  proposals live in their own tables, but graduation (S20), blast-radius (S10), and
+  persona_review (S25) items do NOT — this slice ships a small `review_item` table
+  (migration: id, kind, subject_ref, evidence JSONB, status open|acknowledged|dismissed,
+  decider, timestamps) that those slices emit into. Emission is propose-only; deciding an
+  item is audited.
+- Merged read over the pending sets (proposal tables + `review_item`, admin-only); item kinds
+  are typed (l6_proposal, l7_proposal, graduation, blast_radius, persona_review) — later
+  kinds land additively.
 - Decisions dispatch to each layer's EXISTING governed decide actions (no new decision
   primitives); Re-classify = reject-in-source + propose-in-target in ONE governed action
   carrying provenance (audited both sides, evidence preserved).

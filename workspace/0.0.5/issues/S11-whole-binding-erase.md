@@ -16,9 +16,10 @@ merge or proposal recreating an erased slot) alerts. US7. Exploration C5 §5.6.
 
 ## Approach
 
-- `erase_customer_memory` admin-only action (`_AGENT_EXCLUDED_ACTIONS`): iterate the four
-  slots through the EXISTING clear (shared `resolve_clear_authorization` gate untouched),
-  write a summary audit row with per-slot outcomes; mock+PG lockstep.
+- `erase_customer_memory` admin-only action (`_AGENT_EXCLUDED_ACTIONS` — **with the house
+  `registered_names()` exclusion regression test**, gap-audit fix): iterate the four slots
+  through the EXISTING clear (shared `resolve_clear_authorization` gate untouched), write a
+  summary audit row with per-slot outcomes; mock+PG lockstep.
 - Memory Audit console gains the one-click button (confirm dialog).
 - Re-appearance tripwire: a metric/report flagging any slot write on a binding within N days
   of its erase summary (deterministic query; surfaces on S22's panel; N documented).

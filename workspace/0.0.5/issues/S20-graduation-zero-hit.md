@@ -17,12 +17,15 @@ structured layer, dead vocabulary retires instead of accumulating. US16/US17.
 
 ## Approach
 
-- One scheduled job, watermarked, propose-only (NFR-3): emits graduation + retirement inbox
-  items with the entry + evidence; deciding them uses S15's existing actions (graduation
-  Accept ≈ Re-classify L6→L7; retirement Accept = the existing retire).
-- Window + thresholds are named constants (calibratable); zero-hit merges into S26's
-  entry-health score once that lands (this slice ships the usage-only version, honestly
-  labeled).
+- One scheduled job, watermarked, propose-only (NFR-3): emits graduation + retirement items
+  into the **S15 `review_item` store** (kinds graduation / retirement-candidate) with the
+  entry + evidence; deciding them uses S15's existing actions (graduation Accept ≈
+  Re-classify L6→L7 — which runs THROUGH the governed propose/decide actions, scans applying;
+  retirement Accept = the existing retire).
+- Window + thresholds are named constants (calibratable). **L7 usage = `hit_count`
+  (deterministic applications, S05) + ledger-derived glossary usage (S09)** — count BOTH
+  before calling an entry zero-hit (gap-audit fix); zero-hit merges into S26's entry-health
+  score once that lands (this slice ships the usage-only version, honestly labeled).
 - Sweep visibility: last-run + counts on the retention/hub surfaces (S28-0.0.3 pattern).
 
 ## Acceptance — three-layer gate (NFR-1)

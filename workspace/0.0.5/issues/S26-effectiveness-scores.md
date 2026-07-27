@@ -35,7 +35,16 @@ actually appeared. US17.
   screenshot.
 - **③ Product (PAC):** feeds PAC-7/PAC-9.
 
+- **Hit-ranked glossary selection toggle (gap-audit fix — FR-6's upgrade clause, previously
+  orphaned, now IN scope here):** ship the selection strategy as a knob (newest-20 default →
+  hit/health-ranked), flipped when scores stabilize; the flip is an audited admin/config
+  action, both strategies tested.
+
+## Acceptance addition
+
+- **①:** the ranked strategy selects by entry-health deterministically on seeded scores; the
+  default remains newest-20 until flipped; flip is audited.
+
 ## Out of scope
 
-- Hit-ranked glossary selection flip (a follow-up toggle once scores stabilize — noted, not
-  silently on). Loop metrics — **S28**.
+- Loop metrics — **S28**.

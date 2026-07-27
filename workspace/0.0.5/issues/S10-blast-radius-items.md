@@ -16,11 +16,12 @@ Exploration C5 §5.7.
 
 ## Approach
 
-- Admin-only read (`_AGENT_EXCLUDED_ACTIONS`, the get_memory_audit precedent): affected turns/
+- Admin-only read (`_AGENT_EXCLUDED_ACTIONS`, the get_memory_audit precedent — **with the
+  house `registered_names()` exclusion regression test**, gap-audit fix): affected turns/
   cases for an entry_ref since a timestamp, joined to case status.
-- Hook: the retire/clear/edit decide paths (S02, L6 decisions, L4 clears) enqueue ONE review
-  item carrying the affected-open-cases list as evidence — propose-only, human works it in the
-  S15 inbox (NFR-3).
+- Hook: the retire/clear/edit decide paths (S02, L6 decisions, L4 clears) enqueue ONE
+  **`review_item` row (kind=blast_radius, the S15 store)** carrying the affected-open-cases
+  list as evidence — propose-only, human works it in the S15 inbox (NFR-3).
 - No auto-action on any case; the item's actuators are acknowledge/dismiss + deep links.
 
 ## Acceptance — three-layer gate (NFR-1)

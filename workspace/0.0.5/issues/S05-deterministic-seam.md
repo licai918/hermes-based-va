@@ -25,12 +25,18 @@ agent asserts them. US2's hard half.
   + a clarify posture (never assert an unverified canonical).
 - Fail-open: cache/DB trouble → raw params pass through unchanged (memory never stalls a
   reply, NFR-5).
+- **Hit accounting (gap-audit fix):** each deterministic application increments the entry's
+  `hit_count` / emits a per-entry hit event — turn-safe fire-and-forget, eval-neutral (the
+  metric_event discipline). Glossary-injection usage is NOT counted here — that is derivable
+  from the S09 ledger; S20/S26 consume both.
 
 ## Acceptance — three-layer gate (NFR-1)
 
 - **① Technical:** unit — all three 2055516 notations normalize to one canonical query; alias
-  map applies; disabled normalizer = pass-through; cache honors version bump; failure
-  pass-through proven. Live-PG + mock twin parity.
+  map applies; disabled normalizer = pass-through; **only `confirmed` entries apply —
+  proposed/rejected/retired are NEVER applied (PAC-2's deterministic half)**; cache honors
+  version bump; failure pass-through proven; a hit increments exactly once per application.
+  Live-PG + mock twin parity.
 - **② E2E (browser):** simulator: the three notations each retrieve the same product;
   screenshots.
 - **③ Product (PAC):** PAC-1's retrieval leg.
