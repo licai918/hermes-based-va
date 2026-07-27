@@ -142,8 +142,18 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
 24. As the owner, I want to generate a copilot draft in the simulator, edit and
     send it, and see both the implicit outcome and my explicit rating recorded, so
     that the internal loop is provable end to end.
-25. As the owner, I want every part of this module reachable from a front-end
-    entry, so that nothing is testable only by SQL or curl.
+25. As the owner, I want every **capture** surface reachable from a front-end
+    entry — submitting a review, seeing sampling coverage, rating a draft, and
+    the send-outcome capture — so that no part of *recording* feedback is
+    testable only by SQL or curl.
+
+    Scoped deliberately to capture. The one action this does **not** cover is
+    `list_feedback`, the Phase-2 aggregation read seam: §8 puts a feedback
+    dashboard and an `/admin/feedback` route out of scope, so building a
+    front-end entry for it here would contradict that line. Until Phase 2 gives
+    it a consumer, `list_feedback` is reachable by dispatch only, and that is
+    intended rather than an oversight. (An earlier wording said "every part of
+    this module", which contradicted §8 for exactly this action.)
 
 **Phase 2 (out of scope here, motivating the shape)**
 
@@ -325,7 +335,10 @@ which applies directly to "an agent-initiated feedback call persists nothing."
 - Implicit outcome capture for email and internal-note drafts — those leave by
   manual copy with no send event, so they carry explicit ratings only. Revisit if
   a governed email send ships.
-- A dedicated feedback dashboard or `/admin/feedback` route.
+- A dedicated feedback dashboard or `/admin/feedback` route. This is why
+  `list_feedback` has no front-end entry and is dispatch-only — US-25 is scoped
+  to the *capture* surfaces for that reason, not by omission. If Phase 2 gives
+  the read a consumer, revisit both together.
 - Customer-facing satisfaction ratings — this module scores AI output for
   internal use, and nothing here is exposed to customers.
 - Changing the audit views' read-only stance toward conversation data.
