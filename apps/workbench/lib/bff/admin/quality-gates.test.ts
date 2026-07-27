@@ -4,10 +4,16 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_STALE_SECONDS,
-  GATE_REPORT_READ_CAP,
   handleGetQualityGates,
   type QualityGatesView,
 } from "./quality-gates";
+
+// Real artifact filenames are `{kind}-{stamp}.json` with a lexicographically-sortable
+// stamp (strftime %Y%m%dT%H%M%S%fZ). The reader selects the newest report per kind by
+// that filename stamp, so tests use stamp-shaped names where greater string = newer.
+function stamp(run: number): string {
+  return `20260101T00${String(run).padStart(6, "0")}Z`;
+}
 
 let dir: string;
 
@@ -88,13 +94,45 @@ describe("handleGetQualityGates", () => {
     expect(body.reports[0]!.stale).toBe(true);
   });
 
-  it("keeps only the NEWEST artifact per kind (source-run provenance stays current)", async () => {
-    await writeArtifact("recall-old.json", recallArtifact("2026-07-01T00:00:00Z", "20/30 = 67% (bar: 80%)"));
-    await writeArtifact("recall-new.json", recallArtifact("2026-07-24T03:00:00Z", "24/30 = 80% (bar: 80%)"));
+  it("keeps only the NEWEST artifact per kind by filename stamp -- even if the older file has a newer mtime", async () => {
+    // Older stamp, but we deliberately give it the NEWER mtime to prove selection follows
+    // the filename stamp (one consistent key), not the filesystem clock.
+    await writeArtifact("recall-20260701T000000000000Z.json", recallArtifact("2026-07-01T00:00:00Z", "20/30 = 67% (bar: 80%)"));
+    await writeArtifact("recall-20260724T030000000000Z.json", recallArtifact("2026-07-24T03:00:00Z", "24/30 = 80% (bar: 80%)"));
+    const newer = new Date("2026-08-01T00:00:00Z");
+    await fs.utimes(path.join(dir, "recall-20260701T000000000000Z.json"), newer, newer);
 
     const body = await view(Date.parse("2026-07-24T04:00:00Z"));
     expect(body.reports).toHaveLength(1);
     expect(body.reports[0]!.rows[0]!.result).toBe("24/30 = 80% (bar: 80%)");
+  });
+
+  it("does NOT starve a quiet kind when other kinds emit far more recent files (mtime-cap regression)", async () => {
+    // recall goes silent after one old run; latency + judge each emit 100 newer files.
+    // Under the old newest-50-by-mtime cap, recall's lone oldest-mtime file fell outside
+    // the top 50 of 200+ newer files -> recall vanished from the panel. Group-by-kind reads
+    // each kind's newest, so recall's last report always shows (labeled stale if need be).
+    const old = new Date("2026-01-01T00:00:00Z");
+    await writeArtifact(`recall-${stamp(0)}.json`, recallArtifact("2026-01-01T00:00:00Z"));
+    await fs.utimes(path.join(dir, `recall-${stamp(0)}.json`), old, old);
+
+    const recent = new Date("2026-07-24T00:00:00Z");
+    for (const kind of ["latency", "judge"] as const) {
+      for (let run = 1; run <= 100; run++) {
+        const name = `${kind}-${stamp(run)}.json`;
+        await writeArtifact(name, {
+          kind,
+          generated_at: "2026-07-24T00:00:00Z",
+          source: `python -m ... ${kind}`,
+          source_run: `run/${run}`,
+          rows: [{ name: `${kind} row`, command: "cmd", result: `run ${run}`, passed: kind === "judge" ? null : true, note: null }],
+        });
+        await fs.utimes(path.join(dir, name), recent, recent);
+      }
+    }
+
+    const body = await view(Date.parse("2026-07-24T04:00:00Z"));
+    expect(body.reports.map((r) => r.kind)).toContain("recall");
   });
 
   it("preserves passed=null for advisory (judge) rows -- never coerced to PASS/FAIL", async () => {
@@ -140,41 +178,34 @@ describe("handleGetQualityGates", () => {
     expect(body.reports.map((r) => r.kind)).toEqual(["recall", "latency", "judge"]);
   });
 
-  it("bounds the files it reads to GATE_REPORT_READ_CAP yet still returns newest-per-kind", async () => {
-    // The reports dir grows one file per gate run and nothing prunes it, so reading
-    // every file on every request is O(all-history). Model many runs (each emits one
-    // file per kind, mtime tracking run recency) and assert the reader reads only the
-    // newest cap by mtime -- not the whole dir -- while newest-per-kind stays correct.
+  it("reads O(kinds) files (one newest-per-kind), not O(all-history), and stays correct", async () => {
+    // The reports dir grows one file per gate run and nothing prunes it. The panel only
+    // shows the newest report per kind, and filenames carry a sortable stamp -- so the
+    // reader should read ~one file per kind (the lexicographically-greatest name), NOT a
+    // 50-file mtime cap. Model many runs and assert reads == number of kinds.
     const kinds = ["recall", "latency", "judge"] as const;
-    const runs = 100; // 100 runs * 3 kinds = 300 files, far above the cap
+    const runs = 100; // 100 runs * 3 kinds = 300 files
     const base = Date.parse("2026-01-01T00:00:00Z");
     for (let run = 0; run < runs; run++) {
-      const genMs = base + run * 60_000;
-      const generatedAt = new Date(genMs).toISOString();
+      const generatedAt = new Date(base + run * 60_000).toISOString();
       for (const kind of kinds) {
-        const name = `${kind}-${String(run).padStart(4, "0")}.json`;
-        await writeArtifact(name, {
+        await writeArtifact(`${kind}-${stamp(run)}.json`, {
           kind,
           generated_at: generatedAt,
           source: `python -m ... ${kind}`,
           source_run: `run/${run}`,
           rows: [{ name: `${kind} row`, command: "cmd", result: `run ${run}`, passed: kind === "judge" ? null : true, note: null }],
         });
-        // mtime tracks run recency (newest run = latest mtime), deterministic for the sort.
-        const t = new Date(genMs);
-        await fs.utimes(path.join(dir, name), t, t);
       }
     }
 
     const readSpy = vi.spyOn(fs, "readFile");
     const body = await view(base + runs * 60_000 + 1000);
 
-    // It did NOT read the whole dir; it read at most the cap.
-    const totalJsonFiles = runs * kinds.length; // 300
-    expect(readSpy.mock.calls.length).toBeLessThanOrEqual(GATE_REPORT_READ_CAP);
-    expect(readSpy.mock.calls.length).toBeLessThan(totalJsonFiles);
+    // O(kinds) reads -- exactly one per kind, not the whole dir nor a 50-file cap.
+    expect(readSpy.mock.calls.length).toBe(kinds.length);
 
-    // Newest-per-kind is still correct: each kind's newest is the LAST run's file.
+    // Newest-per-kind (by filename stamp) is correct: each kind's newest is the last run.
     expect(body.reports.map((r) => r.kind)).toEqual(["recall", "latency", "judge"]);
     for (const r of body.reports) {
       expect(r.rows[0]!.result).toBe(`run ${runs - 1}`);
