@@ -113,13 +113,26 @@ def _require_supervisor_or_admin(conn, *, account_id: str) -> None:
     handler; the mock has no account store to check a role against (see the
     module docstring in ``toee_hermes.drivers.mock.feedback``).
 
+    Checks ``status`` as well as ``role``. ``disable_account`` sets status to
+    'disabled' and login refuses a disabled account -- but a session issued
+    BEFORE the disable stays valid until it expires, and nothing between here
+    and the cookie re-checks the account. Without the status clause a
+    just-revoked supervisor keeps writing judgments for the rest of that
+    window, and they land in the audit trail looking entirely legitimate.
+    (The broader gap -- that a live session is never revalidated against the
+    account at all -- is app-wide and pre-existing, not this gate's to close.)
+
     Same "can't distinguish why" discipline as ``_require_case_held_by``: an
-    unknown ``account_id`` and a real rep account both fail closed to the
-    identical ``policy_blocked`` message, so a caller can't use this gate's
-    response to probe whether an account exists.
+    unknown ``account_id``, a real rep account, and a disabled supervisor all
+    fail closed to the identical ``policy_blocked`` message, so a caller can't
+    use this gate's response to probe whether an account exists, what role it
+    holds, or whether it is still active.
     """
     with conn.cursor() as cur:
-        cur.execute("SELECT role FROM workbench_account WHERE id = %s", (account_id,))
+        cur.execute(
+            "SELECT role FROM workbench_account WHERE id = %s AND status = 'active'",
+            (account_id,),
+        )
         row = cur.fetchone()
     if row is None or row[0] not in _REVIEWER_ROLES:
         raise ToolDriverError(

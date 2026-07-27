@@ -1401,3 +1401,43 @@ def test_list_feedback_is_refused_on_the_internal_copilot_profile(datastore) -> 
     assert [r["subject_id"] for r in allowed.data["interaction_reviews"]] == [
         "rec_profile_guard"
     ]
+
+
+def test_submit_interaction_review_by_a_disabled_supervisor_persists_nothing(
+    datastore,
+) -> None:
+    """A revoked account must not keep writing to the quality record.
+
+    ``disable_account`` (accounts.py) sets ``workbench_account.status`` to
+    'disabled', and login refuses a disabled account -- but a session issued
+    BEFORE the disable stays valid until it expires, and neither the session
+    layer nor this gate re-checks status. Role alone is therefore not enough:
+    a just-revoked supervisor could still submit judgments for the rest of the
+    session window, and the review would look fully legitimate in the audit
+    trail.
+
+    Same fail-closed shape as the rep and unknown-account cases -- and
+    deliberately the same message, so the gate cannot be used to probe whether
+    an account exists, what role it has, or whether it is active.
+    """
+    driver, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role, status)"
+            " VALUES ('acct_super_disabled', 'acct_super_disabled', 'x',"
+            " 'workbench_supervisor', 'disabled')"
+        )
+    conn.commit()
+
+    result = _submit(
+        driver,
+        user_id="acct_super_disabled",
+        subject_kind="auto_handled_record",
+        subject_id="rec_disabled_guard",
+        verdict="pass",
+    )
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert _review_count(conn) == 0
+    assert _audit_count(conn) == 0
