@@ -15,10 +15,10 @@ loop that GENERATES proposals is S23 -- out of scope here.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from ...content_scan import scan_injection, scan_pii
 from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
 
@@ -46,32 +46,6 @@ AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT = "copilot_agent"
 AGENT_EXPERIENCE_CONTENT_MAX_LENGTH = 2000
 
 # --- write-side injection/PII scan (S22, the S09 hardening discipline floor) -
-#
-# ponytail: a heuristic keyword/regex floor, not a semantic classifier -- this
-# is the FIRST of three lines of defense (S23 layers prompt-side enforcement
-# on the review fork itself; S24's human confirm gate is the third, and the
-# only one a proposal must clear before it can ever be injected). Extend the
-# pattern tuples below as new seeded adversarial cases get diagnosed, the same
-# way plugin/schemas.py's PARAM_SCHEMAS grows from diagnosed failures.
-_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"ignore\s+(all\s+|any\s+)?(the\s+)?(previous|prior)\s+instructions",
-        r"disregard\s+(all\s+|any\s+)?(the\s+)?(previous|prior)\s+instructions",
-        r"\bsystem\s*:",
-        r"\bassistant\s*:",
-        r"\byou are now\b",
-        r"<\s*/?\s*tool_call",
-        r"\bnew\s+instructions\b",
-        r"\boverride\s+(your|the)\s+(instructions|system prompt)\b",
-    )
-)
-
-# Email / phone / Shopify-customer-id-shaped tokens -- the store is
-# operational-only (NFR-3), never customer PII.
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}")
-_PHONE_RE = re.compile(r"\+?\d[\d\-\s]{6,14}\d")
-_CUSTOMER_ID_RE = re.compile(r"gid://shopify/Customer/\d+|\bcust_[A-Za-z0-9]{4,}\b")
 
 
 def scan_agent_experience_content(*texts: Optional[str]) -> None:
@@ -82,23 +56,16 @@ def scan_agent_experience_content(*texts: Optional[str]) -> None:
     silently drift on what counts as a governed rejection. Any positional
     ``None``/empty string is skipped, so callers can pass ``content`` plus
     every string value out of ``proposer_context`` in one call.
+
+    0.0.5 S01 (D2) SPLIT the pattern sets into ``toee_hermes.content_scan``'s
+    two named resolvers, because L4 and L7 need the injection leg WITHOUT the
+    PII leg (the phone heuristic matches the tire size ``205 55 16``). L6 is
+    unchanged: it is both legs, per text, in the original order -- so an input
+    that used to be rejected still is, with the same ``policy_blocked`` class.
     """
     for text in texts:
-        if not text:
-            continue
-        for pattern in _INJECTION_PATTERNS:
-            if pattern.search(text):
-                raise ToolDriverError(
-                    "policy_blocked",
-                    "agent_experience write rejected: instruction-injection "
-                    "pattern detected in proposed content (S22 write-side scan).",
-                )
-        if _EMAIL_RE.search(text) or _PHONE_RE.search(text) or _CUSTOMER_ID_RE.search(text):
-            raise ToolDriverError(
-                "policy_blocked",
-                "agent_experience write rejected: content must be "
-                "operational-only, no customer PII (NFR-3).",
-            )
+        scan_injection(text)
+        scan_pii(text)
 
 
 def _require_kind(params: dict[str, Any]) -> str:
