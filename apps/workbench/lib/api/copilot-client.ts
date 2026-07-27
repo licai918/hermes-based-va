@@ -9,6 +9,9 @@ import type {
   AuditLogEntry,
   CaseStatus,
   CustomerPreferences,
+  DraftRating,
+  DraftRatingVerdict,
+  InternalReviewReasonTag,
   MemoryPreferenceSlot,
   ThreadMessage,
   WorkbenchCase,
@@ -175,6 +178,33 @@ export function draft(
 
 export function chat(message: string, caseId?: string): Promise<ChatResponse> {
   return sendJson("POST", `${BASE}/chat`, { caseId, message });
+}
+
+// A rep's thumbs up/down on one copilot draft (0.0.4 S06/S07, ADR-0154). Rides
+// the draft correlation id minted client-side when the draft was produced
+// (CopilotGateway.tsx) -- S09 will share that same id with the implicit
+// send-outcome row for the same draft. `kind: "rating"` picks the explicit-
+// rating branch of the feedback BFF route; S09 adds an "outcome" branch to
+// this same route.
+export function submitDraftFeedback(input: {
+  caseId: string;
+  draftCorrelationId: string;
+  draftKind: DraftKind;
+  draftText: string;
+  verdict: DraftRatingVerdict;
+  reasonTags?: InternalReviewReasonTag[];
+  comment?: string;
+}): Promise<{ rating: DraftRating }> {
+  return sendJson<{ rating: DraftRating }>("POST", `${BASE}/feedback`, {
+    kind: "rating",
+    case_id: input.caseId,
+    draft_correlation_id: input.draftCorrelationId,
+    draft_kind: input.draftKind,
+    draft_text: input.draftText,
+    verdict: input.verdict,
+    reason_tags: input.reasonTags ?? [],
+    ...(input.comment ? { comment: input.comment } : {}),
+  });
 }
 
 export function sendSms(

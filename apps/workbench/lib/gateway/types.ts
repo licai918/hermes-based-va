@@ -5,8 +5,10 @@
 // in-memory store they were originally written for; the shapes did not change).
 import {
   MEMORY_PREFERENCE_SLOTS,
+  type DraftRatingVerdict,
   type ExternalReviewReasonTag,
   type InteractionReviewVerdict,
+  type InternalReviewReasonTag,
   type MemoryPreferenceSlot,
 } from "@toee/shared";
 
@@ -19,6 +21,11 @@ export type { MemoryPreferenceSlot };
 // vocabulary + verdict from "./types" alongside everything else, without
 // drifting from the @toee/shared feedback.ts contract (ADR-0154).
 export type { ExternalReviewReasonTag, InteractionReviewVerdict };
+
+// Re-exported so 0.0.4 S07 draft-rating code imports the INTERNAL Review Reason
+// Tag vocabulary + verdict from "./types" alongside everything else, same
+// discipline as the EXTERNAL pair above (ADR-0154).
+export type { InternalReviewReasonTag, DraftRatingVerdict };
 
 export type CaseChannel = "sms" | "email" | "voice";
 
@@ -143,6 +150,26 @@ export interface InteractionReview {
   reasonTags: ExternalReviewReasonTag[];
   comment: string | null;
   reviewerAccountId: string;
+  createdAt: number;
+}
+
+// Which copilot draft surface generated a draft (toee_feedback.submit_draft_rating
+// / record_draft_outcome, ADR-0154, 0.0.4 S06/S07). Mirrors the draft_kind enum in
+// the Python plugin schemas (hermes/toee_hermes/plugin/schemas.py).
+export type DraftKind = "sms" | "email" | "note";
+
+// A rep's thumbs up/down on one copilot draft (toee_feedback.submit_draft_rating,
+// 0.0.4 S06/S07). Append-only, same as InteractionReview -- a re-rating is a new
+// row, not an overwrite.
+export interface DraftRating {
+  ratingId: string;
+  caseId: string;
+  draftCorrelationId: string;
+  draftKind: DraftKind;
+  verdict: DraftRatingVerdict;
+  reasonTags: InternalReviewReasonTag[];
+  comment: string | null;
+  repAccountId: string;
   createdAt: number;
 }
 

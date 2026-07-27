@@ -16,6 +16,16 @@ describe("canAccess", () => {
     }
   });
 
+  it("allows a rep on the draft-feedback write route (0.0.4 S07, quality-feedback)", () => {
+    // Unlike the review write (supervisor/admin-only via the /audit/ prefix),
+    // /api/copilot/feedback sits outside /api/copilot/audit/*, so every role
+    // reaches it -- reps are the intended authors of draft feedback (see
+    // feedback.ts's module docstring).
+    expect(canAccess(rep, "/api/copilot/feedback")).toBe(true);
+    expect(canAccess(supervisor, "/api/copilot/feedback")).toBe(true);
+    expect(canAccess(admin, "/api/copilot/feedback")).toBe(true);
+  });
+
   it("allows every role on the Conversation Simulator (FR-8, 0.0.3 S03)", () => {
     for (const role of [rep, supervisor, admin]) {
       expect(canAccess(role, "/copilot/simulator")).toBe(true);

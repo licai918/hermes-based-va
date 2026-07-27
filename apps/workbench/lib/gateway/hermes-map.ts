@@ -5,7 +5,7 @@
 // (unknown channel/status, malformed timestamp, non-object payload) as governed
 // HermesApiErrors so a bad upstream surfaces on the ADR-0090 banner instead of
 // rendering garbage. Hand-written guards keep the BFF dependency-light.
-import { EXTERNAL_REVIEW_REASON_TAGS } from "@toee/shared";
+import { EXTERNAL_REVIEW_REASON_TAGS, INTERNAL_REVIEW_REASON_TAGS } from "@toee/shared";
 import { HermesApiError } from "./hermes-api-client";
 import {
   PREFERENCE_SLOTS,
@@ -15,10 +15,14 @@ import {
   type CaseChannel,
   type CaseStatus,
   type CustomerPreferences,
+  type DraftKind,
+  type DraftRating,
+  type DraftRatingVerdict,
   type ExternalReviewReasonTag,
   type InteractionReview,
   type InteractionReviewSubjectKind,
   type InteractionReviewVerdict,
+  type InternalReviewReasonTag,
   type MemoryAuditEntry,
   type MemoryAuditView,
   type MemoryPreferenceSlot,
@@ -326,6 +330,49 @@ export function mapInteractionReview(raw: unknown): InteractionReview {
     reasonTags,
     comment: nullableString(r.comment),
     reviewerAccountId: requiredString(r.reviewer_account_id, "reviewer_account_id"),
+    createdAt: isoToMs(r.created_at, "created_at"),
+  };
+}
+
+const DRAFT_KINDS: readonly DraftKind[] = ["sms", "email", "note"];
+const DRAFT_RATING_VERDICTS: readonly DraftRatingVerdict[] = ["up", "down"];
+
+// Maps the row `submit_draft_rating` returns (0.0.4 S06/S07, ADR-0154) onto the
+// camelCase DraftRating the draft card's rating controls consume. Same
+// discipline as mapInteractionReview: an unrecognised reason_tags entry is
+// dropped, not rejected -- this is a display mapper for the row the BFF's own
+// write just produced.
+export function mapDraftRating(raw: unknown): DraftRating {
+  const r = asObject(raw, "draft rating");
+  const draftKind = r.draft_kind;
+  if (!(DRAFT_KINDS as readonly unknown[]).includes(draftKind)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown draft rating draft_kind: ${String(draftKind)}`,
+    );
+  }
+  const verdict = r.verdict;
+  if (!(DRAFT_RATING_VERDICTS as readonly unknown[]).includes(verdict)) {
+    throw new HermesApiError(
+      "unexpected_error",
+      `unknown draft rating verdict: ${String(verdict)}`,
+    );
+  }
+  const rawTags = Array.isArray(r.reason_tags) ? r.reason_tags : [];
+  const reasonTags = rawTags.filter(
+    (t): t is InternalReviewReasonTag =>
+      typeof t === "string" &&
+      (INTERNAL_REVIEW_REASON_TAGS as readonly string[]).includes(t),
+  );
+  return {
+    ratingId: requiredString(r.id, "draft rating id"),
+    caseId: requiredString(r.case_id, "case_id"),
+    draftCorrelationId: requiredString(r.draft_correlation_id, "draft_correlation_id"),
+    draftKind: draftKind as DraftKind,
+    verdict: verdict as DraftRatingVerdict,
+    reasonTags,
+    comment: nullableString(r.comment),
+    repAccountId: requiredString(r.rep_account_id, "rep_account_id"),
     createdAt: isoToMs(r.created_at, "created_at"),
   };
 }
