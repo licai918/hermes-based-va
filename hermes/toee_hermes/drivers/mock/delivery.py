@@ -172,8 +172,9 @@ def _get_product_promise(
     data: DeliveryMockData, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
     _require_verified_numeric_id(context)
-    # The endpoint resolves+validates a sku to a real in-shop variant before the engine
-    # (unknown sku -> 404); a raw numeric variantId still works. Mirror that resolution.
+    # The endpoint resolves+validates sku AND raw variantId to a real in-shop variant
+    # before the engine (unknown sku / product-id-as-variantId -> 404). Mirror both, or
+    # the mock is MORE permissive than live (same fix as the Tier 3b quote handler).
     sku = _read_string(params, "sku")
     variant_id = _read_string(params, "variant_id", "variantId")
     if sku:
@@ -181,7 +182,10 @@ def _get_product_promise(
         if resolved is None:
             raise ToolDriverError("not_found", "Unknown sku.")
         variant_id = resolved
-    elif not variant_id:
+    elif variant_id:
+        if variant_id not in set(data.variant_by_sku.values()):
+            raise ToolDriverError("not_found", "Unknown variant.")
+    else:
         raise ToolDriverError("policy_blocked", "get_product_promise requires a sku.")
     quantity = params.get("quantity")
     quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) else None
@@ -214,7 +218,13 @@ def _get_delivery_quote(
         if resolved is None:
             raise ToolDriverError("not_found", "Unknown sku.")
         variant_id = resolved
-    elif not variant_id:
+    elif variant_id:
+        # The endpoint validates a raw variantId too (unknown variant -> 404); a raw
+        # variantId must resolve to a real in-shop variant, not pass through unchecked.
+        # Otherwise the mock is MORE permissive than live (S30 parity lesson).
+        if variant_id not in set(data.variant_by_sku.values()):
+            raise ToolDriverError("not_found", "Unknown variant.")
+    else:
         raise ToolDriverError("policy_blocked", "get_delivery_quote requires a sku.")
     quantity = params.get("quantity")
     quantity = quantity if isinstance(quantity, int) and not isinstance(quantity, bool) else None

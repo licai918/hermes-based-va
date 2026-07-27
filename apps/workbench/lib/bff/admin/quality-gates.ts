@@ -25,6 +25,15 @@ import { json } from "../respond";
 // needs a tighter freshness bar.
 export const DEFAULT_STALE_SECONDS = 30 * 24 * 60 * 60; // 30 days
 
+// The reports dir grows one file per gate run and nothing prunes it, so reading and
+// parsing EVERY .json on each request is O(all-history) and only worsens over time.
+// The newest-per-kind result needs only the newest handful, so we read only the newest
+// GATE_REPORT_READ_CAP files by mtime (write time tracks run recency). Cross-kind
+// recency can't come from the filename (`{kind}-{stamp}.json` sorts by kind first), so
+// mtime -- not name -- is the correct proxy. 50 covers every kind with generous margin
+// (gates emit ~one file per kind per run).
+export const GATE_REPORT_READ_CAP = 50;
+
 // Panel-row order for a deterministic render; unknown kinds sort after, alpha.
 const KIND_ORDER = ["recall", "latency", "judge"];
 
@@ -130,9 +139,25 @@ export async function handleGetQualityGates(
     throw err;
   }
 
+  // Bound the expensive readFile+parse to the newest cap by mtime. stat is cheap next
+  // to readFile+JSON.parse, so statting all names to rank them is fine; what we refuse
+  // to do is grow the read+parse work with the unpruned history.
+  const jsonFiles = files.filter((file) => file.endsWith(".json"));
+  const ranked = await Promise.all(
+    jsonFiles.map(async (file) => {
+      try {
+        const st = await fs.stat(path.join(reportsDir, file));
+        return { file, mtimeMs: st.mtimeMs };
+      } catch {
+        return { file, mtimeMs: -Infinity }; // vanished between readdir and stat -> sort last
+      }
+    }),
+  );
+  ranked.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const newestFiles = ranked.slice(0, GATE_REPORT_READ_CAP).map((r) => r.file);
+
   const newestByKind = new Map<string, ParsedArtifact>();
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
+  for (const file of newestFiles) {
     let parsed: ParsedArtifact | null = null;
     try {
       const text = await fs.readFile(path.join(reportsDir, file), "utf-8");

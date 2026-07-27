@@ -37,13 +37,17 @@ function pct(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 1000) / 10}%`;
 }
 
-// Honored-rate provenance line. When live, make the partial sample legible (rate
-// is over `sampleSize` of `candidateTotal`, not the whole population) plus the
-// "as of" run time; when not yet computed, the honest label from the BFF.
+// Honored-rate provenance line. When live, keep the two stages distinct so the
+// ratio isn't misread as "only looked at 40 of 200": `sampleSize` were
+// determinately SCORED, `undetermined` were sampled but not determinately scored,
+// and `candidateTotal` is the ELIGIBLE population (threads with customer memory on
+// file, pre-cap) -- not "memory injected at reply time". Plus the "as of" run time;
+// when not yet computed, the honest label from the BFF.
 function honoredSub(h: AggregateMetrics["honoredRate"]): string {
   if (!h.live) return h.label;
   const asOf = h.asOf ? new Date(h.asOf).toLocaleDateString() : "unknown date";
-  return `${h.sampleSize} / ${h.candidateTotal} recent turns sampled · as of ${asOf}`;
+  const undetermined = h.undetermined ?? 0;
+  return `${h.sampleSize} scored · ${undetermined} undetermined of ${h.candidateTotal} turns with customer memory on file · as of ${asOf}`;
 }
 
 function Tile({ title, main, sub }: { title: string; main: string; sub?: string }) {

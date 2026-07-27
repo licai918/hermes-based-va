@@ -397,6 +397,22 @@ def test_mock_unknown_sku_fails_closed_like_the_endpoint_404() -> None:
     assert out.error_class == "not_found"
 
 
+def test_mock_tier3a_unknown_variant_id_fails_closed_like_404() -> None:
+    # Same parity as Tier 3b: the endpoint validates a raw variantId too (unknown
+    # variant / product-id-as-variantId -> 404 -> not_found), not only an unknown sku.
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(mock, "get_product_promise", {"variant_id": "0000000000000"}, identity=_verified())
+    assert out.ok is False
+    assert out.error_class == "not_found"
+
+
+def test_mock_tier3a_known_variant_id_still_works() -> None:
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(mock, "get_product_promise", {"variant_id": VARIANT_ID}, identity=_verified())
+    assert out.ok is True
+    assert out.data["variant_id"] == VARIANT_ID
+
+
 def test_mock_unverified_fails_closed() -> None:
     mock = MockDriver(create_delivery_mock_handlers())
     out = _call(mock, "get_order_delivery", {"order_name": ORDER_NAME})
@@ -556,6 +572,30 @@ def test_quote_mock_malformed_postal_fails_closed_like_400() -> None:
     out = _call(mock, "get_delivery_quote", {"sku": SKU, "postal_code": "NOPE"}, identity=None)
     assert out.ok is False
     assert out.error_class == "configuration_missing"
+
+
+def test_quote_mock_unknown_variant_id_fails_closed_like_404() -> None:
+    # Parity: the live endpoint validates a raw variantId too (unknown variant -> 404
+    # -> not_found), not only an unknown sku. The mock must fail closed the same way
+    # rather than fabricating a quote for a variant that doesn't exist — otherwise the
+    # mock is MORE permissive than live and would green an eval/replay that 404s in
+    # production (S30 "mock hides a live gap" class).
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(
+        mock, "get_delivery_quote", {"variant_id": "0000000000000", "postal_code": POSTAL}, identity=None
+    )
+    assert out.ok is False
+    assert out.error_class == "not_found"
+
+
+def test_quote_mock_known_variant_id_still_works() -> None:
+    # The known-variant path is unchanged: a real in-shop variantId still resolves.
+    mock = MockDriver(create_delivery_mock_handlers())
+    out = _call(
+        mock, "get_delivery_quote", {"variant_id": VARIANT_ID, "postal_code": POSTAL}, identity=None
+    )
+    assert out.ok is True
+    assert out.data["variant_id"] == VARIANT_ID
 
 
 if __name__ == "__main__":  # pragma: no cover

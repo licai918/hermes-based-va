@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from ...honored_rate import honored_rate_metric
+from ._common import METRIC_L6_CONFIRMED, METRIC_SELF_SERVICE_USAGE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -60,20 +61,24 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # S21/FR-30 governed-action counters (self_service_usage, l6_confirmed_
         # entries) are plain totals emitted once per real action -- same table,
         # one query.
+        # The two S21 counters share their metric name with the emit side via the
+        # _common constants, so the emit and aggregation sides can't drift (the
+        # _common docstring's promise). memory_injection/knowledge_search have no
+        # shared constant (no separate emit-site literal to drift from).
         cur.execute(
             """
             SELECT metric, COUNT(*) FILTER (WHERE flag) AS hits, COUNT(*) AS total
             FROM metric_event
-            WHERE metric IN ('memory_injection', 'knowledge_search',
-                             'self_service_usage', 'l6_confirmed_entries')
+            WHERE metric IN ('memory_injection', 'knowledge_search', %s, %s)
             GROUP BY metric
-            """
+            """,
+            (METRIC_SELF_SERVICE_USAGE, METRIC_L6_CONFIRMED),
         )
         counters = {metric: (hits, total) for metric, hits, total in cur.fetchall()}
         mem_hits, mem_total = counters.get("memory_injection", (0, 0))
         know_hits, know_total = counters.get("knowledge_search", (0, 0))
-        self_service_count = counters.get("self_service_usage", (0, 0))[1]
-        l6_confirmed_count = counters.get("l6_confirmed_entries", (0, 0))[1]
+        self_service_count = counters.get(METRIC_SELF_SERVICE_USAGE, (0, 0))[1]
+        l6_confirmed_count = counters.get(METRIC_L6_CONFIRMED, (0, 0))[1]
 
         # --- slots-populated distribution: customer_memory_slot --------------
         cur.execute(
@@ -135,9 +140,11 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
             "rate": _rate(correction_count, accepted_total),
         },
         # S21/FR-30: real once-per-action counters (metric_event), no longer
-        # proxied -- plain totals like merge_count/correction_count above.
-        "self_service_usage": self_service_count,
-        "l6_confirmed_entries": l6_confirmed_count,
+        # proxied -- plain totals like merge_count/correction_count above. Keyed by
+        # the shared _common constants (identical values) so the output contract can't
+        # drift from the emit side.
+        METRIC_SELF_SERVICE_USAGE: self_service_count,
+        METRIC_L6_CONFIRMED: l6_confirmed_count,
     }
 
 

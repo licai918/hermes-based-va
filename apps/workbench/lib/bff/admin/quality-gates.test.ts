@@ -1,9 +1,10 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_STALE_SECONDS,
+  GATE_REPORT_READ_CAP,
   handleGetQualityGates,
   type QualityGatesView,
 } from "./quality-gates";
@@ -15,6 +16,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -136,6 +138,47 @@ describe("handleGetQualityGates", () => {
 
     const body = await view(Date.parse("2026-07-24T04:00:00Z"));
     expect(body.reports.map((r) => r.kind)).toEqual(["recall", "latency", "judge"]);
+  });
+
+  it("bounds the files it reads to GATE_REPORT_READ_CAP yet still returns newest-per-kind", async () => {
+    // The reports dir grows one file per gate run and nothing prunes it, so reading
+    // every file on every request is O(all-history). Model many runs (each emits one
+    // file per kind, mtime tracking run recency) and assert the reader reads only the
+    // newest cap by mtime -- not the whole dir -- while newest-per-kind stays correct.
+    const kinds = ["recall", "latency", "judge"] as const;
+    const runs = 100; // 100 runs * 3 kinds = 300 files, far above the cap
+    const base = Date.parse("2026-01-01T00:00:00Z");
+    for (let run = 0; run < runs; run++) {
+      const genMs = base + run * 60_000;
+      const generatedAt = new Date(genMs).toISOString();
+      for (const kind of kinds) {
+        const name = `${kind}-${String(run).padStart(4, "0")}.json`;
+        await writeArtifact(name, {
+          kind,
+          generated_at: generatedAt,
+          source: `python -m ... ${kind}`,
+          source_run: `run/${run}`,
+          rows: [{ name: `${kind} row`, command: "cmd", result: `run ${run}`, passed: kind === "judge" ? null : true, note: null }],
+        });
+        // mtime tracks run recency (newest run = latest mtime), deterministic for the sort.
+        const t = new Date(genMs);
+        await fs.utimes(path.join(dir, name), t, t);
+      }
+    }
+
+    const readSpy = vi.spyOn(fs, "readFile");
+    const body = await view(base + runs * 60_000 + 1000);
+
+    // It did NOT read the whole dir; it read at most the cap.
+    const totalJsonFiles = runs * kinds.length; // 300
+    expect(readSpy.mock.calls.length).toBeLessThanOrEqual(GATE_REPORT_READ_CAP);
+    expect(readSpy.mock.calls.length).toBeLessThan(totalJsonFiles);
+
+    // Newest-per-kind is still correct: each kind's newest is the LAST run's file.
+    expect(body.reports.map((r) => r.kind)).toEqual(["recall", "latency", "judge"]);
+    for (const r of body.reports) {
+      expect(r.rows[0]!.result).toBe(`run ${runs - 1}`);
+    }
   });
 
   it("skips a malformed artifact but still serves the valid ones (no crash, no junk)", async () => {
