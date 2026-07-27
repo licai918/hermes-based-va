@@ -229,15 +229,23 @@ Is it about ONE customer?
 2. **Capture-boundary note** — superseding note on ADR-0152 (fork-proposes vs agent-proposes),
    or folded into the L7 ADR.
 
-### Open questions (grill fodder)
+### Open questions (grill outcomes applied — all locked 2026-07-21)
 
-- Season source: date-derived (Toronto hemisphere) vs admin-set toggle? (lean: date-derived
-  default + admin override row as a `default_rule`.)
-- Normalizer validation: should a parsed size be verified against the live Shopify catalog
-  (`search_products`) before the agent asserts it? (lean: yes — grounding beats parsing.)
-- Bounded glossary N and selection (newest? per-domain quota? hit-ranked?).
-- Does `default_rule` confirmation policy live in L7 rows or stay a persona-level discipline
-  referencing L7 defaults? (lean: rule in L7, phrasing in persona.)
+- ~~Season source~~ **RESOLVED: date-derived default + admin-overridable `default_rule` row.**
+- ~~Normalizer validation~~ **RESOLVED: yes — a parsed size is verified against the live
+  Shopify catalog (`search_products`) before the agent asserts it; grounding beats parsing.**
+- ~~Bounded glossary N and selection~~ **RESOLVED: start newest-20 (the L6 shape); upgrade to
+  hit-ranked once per-entry effectiveness scores exist (C6 §6.6).**
+- ~~`default_rule` confirmation policy home~~ **RESOLVED: rule in the L7 row, phrasing in
+  persona.**
+- **Grill additions (pinned beyond the original list):** `propose_lexicon_entry` is
+  INTERNAL-allowlisted only and reachable only through the fork's restricted toolset; the
+  draft turn's technically-registered copy stays inert-by-construction AND gets the same
+  pinning regression test S25 gave `propose_experience` (a draft-turn call persists nothing).
+  The deterministic-seam hook point is a **shared per-handler helper** called explicitly by
+  the product-read handlers (`search_products`/`get_product`, mock + real twins) — NOT a
+  central dispatch middleware (smallest surface, explicit call sites, governance spine
+  untouched).
 
 ---
 
@@ -279,10 +287,12 @@ Is it about ONE customer?
 2. **S-L2 budget enforcement** — deadlines + fail-open on the non-L5 layers; parallel pre-turn
    loads IF the numbers say so. (S-M, gated on S-L1 evidence)
 
-### Open questions
-- SLO number: 150ms p95 for total pre-turn reads — right bar? (owner taste; cheap to move.)
-- Parallelize with threads vs restructure to async — the turn runner is sync today; a thread
-  pool for 3 reads is the ponytail answer.
+### Open questions (grill outcomes applied — all locked 2026-07-21)
+- ~~SLO number~~ **RESOLVED (owner decision ②): ≤150ms p95 total pre-turn reads** — cheap to
+  move once the histogram exists.
+- ~~Threads vs async~~ **RESOLVED: `ThreadPoolExecutor` over the 3-4 independent pre-turn
+  loads inside the sync turn worker** — no async rewrite for ~100ms; any pool error degrades
+  to today's sequential path (fail-open, memory never stalls the reply).
 
 ---
 
@@ -341,10 +351,12 @@ Is it about ONE customer?
 3. **S-U3 copilot triage annotations + NL manual-add pre-fill** — the fork-pattern annotator +
    form drafting. (M)
 
-### Open questions
-- Hub replaces the flat nav, or sits above it? (lean: sits above; consoles keep deep links.)
-- Inbox digest OFF-workbench (email/Slack) — deferred until a real provider exists.
-- Annotation model cost knob: annotate every proposal vs on-demand per item.
+### Open questions (grill outcomes applied — all locked 2026-07-21)
+- ~~Hub placement~~ **RESOLVED: sits ABOVE the consoles; deep links stay.**
+- Inbox digest OFF-workbench (email/Slack) — **stays deferred** until a real provider exists
+  (not an open question; a recorded deferral).
+- ~~Annotation cost knob~~ **RESOLVED: scheduled batch (S04 worker pattern) + a per-item
+  on-demand button.**
 
 ---
 
@@ -396,10 +408,11 @@ attribution. A fact physically cannot enter two layers through the write paths.
 3. **S-G3 graduation sweep + retirement report** — scheduled job + inbox items + metrics tile.
    (M, wants Candidates 1+3)
 
-### Open questions
-- Auto-reroute vs annotate-only for lexicon-shaped L6 proposals (lean: annotate-only first —
-  consistent with "human decides").
-- Does the graduation sweep run on a schedule (S28 pattern) or fire on-confirm (event-driven)?
+### Open questions (grill outcomes applied — all locked 2026-07-21)
+- ~~Auto-reroute vs annotate-only~~ **RESOLVED (owner decision ③): annotate-only**, human
+  re-files via the inbox Re-classify action.
+- ~~Sweep scheduling~~ **RESOLVED: scheduled (S04 worker + trigger pattern), not
+  event-driven.**
 
 ---
 
@@ -538,14 +551,19 @@ the closeout inventory before slicing.
    safety leg gating, forget-me scenario. (S-M)
 5. **S-M5 whole-binding erase + deletion-success tripwire** — governed loop + metric. (S)
 
-### Open questions (grill fodder)
-- L4 value scan: hard-reject vs store-and-flag for injection patterns (lean: hard-reject).
-- Cross-layer precedence at render (L4-specific beats L7-default) — composer rule + where the
-  tripwire test lives.
-- Privacy complaint rate: what is the real intake channel? (owner/business question.)
-- Does the ledger live in `agent_turn_trace` (extend) or its own table? (0.0.4 inventory first.)
-- Safety-leg gating threshold: any injected-instruction-obeyed = red, or a tolerance? (lean:
-  any = red.)
+### Open questions (grill outcomes applied — all locked 2026-07-21)
+- ~~L4 value scan~~ **RESOLVED (owner decision ④): hard-reject** for injection patterns.
+- ~~Cross-layer precedence mechanics~~ **RESOLVED: the rule lives in the `render_injection`
+  composition** — L4 renders with explicit override standing ("customer-specific preferences
+  override shared defaults") and the L7 `default_rule` text carries "unless the customer's
+  own preference says otherwise"; the tripwire is a hooks render-composition test asserting
+  order + phrasing.
+- ~~Privacy complaint intake~~ **RESOLVED (owner decision ⑤): forget-me proxy, honestly
+  labeled**, until a business channel exists.
+- ~~Ledger home~~ **RESOLVED (closeout inventory): its OWN new table** — `agent_turn_trace`
+  is not on main; grain must support turn×layer×entry join (C6 §6.6).
+- ~~Safety-leg threshold~~ **RESOLVED: any injected-instruction-obeyed = red, zero
+  tolerance.**
 
 ---
 
@@ -658,8 +676,12 @@ Three additions the “scoring applied to memory TUNING” grill locked beyond 6
 - ~~Supervisor fail-review → L4 prefill~~ **RESOLVED (owner decision ⑦): yes** — one click
   from verdict to fix.
 - ~~Sequencing~~ **RESOLVED: C6 is the LAST 0.0.5 track** (T6).
-- Still open: where do OUT-of-memory signals (persona/tone) land operationally — an inbox
-  item kind, given no ticket system exists? (PRD decides the item shape.)
+- ~~OUT-of-memory signal landing~~ **RESOLVED (final grill pass): a `persona_review` inbox
+  item kind** — evidence-linked (the clustered feedback rows), advisory-only, with audited
+  acknowledge/dismiss as its only actuators; the actual persona change stays the existing
+  dev-edit + eval-re-record process (no 0.0.5 automation touches persona content). With this,
+  every C1-C6 open question is either LOCKED or a recorded deferral — the grill is complete;
+  the sole remaining external input is the owner's ~30 real questions (decision ⑥).
 
 ---
 
