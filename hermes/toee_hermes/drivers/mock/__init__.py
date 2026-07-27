@@ -28,6 +28,7 @@ from .easyroutes import (
     create_easyroutes_mock_handlers,
     easyroutes_baseline_data,
 )
+from .feedback import create_feedback_mock_handlers
 from .identity import (
     IdentityMockData,
     create_identity_mock_handlers,
@@ -84,6 +85,7 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_agent_experience_mock_handlers(),
         create_metrics_mock_handlers(),
         create_retention_mock_handlers(),
+        create_feedback_mock_handlers(),
     )
 
 
@@ -127,4 +129,5 @@ __all__ = [
     "create_agent_experience_mock_handlers",
     "create_metrics_mock_handlers",
     "create_retention_mock_handlers",
+    "create_feedback_mock_handlers",
 ]

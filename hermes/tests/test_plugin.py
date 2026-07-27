@@ -318,10 +318,32 @@ def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     }
     # 0.0.4 S15 adds toee_integrations -- also fully agent-excluded (its single
     # status read is admin-BFF-only, never a model tool loop).
-    assert fully_excluded == {"toee_job_queue", "toee_integrations"}
+    # 0.0.4 S02 adds toee_feedback -- also fully agent-excluded (all four
+    # actions, including list_feedback, are admin-BFF/copilot-BFF-dispatch-only).
+    assert fully_excluded == {"toee_job_queue", "toee_integrations", "toee_feedback"}
     assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"]) - fully_excluded
     assert "toee_sms_reply" not in toolsets
     assert "toee_square_payment_link" not in toolsets
+
+
+# --- 0.0.4 S02: toee_feedback is never LLM-callable on any profile (ADR-0154) -
+
+
+def test_toee_feedback_actions_are_never_registered_as_llm_tools() -> None:
+    # toee_feedback is allowlisted on BOTH internal_copilot (the three write
+    # actions) and supervisor_admin (list_feedback), but every one of its four
+    # actions is in _AGENT_EXCLUDED_ACTIONS -- the governance guarantee this
+    # slice exists to prove (ADR-0154 decision 3: dispatch-reachable, never
+    # model-callable). It must never appear on either profile's tool-calling
+    # surface, nor on the toolset level (a wholly-excluded toolset registers no
+    # handler at all -- see _wholly_excluded_toolsets in test_copilot_turn.py).
+    feedback_actions = TOOL_CATALOG["toee_feedback"]
+    for profile in ("internal_copilot", "supervisor_admin"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_feedback" not in ctx.registered_toolsets()
+        for action in feedback_actions:
+            assert f"toee_feedback__{action}" not in ctx.registered_names()
 
 
 def test_register_defaults_to_external_when_profile_absent(monkeypatch) -> None:

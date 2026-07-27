@@ -16,7 +16,7 @@
   SimpleTexting migration). This module reuses 0.0.3's L6 loop, admin review
   queue, `metric_event` panel, and Conversation Simulator rather than
   rebuilding them. Reserved numbers against that baseline: **ADR-0154**,
-  migration **0012**.
+  migration **0018** (provisional — see §9, re-check at PR time).
 - **Terminology:** Textline is retired (ADR-0153). The governed customer send is
   the provider-neutral `toee_sms_reply`, surfaced as "Send via SMS".
 
@@ -62,8 +62,13 @@ actor-attributed and append-only, sharing a tool shell but no data or policy:
   signal and an optional explicit one.
 
 Writes go through one new `toee_feedback` tool reachable **only** on the
-deterministic dispatch route and registered in **no** Profile Tool Allowlist, so
-every row carries a real employee and no agent can score itself or its own draft.
+deterministic dispatch route. The tool sits in the relevant profiles' Profile
+Tool Allowlist (the dispatch Tool Gate *is* that allowlist — absent from it
+means unreachable), but every one of its actions is also listed in the
+plugin's agent-excluded-actions set, so a live agent's tool loop never sees it
+while the BFF still dispatches it. Every row still carries a real employee
+because the copilot draft turn's boot path never carries an acting employee at
+all, so no agent can score itself or its own draft regardless of registration.
 
 Phase 1 (this PRD) is capture only. The improvement loop is Phase 2 and, by
 decision, **builds nothing new**: it feeds 0.0.3's L6 `agent_experience`
@@ -137,8 +142,18 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
 24. As the owner, I want to generate a copilot draft in the simulator, edit and
     send it, and see both the implicit outcome and my explicit rating recorded, so
     that the internal loop is provable end to end.
-25. As the owner, I want every part of this module reachable from a front-end
-    entry, so that nothing is testable only by SQL or curl.
+25. As the owner, I want every **capture** surface reachable from a front-end
+    entry — submitting a review, seeing sampling coverage, rating a draft, and
+    the send-outcome capture — so that no part of *recording* feedback is
+    testable only by SQL or curl.
+
+    Scoped deliberately to capture. The one action this does **not** cover is
+    `list_feedback`, the Phase-2 aggregation read seam: §8 puts a feedback
+    dashboard and an `/admin/feedback` route out of scope, so building a
+    front-end entry for it here would contradict that line. Until Phase 2 gives
+    it a consumer, `list_feedback` is reachable by dispatch only, and that is
+    intended rather than an oversight. (An earlier wording said "every part of
+    this module", which contradicted §8 for exactly this action.)
 
 **Phase 2 (out of scope here, motivating the shape)**
 
@@ -150,7 +165,8 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
 
 ## 4. Functional Requirements
 
-- **FR-1 Storage.** Migration `0012_feedback_tables.sql` adds two independent,
+- **FR-1 Storage.** Migration `0018_feedback_tables.sql` (next free number,
+  re-checked immediately before the migration PR — see §9) adds two independent,
   append-only operational-layer tables. `interaction_review`: subject kind
   (`auto_handled_record` | `sales_outreach_case`), subject id, verdict
   (`pass` | `fail`), reason tags, optional comment, reviewer account, timestamp;
@@ -169,7 +185,15 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
   `submit_interaction_review`, `record_draft_outcome`, `submit_draft_rating` on
   the **Internal Copilot Profile**, and read-only `list_feedback` on the
   **Supervisor Admin Profile**. Reachable only through
-  `POST /v1/tools:dispatch`; registered in **no** Profile Tool Allowlist.
+  `POST /v1/tools:dispatch`. `toee_feedback` is in both profiles' Profile Tool
+  Allowlist (the dispatch Tool Gate is the allowlist, so absence would mean
+  unreachable, not merely model-unreachable), and every `(toee_feedback,
+  action)` pair is in the plugin's agent-excluded-actions set, so registration
+  never exposes it to a live agent's tool-calling loop. Allowlisting is
+  per-**tool**: the split between which action lives on which profile
+  (`submit_interaction_review`/`record_draft_outcome`/`submit_draft_rating` on
+  Internal Copilot, `list_feedback` on Supervisor Admin) is enforced by which
+  BFF route calls which action, not by the allowlist itself.
 - **FR-4 Actor-attributed, fail-closed writes.** Every write derives its actor
   from framework-resolved `context.user_id` and fails closed to `policy_blocked`
   when it is absent. `submit_interaction_review` additionally requires a
@@ -235,11 +259,18 @@ KnowledgeOps publish gate, and the existing aggregate metrics panel.
 - **The subject is the audit record identity**, not the long-lived thread — a
   thread accumulates many interactions, so scoring it would make the verdict
   ambiguous the moment a second conversation lands.
-- **Dispatch-only tool, absent from every allowlist.** This is what makes
-  "the AI cannot score itself" structural. The copilot draft turn boots through a
-  path that takes no `user_id` at all (ADR-0148's invariant), so an agent-initiated
-  feedback call cannot carry an actor and fails closed — a property of the boot
-  path, not of a prompt instruction.
+- **Dispatch-only tool, allowlisted but agent-excluded.** The dispatch route's
+  Tool Gate *is* the profile allowlist, so a tool absent from it is
+  unreachable even for the BFF — "registered in no allowlist" would produce a
+  dead tool, not a governance property. The real pattern (already used by
+  `toee_agent_experience`, `toee_metrics`, `toee_retention`, `toee_job_queue`,
+  `toee_integrations`) is allowlisted-for-dispatch **and** every action listed
+  in the plugin's agent-excluded-actions set, so registration never builds a
+  model-callable schema for it. What actually makes "the AI cannot score
+  itself" structural is independent of registration: the copilot draft turn
+  boots through a path that takes no `user_id` at all (ADR-0148's invariant),
+  so an agent-initiated feedback call cannot carry an actor and fails closed —
+  a property of the boot path, not of a prompt instruction.
 - **Client-minted draft correlation id.** The draft is currently just a mutable
   string in the gateway component; correlating an implicit outcome with an explicit
   rating, and computing edit distance at all, requires an id plus the original
@@ -304,7 +335,10 @@ which applies directly to "an agent-initiated feedback call persists nothing."
 - Implicit outcome capture for email and internal-note drafts — those leave by
   manual copy with no send event, so they carry explicit ratings only. Revisit if
   a governed email send ships.
-- A dedicated feedback dashboard or `/admin/feedback` route.
+- A dedicated feedback dashboard or `/admin/feedback` route. This is why
+  `list_feedback` has no front-end entry and is dispatch-only — US-25 is scoped
+  to the *capture* surfaces for that reason, not by omission. If Phase 2 gives
+  the read a consumer, revisit both together.
 - Customer-facing satisfaction ratings — this module scores AI output for
   internal use, and nothing here is exposed to customers.
 - Changing the audit views' read-only stance toward conversation data.
@@ -313,11 +347,14 @@ which applies directly to "an agent-initiated feedback call persists nothing."
 
 - **Sequencing.** Unblocked — 0.0.3 is on `main` and this branch is rebased onto
   it. Ready to slice into issues.
-- **Numbering is reserved, not held.** ADR-0154 and migration 0012 were free at
-  rebase time, but sibling 0.0.4 tracks are landing concurrently and both
-  namespaces are first-come. This module already lost 0149→0153→0154 and
-  0008→0010→0012 to two such races; **re-check both immediately before the
-  implementation PR** rather than trusting these numbers.
+- **Numbering is reserved, not held.** ADR-0154 landed correctly and needs no
+  renumber. The migration number keeps rotting instead: this module has now lost
+  `0012` → `0016` → `0017` to concurrent landings (`0012_outbound_send`, then
+  `0016_scripted_eval_turn`, then `0017_honored_rate_aggregate`) as sibling 0.0.4
+  tracks land concurrently on this branch. As of this correction the next free
+  number is **`0018`** (S03's `interaction_review` migration) with **`0019`**
+  next in line (S06's `draft_feedback` migration) — both provisional; **re-check
+  immediately before each migration PR** rather than trusting these numbers.
 - **Known open risk (inherited).** Both mechanisms' honesty rests on
   `context.user_id`'s own contract — ADR-0148's RK-2. A future non-UI caller that
   sets `user_id` without a real employee present would forge feedback attribution

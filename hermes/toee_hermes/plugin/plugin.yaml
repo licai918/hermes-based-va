@@ -80,5 +80,9 @@ provides_tools:
   - toee_integrations__get_integrations_status
   - toee_integrations__initiate_reconnect
   - toee_integrations__reprobe_now
+  - toee_feedback__submit_interaction_review
+  - toee_feedback__record_draft_outcome
+  - toee_feedback__submit_draft_rating
+  - toee_feedback__list_feedback
 provides_hooks:
   - pre_llm_call

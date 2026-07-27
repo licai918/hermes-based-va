@@ -8,6 +8,8 @@ import { formatChannel, formatRelativeTime, formatStatus } from "@/lib/format";
 import {
   Notice,
   failureStyle,
+  mutedStyle,
+  reviewedStyle,
   tableStyle,
   tdStyle,
   thStyle,
@@ -46,6 +48,7 @@ export function SalesOutreachList() {
           <th style={thStyle}>Status</th>
           <th style={thStyle}>Created</th>
           <th style={thStyle}>Last activity</th>
+          <th style={thStyle}>Review status</th>
         </tr>
       </thead>
       <tbody>
@@ -63,6 +66,13 @@ export function SalesOutreachList() {
             <td style={tdStyle}>{formatStatus(c.status)}</td>
             <td style={tdStyle}>{formatRelativeTime(c.openedAt, now)}</td>
             <td style={tdStyle}>{formatRelativeTime(c.lastActivityAt, now)}</td>
+            <td style={tdStyle}>
+              {c.reviewed ? (
+                <span style={reviewedStyle}>Reviewed</span>
+              ) : (
+                <span style={mutedStyle}>Not reviewed</span>
+              )}
+            </td>
           </tr>
         ))}
       </tbody>

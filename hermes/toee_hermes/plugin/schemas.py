@@ -21,6 +21,33 @@ from typing import Any
 
 from ..tool_catalog import TOOL_CATALOG
 
+# The two Review Reason Tag enums (ADR-0154, 0.0.4 S02). EXTERNAL is used by
+# toee_feedback.submit_interaction_review (supervisor/admin pass/fail review of
+# an auto_handled_record or sales_outreach_case); INTERNAL is used by
+# toee_feedback.submit_draft_rating (a rep's thumbs up/down on a copilot
+# draft). The sets are deliberately separate -- an external tag on an internal
+# rating (or vice versa) is a validation error the S03/S06 handlers enforce.
+# TS keeps its own mirror at packages/shared/src/feedback.ts -- update both
+# lists together so the two runtimes can't silently drift.
+EXTERNAL_REVIEW_REASON_TAGS: tuple[str, ...] = (
+    "factual_error",
+    "tone_inappropriate",
+    "policy_violation",
+    "tool_misuse",
+    "missed_information",
+    "should_have_escalated",
+    "other",
+)
+
+INTERNAL_REVIEW_REASON_TAGS: tuple[str, ...] = (
+    "factual_error",
+    "wrong_tone",
+    "missing_context",
+    "too_verbose",
+    "wrong_action",
+    "other",
+)
+
 # Known (tool, action) -> {"properties": ..., "required": [...]} overrides.
 # Populated only for actions with a diagnosed param-guessing failure so far
 # (S10). Filling the rest of the catalog -- notably the get_order family
@@ -194,6 +221,160 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             },
         },
         "required": ["integration_key"],
+    },
+    # 0.0.4 S02 (ADR-0154): the toee_feedback tool shell's four actions. None
+    # are LLM-callable (all are in _AGENT_EXCLUDED_ACTIONS), but the BFF's
+    # deterministic dispatch still goes through this same schema/param
+    # validation, so params are declared now rather than left open -- S03/S06/
+    # S08/S10 add the handlers that enforce these shapes for real.
+    ("toee_feedback", "submit_interaction_review"): {
+        "properties": {
+            "subject_kind": {
+                "type": "string",
+                "enum": ["auto_handled_record", "sales_outreach_case"],
+                "description": "Which audit subject this review is about.",
+            },
+            "subject_id": {
+                "type": "string",
+                "description": (
+                    "The id of the auto_handled_record or sales_outreach_case "
+                    "being reviewed."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["pass", "fail"],
+                "description": "The reviewer's pass/fail judgment on the interaction.",
+            },
+            "reason_tags": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(EXTERNAL_REVIEW_REASON_TAGS)},
+                "description": (
+                    "Reason tags for a fail verdict; at least one is required "
+                    "when verdict is fail."
+                ),
+            },
+            "comment": {
+                "type": "string",
+                "description": "Optional free-text color, never required.",
+            },
+        },
+        "required": ["subject_kind", "subject_id", "verdict"],
+    },
+    ("toee_feedback", "record_draft_outcome"): {
+        "properties": {
+            "case_id": {
+                "type": "string",
+                "description": "The case the draft belongs to; the acting rep must hold it.",
+            },
+            "draft_correlation_id": {
+                "type": "string",
+                "description": (
+                    "The correlation id shared with the draft this outcome is about."
+                ),
+            },
+            "draft_kind": {
+                "type": "string",
+                "enum": ["sms", "email", "note"],
+                "description": "Which copilot draft surface generated the draft.",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["sent_as_is", "sent_edited"],
+                "description": (
+                    "Whether the rep sent the draft unchanged or edited it first."
+                ),
+            },
+            "edit_distance_ratio": {
+                "type": "number",
+                "description": (
+                    "Normalized edit distance; required when outcome is "
+                    "sent_edited, rejected when outcome is sent_as_is."
+                ),
+            },
+            "draft_text": {
+                "type": "string",
+                "description": (
+                    "The generated-draft snapshot this outcome is about; always "
+                    "available (the rep sends the draft card), so required."
+                ),
+            },
+        },
+        "required": [
+            "case_id",
+            "draft_correlation_id",
+            "draft_kind",
+            "outcome",
+            "draft_text",
+        ],
+    },
+    ("toee_feedback", "submit_draft_rating"): {
+        "properties": {
+            "case_id": {
+                "type": "string",
+                "description": "The case the rated draft belongs to; the acting rep must hold it.",
+            },
+            "draft_correlation_id": {
+                "type": "string",
+                "description": "The correlation id shared with the draft being rated.",
+            },
+            "draft_kind": {
+                "type": "string",
+                "enum": ["sms", "email", "note"],
+                "description": "Which copilot draft surface generated the draft.",
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["up", "down"],
+                "description": "The rep's thumbs up/down on the draft.",
+            },
+            "reason_tags": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(INTERNAL_REVIEW_REASON_TAGS)},
+                "description": (
+                    "Reason tags for a down verdict; at least one is required "
+                    "when verdict is down."
+                ),
+            },
+            "comment": {
+                "type": "string",
+                "description": "Optional free-text color, never required.",
+            },
+            "draft_text": {
+                "type": "string",
+                "description": (
+                    "The generated-draft snapshot being rated; always available "
+                    "(you rate the draft card), so required -- a rated_only row "
+                    "has no linked outcome row to recover it from otherwise."
+                ),
+            },
+        },
+        "required": [
+            "case_id",
+            "draft_correlation_id",
+            "draft_kind",
+            "verdict",
+            "draft_text",
+        ],
+    },
+    ("toee_feedback", "list_feedback"): {
+        "properties": {
+            "since": {
+                "type": "string",
+                "description": (
+                    "Optional ISO-8601 timestamp; only rows created at/after "
+                    "this are returned."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "description": "Optional verdict filter (pass/fail/up/down).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional bounded page size.",
+            },
+        },
     },
 }
 

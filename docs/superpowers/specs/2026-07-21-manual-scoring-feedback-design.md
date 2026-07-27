@@ -19,7 +19,12 @@ unmerged 0.0.3 branch. Reconciling against it changed four things:
 
 1. **Migration number** — 0.0.3 takes `0008`/`0009`, and the post-0.0.3 merges
    take `0010_customer_memory_retention_index.sql` and
-   `0011_inbound_event_claim.sql`; this feature's migration is **0012**.
+   `0011_inbound_event_claim.sql`; this feature's migration was **0012** at
+   that time. Concurrent 0.0.4 landings have since taken `0012_outbound_send`,
+   `0016_scripted_eval_turn`, and `0017_honored_rate_aggregate`, so the number
+   is provisional and re-checked at PR time — currently **0018**
+   (`interaction_review`, S03) and **0019** (`draft_feedback`, S06). See
+   PRD §9.
 2. **ADR number** — 0.0.3 takes 0149–0152 and the SimpleTexting migration took
    0153; this ADR is **0154**.
 2b. **Textline is retired** (ADR-0153) — the governed send is provider-neutral
@@ -68,8 +73,10 @@ accumulates.
 
 ## 1. Data model
 
-New migration `hermes-runtime/migrations/0012_feedback_tables.sql` (0008–0011
-are taken). Two independent tables in the operational layer (Toee Business
+New migration `hermes-runtime/migrations/0018_feedback_tables.sql` (next free
+number, re-checked at PR time — see PRD §9; `0012` was taken by
+`0012_outbound_send` and `0016`/`0017` by two further concurrent 0.0.4
+landings). Two independent tables in the operational layer (Toee Business
 Datastore). Retention follows the operational layer (ADR-0004).
 
 ### `interaction_review` (external)
@@ -123,8 +130,16 @@ implicit outcome. Email and note drafts leave via manual copy — no send event
 ## 2. Tool surface: `toee_feedback`
 
 Fixed action enum (ADR-0059), reachable **only** through the deterministic
-`POST /v1/tools:dispatch` route. **Not registered in any Profile Tool
-Allowlist** — no agent (external, copilot draft turn, or admin) can call it.
+`POST /v1/tools:dispatch` route. `toee_feedback` **is** in the `internal_copilot`
+and `supervisor_admin` Profile Tool Allowlists (the dispatch route's Tool Gate
+*is* that allowlist, so a tool absent from it would be unreachable even for
+the BFF) — what keeps a live agent's tool loop from ever seeing it is that
+every `(toee_feedback, action)` pair is also in the plugin's
+`_AGENT_EXCLUDED_ACTIONS` set, so tool registration never builds a
+model-callable schema for it (same pattern as `toee_agent_experience`,
+`toee_metrics`, `toee_retention`, `toee_job_queue`, `toee_integrations`).
+Allowlisting is per **tool**; the action split in the table below is enforced
+by which BFF route calls which action, not by the allowlist.
 
 | Action | Profile | Tool Gate |
 | --- | --- | --- |

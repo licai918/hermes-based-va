@@ -166,6 +166,19 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "initiate_reconnect",
         "reprobe_now",
     ),
+    # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- the shared
+    # spine both capture mechanisms (external Interaction Review, internal Draft
+    # Feedback) extend. Fixed four-action enum; no handlers yet (S03/S06/S08/S10
+    # add those). All four actions are in _AGENT_EXCLUDED_ACTIONS -- dispatch-
+    # reachable (allowlisted on internal_copilot for the three writes and on
+    # supervisor_admin for list_feedback) but never model-callable, so the AI
+    # cannot score itself (see toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS).
+    "toee_feedback": (
+        "submit_interaction_review",
+        "record_draft_outcome",
+        "submit_draft_rating",
+        "list_feedback",
+    ),
 }
 
 

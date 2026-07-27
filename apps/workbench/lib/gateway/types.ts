@@ -3,12 +3,35 @@
 // ADR-0085/0086 audit views). These are the workbench's WIRE shapes: hermes-map.ts
 // validates each snake_case datastore row onto them (0.0.4 S09 deleted the
 // in-memory store they were originally written for; the shapes did not change).
-import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/shared";
+import {
+  MEMORY_PREFERENCE_SLOTS,
+  type DraftOutcome,
+  type DraftRatingVerdict,
+  type ExternalReviewReasonTag,
+  type InteractionReviewVerdict,
+  type InternalReviewReasonTag,
+  type MemoryPreferenceSlot,
+} from "@toee/shared";
 
 // Re-exported so the rest of the BFF/gateway layer imports the slot union from
 // "./types" alongside everything else, without drifting from the @toee/shared
 // contract's own slot names (ADR-0111, S07/FR-6).
 export type { MemoryPreferenceSlot };
+
+// Re-exported so 0.0.4 S04 review code imports the EXTERNAL Review Reason Tag
+// vocabulary + verdict from "./types" alongside everything else, without
+// drifting from the @toee/shared feedback.ts contract (ADR-0154).
+export type { ExternalReviewReasonTag, InteractionReviewVerdict };
+
+// Re-exported so 0.0.4 S07 draft-rating code imports the INTERNAL Review Reason
+// Tag vocabulary + verdict from "./types" alongside everything else, same
+// discipline as the EXTERNAL pair above (ADR-0154).
+export type { InternalReviewReasonTag, DraftRatingVerdict };
+
+// Re-exported so 0.0.4 S09's implicit outcome-capture code (feedback.ts's
+// record_draft_outcome branch) imports it from "./types" alongside everything
+// else, same discipline as DraftRatingVerdict above (ADR-0154).
+export type { DraftOutcome };
 
 export type CaseChannel = "sms" | "email" | "voice";
 
@@ -35,6 +58,18 @@ export interface WorkbenchCase {
   smsSessionActive: boolean;
   openedAt: number;
   lastActivityAt: number;
+  // Sampling coverage (0.0.4 S05, FR-6): ANY interaction_review row exists for
+  // this case, by any reviewer -- "has this been sampled", not "did I review
+  // it". Only `list_sales_outreach` populates this (a single batched join, not
+  // per-row); optional because the general case queue read (`list_cases`)
+  // never sets it -- absent reads as not-reviewed, same as `false`.
+  reviewed?: boolean;
+  // US-7/FR-5 (gap fix): the CURRENT ACCOUNT's own latest review of this
+  // subject, if any -- what ReviewBar renders on load so reopening a record
+  // shows the reviewer's own prior verdict. Only `get_sales_outreach`
+  // populates this; absent/null reads as "I haven't reviewed this", distinct
+  // from `reviewed` above (which is "has anyone").
+  myReview?: InteractionReview | null;
 }
 
 export type ThreadAuthor = "customer" | "hermes" | "workbench";
@@ -102,6 +137,55 @@ export interface AutoHandledRecord {
   toolFailure: boolean;
   timeline: ThreadMessage[];
   toolCalls: ToolCallEvidence[];
+  // Sampling coverage (0.0.4 S05, FR-6): ANY interaction_review row exists for
+  // this record, by any reviewer -- see WorkbenchCase.reviewed for the same
+  // semantics. Only `list_auto_handled` populates this; `get_auto_handled`
+  // (detail) never sets it -- absent reads as not-reviewed, same as `false`.
+  reviewed?: boolean;
+  // US-7/FR-5 (gap fix): see WorkbenchCase.myReview for the same semantics.
+  // Only `get_auto_handled` populates this.
+  myReview?: InteractionReview | null;
+}
+
+// The EXTERNAL mechanism's subject: one Auto-Handled Interaction record or one
+// sales_outreach Follow-up Case (ADR-0154, 0.0.4 S04). Mirrors
+// INTERACTION_REVIEW_SUBJECT_KINDS in the Python plugin schemas.
+export type InteractionReviewSubjectKind =
+  | "auto_handled_record"
+  | "sales_outreach_case";
+
+// A supervisor/admin's pass/fail judgment (toee_feedback.submit_interaction_review,
+// ADR-0154, 0.0.4 S03/S04). Append-only on the datastore: a re-review is a new row,
+// never an update -- the BFF/UI treat the latest one per subject as "the" review.
+export interface InteractionReview {
+  reviewId: string;
+  subjectKind: InteractionReviewSubjectKind;
+  subjectId: string;
+  verdict: InteractionReviewVerdict;
+  reasonTags: ExternalReviewReasonTag[];
+  comment: string | null;
+  reviewerAccountId: string;
+  createdAt: number;
+}
+
+// Which copilot draft surface generated a draft (toee_feedback.submit_draft_rating
+// / record_draft_outcome, ADR-0154, 0.0.4 S06/S07). Mirrors the draft_kind enum in
+// the Python plugin schemas (hermes/toee_hermes/plugin/schemas.py).
+export type DraftKind = "sms" | "email" | "note";
+
+// A rep's thumbs up/down on one copilot draft (toee_feedback.submit_draft_rating,
+// 0.0.4 S06/S07). Append-only, same as InteractionReview -- a re-rating is a new
+// row, not an overwrite.
+export interface DraftRating {
+  ratingId: string;
+  caseId: string;
+  draftCorrelationId: string;
+  draftKind: DraftKind;
+  verdict: DraftRatingVerdict;
+  reasonTags: InternalReviewReasonTag[];
+  comment: string | null;
+  repAccountId: string;
+  createdAt: number;
 }
 
 // Assignee filter modes for the queue (ADR-0079). Reps default to

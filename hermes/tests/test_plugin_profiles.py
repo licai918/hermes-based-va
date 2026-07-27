@@ -52,6 +52,12 @@ ADR_0035_INTERNAL = {
     # 0.0.3 S28 (FR-30): Customer Memory retention sweep admin panel, reached
     # over this profile's API by the admin BFF (same precedent as toee_metrics).
     "toee_retention",
+    # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- the three
+    # write actions (submit_interaction_review, record_draft_outcome,
+    # submit_draft_rating) are dispatched from copilot/review-fork surfaces.
+    # All four actions are agent-excluded (see toee_hermes.plugin), so this
+    # allowlisting only opens the dispatch gate for the BFF, never the model.
+    "toee_feedback",
 }
 ADR_0038_SUPERVISOR = {
     "toee_knowledge_ops",
@@ -66,6 +72,9 @@ ADR_0038_SUPERVISOR = {
     # 0.0.4 S15 (FR-23): the /admin/integrations status read -- a CREDENTIAL
     # surface reached over this profile's API by the admin BFF. Agent-excluded.
     "toee_integrations",
+    # 0.0.4 S02 (ADR-0154): list_feedback -- the supervisor read over both
+    # feedback tables (S10). Agent-excluded like every action on this tool.
+    "toee_feedback",
 }
 
 
@@ -98,6 +107,16 @@ def test_profiles_union_covers_all_catalog_tools() -> None:
     for profile in PROFILES:
         union |= set(allowlisted_tools(profile))
     assert union == set(TOOL_CATALOG)
+
+
+def test_toee_feedback_resolves_for_internal_copilot_and_supervisor_admin() -> None:
+    # S02 acceptance: the tool must resolve (be dispatchable) for BOTH profiles --
+    # internal_copilot for the three write actions, supervisor_admin for
+    # list_feedback. Model exclusion is a separate guarantee, asserted in
+    # test_plugin.py against _AGENT_EXCLUDED_ACTIONS.
+    assert "toee_feedback" in allowlisted_tools("internal_copilot")
+    assert "toee_feedback" in allowlisted_tools("supervisor_admin")
+    assert "toee_feedback" not in allowlisted_tools("customer_service_external")
 
 
 def test_allowlisted_tools_rejects_unknown_profile() -> None:

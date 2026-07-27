@@ -15,6 +15,7 @@ from .agent_experience import agent_experience_handlers
 from .cases import case_handlers
 from .dead_letter import dead_letter_handlers
 from .eval_review import eval_review_handlers
+from .feedback import feedback_handlers
 from .identity import identity_handlers
 from .integrations import integrations_handlers
 from .knowledge import knowledge_handlers
@@ -52,6 +53,7 @@ def build_datastore_registry() -> DatastoreRegistry:
         retention_handlers(),
         dead_letter_handlers(),
         integrations_handlers(),
+        feedback_handlers(),
     )
 
 

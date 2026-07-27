@@ -39,6 +39,8 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_job_queue",
         # 0.0.4 S15 (FR-23): the /admin/integrations status-page read.
         "toee_integrations",
+        # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell.
+        "toee_feedback",
     }
 
 
@@ -133,6 +135,29 @@ def test_workbench_admin_exposes_authenticate_for_login_cutover() -> None:
         "authenticate",
     )
     assert is_tool_action("toee_workbench_admin", "authenticate") is True
+
+
+def test_feedback_actions_match_adr_0154() -> None:
+    # 0.0.4 S02 (ADR-0154): the toee_feedback tool shell. Fixed four-action enum;
+    # no handlers yet (S03/S06/S08/S10 add those) -- this pins the catalog +
+    # allowlist + agent-exclusion governance shell those slices build on.
+    assert TOOL_CATALOG["toee_feedback"] == (
+        "submit_interaction_review",
+        "record_draft_outcome",
+        "submit_draft_rating",
+        "list_feedback",
+    )
+    assert is_tool_action("toee_feedback", "submit_interaction_review") is True
+    assert is_tool_action("toee_feedback", "record_draft_outcome") is True
+    assert is_tool_action("toee_feedback", "submit_draft_rating") is True
+    assert is_tool_action("toee_feedback", "list_feedback") is True
+
+
+def test_feedback_rejects_a_foreign_action_name() -> None:
+    # A schema/catalog-check test (S02 acceptance): an action name that belongs
+    # to no toee_feedback action (nor was ever meant to) must be rejected.
+    assert is_tool_action("toee_feedback", "delete_feedback") is False
+    assert is_tool_action("toee_feedback", "get_order") is False
 
 
 def test_is_tool_name_accepts_known_and_rejects_unknown() -> None:
