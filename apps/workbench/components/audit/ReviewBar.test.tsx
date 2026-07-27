@@ -124,6 +124,56 @@ describe("ReviewBar", () => {
     });
   });
 
+  // --- US-7/FR-5: a supervisor reopening a record sees their prior verdict ---
+
+  it("renders the unreviewed state when no initial review is supplied", () => {
+    renderBar();
+    expect(screen.getByText("Pass")).toBeInTheDocument();
+    expect(screen.getByText("Fail")).toBeInTheDocument();
+    expect(screen.queryByText(/Reviewed:/)).toBeNull();
+  });
+
+  it("renders the prior verdict, tags, and comment on load when supplied", () => {
+    renderBar({
+      initialReview: {
+        verdict: "fail",
+        reasonTags: ["factual_error", "policy_violation"],
+        comment: "gave the wrong ETA",
+      },
+    });
+
+    const region = screen.getByRole("region", { name: "Review" });
+    expect(region).toHaveTextContent(/Reviewed:\s*Fail/);
+    expect(region).toHaveTextContent("Factual error");
+    expect(region).toHaveTextContent("Policy violation");
+    expect(region).toHaveTextContent("gave the wrong ETA");
+    expect(screen.getByText("Edit review")).toBeInTheDocument();
+    expect(screen.queryByText("Pass")).toBeNull();
+  });
+
+  it("the edit affordance on a prior review still submits and appends a new row", async () => {
+    const submit = vi.fn().mockResolvedValue({ review: { id: "irev_2" } });
+    renderBar({
+      submit,
+      initialReview: { verdict: "pass", reasonTags: [] },
+    });
+
+    fireEvent.click(screen.getByText("Edit review"));
+    fireEvent.click(screen.getByText("Fail"));
+    fireEvent.click(screen.getByText("Tool misuse"));
+    fireEvent.click(screen.getByText("Submit fail"));
+
+    await waitFor(() =>
+      expect(submit).toHaveBeenCalledWith({
+        subjectKind: "auto_handled_record",
+        subjectId: "rec-1",
+        verdict: "fail",
+        reasonTags: ["tool_misuse"],
+        comment: undefined,
+      }),
+    );
+  });
+
   it("surfaces a submit failure without losing the form", async () => {
     const submit = vi.fn().mockRejectedValue(new Error("network down"));
     renderBar({ submit });

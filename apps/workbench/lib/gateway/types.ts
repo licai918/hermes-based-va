@@ -64,6 +64,12 @@ export interface WorkbenchCase {
   // per-row); optional because the general case queue read (`list_cases`)
   // never sets it -- absent reads as not-reviewed, same as `false`.
   reviewed?: boolean;
+  // US-7/FR-5 (gap fix): the CURRENT ACCOUNT's own latest review of this
+  // subject, if any -- what ReviewBar renders on load so reopening a record
+  // shows the reviewer's own prior verdict. Only `get_sales_outreach`
+  // populates this; absent/null reads as "I haven't reviewed this", distinct
+  // from `reviewed` above (which is "has anyone").
+  myReview?: InteractionReview | null;
 }
 
 export type ThreadAuthor = "customer" | "hermes" | "workbench";
@@ -136,6 +142,9 @@ export interface AutoHandledRecord {
   // semantics. Only `list_auto_handled` populates this; `get_auto_handled`
   // (detail) never sets it -- absent reads as not-reviewed, same as `false`.
   reviewed?: boolean;
+  // US-7/FR-5 (gap fix): see WorkbenchCase.myReview for the same semantics.
+  // Only `get_auto_handled` populates this.
+  myReview?: InteractionReview | null;
 }
 
 // The EXTERNAL mechanism's subject: one Auto-Handled Interaction record or one

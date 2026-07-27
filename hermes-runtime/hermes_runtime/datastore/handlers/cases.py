@@ -515,6 +515,37 @@ def _reviewed_subject_ids(
         return {row[0] for row in cur.fetchall()}
 
 
+def _my_review(
+    conn, subject_kind: str, subject_id: str, account_id: Optional[str]
+) -> Optional[dict[str, Any]]:
+    """The CURRENT ACCOUNT's latest ``interaction_review`` row for one subject.
+
+    US-7 / FR-5: a supervisor reopening a record must see their own prior
+    verdict, not just "someone reviewed this" (that's ``_reviewed_subject_ids``
+    above). The table is append-only (0018_feedback.sql) so "latest" means
+    newest ``created_at``; ``idx_interaction_review_subject`` is
+    ``(subject_kind, subject_id, created_at DESC)``, so filtering further by
+    ``reviewer_account_id`` still walks that index in created_at order and
+    stops at the first match -- one indexed lookup, not a scan.
+
+    The actor is ``context.user_id`` at the call site, never a param (ADR-0148).
+    No account -> no prior review to attribute; this is a read, so it degrades
+    to None rather than raising the way a governed write would.
+    """
+    if not account_id:
+        return None
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT id, subject_kind, subject_id, verdict, reason_tags, comment,"
+            " reviewer_account_id, created_at FROM interaction_review"
+            " WHERE subject_kind = %s AND subject_id = %s AND reviewer_account_id = %s"
+            " ORDER BY created_at DESC LIMIT 1",
+            (subject_kind, subject_id, account_id),
+        )
+        row = cur.fetchone()
+    return serialize_row(row)
+
+
 def _list_auto_handled(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
@@ -560,6 +591,11 @@ def _get_auto_handled(
     record = _build_auto_handled_record(conn, record_id, include_timeline=True)
     if record is None:
         return {"record": None}
+    # US-7 (FR-5): the reviewer's own latest verdict on THIS record, so reopening
+    # it shows what they already said instead of a blank bar.
+    record["my_review"] = _my_review(
+        conn, "auto_handled_record", record_id, context.user_id
+    )
     insert_audit(
         conn,
         profile=context.profile,
@@ -610,6 +646,11 @@ def _get_sales_outreach(
         row = cur.fetchone()
     if row is None:
         return {"case": None}
+    case = _read_model(conn, row)
+    # US-7 (FR-5): same own-latest-verdict lookup as _get_auto_handled.
+    case["my_review"] = _my_review(
+        conn, "sales_outreach_case", case_id, context.user_id
+    )
     insert_audit(
         conn,
         profile=context.profile,
@@ -619,7 +660,7 @@ def _get_sales_outreach(
         target_id=case_id,
         details={"case_id": case_id},
     )
-    return {"case": _read_model(conn, row)}
+    return {"case": case}
 
 
 def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:

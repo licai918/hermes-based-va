@@ -89,6 +89,7 @@ export function AutoHandledDetail({
             role={role}
             subjectKind="auto_handled_record"
             subjectId={recordId}
+            initialReview={state.data.record.myReview}
           />
 
           <section style={cardStyle}>

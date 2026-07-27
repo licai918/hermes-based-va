@@ -5,17 +5,22 @@
 // conversation data; this is the ONLY write the audit BFF makes, and it targets the
 // review table only.
 //
-// ROLE ENFORCEMENT (quality-feedback S04, verified not assumed): the datastore
-// carries no role column, so the Python layer cannot tell a supervisor from a rep.
-// The boundary lives at the BFF route PREFIX gate instead -- this route sits under
+// ROLE ENFORCEMENT (quality-feedback S04/FR-4, verified not assumed): this is now
+// a TWO-layer gate, not one. Layer 1, here at the BFF: this route sits under
 // /api/copilot/audit/*, which withSession's canAccess already restricts to
 // supervisor/admin (lib/auth/access.ts), exactly like the read-only
 // get_auto_handled/get_sales_outreach routes beside it. lib/auth/access.test.ts
 // pins `canAccess(rep, "/api/copilot/audit/review") === false` so this is proven,
-// not assumed. This handler therefore has no in-handler role check (mirrors
-// audit.ts's read handlers) -- the actor still rides along automatically via the
-// per-profile client `dispatchWrite` builds (ADR-0141), which fails closed with no
-// acting account regardless.
+// not assumed. Layer 2, at the Postgres handler: `workbench_account.role` DOES
+// exist (0001_initial_schema.sql), and `submit_interaction_review` independently
+// requires it to be supervisor/admin via `_require_supervisor_or_admin`
+// (hermes-runtime/hermes_runtime/datastore/handlers/feedback.py) -- so a caller
+// that reached the dispatch route some other way still gets refused on role, not
+// just on route prefix. This handler still has no in-handler role check of its
+// own (mirrors audit.ts's read handlers): the actor rides along automatically via
+// the per-profile client `dispatchWrite` builds (ADR-0141), which fails closed
+// with no acting account regardless, and the role check itself lives at the
+// handler layer above.
 //
 // Body validation runs here, in TypeScript, BEFORE any dispatch: subject_kind and
 // verdict against their closed enums, reason_tags against the EXTERNAL Review

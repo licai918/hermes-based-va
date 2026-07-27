@@ -103,6 +103,7 @@ export function mapWorkbenchCase(raw: unknown): WorkbenchCase {
     openedAt: isoToMs(r.opened_at, "opened_at"),
     lastActivityAt: isoToMs(r.last_activity_at, "last_activity_at"),
     reviewed: r.reviewed === true,
+    myReview: r.my_review != null ? mapInteractionReview(r.my_review) : null,
   };
 }
 
@@ -286,6 +287,7 @@ export function mapAutoHandledRecord(raw: unknown): AutoHandledRecord {
     timeline: timelineRaw.map(mapThreadMessage),
     toolCalls: toolCallsRaw.map(mapToolCallEvidence),
     reviewed: r.reviewed === true,
+    myReview: r.my_review != null ? mapInteractionReview(r.my_review) : null,
   };
 }
 

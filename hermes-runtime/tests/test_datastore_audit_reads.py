@@ -286,6 +286,145 @@ def test_list_sales_outreach_does_not_leak_review_across_unrelated_sibling(
     assert by_id[sibling_case] is False
 
 
+# --- US-7 (FR-5): the audit detail read surfaces the CURRENT ACCOUNT's own ---
+# --- latest review, so reopening a record shows the prior verdict. ----------
+
+
+def _seed_second_reviewer(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role) "
+            "VALUES ('acct_super_2', 'acct_super_2', 'x', 'workbench_supervisor')"
+        )
+    conn.commit()
+
+
+def test_get_auto_handled_with_no_review_reads_no_prior_review(datastore) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_my_review_none"
+    _seed_auto_thread(conn, thread_id)
+
+    result = _run(driver, "get_auto_handled", {"record_id": thread_id}, _ctx("acct_super_1"))
+    assert result.ok
+    assert result.data["record"]["my_review"] is None
+
+
+def test_get_auto_handled_reads_back_own_review_verdict_tags_comment(datastore) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_my_review_present"
+    _seed_auto_thread(conn, thread_id)
+
+    review = _submit_review(
+        driver,
+        subject_kind="auto_handled_record",
+        subject_id=thread_id,
+        verdict="fail",
+        reason_tags=["factual_error", "tone_inappropriate"],
+        comment="gave the wrong ETA",
+    )
+    assert review.ok
+
+    result = _run(driver, "get_auto_handled", {"record_id": thread_id}, _ctx("acct_super_1"))
+    assert result.ok
+    my_review = result.data["record"]["my_review"]
+    assert my_review is not None
+    assert my_review["verdict"] == "fail"
+    assert my_review["reason_tags"] == ["factual_error", "tone_inappropriate"]
+    assert my_review["comment"] == "gave the wrong ETA"
+    assert my_review["reviewer_account_id"] == "acct_super_1"
+
+
+def test_get_auto_handled_my_review_is_the_latest_of_two_appended_reviews(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_my_review_latest"
+    _seed_auto_thread(conn, thread_id)
+
+    first = _submit_review(
+        driver, subject_kind="auto_handled_record", subject_id=thread_id, verdict="pass"
+    )
+    second = _submit_review(
+        driver,
+        subject_kind="auto_handled_record",
+        subject_id=thread_id,
+        verdict="fail",
+        reason_tags=["should_have_escalated"],
+    )
+    assert first.ok and second.ok
+
+    result = _run(driver, "get_auto_handled", {"record_id": thread_id}, _ctx("acct_super_1"))
+    assert result.ok
+    my_review = result.data["record"]["my_review"]
+    assert my_review["verdict"] == "fail"
+    assert my_review["reason_tags"] == ["should_have_escalated"]
+
+
+def test_get_auto_handled_review_by_a_different_account_is_not_mine(datastore) -> None:
+    driver, conn, _ = datastore
+    thread_id = "thr_auto_my_review_not_mine"
+    _seed_auto_thread(conn, thread_id)
+    _seed_second_reviewer(conn)
+
+    review = _submit_review(
+        driver, subject_kind="auto_handled_record", subject_id=thread_id, verdict="pass"
+    )
+    assert review.ok
+
+    result = _run(driver, "get_auto_handled", {"record_id": thread_id}, _ctx("acct_super_2"))
+    assert result.ok
+    assert result.data["record"]["my_review"] is None
+
+
+def test_get_sales_outreach_reads_back_own_review(datastore) -> None:
+    driver, conn, _ = datastore
+    case_id = "case_sales_my_review_present"
+    _seed_sales_case(conn, case_id)
+
+    review = _submit_review(
+        driver,
+        subject_kind="sales_outreach_case",
+        subject_id=case_id,
+        verdict="fail",
+        reason_tags=["policy_violation"],
+        comment="pitched a discontinued SKU",
+    )
+    assert review.ok
+
+    result = _run(driver, "get_sales_outreach", {"case_id": case_id}, _ctx("acct_super_1"))
+    assert result.ok
+    my_review = result.data["case"]["my_review"]
+    assert my_review is not None
+    assert my_review["verdict"] == "fail"
+    assert my_review["comment"] == "pitched a discontinued SKU"
+
+
+def test_get_sales_outreach_with_no_review_reads_no_prior_review(datastore) -> None:
+    driver, conn, _ = datastore
+    case_id = "case_sales_my_review_none"
+    _seed_sales_case(conn, case_id)
+
+    result = _run(driver, "get_sales_outreach", {"case_id": case_id}, _ctx("acct_super_1"))
+    assert result.ok
+    assert result.data["case"]["my_review"] is None
+
+
+def test_get_sales_outreach_review_by_a_different_account_is_not_mine(datastore) -> None:
+    driver, conn, _ = datastore
+    case_id = "case_sales_my_review_not_mine"
+    _seed_sales_case(conn, case_id)
+    _seed_second_reviewer(conn)
+
+    review = _submit_review(
+        driver, subject_kind="sales_outreach_case", subject_id=case_id, verdict="pass"
+    )
+    assert review.ok
+
+    result = _run(driver, "get_sales_outreach", {"case_id": case_id}, _ctx("acct_super_2"))
+    assert result.ok
+    assert result.data["case"]["my_review"] is None
+
+
 def test_get_sales_outreach_rejects_non_sales_case(datastore) -> None:
     driver, conn, _ = datastore
     with conn.cursor() as cur:

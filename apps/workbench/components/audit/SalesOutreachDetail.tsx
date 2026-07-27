@@ -81,6 +81,7 @@ export function SalesOutreachDetail({
             role={role}
             subjectKind="sales_outreach_case"
             subjectId={caseId}
+            initialReview={state.data.case.myReview}
           />
 
           <section style={cardStyle}>
