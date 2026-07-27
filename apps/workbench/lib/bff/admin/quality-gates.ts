@@ -130,41 +130,59 @@ export async function handleGetQualityGates(
     throw err;
   }
 
-  const newestByKind = new Map<string, ParsedArtifact>();
+  // The reports dir grows one file per gate run and nothing prunes it, so reading EVERY
+  // .json is O(all-history). The panel only ever shows the newest report per kind, and
+  // filenames are `{kind}-{stamp}.json` where stamp = strftime("%Y%m%dT%H%M%S%fZ") -- a
+  // lexicographically-sortable timestamp, and neither the kind nor the stamp contains a
+  // `-`. So parse the kind as the substring before the first `-`, group by kind, and take
+  // the lexicographically-greatest name per kind (= newest) WITHOUT reading. We then read
+  // + parse only that ~one-per-kind file. This is O(kinds) reads (no kind can be starved
+  // by a noisier sibling) and uses ONE consistent key -- the filename stamp -- for both
+  // newest-per-kind selection and read-bounding. Files not matching the shape are ignored.
+  const namesByKind = new Map<string, string[]>();
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
-    let parsed: ParsedArtifact | null = null;
-    try {
-      const text = await fs.readFile(path.join(reportsDir, file), "utf-8");
-      parsed = parseArtifact(JSON.parse(text));
-    } catch {
-      parsed = null; // unreadable / non-JSON -> skip
-    }
-    if (!parsed) {
-      console.warn(`[quality-gates] skipping unparseable gate report: ${file}`);
-      continue;
-    }
-    const current = newestByKind.get(parsed.kind);
-    if (!current || parsed.generatedAtMs > current.generatedAtMs) {
-      newestByKind.set(parsed.kind, parsed);
+    const dash = file.indexOf("-");
+    if (dash <= 0) continue; // no `{kind}-{stamp}` shape -> ignore
+    const kind = file.slice(0, dash);
+    const list = namesByKind.get(kind);
+    if (list) list.push(file);
+    else namesByKind.set(kind, [file]);
+  }
+
+  const reports: QualityGateReport[] = [];
+  for (const names of namesByKind.values()) {
+    // Newest first by the sortable stamp; read down only until the first file that parses,
+    // so a malformed newest falls back to the prior report for that kind (honest, no crash)
+    // rather than dropping the kind entirely.
+    names.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+    for (const file of names) {
+      let parsed: ParsedArtifact | null = null;
+      try {
+        const text = await fs.readFile(path.join(reportsDir, file), "utf-8");
+        parsed = parseArtifact(JSON.parse(text));
+      } catch {
+        parsed = null; // unreadable / non-JSON -> skip
+      }
+      if (!parsed) {
+        console.warn(`[quality-gates] skipping unparseable gate report: ${file}`);
+        continue;
+      }
+      const ageSeconds = Math.max(0, Math.floor((now - parsed.generatedAtMs) / 1000));
+      reports.push({
+        kind: parsed.kind,
+        source: parsed.source,
+        sourceRun: parsed.sourceRun,
+        generatedAt: parsed.generatedAt,
+        ageSeconds,
+        stale: ageSeconds > staleThresholdSeconds,
+        rows: parsed.rows,
+      });
+      break; // first parseable name = newest usable report for this kind
     }
   }
 
-  const reports: QualityGateReport[] = [...newestByKind.values()]
-    .map((p) => {
-      const ageSeconds = Math.max(0, Math.floor((now - p.generatedAtMs) / 1000));
-      return {
-        kind: p.kind,
-        source: p.source,
-        sourceRun: p.sourceRun,
-        generatedAt: p.generatedAt,
-        ageSeconds,
-        stale: ageSeconds > staleThresholdSeconds,
-        rows: p.rows,
-      };
-    })
-    .sort((a, b) => orderIndex(a.kind) - orderIndex(b.kind) || a.kind.localeCompare(b.kind));
-
+  reports.sort((a, b) => orderIndex(a.kind) - orderIndex(b.kind) || a.kind.localeCompare(b.kind));
   return json<QualityGatesView>({ reports, staleThresholdSeconds });
 }
 
