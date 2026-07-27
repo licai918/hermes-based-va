@@ -43,8 +43,8 @@ hole.
 
 | Prefix | Slice | Table / change |
 | --- | --- | --- |
-| 0020 | S01 | `semantic_lexicon` |
-| 0021 | S09 | `injection_ledger` + its query indexes |
+| 0020 | S01 | `semantic_lexicon` — **LANDED** |
+| 0021 | ~~S09~~ **S21** | `honored_rate_leg_results` — **LANDED**. S21 needed a table this table did not anticipate (its Surface line declared none) and reached 0021 first. Rewriting a landed migration is worse than moving an unwritten one, so **S09 moves to 0030**. |
 | 0022 | S15 | `review_item` |
 | 0023 | S18 | latency samples (D5 — S18 DOES need a migration) |
 | 0024 | S03 | seeded domain #1 rows |
@@ -53,7 +53,13 @@ hole.
 | 0027 | S25 | aggregator watermark |
 | 0028 | S26 | effectiveness rollup |
 | 0029 | S27 | `draft_feedback.sent_text` (D11 — owner-flagged) |
-| 0030 | spare | |
+| 0030 | **S09** | `injection_ledger` + its query indexes — **moved here from 0021**, see above |
+| 0031 | spare | |
+
+The 0021 collision is the reason this table exists, and it still happened — because the table
+only allocates numbers to slices the plan predicted would need one. **If your slice needs a
+migration and this table gives you no number, take the next free prefix, and say so loudly in
+your report** so the table can be corrected before the next slice reads it.
 
 Still re-verify by listing the directory before writing yours; if reality has moved past this
 table, take the next free number and say so in the report.
@@ -267,6 +273,30 @@ audit that claims completeness must say so. **README's NFR-1 line adds S09, with
 S06 hard-codes "newest-20" and S25 hard-codes N=3/M=3, while S22 (much later) must render
 "glossary N, bounds, windows" on the knob panel. **Introduce these as named module constants in
 the slice that first uses them**, so S22 reads them instead of hunting magic numbers.
+
+## D17b. `tools.ts` is a PARTIAL mirror, and its "drift test" does not detect drift
+
+Found while implementing S01. The Python catalog has **23** tools; `packages/shared/src/tools.ts`
+has **18**. Absent from the TypeScript side: `toee_delivery_promise`, `toee_integrations`,
+`toee_job_queue`, `toee_metrics`, `toee_retention` — all shipped in 0.0.3/0.0.4.
+
+The file calls itself the "v1 Domain Adapter Tool catalog", which would make a subset
+legitimate — except that three post-v1 governed stores (`toee_agent_experience`,
+`toee_feedback`, `toee_semantic_lexicon`) *were* added to it. So the stated purpose no longer
+describes the contents, and there is no rule a reader can apply.
+
+Worse, nothing protects it: `tools.test.ts` asserts "contains exactly the 18 v1 tool names"
+against a **hardcoded list**. That test only fires when someone edits `tools.ts` without editing
+the test. It cannot see the Python catalog at all, so it never had a chance to catch these five.
+A hardcoded restatement of the thing under test is not a drift test.
+
+**Decision for 0.0.5:** a slice that adds a **governed memory-layer store** mirrors it into
+`tools.ts` — that is the convention the last three such stores actually followed, and S01
+followed it. **0.0.5 does NOT backfill the five missing operations tools**: nothing in
+TypeScript references them, so their absence is a typing/documentation gap rather than a
+runtime defect, and quietly absorbing four earlier slices' debt into this iteration would hide
+it rather than fix it. The real fix — a cross-language drift test that compares the two
+catalogs and forces any exclusion to be explicit and justified — is filed as its own follow-up.
 
 ## D17. Catalog-sync (HOTSPOT-A) is serialized — one slice at a time
 

@@ -9,7 +9,10 @@
 
 ## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
 
-- **D1** — migration prefix **0021**.
+- **D1** — migration prefix **0030** (moved from 0021: S21 needed a table the allocation table
+  did not anticipate, reached 0021 first, and landed `0021_honored_rate_leg_results.sql`.
+  Rewriting a landed migration is worse than moving an unwritten one). List the directory before
+  you write yours and take the next free number if reality has moved again.
 - **D4.1 — the gate is the EVAL axis, not the injection axis.** The Approach below says "gate on
   the same axes the injections themselves are gated on" AND "never on the record/replay path".
   Those are different axes: `eval_record.py` **does** call `render_injection` with a scenario
