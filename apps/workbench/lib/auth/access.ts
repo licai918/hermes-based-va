@@ -26,6 +26,16 @@ function isAdminPath(pathname: string): boolean {
 // than the rest of /admin/* (supervisor+admin, an OPERATIONS surface like the
 // dead-letter view). A supervisor triaging stuck work needs the dead-letter view;
 // only an admin should see the credential-configuration status of every backend.
+//
+// RULED, 0.0.5 S02 review: the L7 semantic lexicon (/admin/lexicon,
+// /api/admin/lexicon) is deliberately NOT in this narrower tier, although its
+// brief says "all admin-only". "Admin-only" there means "never LLM-callable" --
+// the slice's Approach glosses it as `_AGENT_EXCLUDED_ACTIONS`, and that is
+// enforced in the tool catalog, not here. As a human surface it is governance,
+// exactly like its L6 sibling /admin/agent-experience, which is also
+// supervisor+admin; a supervisor curating domain vocabulary is the same kind of
+// act as a supervisor deciding an L6 proposal. Narrow it only if the L6 gate
+// narrows too, or the two consoles will disagree about who governs memory.
 function isAdminOnlyPath(pathname: string): boolean {
   return (
     pathname.startsWith("/admin/integrations") ||

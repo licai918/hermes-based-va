@@ -420,6 +420,19 @@ def lexicon_provenance_unattributed(row: dict[str, Any]) -> bool:
     )
 
 
+def lexicon_entry_view(row: dict[str, Any]) -> dict[str, Any]:
+    """One response shape for every governed L7 action, both twins.
+
+    S02 review finding B: the D20 derivation was applied on the LIST only, so an
+    EDIT response -- which the console maps straight over the row it replaces --
+    reported ``provenance_unattributed`` as absent/false on a row that is still
+    ``admin_manual`` with a NULL decider. The badge went dark at the exact moment
+    an admin was touching the row. Deriving it here, on the way out of every
+    action, is the only place that cannot be forgotten by the next one.
+    """
+    return {**row, "provenance_unattributed": lexicon_provenance_unattributed(row)}
+
+
 def read_lexicon_proposal(
     params: dict[str, Any], context: "ToolExecutionContext"
 ) -> dict[str, Any]:
@@ -492,7 +505,7 @@ def _make_clock() -> Any:
     return now
 
 
-def _confirmed_set_version(store: list[dict[str, Any]]) -> Optional[str]:
+def _lexicon_version(store: list[dict[str, Any]]) -> Optional[str]:
     """The marker S05/S06 compare their caches against -- ``MAX(updated_at)``.
 
     Every governed L7 write moves ``updated_at`` on the row it touches, so the
@@ -501,10 +514,16 @@ def _confirmed_set_version(store: list[dict[str, Any]]) -> Optional[str]:
     so there is no column to migrate, nothing to keep in sync, and no way for a
     stored counter to disagree with the rows it claims to describe.
 
-    ponytail: MAX over the table, not over the confirmed rows only -- a retire
-    moves a row OUT of `confirmed`, and a max scoped to that subset could then go
-    DOWN, which is exactly what a cache must not see. If a per-domain version
-    ever matters, group by domain here; nothing needs it today.
+    Named ``lexicon_version``, not ``confirmed_set_version`` (S02 review finding
+    F): it is a max over the WHOLE table, so a reject -- which changes nothing in
+    the confirmed set -- moves it too, and the old name promised otherwise.
+    Table-wide is nonetheless the RIGHT computation, which is why the name moved
+    instead of the query: a max scoped to the confirmed rows would go DOWN when a
+    retire moves a row out of that subset, and a cache must never see a version
+    go backwards.
+
+    ponytail: one number for the whole store. If a per-domain version ever
+    matters, group by domain here; nothing needs it today.
     """
     return max((entry["updated_at"] for entry in store), default=None)
 
@@ -593,7 +612,11 @@ def create_semantic_lexicon_mock_handlers(
         # Always "proposed": a caller-supplied status is ignored, the same way
         # provenance is. Only add_lexicon_entry lands a row already decided.
         entry = _insert(fields)
-        return {**entry, "pii_keep_exempt": pii_keep_exempt, "proposed": True}
+        return {
+            **lexicon_entry_view(entry),
+            "pii_keep_exempt": pii_keep_exempt,
+            "proposed": True,
+        }
 
     def add_lexicon_entry(
         params: dict[str, Any], context: "ToolExecutionContext"
@@ -611,7 +634,11 @@ def create_semantic_lexicon_mock_handlers(
         # Created and decided in one act -- the Postgres twin's INSERT sets both
         # from the same now(), so the mock must not drift them apart either.
         entry["decided_at"] = entry["created_at"]
-        return {**entry, "pii_keep_exempt": pii_keep_exempt, "added": True}
+        return {
+            **lexicon_entry_view(entry),
+            "pii_keep_exempt": pii_keep_exempt,
+            "added": True,
+        }
 
     def _decide(
         params: dict[str, Any], context: "ToolExecutionContext", action: str
@@ -627,7 +654,7 @@ def create_semantic_lexicon_mock_handlers(
             entry["decider_account_id"] = decider
             entry["decided_at"] = now()
             entry["updated_at"] = entry["decided_at"]
-        return dict(entry)
+        return lexicon_entry_view(entry)
 
     def edit_lexicon_entry(
         params: dict[str, Any], context: "ToolExecutionContext"
@@ -640,6 +667,12 @@ def create_semantic_lexicon_mock_handlers(
         # WHO edited is recorded on the audit row (Postgres twin), not by
         # overwriting who decided. Retire-then-add remains the different intent
         # ("that mapping was wrong, kill it and start a new one").
+        #
+        # The editor is dropped here because the mock has no audit sink to write
+        # it to -- inventing one would be a mock/Postgres divergence, not
+        # lockstep. That the SHARED resolver names the acting admin is pinned
+        # directly, by test_the_edit_resolver_names_the_acting_admin_as_the_editor
+        # (S02 review finding G).
         entry_id, _editor, changes = read_lexicon_edit(params, context)
         entry = _find(entry_id)
         if entry["status"] not in LEXICON_EDITABLE_STATUSES:
@@ -651,7 +684,7 @@ def create_semantic_lexicon_mock_handlers(
         )
         entry.update(changes)
         entry["updated_at"] = now()
-        return dict(entry)
+        return lexicon_entry_view(entry)
 
     def list_lexicon_entries(
         params: dict[str, Any], context: "ToolExecutionContext"
@@ -676,11 +709,8 @@ def create_semantic_lexicon_mock_handlers(
             reversed(entries), key=lambda e: e["created_at"], reverse=True
         )
         return {
-            "entries": [
-                {**e, "provenance_unattributed": lexicon_provenance_unattributed(e)}
-                for e in entries
-            ],
-            "confirmed_set_version": _confirmed_set_version(store),
+            "entries": [lexicon_entry_view(e) for e in entries],
+            "lexicon_version": _lexicon_version(store),
         }
 
     return {

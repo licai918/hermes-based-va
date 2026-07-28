@@ -65,7 +65,7 @@ describe("handleListLexiconViaApi", () => {
       captured = JSON.parse(init.body as string) as SentDispatch;
       return dispatchResponse({
         entries: [rawEntry()],
-        confirmed_set_version: "2026-07-01T10:00:00Z",
+        lexicon_version: "2026-07-01T10:00:00Z",
       });
     });
 
@@ -74,7 +74,7 @@ describe("handleListLexiconViaApi", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       entries: unknown[];
-      confirmedSetVersion: string | null;
+      lexiconVersion: string | null;
     };
     expect(body.entries[0]).toMatchObject({
       id: "lex_1",
@@ -88,7 +88,7 @@ describe("handleListLexiconViaApi", () => {
       provenanceUnattributed: false,
       hitCount: 7,
     });
-    expect(body.confirmedSetVersion).toBe("2026-07-01T10:00:00Z");
+    expect(body.lexiconVersion).toBe("2026-07-01T10:00:00Z");
 
     const sent = captured as SentDispatch | null;
     expect(sent?.tool).toBe("toee_semantic_lexicon");

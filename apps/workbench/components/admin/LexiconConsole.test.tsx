@@ -35,6 +35,7 @@ function baseProps(entries: LexiconEntry[] = [entry()]) {
     rowErrors: {} as Record<string, string>,
     addError: null as string | null,
     statusFilter: "all" as const,
+    lexiconVersion: null as string | null,
     onStatusFilter: vi.fn(),
     onDecide: vi.fn(),
     onEdit: vi.fn(),
@@ -71,9 +72,15 @@ describe("LexiconConsoleView", () => {
     expect(screen.queryByRole("button", { name: "Approve 2055516" })).toBeNull();
   });
 
-  it("offers no actions on a terminal entry", () => {
+  it("offers no actions on a terminal entry, but still its evidence", () => {
     render(<LexiconConsoleView {...baseProps([entry({ status: "retired" })])} />);
-    expect(screen.queryByRole("button", { name: /TOEE/ })).toBeNull();
+    for (const verb of ["Approve", "Reject", "Retire", "Edit"]) {
+      expect(screen.queryByRole("button", { name: `${verb} TOEE` })).toBeNull();
+    }
+    // Why a mapping was retired is still worth being able to read.
+    expect(
+      screen.getByRole("button", { name: "Evidence for TOEE" }),
+    ).toBeInTheDocument();
   });
 
   it("edits the canonical form in place and calls onEdit with the new value", () => {
@@ -109,6 +116,94 @@ describe("LexiconConsoleView", () => {
     );
     expect(screen.getAllByText("UNATTRIBUTED")).toHaveLength(1);
     expect(screen.getByText("seed-admin")).toBeInTheDocument();
+  });
+
+  // --- the detail surface (review finding A) ----------------------------------
+  // The Goal calls the console "CRUD + detail surface". `evidence` and
+  // `proposerContext` were mapped and typed all the way to the client and then
+  // rendered nowhere, so an admin approving a mapping an agent captured from a
+  // customer conversation was deciding blind -- rubber-stamping, in a governance
+  // model whose entire premise is "a human decides, with the evidence in front
+  // of them".
+
+  it("shows a proposal's evidence and proposer context WITHOUT an extra click", () => {
+    render(
+      <LexiconConsoleView
+        {...baseProps([
+          entry({
+            status: "proposed",
+            evidence: "Customer: do you have 205 55 16 for my TOEE?",
+            proposerContext: { case_id: "case_42", turn: 3 },
+          }),
+        ])}
+      />,
+    );
+
+    // Open by default on a PROPOSED row: this is the row being decided, and the
+    // decision controls are in the row immediately above the panel.
+    expect(
+      screen.getByText(/do you have 205 55 16 for my TOEE/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/case_42/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve TOEE" })).toBeInTheDocument();
+  });
+
+  it("says so plainly when a proposal carries no evidence at all", () => {
+    render(<LexiconConsoleView {...baseProps([entry({ status: "proposed" })])} />);
+    expect(screen.getByText(/No evidence was captured/i)).toBeInTheDocument();
+    expect(screen.getByText(/No proposer context/i)).toBeInTheDocument();
+  });
+
+  it("leaves a decided row's detail collapsed until it is asked for", () => {
+    render(
+      <LexiconConsoleView
+        {...baseProps([
+          entry({
+            status: "confirmed",
+            deciderAccountId: "seed-admin",
+            evidence: "Quoted from case 42.",
+          }),
+        ])}
+      />,
+    );
+
+    expect(screen.queryByText("Quoted from case 42.")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Evidence for TOEE" }));
+    expect(screen.getByText("Quoted from case 42.")).toBeInTheDocument();
+  });
+
+  // --- the edited signal (review finding C) ------------------------------------
+  // An edit deliberately does NOT re-stamp the decider (that would put a
+  // decided_at on a still-proposed row), so the Decider column can read "A"
+  // while the content is B's. The audit log has the truth and no UI reads it, so
+  // the row must at least admit that it changed after it was decided.
+
+  it("marks a row whose content changed after it was decided", () => {
+    render(
+      <LexiconConsoleView
+        {...baseProps([
+          entry({
+            id: "lex_1",
+            status: "confirmed",
+            deciderAccountId: "admin-a",
+            decidedAt: NOW,
+            updatedAt: NOW + 60_000,
+          }),
+          entry({
+            id: "lex_2",
+            surfaceForm: "2055516",
+            status: "confirmed",
+            deciderAccountId: "admin-b",
+            decidedAt: NOW,
+            updatedAt: NOW,
+          }),
+        ])}
+      />,
+    );
+
+    // Exactly one row admits an edit -- the one whose updated_at moved past its
+    // decided_at. A decided-and-untouched row must NOT be marked.
+    expect(screen.getAllByText(/\(edited/)).toHaveLength(1);
   });
 
   it("never presents pii_redacted=false as a clean bill of health", () => {
@@ -161,7 +256,7 @@ describe("LexiconConsole (fetching container)", () => {
 
   it("loads on mount and re-reads through the ONE action when the filter changes", async () => {
     const fetchMock = vi.fn(() =>
-      Promise.resolve(jsonResponse({ entries: [entry()], confirmedSetVersion: null })),
+      Promise.resolve(jsonResponse({ entries: [entry()], lexiconVersion: null })),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -236,6 +331,25 @@ describe("LexiconConsole (fetching container)", () => {
     );
     expect(await screen.findByText("TOEE TIRE LTD")).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
+  });
+
+  it("surfaces the lexicon version the read returned (review finding F)", async () => {
+    // It was computed server-side and then thrown away by listLexiconEntries.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse({
+            entries: [entry()],
+            lexiconVersion: "2026-07-21T10:00:00Z",
+          }),
+        ),
+      ),
+    );
+
+    render(<LexiconConsole />);
+
+    expect(await screen.findByText(/2026-07-21T10:00:00Z/)).toBeInTheDocument();
   });
 
   it("shows a governed add failure inline and keeps the form usable", async () => {

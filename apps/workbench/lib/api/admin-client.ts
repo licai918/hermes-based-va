@@ -221,17 +221,23 @@ export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
 // read), plus the four governed writes. Every write goes through the admin BFF,
 // which attaches the signed-in account as the actor; nothing here supplies one.
 
+// `lexiconVersion` (MAX(updated_at) over the whole table) rides the same read
+// and is returned rather than discarded: it is what the S05/S06 caches compare
+// against, and the console shows it so a decision can be seen to move it.
+export interface LexiconListing {
+  entries: LexiconEntry[];
+  lexiconVersion: string | null;
+}
+
 export function listLexiconEntries(filters: {
   status?: LexiconStatus;
   domain?: string;
-} = {}): Promise<LexiconEntry[]> {
+} = {}): Promise<LexiconListing> {
   const query = new URLSearchParams();
   if (filters.status) query.set("status", filters.status);
   if (filters.domain) query.set("domain", filters.domain);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
-  return getJson<{ entries: LexiconEntry[] }>(`/api/admin/lexicon${suffix}`).then(
-    (b) => b.entries,
-  );
+  return getJson<LexiconListing>(`/api/admin/lexicon${suffix}`);
 }
 
 export function decideLexiconEntry(

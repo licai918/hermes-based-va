@@ -25,7 +25,7 @@ from toee_hermes.drivers.mock.semantic_lexicon import (
     LEXICON_DECISIONS,
     LEXICON_EDITABLE_STATUSES,
     duplicate_entry_error,
-    lexicon_provenance_unattributed,
+    lexicon_entry_view,
     missing_entry_error,
     not_editable_error,
     read_lexicon_decision,
@@ -178,7 +178,7 @@ def _add_lexicon_entry(
         )
         row = cur.fetchone()
     return {
-        **serialize_row(row),
+        **lexicon_entry_view(serialize_row(row)),
         "pii_keep_exempt": fields["pii_keep_exempt"],
         "added": True,
     }
@@ -226,7 +226,7 @@ def _decide_lexicon_entry(
             existing = cur.fetchone()
         if existing is None:
             raise missing_entry_error(entry_id)
-        return serialize_row(existing)
+        return lexicon_entry_view(serialize_row(existing))
     insert_audit(
         conn,
         profile=context.profile,
@@ -236,7 +236,7 @@ def _decide_lexicon_entry(
         target_id=entry_id,
         details={"status": to_status},
     )
-    return serialize_row(row)
+    return lexicon_entry_view(serialize_row(row))
 
 
 def _edit_lexicon_entry(
@@ -252,6 +252,15 @@ def _edit_lexicon_entry(
     ``decided_at`` are untouched too: an edit is not a decision, and WHO edited
     is recorded on the ``old -> new`` audit row rather than by overwriting who
     decided. Retire-then-add stays available as the different admin intent.
+
+    **The decider is deliberately NOT re-stamped (S02 review finding C, ruled).**
+    Re-stamping would put a ``decided_at`` on a still-``proposed`` row, which is a
+    worse lie than the one it fixes. The cost it leaves is real -- the console's
+    Decider column can read "A" while the current content is B's -- so the
+    console pays it off on the READ instead: ``updated_at`` moving past
+    ``decided_at`` is exactly "edited after it was decided", and the row renders
+    an ``(edited …)`` marker beside the decider pointing at the audit log for
+    who. One derivation, no column, no false ``decided_at``.
 
     ``UNIQUE(domain, surface_form)`` is respected rather than dodged: an edit
     that moves a surface form onto another row's is the same governed
@@ -299,7 +308,7 @@ def _edit_lexicon_entry(
             "new": dict(changes),
         },
     )
-    return serialize_row(row)
+    return lexicon_entry_view(serialize_row(row))
 
 
 def _list_lexicon_entries(
@@ -331,18 +340,15 @@ def _list_lexicon_entries(
         )
         rows = cur.fetchall()
         # MAX(updated_at) over the WHOLE table -- monotonic, filter-independent,
-        # and no column to migrate. See the mock twin's _confirmed_set_version.
+        # and no column to migrate. Named `lexicon_version` rather than
+        # `confirmed_set_version` because that is what it measures: a reject moves
+        # it although the confirmed set did not change. See the mock twin's
+        # _lexicon_version for why table-wide is nonetheless the right query.
         cur.execute("SELECT max(updated_at) AS version FROM semantic_lexicon")
         version = cur.fetchone()["version"]
     return {
-        "entries": [
-            {
-                **serialize_row(r),
-                "provenance_unattributed": lexicon_provenance_unattributed(r),
-            }
-            for r in rows
-        ],
-        "confirmed_set_version": version.isoformat() if version else None,
+        "entries": [lexicon_entry_view(serialize_row(r)) for r in rows],
+        "lexicon_version": version.isoformat() if version else None,
     }
 
 

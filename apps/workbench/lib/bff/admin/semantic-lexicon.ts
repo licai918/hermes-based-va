@@ -25,7 +25,7 @@ import type {
   LexiconProvenance,
   LexiconStatus,
 } from "../../gateway/types";
-import { json } from "../respond";
+import { json, problem } from "../respond";
 
 const TOOL = "toee_semantic_lexicon";
 
@@ -131,12 +131,17 @@ export function mapLexiconEntry(raw: unknown): LexiconEntry {
   };
 }
 
+// `lexicon_version`, not `confirmed_set_version` (S02 review finding F): the
+// server derives it as MAX(updated_at) over the WHOLE table, so a reject moves
+// it although the confirmed set did not change. The computation is right -- a
+// max scoped to the confirmed rows would go DOWN on a retire, which is what a
+// cache must never see -- so the name is what changed.
 function mapEntries(data: unknown): { entries: LexiconEntry[]; version: string | null } {
   const d = (data ?? {}) as Record<string, unknown>;
   const rawEntries = Array.isArray(d.entries) ? (d.entries as unknown[]) : [];
   return {
     entries: rawEntries.map(mapLexiconEntry),
-    version: typeof d.confirmed_set_version === "string" ? d.confirmed_set_version : null,
+    version: typeof d.lexicon_version === "string" ? d.lexicon_version : null,
   };
 }
 
@@ -154,7 +159,7 @@ export async function handleListLexiconViaApi(
     const { entries, version } = mapEntries(
       await client.dispatch(TOOL, "list_lexicon_entries", params),
     );
-    return json({ entries, confirmedSetVersion: version });
+    return json({ entries, lexiconVersion: version });
   } catch (err) {
     return hermesErrorToProblem(err);
   }
@@ -175,6 +180,24 @@ export async function handleDecideLexiconViaApi(
   }
 }
 
+// A request the BFF can already see is malformed is a 400 here, NOT a dispatch.
+// Hermes classifies a blank required field as `unexpected_error`, which the
+// house error map (correctly, for an unclassified governed failure) turns into
+// 502 -- so a blank Domain in the add form rendered to the admin as "502 Bad
+// Gateway". The honest level for "you left a required field empty" is the layer
+// that owns the request shape, which is this one; the Hermes-side validator
+// stays exactly as it is, as the guard for every other caller.
+function requireFields(
+  body: Record<string, string | undefined>,
+): Response | null {
+  for (const [name, value] of Object.entries(body)) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      return problem(400, `${name} is required`);
+    }
+  }
+  return null;
+}
+
 // D7: an in-place UPDATE of the mapping; the entry id is stable and `hit_count`
 // continues. Only the fields the caller actually supplied are forwarded, so an
 // omitted field means "leave unchanged" rather than "clear".
@@ -186,6 +209,10 @@ export async function handleEditLexiconViaApi(
   const params: Record<string, unknown> = { id };
   if (body.surfaceForm !== undefined) params.surface_form = body.surfaceForm;
   if (body.canonicalForm !== undefined) params.canonical_form = body.canonicalForm;
+  // An edit that changes nothing would otherwise be a 502 as well.
+  if (Object.keys(params).length === 1) {
+    return problem(400, "surfaceForm or canonicalForm is required");
+  }
   try {
     const data = await client.dispatchWrite(TOOL, "edit_lexicon_entry", params);
     return json({ entry: mapLexiconEntry(data) });
@@ -207,6 +234,13 @@ export async function handleAddLexiconViaApi(
     evidence?: string;
   },
 ): Promise<Response> {
+  const missing = requireFields({
+    domain: body.domain,
+    entryKind: body.entryKind,
+    surfaceForm: body.surfaceForm,
+    canonicalForm: body.canonicalForm,
+  });
+  if (missing) return missing;
   const params: Record<string, unknown> = {
     domain: body.domain,
     entry_kind: body.entryKind,

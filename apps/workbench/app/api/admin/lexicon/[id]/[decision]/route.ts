@@ -18,7 +18,11 @@ export const POST = withSession((_req, { session, params }) => {
   const id = params?.id ?? "";
   if (!id) return problem(400, "id is required");
   const decision = params?.decision ?? "";
-  if (!(decision in LEXICON_DECISION_ACTIONS)) {
+  // `hasOwn`, not `in`: `in` walks the prototype chain, so `toString`,
+  // `constructor` and `__proto__` all passed this guard and dispatched a
+  // `Function` as an action name -- a confusing 500 where a 404 was the whole
+  // point of checking.
+  if (!Object.hasOwn(LEXICON_DECISION_ACTIONS, decision)) {
     return problem(404, `unknown lexicon decision "${decision}"`);
   }
   return handleDecideLexiconViaApi(

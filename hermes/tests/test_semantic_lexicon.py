@@ -21,6 +21,7 @@ from toee_hermes.drivers.mock.semantic_lexicon import (
     LEXICON_PROVENANCE_VALUES,
     LEXICON_STATUS_VALUES,
     create_semantic_lexicon_mock_handlers,
+    read_lexicon_edit,
 )
 from toee_hermes.execute import execute_tool
 from toee_hermes.plugin import register
@@ -556,32 +557,37 @@ def test_the_agent_route_with_no_actor_still_writes_conversation_confirmed() -> 
     assert result.data["provenance"] == "conversation_confirmed"
 
 
+def _interim_unattributed_row() -> dict[str, Any]:
+    """The shape of a row written between S01 and S02: ``admin_manual``, no decider.
+
+    No governed action can produce one any more (D20 refuses), so a test that
+    needs one plants it directly.
+    """
+    return {
+        "id": "lex_interim",
+        "domain": "company",
+        "entry_kind": "alias",
+        "surface_form": "TOEE",
+        "canonical_form": "TOEE TIRE",
+        "status": "proposed",
+        "provenance": "admin_manual",
+        "evidence": None,
+        "proposer_context": None,
+        "pii_redacted": False,
+        "decider_account_id": None,
+        "decided_at": None,
+        "hit_count": 0,
+        "created_at": "2026-07-01T00:00:00+00:00",
+        "updated_at": "2026-07-01T00:00:00+00:00",
+    }
+
+
 def test_an_unattributed_admin_manual_row_is_flagged_on_the_read() -> None:
     # The interim sweep: rows written between S01 and S02 can carry
     # provenance='admin_manual' with a NULL decider. They arrive in the queue
     # looking authoritative; the read must mark them so the console cannot render
     # one indistinguishably from an entry a named admin actually approved.
-    store: list[dict[str, Any]] = []
-    driver = _driver(store)
-    store.append(
-        {
-            "id": "lex_interim",
-            "domain": "company",
-            "entry_kind": "alias",
-            "surface_form": "TOEE",
-            "canonical_form": "TOEE TIRE",
-            "status": "proposed",
-            "provenance": "admin_manual",
-            "evidence": None,
-            "proposer_context": None,
-            "pii_redacted": False,
-            "decider_account_id": None,
-            "decided_at": None,
-            "hit_count": 0,
-            "created_at": "2026-07-01T00:00:00+00:00",
-            "updated_at": "2026-07-01T00:00:00+00:00",
-        }
-    )
+    driver = _driver([_interim_unattributed_row()])
 
     assert _entry(driver, "lex_interim")["provenance_unattributed"] is True
 
@@ -590,6 +596,40 @@ def test_an_attributed_admin_manual_row_is_not_flagged() -> None:
     driver = _driver()
     added = _add(driver)
     assert _entry(driver, added.data["id"])["provenance_unattributed"] is False
+
+
+def test_an_edit_response_still_flags_an_unattributed_row() -> None:
+    # S02 review finding B: the flag was derived on the LIST only, so an edit
+    # response -- which the console maps straight over the row it replaces --
+    # turned the UNATTRIBUTED warning OFF on a row that is still admin_manual
+    # with a NULL decider. The warning went dark exactly when someone touched
+    # the row. Every governed write response carries the derivation now.
+    driver = _driver([_interim_unattributed_row()])
+
+    result = _decide(
+        driver, "edit_lexicon_entry", "lex_interim", canonical_form="TOEE TIRE LTD"
+    )
+
+    assert result.ok is True
+    assert result.data["canonical_form"] == "TOEE TIRE LTD"
+    assert result.data["provenance_unattributed"] is True
+
+
+def test_every_governed_write_response_carries_the_unattributed_flag() -> None:
+    # The other half of finding B: an ATTRIBUTED row must say so on every write
+    # response too, or the console cannot trust the field it maps.
+    driver = _driver()
+    proposed = _propose(driver, _internal_ctx())
+
+    confirmed = _decide(driver, "confirm_lexicon_entry", proposed.data["id"])
+    edited = _decide(
+        driver, "edit_lexicon_entry", proposed.data["id"], canonical_form="205/55R17"
+    )
+    added = _add(driver)
+
+    assert confirmed.data["provenance_unattributed"] is False
+    assert edited.data["provenance_unattributed"] is False
+    assert added.data["provenance_unattributed"] is False
 
 
 # --- confirm / reject / retire ------------------------------------------------
@@ -783,6 +823,22 @@ def test_edit_does_not_reach_a_terminal_entry() -> None:
     assert result.error_class == "conflict"
 
 
+def test_the_edit_resolver_names_the_acting_admin_as_the_editor() -> None:
+    # S02 review finding G: the mock has no audit sink, so the Postgres twin was
+    # the ONLY place a dropped edit attribution went red -- the mock/Postgres
+    # asymmetry this iteration keeps getting bitten by. WHO edited is derived in
+    # the SHARED resolver both twins call, so pin it there: that is the half the
+    # mock actually runs, and it is where a regression would start.
+    entry_id, editor, changes = read_lexicon_edit(
+        {"id": "lex_1", "canonical_form": "TOEE TIRE LTD"},
+        _dispatch_ctx(user_id="acct_admin_9"),
+    )
+
+    assert entry_id == "lex_1"
+    assert editor == "acct_admin_9"
+    assert changes == {"canonical_form": "TOEE TIRE LTD"}
+
+
 # --- manual add: the admin IS the gate ----------------------------------------
 
 
@@ -831,7 +887,7 @@ def test_manual_add_scans_content_like_every_other_governed_write() -> None:
     assert result.error_class == "policy_blocked"
 
 
-# --- list: filters, ordering, and the confirmed-set version --------------------
+# --- list: filters, ordering, and the lexicon version --------------------------
 
 
 def test_list_orders_newest_first_like_postgres() -> None:
@@ -886,16 +942,34 @@ def test_list_rejects_an_unknown_status_filter() -> None:
     assert result.error_class == "unexpected_error"
 
 
-def test_the_confirmed_set_version_moves_on_every_decide() -> None:
+def test_the_lexicon_version_moves_on_every_decide() -> None:
     # Feeds the S05/S06 caches: a monotonic marker they can compare against
     # without re-reading the whole confirmed set.
     driver = _driver()
     proposed = _propose(driver, _internal_ctx())
-    before = _list(driver).data["confirmed_set_version"]
+    before = _list(driver).data["lexicon_version"]
 
     _decide(driver, "confirm_lexicon_entry", proposed.data["id"])
 
-    assert _list(driver).data["confirmed_set_version"] > before
+    assert _list(driver).data["lexicon_version"] > before
+
+
+def test_the_lexicon_version_moves_on_a_reject_too_which_is_why_it_is_named_that() -> (
+    None
+):
+    # S02 review finding F: it was called `confirmed_set_version` but it is
+    # MAX(updated_at) over the WHOLE table, so a REJECT -- which changes nothing
+    # in the confirmed set -- moves it as well. Table-wide is the right
+    # computation (a max scoped to confirmed rows would go DOWN on a retire,
+    # which is exactly what a cache must never see), so the NAME was the thing
+    # that was wrong.
+    driver = _driver()
+    proposed = _propose(driver, _internal_ctx())
+    before = _list(driver).data["lexicon_version"]
+
+    _decide(driver, "reject_lexicon_entry", proposed.data["id"])
+
+    assert _list(driver).data["lexicon_version"] > before
 
 
 # --- mock ids never collide ----------------------------------------------------

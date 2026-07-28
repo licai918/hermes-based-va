@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pytest
 
+from toee_hermes.drivers.mock.semantic_lexicon import LEXICON_DECISIONS
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import TOOLS_DISPATCH_ROUTE, ToolExecutionContext
 
@@ -252,7 +253,11 @@ def test_a_decision_without_an_actor_is_policy_blocked(datastore, action: str) -
     assert not result.ok
     assert result.error_class == "policy_blocked"
     assert _row(conn, proposed.data["id"], "status")[0] == "proposed"
-    assert _audit(conn, "lexicon_entry_confirmed") == []
+    # S02 review finding G: this asserted "no lexicon_entry_confirmed audit row"
+    # for ALL THREE parameterisations, which is trivially true for reject and
+    # retire -- two of the three cases proved nothing. Assert the audit action
+    # THIS decision would have written, taken from the shared transition table.
+    assert _audit(conn, LEXICON_DECISIONS[action][2]) == []
 
 
 # --- edit: in-place, stable id, hit_count continues (D7) ------------------------
@@ -514,11 +519,76 @@ def test_list_rejects_an_unknown_status_filter(datastore) -> None:
     assert result.error_class == "unexpected_error"
 
 
-def test_the_confirmed_set_version_moves_on_every_decide(datastore) -> None:
+def test_the_lexicon_version_moves_on_every_decide(datastore) -> None:
     driver, _, _ = datastore
     proposed = _propose(driver)
-    before = _list(driver).data["confirmed_set_version"]
+    before = _list(driver).data["lexicon_version"]
 
     _admin(driver, "confirm_lexicon_entry", id=proposed.data["id"])
 
-    assert _list(driver).data["confirmed_set_version"] > before
+    assert _list(driver).data["lexicon_version"] > before
+
+
+def test_the_lexicon_version_moves_on_a_reject_too(datastore) -> None:
+    # S02 review finding F: MAX(updated_at) over the WHOLE table, so a reject --
+    # which changes nothing in the confirmed set -- moves it too. Table-wide is
+    # the right computation (scoped to confirmed rows it could go DOWN on a
+    # retire); the NAME was what promised otherwise.
+    driver, _, _ = datastore
+    proposed = _propose(driver)
+    before = _list(driver).data["lexicon_version"]
+
+    _admin(driver, "reject_lexicon_entry", id=proposed.data["id"])
+
+    assert _list(driver).data["lexicon_version"] > before
+
+
+# --- every governed write response carries the D20 derivation (finding B) -------
+
+
+def test_an_edit_response_still_flags_an_unattributed_row(datastore) -> None:
+    # Finding B against real Postgres: the console maps a write response straight
+    # over the row it replaces, so a response missing the derivation switched the
+    # UNATTRIBUTED badge OFF on a row that is still admin_manual with a NULL
+    # decider -- silently, at the exact moment an admin was touching it.
+    driver, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO semantic_lexicon "
+            "(id, domain, entry_kind, surface_form, canonical_form, status, provenance) "
+            "VALUES ('lex_interim', 'wheel', 'alias', 'TOEE', 'TOEE TIRE', "
+            "'proposed', 'admin_manual')"
+        )
+
+    result = _admin(
+        driver, "edit_lexicon_entry", id="lex_interim", canonical_form="TOEE TIRE LTD"
+    )
+
+    assert result.ok, result.error_class
+    assert result.data["canonical_form"] == "TOEE TIRE LTD"
+    assert result.data["provenance_unattributed"] is True
+    # Still unattributed in the table too: an edit is not a decision (see the
+    # ruling in _edit_lexicon_entry on why the decider is not re-stamped).
+    assert _row(conn, "lex_interim", "decider_account_id")[0] is None
+
+
+def test_every_governed_write_response_carries_the_unattributed_flag(datastore) -> None:
+    driver, _, _ = datastore
+    proposed = _propose(driver)
+
+    confirmed = _admin(driver, "confirm_lexicon_entry", id=proposed.data["id"])
+    edited = _admin(
+        driver, "edit_lexicon_entry", id=proposed.data["id"], canonical_form="205/55R17"
+    )
+    added = _admin(
+        driver,
+        "add_lexicon_entry",
+        domain="brand",
+        entry_kind="alias",
+        surface_form="TOEE",
+        canonical_form="TOEE TIRE",
+    )
+
+    assert confirmed.data["provenance_unattributed"] is False
+    assert edited.data["provenance_unattributed"] is False
+    assert added.data["provenance_unattributed"] is False
