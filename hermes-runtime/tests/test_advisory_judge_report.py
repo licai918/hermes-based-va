@@ -75,6 +75,39 @@ def test_renders_full_report_with_an_injected_judge(tmp_path: Path, capsys) -> N
     assert "precision" in art["rows"][0]["result"]
 
 
+def test_panel_rows_label_their_split_and_carry_the_effective_held_out_n(
+    tmp_path: Path,
+) -> None:
+    # S21 re-review: the per-leg panel rows were measured on the IN-SAMPLE split
+    # and named as if they were the leg's accuracy full stop, and the held-out
+    # row reported 10 fixtures when only the legs with rubric guidance are held
+    # out from anything. A number is allowed on the panel with its caveat, or
+    # not at all.
+    from eval_runner.judge_measure import held_out_effective_n_note
+
+    main(
+        [
+            "--out",
+            str(tmp_path / "report.md"),
+            "--env-file",
+            str(tmp_path / "absent.env"),
+        ],
+        client=_AlwaysYesJudge(),
+    )
+
+    reports = list(Path(os.environ["GATE_REPORTS_DIR"]).glob("judge-*.json"))
+    rows = json.loads(reports[-1].read_text(encoding="utf-8"))["rows"]
+
+    leg_rows = [r for r in rows if r["name"].startswith("Judge leg:")]
+    assert leg_rows
+    for row in leg_rows:
+        assert "in-sample" in row["name"], row["name"]
+        assert "undetermined" in row["result"]
+
+    held_out_row = next(r for r in rows if "held-out" in r["name"])
+    assert held_out_effective_n_note() in held_out_row["note"]
+
+
 def test_exit_zero_even_when_the_judge_is_useless(tmp_path: Path) -> None:
     class _GarbageJudge:
         def complete(self, prompt: str, *, model: str) -> str:

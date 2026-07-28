@@ -33,7 +33,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from eval_runner.judge import JudgeClient, resolve_judge_model
-from eval_runner.judge_measure import measure_judge_legs, split_held_out
+from eval_runner.judge_measure import (
+    held_out_effective_n_note,
+    measure_judge_legs,
+    split_held_out,
+)
 from eval_runner.judge_report import render_report, render_skipped
 
 from hermes_runtime.gate_report_artifact import write_report
@@ -141,15 +145,22 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
                 "passed": None,
                 "note": (
                     "Fixtures in shapes the rubric guidance does NOT describe -- "
-                    "the only evidence here that is not in-sample. Advisory only."
+                    "the only evidence here that is not in-sample. Advisory only. "
+                    + held_out_effective_n_note()
                 ),
             },
             # One row PER LEG (S21, FR-28): the panel is where a leg quietly
             # rotting to 0.4 precision has to become visible, and the headline
             # row above cannot show that.
+            #
+            # Named IN-SAMPLE (S21 re-review): these rows are measured on the
+            # in-sample split only, and an unlabelled "Judge leg: honored 1.000"
+            # on a panel reads as the leg's accuracy full stop. The held-out
+            # counterpart is 2 fixtures per leg -- too thin for its own row, and
+            # reported in the held-out row above rather than implied here.
             *(
                 {
-                    "name": f"Judge leg: {leg} (FR-28)",
+                    "name": f"Judge leg: {leg}, in-sample (FR-28)",
                     "command": "python -m hermes_runtime.advisory_judge_report",
                     "result": (
                         f"precision {m.precision:.3f}, recall {m.recall:.3f}, "

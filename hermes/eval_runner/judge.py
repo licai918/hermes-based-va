@@ -201,6 +201,18 @@ _LEG_GUIDANCE: dict[str, str] = {
     ),
 }
 
+def legs_with_guidance() -> tuple[str, ...]:
+    """The legs whose prompt carries leg-specific grading rules.
+
+    A HELD-OUT fixture is only held out from something on these legs (S21
+    re-review): the rest get the shared preamble only, so there is no
+    leg-specific description for a fixture to be outside of, and their held-out
+    pairs are evidence of nothing. Anything reporting a held-out number uses
+    this to state the EFFECTIVE n rather than the headcount.
+    """
+    return tuple(leg for leg, guidance in _LEG_GUIDANCE.items() if guidance)
+
+
 _POSITIVE_VERDICT_TOKENS = {"yes", "true", "honored", "met", "silent"}
 _NEGATIVE_VERDICT_TOKENS = {"no", "false", "not", "not_honored", "unmet", "recalled"}
 

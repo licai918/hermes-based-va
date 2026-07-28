@@ -40,7 +40,12 @@ import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from .judge import JudgeClient, judge_reply, resolve_judge_model
+from .judge import (
+    JudgeClient,
+    judge_reply,
+    legs_with_guidance,
+    resolve_judge_model,
+)
 from .judge_fixtures import JUDGE_FIXTURES, JudgeFixture
 
 
@@ -153,6 +158,38 @@ def split_held_out(
     return (
         tuple(f for f in fixtures if not f.held_out),
         tuple(f for f in fixtures if f.held_out),
+    )
+
+
+def held_out_effective_n_note(
+    fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+) -> str:
+    """State the EFFECTIVE held-out n, not the headcount (S21 re-review).
+
+    "Held out from the rubric guidance" only means something on a leg that HAS
+    leg-specific guidance (:func:`eval_runner.judge.legs_with_guidance`). The
+    others get the shared preamble only, so their held-out fixtures are held out
+    from nothing and are not evidence about contamination -- reporting the
+    headcount as the strength of the split overstates it.
+
+    One sentence, generated rather than written down, because the requirement is
+    that the caveat travels with the number EVERYWHERE the number appears: this
+    CLI, the PR markdown (``judge_report``) and the quality-gates panel row
+    (``hermes_runtime.advisory_judge_report``) all print this exact string.
+    """
+    guided = set(legs_with_guidance())
+    held_out = [f for f in fixtures if f.held_out]
+    effective = [f for f in held_out if f.leg in guided]
+    unguided = sorted({f.leg for f in held_out} - guided)
+    if not unguided:
+        return f"Effective held-out n: **{len(effective)} of {len(held_out)}**."
+    names = ", ".join(f"`{leg}`" for leg in unguided)
+    return (
+        f"**Effective held-out n is {len(effective)} of {len(held_out)}.** Only "
+        f"{len(guided & {f.leg for f in held_out})} legs carry leg-specific "
+        f"rubric guidance to be held out FROM; {names} get the shared preamble "
+        "only, so their held-out fixtures are held out from nothing and say "
+        "nothing about contamination. Read the per-leg rows, not the total."
     )
 
 
@@ -300,6 +337,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"expected={miss.fixture.expected_passed} "
                 f"got={miss.got_passed}: {miss.reason}"
             )
+        if label == "held-out":
+            print(f"  [held-out] {held_out_effective_n_note()}")
 
     return 0
 

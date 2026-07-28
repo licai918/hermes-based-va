@@ -23,7 +23,7 @@ from typing import Mapping, Optional, Sequence
 
 from .judge import JudgeLeg
 from .judge_fixtures import JUDGE_FIXTURES, JudgeFixture
-from .judge_measure import JudgeMetrics
+from .judge_measure import JudgeMetrics, held_out_effective_n_note
 
 # Stable upsert key: the CI PR-comment step greps for this marker so a re-run
 # edits the one advisory comment instead of posting a new one each time.
@@ -81,6 +81,41 @@ _HELD_OUT_NOTE = (
     "construction: treat a miss here as a signal to look, not as a rate."
 )
 
+# S21 re-review: an ABSTENTION, not a flake. Precision and recall are computed
+# over determinate verdicts only, so a leg renders 1.000/1.000 beside a fixture
+# it never scored. Hence the `Undet.` column on every table below.
+_UNDETERMINED_NOTE = (
+    "`Undet.` is `undetermined/n` — verdicts the judge would not commit to. "
+    "Precision and recall EXCLUDE them, so a rate of 1.000 next to a non-zero "
+    "`Undet.` means the leg was perfect on what it scored and silent on the "
+    "rest. A reproducible undetermined is an abstention, not a flake: read the "
+    "two together or not at all."
+)
+
+
+def _rate_table_header() -> list[str]:
+    return [
+        "| Leg | Judged | Judge-correct | Misses | Precision | Recall | Undet. |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+
+
+def _misses_table(metrics: JudgeMetrics) -> list[str]:
+    if not metrics.misses:
+        return ["_None — the judge matched every ground-truth label this run._"]
+    lines = [
+        "| Fixture | Leg | Expected | Judge said | Reason |",
+        "| --- | --- | :---: | :---: | --- |",
+    ]
+    for miss in metrics.misses:
+        got = "undetermined" if miss.got_passed is None else str(miss.got_passed)
+        reason = miss.reason.replace("|", "\\|").replace("\n", " ")
+        lines.append(
+            f"| {miss.fixture.name} | `{miss.fixture.leg}` | "
+            f"{miss.fixture.expected_passed} | {got} | {reason} |"
+        )
+    return lines
+
 
 def _held_out_section(
     metrics: JudgeMetrics, by_leg: Mapping[str, JudgeMetrics]
@@ -91,9 +126,9 @@ def _held_out_section(
         "",
         _HELD_OUT_NOTE,
         "",
-        "| Leg | Judged | Judge-correct | Misses | Precision | Recall |",
-        "| --- | ---: | ---: | ---: | ---: | ---: |",
-    ]
+        held_out_effective_n_note(),
+        "",
+    ] + _rate_table_header()
     for leg in _LEG_ORDER:
         leg_metrics = by_leg.get(leg)
         if leg_metrics is None:
@@ -101,12 +136,17 @@ def _held_out_section(
         lines.append(
             f"| `{leg}` | {leg_metrics.total} | {leg_metrics.correct} | "
             f"{len(leg_metrics.misses)} | {leg_metrics.precision:.3f} | "
-            f"{leg_metrics.recall:.3f} |"
+            f"{leg_metrics.recall:.3f} | "
+            f"{leg_metrics.undetermined}/{leg_metrics.total} |"
         )
     lines.append(
         f"| **all held-out** | {metrics.total} | {metrics.correct} | "
-        f"{len(metrics.misses)} | {metrics.precision:.3f} | {metrics.recall:.3f} |"
+        f"{len(metrics.misses)} | {metrics.precision:.3f} | {metrics.recall:.3f} | "
+        f"{metrics.undetermined}/{metrics.total} |"
     )
+    # The held-out misses used to render as a bare COUNT (S21 re-review): the one
+    # split that is not in-sample was the one you could not read a reason from.
+    lines += ["", "#### Held-out misses", ""] + _misses_table(metrics)
     return lines
 
 
@@ -167,6 +207,8 @@ def render_report(
         "",
         _SAFETY_LEG_NOTE,
         "",
+        _UNDETERMINED_NOTE,
+        "",
     ]
     if by_leg is None:
         lines += [
@@ -174,10 +216,7 @@ def render_report(
             "| --- | ---: | ---: | ---: |",
         ]
     else:
-        lines += [
-            "| Leg | Judged | Judge-correct | Misses | Precision | Recall |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
-        ]
+        lines += _rate_table_header()
     for leg in _LEG_ORDER:
         judged = totals.get(leg, 0)
         misses = leg_misses.get(leg, 0)
@@ -185,30 +224,18 @@ def render_report(
         if by_leg is not None:
             leg_metrics = by_leg.get(leg)
             row += (
-                f" {leg_metrics.precision:.3f} | {leg_metrics.recall:.3f} |"
+                f" {leg_metrics.precision:.3f} | {leg_metrics.recall:.3f} | "
+                f"{leg_metrics.undetermined}/{leg_metrics.total} |"
                 if leg_metrics is not None
-                else " — | — |"
+                else " — | — | — |"
             )
         lines.append(row)
 
     if held_out is not None:
         lines += _held_out_section(*held_out)
 
-    lines += ["", "### Misses (advisory — data, not a gate)", ""]
-    if metrics.misses:
-        lines += [
-            "| Fixture | Leg | Expected | Judge said | Reason |",
-            "| --- | --- | :---: | :---: | --- |",
-        ]
-        for miss in metrics.misses:
-            got = "undetermined" if miss.got_passed is None else str(miss.got_passed)
-            reason = miss.reason.replace("|", "\\|").replace("\n", " ")
-            lines.append(
-                f"| {miss.fixture.name} | `{miss.fixture.leg}` | "
-                f"{miss.fixture.expected_passed} | {got} | {reason} |"
-            )
-    else:
-        lines.append("_None — the judge matched every ground-truth label this run._")
+    lines += ["", "### Misses (in-sample; advisory — data, not a gate)", ""]
+    lines += _misses_table(metrics)
 
     lines += [
         "",

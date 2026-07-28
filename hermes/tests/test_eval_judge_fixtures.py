@@ -48,13 +48,24 @@ def test_every_leg_keeps_a_held_out_split_the_rubric_does_not_describe() -> None
 def test_held_out_fixtures_avoid_the_in_sample_memory_presets() -> None:
     # A held-out reply judged against an in-sample memory preset is only half
     # held out -- the rubric guidance quotes preset wording verbatim.
-    in_sample_memory = {
-        tuple(sorted(f.memory_preset.items()))
+    #
+    # Compared per (SLOT, VALUE), not per whole preset (S21 re-review): the
+    # held-out channel preset was `{"channel_preference": "text message"}`, the
+    # byte-identical half of the in-sample `_MIXED_PREFERENCES`, and a
+    # whole-dict comparison called that held out because the dict had one key
+    # instead of two.
+    in_sample_values = {
+        item
         for f in JUDGE_FIXTURES
         if not f.held_out
+        for item in f.memory_preset.items()
     }
     for fixture in (f for f in JUDGE_FIXTURES if f.held_out):
-        assert tuple(sorted(fixture.memory_preset.items())) not in in_sample_memory
+        shared = sorted(set(fixture.memory_preset.items()) & in_sample_values)
+        assert not shared, (
+            f"held-out fixture {fixture.name} is judged against memory an "
+            f"in-sample fixture already uses verbatim: {shared}"
+        )
 
 
 def test_every_fixture_is_a_judge_fixture_with_a_unique_name_and_reply() -> None:

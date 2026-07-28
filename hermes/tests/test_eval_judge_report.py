@@ -112,6 +112,90 @@ def test_held_out_numbers_render_separately_and_the_headline_says_in_sample() ->
     assert overall.total == len(in_sample)
 
 
+def test_the_held_out_number_states_its_effective_n() -> None:
+    # S21 re-review: "held out" is only meaningful for a leg whose prompt carries
+    # leg-specific guidance to be held out FROM. `honored` and
+    # `no_unprompted_recall` have no `_LEG_GUIDANCE` entry, so their held-out
+    # pairs are held out from nothing -- reporting 10 as if all ten were evidence
+    # overstates the number. The note must say the effective figure.
+    from eval_runner.judge import legs_with_guidance
+    from eval_runner.judge_measure import held_out_effective_n_note, split_held_out
+
+    judge = _OracleJudge()
+    in_sample, out_of_sample = split_held_out()
+    overall, by_leg = measure_judge_legs(in_sample, client=judge, model="mock/judge")
+
+    report = render_report(
+        overall,
+        model="mock/judge",
+        fixtures=in_sample,
+        by_leg=by_leg,
+        held_out=measure_judge_legs(out_of_sample, client=judge, model="mock/judge"),
+    )
+
+    guided = set(legs_with_guidance())
+    effective = [f for f in out_of_sample if f.leg in guided]
+    unguided = sorted({f.leg for f in out_of_sample} - guided)
+    assert unguided, "this test is vacuous if every leg has guidance"
+    assert len(effective) < len(out_of_sample)
+    assert f"{len(effective)} of {len(out_of_sample)}" in report
+    assert held_out_effective_n_note() in report
+    for leg in unguided:
+        assert f"`{leg}`" in report
+
+
+def test_every_rate_row_carries_undetermined_over_n() -> None:
+    # S21 re-review: a reproducible `undetermined` is an ABSTENTION, not a flake.
+    # Precision and recall exclude it, so a leg can render 1.000/1.000 next to a
+    # fixture it never scored at all. The rate never ships without the count.
+    from eval_runner.judge_measure import split_held_out
+
+    # A judge that cannot be parsed -> every fixture undetermined, every rate 0.000.
+    judge = _RecordedJudge("no json here at all")
+    in_sample, out_of_sample = split_held_out()
+    overall, by_leg = measure_judge_legs(in_sample, client=judge, model="mock/judge")
+    held_out = measure_judge_legs(out_of_sample, client=judge, model="mock/judge")
+
+    report = render_report(
+        overall,
+        model="mock/judge",
+        fixtures=in_sample,
+        by_leg=by_leg,
+        held_out=held_out,
+    )
+
+    assert overall.undetermined == overall.total
+    assert "Undet." in report
+    # Both tables: every leg row shows undetermined/n beside its precision.
+    for leg, metrics in by_leg.items():
+        assert f"{metrics.undetermined}/{metrics.total}" in report
+    for leg, metrics in held_out[1].items():
+        assert f"{metrics.undetermined}/{metrics.total}" in report
+
+
+def test_held_out_misses_render_with_their_reasons() -> None:
+    # S21 re-review: the held-out table used to render misses as a bare count,
+    # so the one split that is not in-sample was the one you could not read.
+    from eval_runner.judge_measure import split_held_out
+
+    judge = _RecordedJudge('{"verdict":"yes","reason":"always-positive stand-in"}')
+    in_sample, out_of_sample = split_held_out()
+    overall, by_leg = measure_judge_legs(in_sample, client=judge, model="mock/judge")
+    held_out = measure_judge_legs(out_of_sample, client=judge, model="mock/judge")
+
+    report = render_report(
+        overall,
+        model="mock/judge",
+        fixtures=in_sample,
+        by_leg=by_leg,
+        held_out=held_out,
+    )
+
+    assert held_out[0].misses, "always-yes must miss the ground-truth negatives"
+    for miss in held_out[0].misses:
+        assert miss.fixture.name in report
+
+
 def test_misses_render_as_a_table_when_the_judge_is_wrong() -> None:
     # Always-"yes" is wrong on every ground-truth negative -> a populated misses table.
     metrics = measure_judge(client=_RecordedJudge('{"verdict":"yes","reason":"always"}'))
