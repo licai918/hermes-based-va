@@ -9,9 +9,15 @@ user turn, never the system prompt, and never break the turn on provider error.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from toee_hermes.plugin.hooks import make_pre_llm_call_hook, render_injection
+from toee_hermes.plugin.hooks import (
+    glossary_entries,
+    make_pre_llm_call_hook,
+    render_injection,
+)
 from toee_hermes.plugin.profiles import (
     DEFAULT_PROFILE,
     PROFILE_TOOL_ALLOWLIST,
@@ -251,3 +257,111 @@ def test_pre_llm_call_swallows_provider_errors() -> None:
     hook = make_pre_llm_call_hook(snapshot_provider=boom, memory_provider=boom)
     out = hook(session_id="s1", user_message="hi")
     assert out is None
+
+
+# --- glossary_entries: the SELECTION rules, driven directly (S06, FR-6/FR-7) ---
+#
+# Everything above reaches this function through a renderer, so its rules were
+# only ever asserted as formatted text. `glossary_entries` decides WHAT enters
+# the prompt -- the status re-check, the both-forms requirement for mapping
+# rows, and the `default_rule` condition evaluated against a DATE -- and
+# `_render_lexicon` only formats what it returns. These drive the selector.
+
+
+def _lex(entry_id, kind, surface, canonical, *, status="confirmed", domain="tire"):
+    """A row in the shape ``load_confirmed_lexicon`` returns."""
+    return {
+        "id": entry_id,
+        "domain": domain,
+        "entry_kind": kind,
+        "surface_form": surface,
+        "canonical_form": canonical,
+        "status": status,
+    }
+
+
+# BOTH seasonal rows confirmed and present -- the seeded situation, and the only
+# fixture in which "evaluated at render" has something it must EXCLUDE. With one
+# seasonal row, selecting and not-selecting return the same list.
+_BOTH_SEASONS = [
+    _lex("lex_alias", "alias", "TOEE", "TOEE TIRE", domain="company"),
+    _lex("lex_winter", "default_rule", "season=winter", "winter tires"),
+    _lex("lex_all_season", "default_rule", "season=all_season", "all-season tires"),
+]
+
+_JANUARY = date(2026, 1, 15)  # inside WINTER_MONTHS
+_JULY = date(2026, 7, 15)  # outside it
+
+
+@pytest.mark.parametrize(
+    ("today", "applied", "losing"),
+    [
+        (_JANUARY, "lex_winter", "lex_all_season"),
+        (_JULY, "lex_all_season", "lex_winter"),
+    ],
+)
+def test_glossary_entries_admits_only_the_season_the_date_picks(
+    today: date, applied: str, losing: str
+) -> None:
+    # Fixed dates, not date.today(): the two cases sit on either side of the
+    # WINTER_MONTHS boundary, so a selector that ignored `today` cannot satisfy
+    # both. The losing season's row is not merely unformatted -- it is not
+    # returned at all, which is what keeps the provenance ledger from crediting
+    # an entry the prompt never carried.
+    ids = [entry["id"] for entry in glossary_entries(_BOTH_SEASONS, today)]
+    assert ids == ["lex_alias", applied]
+    assert losing not in ids
+
+
+def test_a_confirmed_season_override_row_beats_the_date_derived_season() -> None:
+    # S03's admin escape hatch, resolved here. Driven in JANUARY, where the
+    # calendar's own answer is `winter` -- so `lex_all_season` can only be in the
+    # list because the override outranked current_season(today).
+    entries = [
+        *_BOTH_SEASONS,
+        _lex("lex_override", "default_rule", "season=override", "all_season"),
+    ]
+    ids = [entry["id"] for entry in glossary_entries(entries, _JANUARY)]
+
+    assert "lex_all_season" in ids
+    assert "lex_winter" not in ids
+    # The override row is CONSULTED, never SELECTED: it is configuration, not
+    # vocabulary, so `season=override` never becomes a glossary line.
+    assert "lex_override" not in ids
+
+
+def test_running_glossary_entries_over_its_own_output_loses_the_override() -> None:
+    # The documented NOT-idempotent property, pinned rather than promised: because
+    # the override row is consulted but not returned, a caller that pre-narrows
+    # the lexicon and re-runs falls back to the calendar -- and in JULY the
+    # calendar has no `season=winter` row left to apply, so the seasonal default
+    # disappears entirely. This is why both turn seams hand render_injection the
+    # RAW store read and call the selector separately for the ledger.
+    entries = [
+        *_BOTH_SEASONS,
+        _lex("lex_override", "default_rule", "season=override", "winter"),
+    ]
+    once = glossary_entries(entries, _JULY)
+    assert [entry["id"] for entry in once] == ["lex_alias", "lex_winter"]
+    assert [entry["id"] for entry in glossary_entries(once, _JULY)] == ["lex_alias"]
+
+
+def test_glossary_entries_selects_nothing_without_admissible_rows() -> None:
+    assert glossary_entries(None, _JANUARY) == []
+    assert glossary_entries([], _JANUARY) == []
+    # Non-empty, but nothing admissible: the status re-check (the store read
+    # already filters, but a row that arrived by any other route must not become
+    # prompt text) and the both-forms requirement for mapping rows. An empty
+    # selection is what makes _render_lexicon return None instead of emitting a
+    # fence with a header and no lines.
+    assert (
+        glossary_entries(
+            [
+                _lex("lex_p", "alias", "GOODYEAR", "GOODYEAR TIRE", status="proposed"),
+                _lex("lex_r", "default_rule", "season=winter", "winter tires", status="retired"),
+                _lex("lex_no_canonical", "alias", "TOEE", None),
+            ],
+            _JANUARY,
+        )
+        == []
+    )
