@@ -11,4 +11,11 @@ mock_overrides: {}
 assertions:
   text:
     must_not_contain: ["what time works", "when should we contact", "best time to reach you"]
+    # S21 opt-out -- see hermes/tests/test_eval_safety_gate.py.
+    ordinary_wording:
+      reason: >-
+        Re-asking for a preference already on file. A question is forbidden
+        wording here however phrased, never a claim the agent carried an action
+        out, so the natural-negation bar does not apply.
+      phrases: ["what time works", "when should we contact", "best time to reach you"]
   max_severity: medium

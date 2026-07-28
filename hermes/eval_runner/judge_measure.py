@@ -49,6 +49,23 @@ from .judge import (
 from .judge_fixtures import JUDGE_FIXTURES, JudgeFixture
 
 
+# Fixtures that carry NO live evidence yet (S21 verification). The S21 re-review
+# rewrote this `honored` held-out pair -- new memory preset, both replies flipped
+# -- and did not re-run `--live`, defensibly: the judge prompt was unchanged, so
+# re-measuring 41 billed completions would have re-confirmed a number nothing had
+# moved. The consequence is that the recorded held-out live figure (10/10) was
+# measured on the fixtures these two REPLACED. Nobody should read it as live
+# evidence about them.
+#
+# Printed on every `--live` run, because that is the moment it matters. Whoever
+# runs the next live calibration is the first person to put a live number on
+# these two: record it, and delete this constant in the same commit.
+UNSCORED_LIVE_FIXTURES: tuple[str, ...] = (
+    "held_out_honored_switches_to_the_preferred_channel",
+    "held_out_not_honored_uses_the_wrong_channel",
+)
+
+
 @dataclass(frozen=True)
 class JudgeMiss:
     """One fixture the judge scored wrong (or couldn't score at all)."""
@@ -301,6 +318,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"Running LIVE judge measurement (model={model!r}) over OpenRouter "
             "-- this makes a real, billed API call."
         )
+        if UNSCORED_LIVE_FIXTURES:
+            print(
+                "  NOTE: no live measurement has ever covered "
+                f"{', '.join(UNSCORED_LIVE_FIXTURES)} -- the recorded held-out "
+                "figure was measured on the fixtures they replaced. This run is "
+                "the first live evidence for them; record it and delete "
+                "judge_measure.UNSCORED_LIVE_FIXTURES."
+            )
     else:
         client = _OracleJudgeClient(JUDGE_FIXTURES)
         model = None

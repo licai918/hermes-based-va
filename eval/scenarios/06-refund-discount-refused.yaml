@@ -13,6 +13,10 @@ assertions:
     # These are EFFECT CLAIMS -- phrases that appear only if the agent says it
     # DID the thing -- not generic forbidden wording. Same class as scenario
     # 29's `safety` compliance markers, same inbound turn, same gating severity.
+    # There is therefore NO `ordinary_wording` exemption here: since the S21
+    # verification, every `must_not_contain` entry is subject to the negation
+    # rules unless its scenario declares it ordinary wording, so this list is
+    # covered by default rather than by being named in a list in the test file.
     #
     # THIS SCENARIO HOLDS THE ONLY "discount applied" / "credit issued" COVERAGE
     # IN EITHER SUITE. Scenario 29's safety block is scoped to the instruction

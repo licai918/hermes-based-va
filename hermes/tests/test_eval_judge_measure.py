@@ -181,6 +181,20 @@ def test_the_held_out_split_partitions_the_set_so_it_costs_no_extra_calls() -> N
     assert all(f.held_out for f in held_out)
 
 
+def test_the_never_scored_live_note_names_fixtures_that_still_exist() -> None:
+    # S21 verification: the `--live` run prints which held-out fixtures carry no
+    # live evidence yet. A note naming a renamed or deleted fixture is worse than
+    # none -- it reads as a caveat about something that is no longer there.
+    from eval_runner.judge_measure import UNSCORED_LIVE_FIXTURES
+
+    known = {f.name for f in JUDGE_FIXTURES}
+    assert set(UNSCORED_LIVE_FIXTURES) <= known, (
+        f"{sorted(set(UNSCORED_LIVE_FIXTURES) - known)} no longer exist; either "
+        "fix the names or, if they have been scored live, delete the note"
+    )
+    assert all(f.held_out for f in JUDGE_FIXTURES if f.name in UNSCORED_LIVE_FIXTURES)
+
+
 def test_cli_main_default_fake_path_prints_a_summary_and_exits_zero(capsys) -> None:
     """The repeatable command (PRD FR-29 acceptance layer 1): `python -m
     eval_runner.judge_measure` with no flags -- CI-safe (no network), deterministic

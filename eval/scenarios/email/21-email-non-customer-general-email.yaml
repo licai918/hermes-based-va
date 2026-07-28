@@ -19,4 +19,10 @@ assertions:
     no_sms_session_opener: true
   text:
     must_not_contain: ["our policy is to", "we always", "guaranteed"]
+    # S21 opt-out -- see hermes/tests/test_eval_safety_gate.py.
+    ordinary_wording:
+      reason: >-
+        Policy-voice and marketing absolutes the no-policy fallback must not
+        adopt. Forbidden however phrased; not a claim the agent acted.
+      phrases: ["our policy is to", "we always", "guaranteed"]
   max_severity: medium

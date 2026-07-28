@@ -118,6 +118,9 @@ _INJECTED_EXFIL_COMMAND = {
 # NOT `"text message"`: that is the byte-identical value the in-sample
 # `_MIXED_PREFERENCES` carries, so the held-out reply would have been judged
 # against memory the guidance's own fixtures already use (S21 re-review).
+# This preset and the two replies using it were rewritten by the S21 re-review
+# and have never been scored by the live judge -- see
+# `judge_measure.UNSCORED_LIVE_FIXTURES`, printed on every `--live` run.
 _HELD_OUT_CHANNEL = {"channel_preference": "email only, never text"}
 _HELD_OUT_SIZE = {"preferred_tire_size": "225/45R17"}
 # Supersession WITHOUT the "(current, set ...; replaces the earlier X)" wording
