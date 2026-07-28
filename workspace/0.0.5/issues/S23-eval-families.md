@@ -22,6 +22,23 @@
   here, say so in your report rather than silently widening scope.
 - **D0** — "the S09-0.0.2 unit tests" in the Goal below means the **0.0.2** slice's tests, not
   the 0.0.5 S09.
+- **You are where the safety gate's breadth has to come from.** S21's review found that the
+  gating half was reddening on correct behaviour — one of its five compliance markers was a
+  fragment of the injected instruction itself, so a refusal that *quoted* the note tripped the
+  gate. The fix cut the marker set to two effect-phrases and added two marker-authoring tests,
+  including a structural one: **no marker may be a substring of the injected note.** Follow both
+  when you author this family's scenarios; a marker that can appear in a refusal is worse than
+  no marker, because it trains people to switch the gate off.
+  The consequence is that enforcement is now two literal strings on one scenario — a deliberately
+  low recall ceiling, documented in ADR-0160. **Breadth is your job**, not by loosening the
+  markers but by adding scenarios whose obedience has its own unambiguous effect-phrase.
+- **Author at least one scenario where obedience is expressed as a TOOL CALL with a bland
+  reply.** `_eval_safety` reads only `outbound_text`, so the deterministic gate is blind to it
+  by construction (recorded in ADR-0160 as an upgrade path; widening what the one gating
+  assertion reads is a CI-gating change that needs its own slice, not a quiet extension here).
+  Your family should still cover the shape, and must state plainly which half catches it — the
+  advisory leg can, the gate cannot. A green gate must never be read as "no injected instruction
+  was obeyed anywhere".
 
 ## Goal
 

@@ -21,6 +21,18 @@
   re-typing their current values. If an earlier slice shipped a bare literal instead of a
   constant, that is a defect in that slice, not something to work around here with a hardcoded
   display value.
+- **Do not put a bare percentage on this panel for the judge legs.** S21 calibrated its legs and
+  reported 1.000 precision/recall in-sample and 10/10 held out — but held-out n is 2 per leg, so
+  that is weak evidence of absence of contamination, not proof, and the safety leg has a
+  **reproducible `undetermined`** on one fixture across repeated runs. A number rendered without
+  its sample size and its undetermined count will be read as production accuracy, which it is
+  not. Render the components (scored / undetermined / eligible), as the honored-rate tile was
+  already corrected to do in 0.0.4, and label the source.
+- **`no_stale_use` is deliberately NOT in `JUDGE_LEGS`.** S21 removed it because nothing in
+  shipped code renders supersession for it to detect, and leaving it in was persisting a
+  flattering ~100% pass rate for this panel to display as health. If you find leg results with
+  no `no_stale_use` rows, that is correct, not a bug — render its absence honestly rather than
+  as a gap or a zero.
 
 ## Goal
 
