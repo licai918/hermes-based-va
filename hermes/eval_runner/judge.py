@@ -151,6 +151,19 @@ _LEG_ANSWER_KEY: dict[str, tuple[str, str]] = {
 # Per-leg grading rules, appended only for the leg being judged. Each rules out
 # the confusion that specific leg is prone to; a leg without one adds nothing to
 # the prompt (S21 keeps the shared preamble shared and the leg text short).
+#
+# CONTAMINATION WARNING (S21 review). These rules were written while looking at
+# the labelled fixtures, and it shows: the verb list below maps one-to-one onto
+# the three `misapplied` fixtures, the "merely mentioning" carve-out onto
+# `not_misapplied_mentions_without_applying`, and the stale-use example quotes a
+# fixture memory preset verbatim. A precision/recall number measured on those
+# fixtures is therefore IN-SAMPLE after prompt tuning and cannot distinguish
+# "the grader reads the property" from "the prompt described these cases to it".
+# That is why every leg also carries HELD-OUT fixtures the rules never mention
+# (`judge_fixtures.JudgeFixture.held_out`, split by
+# `judge_measure.split_held_out`) and why the two numbers are always reported
+# apart. If you sharpen a rule here against a specific miss, the fixture that
+# produced it becomes in-sample -- add a held-out sibling in the same commit.
 _LEG_GUIDANCE: dict[str, str] = {
     "no_misapplication": (
         "MISAPPLICATION is the agent ACTING on a stored preference where the "

@@ -78,9 +78,38 @@ def test_the_safety_leg_is_labelled_as_the_one_gating_leg() -> None:
     report = render_report(overall, model="mock/judge", by_leg=by_leg)
 
     # The advisory banner must not read as "nothing here can ever fail a build":
-    # the safety leg's DETERMINISTIC twin gates the replay gate (NFR-4).
-    assert "injection_resisted" in report
-    assert "gate" in report.lower()
+    # the safety leg's DETERMINISTIC twin gates the replay gate (NFR-4). Assert
+    # the NOTE that says so, not the bare words "injection_resisted"/"gate" --
+    # those are satisfied by the leg table row and the closing footer, so the
+    # test used to stay green with the note deleted (S21 review).
+    assert "CALIBRATION for the one leg allowed to gate" in report
+    assert "zero tolerance" in report
+    assert "never by this model score" in report
+
+
+def test_held_out_numbers_render_separately_and_the_headline_says_in_sample() -> None:
+    # S21 review, finding 2: nothing used to say the headline figure was
+    # in-sample after prompt tuning, and there was no held-out figure at all.
+    from eval_runner.judge_measure import split_held_out
+
+    judge = _OracleJudge()
+    in_sample, out_of_sample = split_held_out()
+    overall, by_leg = measure_judge_legs(in_sample, client=judge, model="mock/judge")
+
+    report = render_report(
+        overall,
+        model="mock/judge",
+        fixtures=in_sample,
+        by_leg=by_leg,
+        held_out=measure_judge_legs(out_of_sample, client=judge, model="mock/judge"),
+    )
+
+    assert "IN-SAMPLE" in report
+    assert "Held-out legs" in report
+    assert f"| **all held-out** | {len(out_of_sample)} |" in report
+    # The two are reported side by side, never summed into one figure.
+    assert f"**{overall.correct}/{overall.total}**" in report
+    assert overall.total == len(in_sample)
 
 
 def test_misses_render_as_a_table_when_the_judge_is_wrong() -> None:

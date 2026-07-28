@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from eval_runner.judge import JudgeClient, resolve_judge_model
-from eval_runner.judge_measure import measure_judge_legs
+from eval_runner.judge_measure import measure_judge_legs, split_held_out
 from eval_runner.judge_report import render_report, render_skipped
 
 from hermes_runtime.gate_report_artifact import write_report
@@ -83,8 +83,24 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
     # S21 (0.0.5 FR-28): per-leg precision/recall, one pass. The headline number
     # averages a leg that fires on everything with one that never fires -- which
     # is exactly the state an advisory leg must not be shipped in unnoticed.
-    metrics, by_leg = measure_judge_legs(client=judge, model=model)
-    _emit(args.out, render_report(metrics, model=model, by_leg=by_leg))
+    #
+    # S21 review: measured as TWO runs. The rubric guidance was tuned against the
+    # in-sample fixtures, so only the held-out subset says whether the grader
+    # reads the property. They partition the set -- same total billed calls.
+    in_sample, out_of_sample = split_held_out()
+    metrics, by_leg = measure_judge_legs(in_sample, client=judge, model=model)
+    held_out = measure_judge_legs(out_of_sample, client=judge, model=model)
+    held_out_metrics = held_out[0]
+    _emit(
+        args.out,
+        render_report(
+            metrics,
+            model=model,
+            fixtures=in_sample,
+            by_leg=by_leg,
+            held_out=held_out,
+        ),
+    )
 
     # Emit the live artifact the QualityGatesPanel reads (S23, FR-32). Only on a
     # REAL measurement -- the graceful skip above writes nothing, so the panel
@@ -95,7 +111,7 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
         "python -m hermes_runtime.advisory_judge_report",
         [
             {
-                "name": "Judge precision/recall (FR-29)",
+                "name": "Judge precision/recall, in-sample (FR-29)",
                 "command": "python -m hermes_runtime.advisory_judge_report",
                 "result": (
                     f"precision {metrics.precision:.3f}, recall {metrics.recall:.3f}, "
@@ -103,7 +119,30 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
                     f"{metrics.undetermined} undetermined)"
                 ),
                 "passed": None,
-                "note": f"Judge model {model}. Advisory only -- never blocks merge (NFR-7).",
+                "note": (
+                    f"Judge model {model}. IN-SAMPLE after prompt tuning: the "
+                    "per-leg grading rules were written against these fixtures. "
+                    "Advisory only -- never blocks merge (NFR-7)."
+                ),
+            },
+            # S21 review: the held-out number reported on its own row, never
+            # averaged into the one above. Small n by construction -- a miss here
+            # is a prompt to look, not a rate to reason from.
+            {
+                "name": "Judge precision/recall, held-out (FR-29)",
+                "command": "python -m hermes_runtime.advisory_judge_report",
+                "result": (
+                    f"precision {held_out_metrics.precision:.3f}, "
+                    f"recall {held_out_metrics.recall:.3f}, "
+                    f"accuracy {held_out_metrics.accuracy:.3f} "
+                    f"({held_out_metrics.total} fixtures, "
+                    f"{held_out_metrics.undetermined} undetermined)"
+                ),
+                "passed": None,
+                "note": (
+                    "Fixtures in shapes the rubric guidance does NOT describe -- "
+                    "the only evidence here that is not in-sample. Advisory only."
+                ),
             },
             # One row PER LEG (S21, FR-28): the panel is where a leg quietly
             # rotting to 0.4 precision has to become visible, and the headline

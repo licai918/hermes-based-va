@@ -35,12 +35,14 @@ per-run cap; the job logs sampled-vs-skipped when the cap bites.
 
 **S21 (0.0.5, FR-28) -- more legs, same sample.** The job now runs every leg in
 :data:`JUDGE_LEGS` over the SAME sampled transcripts: the honored leg (unchanged,
-still the tile's number and still in its own columns) plus the two new advisory
-legs and the adversarial safety leg. Per-leg counts persist in the aggregate's
-``leg_results`` for 0.0.5 S22/S26 to read. Nothing here gates -- including the
-safety leg: a stored score can only ever report. The safety leg's gating half is
-the deterministic marker check inside the CI replay gate
+still the tile's number and still in its own columns) plus the ``no_misapplication``
+advisory leg and the adversarial safety leg. Per-leg counts persist in the
+aggregate's ``leg_results`` for 0.0.5 S22/S26 to read. Nothing here gates --
+including the safety leg: a stored score can only ever report. The safety leg's
+gating half is the deterministic marker check inside the CI replay gate
 (``eval_runner.assertions._eval_safety``), which makes no model call.
+:data:`JUDGE_LEGS` is deliberately a SUBSET of the calibrated rubric -- see the
+comment on it for which legs are held back and why.
 """
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ DEFAULT_WINDOW_SECONDS = 7 * 24 * 60 * 60
 
 # The COST BOUND (FR-31): at most this many TRANSCRIPTS per run. Each transcript
 # costs one billed OpenRouter completion PER LEG (S21), so a run's spend is
-# `cap * len(JUDGE_LEGS)` completions -- 200 at today's values, up from 50 when
+# `cap * len(JUDGE_LEGS)` completions -- 150 at today's values, up from 50 when
 # the honored leg ran alone. The cap stays expressed in transcripts because that
 # is what the sample means; the eligible population is counted before it and the
 # gap is logged (no silent truncation). Raise it only if a wider sample is worth
@@ -79,11 +81,29 @@ SAMPLE_CAP = 50
 # honored leg keeps its dedicated aggregate columns; all legs (honored included)
 # also land in `leg_results` so a reader never has to special-case one of them.
 # Each name is phrased so a PASS means the agent behaved well, so a
-# misapplication/stale-use RATE is `1 - passed/determinate` (see JudgeLeg).
+# misapplication RATE is `1 - passed/determinate` (see JudgeLeg).
+#
+# This is the PRODUCTION-SAMPLING set, deliberately smaller than the calibrated
+# rubric (`eval_runner.judge.JudgeLeg`, 5 legs) and than the fixture report's
+# `judge_report._LEG_ORDER`. A leg belongs here only if it can actually read
+# something off a sampled `Transcript`. Two cannot, and shipping their numbers
+# would put a flattering ~100% pass rate on a panel that means nothing:
+#
+#   - `no_unprompted_recall` needs the INBOUND turn ("did the customer raise it
+#     this turn?"). A Transcript carries only the reply and the injected memory,
+#     so the leg is unanswerable here. Excluded since S22-0.0.4.
+#   - `no_stale_use` needs the injected memory to RENDER supersession. Nothing
+#     shipped emits that today -- 0.0.5 S07 lands the value history, and
+#     surfacing it to the judge is not yet in any slice. Until it renders, this
+#     leg would spend ~50 completions a run to persist "no stale value present"
+#     as a ~100% pass rate that a later memory-health panel would draw as
+#     health. Excluded in the S21 review; re-enabling is ONE line here once the
+#     injection composer renders supersession. The rubric
+#     (`judge._LEG_CRITERIA`/`_LEG_GUIDANCE`) and its labelled fixtures stay in
+#     place and calibrated, so nothing has to be rebuilt.
 JUDGE_LEGS: tuple[JudgeLeg, ...] = (
     "honored",
     "no_misapplication",
-    "no_stale_use",
     "injection_resisted",
 )
 

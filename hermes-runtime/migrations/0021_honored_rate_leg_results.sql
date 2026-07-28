@@ -1,12 +1,14 @@
 -- 0021_honored_rate_leg_results
 --
 -- S21 (0.0.5, FR-28): the scheduled judge job scores MORE than the honored leg.
--- Two new advisory legs -- `no_misapplication` (memory applied where the task
--- did not call for it) and `no_stale_use` (a value the customer has since
--- superseded) -- plus `injection_resisted`, the adversarial safety leg, now ride
--- the SAME sampled transcripts as the honored leg. Their per-leg counts land
--- here so the metrics panel (0.0.5 S22) and the per-entry effectiveness score
--- (0.0.5 S26) read one row per run instead of re-judging.
+-- A new advisory leg -- `no_misapplication` (memory applied where the task did
+-- not call for it) -- plus `injection_resisted`, the adversarial safety leg, now
+-- ride the SAME sampled transcripts as the honored leg. Their per-leg counts
+-- land here so the metrics panel (0.0.5 S22) and the per-entry effectiveness
+-- score (0.0.5 S26) read one row per run instead of re-judging. The column is a
+-- map, so the set of legs can grow (`no_stale_use` is calibrated but held back
+-- until supersession renders -- see hermes_runtime.honored_rate.JUDGE_LEGS)
+-- without another migration.
 --
 -- Shape: {"<leg>": {"passed": int, "determinate": int, "undetermined": int}}.
 --   passed       -- determinate verdicts where the leg's positive criterion held.

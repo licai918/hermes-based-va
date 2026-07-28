@@ -152,6 +152,23 @@ def test_a_leg_the_judge_cannot_score_is_undetermined_not_a_failure() -> None:
     }
 
 
+def test_the_dormant_stale_use_leg_never_reaches_the_aggregate() -> None:
+    # S21 review, finding 3. `no_stale_use` is calibrated but has nothing to read
+    # in production: no shipped code renders supersession into the injected
+    # memory. Sampling it would spend ~50 completions a run to persist a ~100%
+    # pass rate that a later memory-health panel would draw as health.
+    assert "no_stale_use" not in JUDGE_LEGS
+    assert "no_unprompted_recall" not in JUDGE_LEGS  # needs the inbound turn
+
+    # ...and it stays CALIBRATED, so re-enabling is one line in JUDGE_LEGS: the
+    # rubric still builds and the labelled fixtures are still there.
+    from eval_runner.judge import build_judge_prompt
+    from eval_runner.judge_fixtures import JUDGE_FIXTURES
+
+    assert "Leg: no_stale_use" in build_judge_prompt(reply="x", leg="no_stale_use")
+    assert [f for f in JUDGE_FIXTURES if f.leg == "no_stale_use"]
+
+
 def test_leg_results_round_trip_through_the_aggregate_row(datastore) -> None:
     _driver, conn, _schema = datastore
     legs = {leg: {"passed": 2, "determinate": 3, "undetermined": 1} for leg in JUDGE_LEGS}
@@ -173,10 +190,19 @@ def test_leg_results_round_trip_through_the_aggregate_row(datastore) -> None:
         metric = honored_rate_metric(cur)
 
     assert metric["leg_results"] == legs
-    # Pre-S21 rows (no leg_results) read as an honest empty map, never a zero rate.
+    # Pre-S21 rows read as an honest empty map, never a zero rate. Insert one the
+    # way a pre-S21 row actually arrived -- WITHOUT the column -- so migration
+    # 0021's `DEFAULT '{}'::jsonb` is what produces the empty map. Going through
+    # record_honored_rate_aggregate would send an explicit '{}' and never
+    # exercise the default at all (S21 review).
     with conn.cursor() as cur:
-        record_honored_rate_aggregate(
-            cur, HonoredRateAggregate(1, 1, 0, 1, 604800)
+        cur.execute(
+            """
+            INSERT INTO honored_rate_aggregate
+                (honored_count, sample_size, undetermined_count, candidate_total,
+                 window_seconds)
+            VALUES (1, 1, 0, 1, 604800)
+            """
         )
     conn.commit()
     with conn.cursor() as cur:

@@ -29,6 +29,14 @@ from .judge_measure import JudgeMetrics
 # edits the one advisory comment instead of posting a new one each time.
 MARKER = "<!-- s20-advisory-judge-report -->"
 
+# Every CALIBRATED leg, in report order -- deliberately wider than
+# `hermes_runtime.honored_rate.JUDGE_LEGS`, which is the PRODUCTION-SAMPLING set.
+# A leg is calibrated here as soon as it has labelled fixtures; it joins
+# production sampling only once it can read something off a live transcript.
+# `no_unprompted_recall` cannot (it needs the inbound turn) and `no_stale_use`
+# cannot yet (nothing shipped renders supersession) -- see the comment on
+# JUDGE_LEGS. Measuring a leg here costs fixtures, not billed production traffic,
+# so the two lists are meant to differ.
 _LEG_ORDER: tuple[JudgeLeg, ...] = (
     "honored",
     "no_unprompted_recall",
@@ -57,6 +65,51 @@ _SAFETY_LEG_NOTE = (
 )
 
 
+# S21 review, finding 2. Nothing used to say the headline figure was in-sample
+# after prompt tuning, which is exactly the claim contamination undermines.
+_IN_SAMPLE_NOTE = (
+    "**These are IN-SAMPLE numbers.** The per-leg grading rules in "
+    "`judge._LEG_GUIDANCE` were written and tuned against these fixtures, so a "
+    "high score here partly measures the prompt describing them. The held-out "
+    "table below is the only evidence about shapes the rubric never named."
+)
+
+_HELD_OUT_NOTE = (
+    "Fixtures deliberately built in failure shapes and memory renderings the "
+    "rubric guidance does NOT describe — the honest read on whether the grader "
+    "reads the property or recognises a described shape. Small n by "
+    "construction: treat a miss here as a signal to look, not as a rate."
+)
+
+
+def _held_out_section(
+    metrics: JudgeMetrics, by_leg: Mapping[str, JudgeMetrics]
+) -> list[str]:
+    lines = [
+        "",
+        "### Held-out legs (reported separately, never averaged in)",
+        "",
+        _HELD_OUT_NOTE,
+        "",
+        "| Leg | Judged | Judge-correct | Misses | Precision | Recall |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for leg in _LEG_ORDER:
+        leg_metrics = by_leg.get(leg)
+        if leg_metrics is None:
+            continue
+        lines.append(
+            f"| `{leg}` | {leg_metrics.total} | {leg_metrics.correct} | "
+            f"{len(leg_metrics.misses)} | {leg_metrics.precision:.3f} | "
+            f"{leg_metrics.recall:.3f} |"
+        )
+    lines.append(
+        f"| **all held-out** | {metrics.total} | {metrics.correct} | "
+        f"{len(metrics.misses)} | {metrics.precision:.3f} | {metrics.recall:.3f} |"
+    )
+    return lines
+
+
 def _leg_totals(fixtures: Sequence[JudgeFixture]) -> dict[str, int]:
     totals: dict[str, int] = {leg: 0 for leg in _LEG_ORDER}
     for fixture in fixtures:
@@ -77,6 +130,7 @@ def render_report(
     model: str,
     fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
     by_leg: Optional[Mapping[str, JudgeMetrics]] = None,
+    held_out: Optional[tuple[JudgeMetrics, Mapping[str, JudgeMetrics]]] = None,
 ) -> str:
     """Render a completed advisory judge run to markdown (verdicts, legs, misses).
 
@@ -84,6 +138,12 @@ def render_report(
     adds per-leg precision/recall to the Legs table. It is optional so the
     pre-S21 single-metrics call still renders; without it the table falls back to
     judged/correct/miss counts only.
+
+    ``held_out`` (S21 review) is the return value of a SECOND
+    ``measure_judge_legs`` call over
+    :func:`eval_runner.judge_measure.split_held_out`'s held-out subset. Supplied,
+    it renders its own table; the two are never averaged, because the in-sample
+    numbers are measured on the fixtures the rubric guidance was tuned against.
     """
     totals = _leg_totals(fixtures)
     leg_misses = _leg_misses(metrics)
@@ -96,12 +156,14 @@ def render_report(
         "",
         f"- Judge model: `{model}`",
         (
-            f"- Scored **{metrics.correct}/{metrics.total}** correct · "
+            f"- In-sample: scored **{metrics.correct}/{metrics.total}** correct · "
             f"precision `{metrics.precision:.3f}` · recall `{metrics.recall:.3f}` · "
             f"accuracy `{metrics.accuracy:.3f}` · undetermined `{metrics.undetermined}`"
         ),
         "",
-        "### Legs",
+        "### Legs (in-sample)",
+        "",
+        _IN_SAMPLE_NOTE,
         "",
         _SAFETY_LEG_NOTE,
         "",
@@ -128,6 +190,9 @@ def render_report(
                 else " — | — |"
             )
         lines.append(row)
+
+    if held_out is not None:
+        lines += _held_out_section(*held_out)
 
     lines += ["", "### Misses (advisory — data, not a gate)", ""]
     if metrics.misses:
@@ -177,7 +242,7 @@ def render_skipped(reason: str, *, marker: str = MARKER) -> str:
 
 def demo() -> None:  # ponytail: one runnable self-check, no framework
     """Self-check: render both paths from a mock-driven metrics object."""
-    from .judge_measure import measure_judge_legs
+    from .judge_measure import measure_judge_legs, split_held_out
 
     class _MockJudge:
         # A recorded/mock judge response: always "yes" — wrong on the ground-truth
@@ -185,14 +250,23 @@ def demo() -> None:  # ponytail: one runnable self-check, no framework
         def complete(self, prompt: str, *, model: str) -> str:
             return '{"verdict": "yes", "reason": "mock always-positive"}'
 
-    metrics, by_leg = measure_judge_legs(client=_MockJudge(), model="mock/judge")
-    report = render_report(metrics, model="mock/judge", by_leg=by_leg)
+    judge = _MockJudge()
+    in_sample, out_of_sample = split_held_out()
+    metrics, by_leg = measure_judge_legs(in_sample, client=judge, model="mock/judge")
+    report = render_report(
+        metrics,
+        model="mock/judge",
+        fixtures=in_sample,
+        by_leg=by_leg,
+        held_out=measure_judge_legs(out_of_sample, client=judge, model="mock/judge"),
+    )
     assert MARKER in report
     assert "Advisory only" in report
     assert "precision `" in report
     for leg in _LEG_ORDER:
         assert f"| `{leg}` |" in report
     assert "| Precision | Recall |" in report
+    assert "IN-SAMPLE" in report and "all held-out" in report
     # Always-positive judge misses every ground-truth negative -> a non-empty misses table.
     assert metrics.misses and "Judge said" in report
 

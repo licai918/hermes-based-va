@@ -135,6 +135,27 @@ def measure_judge(
     )
 
 
+def split_held_out(
+    fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+) -> tuple[tuple[JudgeFixture, ...], tuple[JudgeFixture, ...]]:
+    """``(in_sample, held_out)`` -- the contamination split (S21 review).
+
+    :data:`eval_runner.judge._LEG_GUIDANCE` was written against the in-sample
+    fixtures (its verb list, its "merely mentioning" carve-out, and a memory
+    rendering it quotes verbatim all map onto specific ones), so an in-sample
+    precision of 1.000 partly measures the prompt describing those fixtures. The
+    held-out fixtures use shapes the guidance never mentions; they are scored and
+    reported on their own, never averaged into the in-sample figure.
+
+    The two subsets PARTITION the set, so measuring both costs exactly what
+    measuring the whole set once costs -- one billed completion per fixture.
+    """
+    return (
+        tuple(f for f in fixtures if not f.held_out),
+        tuple(f for f in fixtures if f.held_out),
+    )
+
+
 def _combine(parts: Sequence[JudgeMetrics]) -> JudgeMetrics:
     """Sum per-leg metrics into the whole-set metrics.
 
@@ -247,28 +268,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         client = _OracleJudgeClient(JUDGE_FIXTURES)
         model = None
 
-    metrics, by_leg = measure_judge_legs(JUDGE_FIXTURES, client=client, model=model)
-
-    print(
-        f"judge_measure: total={metrics.total} correct={metrics.correct} "
-        f"precision={metrics.precision:.3f} recall={metrics.recall:.3f} "
-        f"accuracy={metrics.accuracy:.3f} undetermined={metrics.undetermined}"
-    )
-    # Per-leg is the number that decides whether a leg is trustworthy (S21).
-    for leg in sorted(by_leg):
-        leg_metrics = by_leg[leg]
+    # Reported as two separate runs, never averaged (S21 review): the in-sample
+    # number is measured on the fixtures the rubric guidance was tuned against,
+    # the held-out number on shapes it never describes. Together they still cost
+    # one completion per fixture -- the subsets partition the set.
+    in_sample, held_out = split_held_out(JUDGE_FIXTURES)
+    for label, subset in (("in-sample", in_sample), ("held-out", held_out)):
+        if not subset:
+            continue
+        metrics, by_leg = measure_judge_legs(subset, client=client, model=model)
         print(
-            f"  leg={leg} n={leg_metrics.total} correct={leg_metrics.correct} "
-            f"precision={leg_metrics.precision:.3f} "
-            f"recall={leg_metrics.recall:.3f} "
-            f"accuracy={leg_metrics.accuracy:.3f} "
-            f"undetermined={leg_metrics.undetermined}"
+            f"judge_measure [{label}]: total={metrics.total} "
+            f"correct={metrics.correct} precision={metrics.precision:.3f} "
+            f"recall={metrics.recall:.3f} accuracy={metrics.accuracy:.3f} "
+            f"undetermined={metrics.undetermined}"
         )
-    for miss in metrics.misses:
-        print(
-            f"  MISS leg={miss.fixture.leg} expected={miss.fixture.expected_passed} "
-            f"got={miss.got_passed}: {miss.reason}"
-        )
+        # Per-leg is the number that decides whether a leg is trustworthy (S21).
+        for leg in sorted(by_leg):
+            leg_metrics = by_leg[leg]
+            print(
+                f"  [{label}] leg={leg} n={leg_metrics.total} "
+                f"correct={leg_metrics.correct} "
+                f"precision={leg_metrics.precision:.3f} "
+                f"recall={leg_metrics.recall:.3f} "
+                f"accuracy={leg_metrics.accuracy:.3f} "
+                f"undetermined={leg_metrics.undetermined}"
+            )
+        for miss in metrics.misses:
+            print(
+                f"  [{label}] MISS leg={miss.fixture.leg} "
+                f"expected={miss.fixture.expected_passed} "
+                f"got={miss.got_passed}: {miss.reason}"
+            )
 
     return 0
 

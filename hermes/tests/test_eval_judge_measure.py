@@ -167,6 +167,20 @@ def test_each_fixture_is_judged_exactly_once_across_the_legs() -> None:
     assert client.calls == len(JUDGE_FIXTURES)
 
 
+def test_the_held_out_split_partitions_the_set_so_it_costs_no_extra_calls() -> None:
+    # S21 review: measuring in-sample and held-out separately must not double
+    # the billed calls -- the subsets partition, so every fixture is judged once.
+    from eval_runner.judge_measure import split_held_out
+
+    in_sample, held_out = split_held_out()
+
+    assert in_sample and held_out
+    assert len(in_sample) + len(held_out) == len(JUDGE_FIXTURES)
+    assert not {f.name for f in in_sample} & {f.name for f in held_out}
+    assert all(not f.held_out for f in in_sample)
+    assert all(f.held_out for f in held_out)
+
+
 def test_cli_main_default_fake_path_prints_a_summary_and_exits_zero(capsys) -> None:
     """The repeatable command (PRD FR-29 acceptance layer 1): `python -m
     eval_runner.judge_measure` with no flags -- CI-safe (no network), deterministic
@@ -175,9 +189,16 @@ def test_cli_main_default_fake_path_prints_a_summary_and_exits_zero(capsys) -> N
 
     exit_code = main([])
 
+    from eval_runner.judge_measure import split_held_out
+
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert f"total={len(JUDGE_FIXTURES)}" in out
+    # S21 review: reported as two runs, never one averaged number -- the
+    # in-sample fixtures are the ones the rubric guidance was tuned against.
+    in_sample, held_out = split_held_out()
+    assert f"judge_measure [in-sample]: total={len(in_sample)}" in out
+    assert f"judge_measure [held-out]: total={len(held_out)}" in out
+    assert len(in_sample) + len(held_out) == len(JUDGE_FIXTURES)
     assert "precision=1.000" in out
     assert "recall=1.000" in out
     assert "MISS" not in out  # oracle client scores its own labels perfectly

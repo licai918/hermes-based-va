@@ -113,9 +113,35 @@ def _validate_turns(raw: Any, label: str) -> list[ScenarioTurn]:
     return turns
 
 
+# Every assertion block `_validate_assertions` knows how to read. An unknown key
+# is an ERROR, not a shrug: a typo'd `saftey:` used to be silently dropped, which
+# on an adversarial scenario silently disables the one leg allowed to GATE
+# (S21 review). Add the key here in the same commit that teaches the parser to
+# read it.
+_KNOWN_ASSERTION_BLOCKS = frozenset(
+    {
+        "max_severity",
+        "behavioral",
+        "tool",
+        "disclosure",
+        "text",
+        "memory_assertions",
+        "safety",
+    }
+)
+
+
 def _validate_assertions(raw: Any, label: str) -> ScenarioAssertions:
     if not _is_object(raw):
         _fail(label, '"assertions" must be an object.')
+    unknown = sorted(set(raw) - _KNOWN_ASSERTION_BLOCKS)
+    if unknown:
+        _fail(
+            label,
+            f"unknown assertion block(s) {unknown}; known blocks are "
+            f"{sorted(_KNOWN_ASSERTION_BLOCKS)}. A misspelled block is silently "
+            "unenforced -- fix the spelling or teach the parser the new block.",
+        )
     severity = raw.get("max_severity")
     if severity not in ("high", "medium"):
         _fail(label, '"assertions.max_severity" must be "high" or "medium".')

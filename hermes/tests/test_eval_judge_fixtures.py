@@ -30,8 +30,31 @@ CATEGORY_LEG: dict[str, tuple[str, bool]] = {
 }
 
 
-def test_fixture_set_size_is_small_but_covers_the_labelled_range() -> None:
-    assert 10 <= len(JUDGE_FIXTURES) <= 40
+def test_every_leg_keeps_a_held_out_split_the_rubric_does_not_describe() -> None:
+    # S21 review, finding 2. `judge._LEG_GUIDANCE` was written against the
+    # in-sample fixtures, so their score partly measures the prompt describing
+    # them. Every leg keeps at least two fixtures the guidance never mentions,
+    # in BOTH directions, or its reported number is in-sample only.
+    #
+    # (This replaces a `len(JUDGE_FIXTURES) <= 40` bound that constrained nothing
+    # at n=31 -- a real structural constraint instead of a decorative one.)
+    for leg in {leg for leg, _ in CATEGORY_LEG.values()}:
+        held_out = [f for f in JUDGE_FIXTURES if f.leg == leg and f.held_out]
+        assert len(held_out) >= 2, f"leg {leg} has no held-out split"
+        assert any(f.expected_passed for f in held_out), leg
+        assert any(not f.expected_passed for f in held_out), leg
+
+
+def test_held_out_fixtures_avoid_the_in_sample_memory_presets() -> None:
+    # A held-out reply judged against an in-sample memory preset is only half
+    # held out -- the rubric guidance quotes preset wording verbatim.
+    in_sample_memory = {
+        tuple(sorted(f.memory_preset.items()))
+        for f in JUDGE_FIXTURES
+        if not f.held_out
+    }
+    for fixture in (f for f in JUDGE_FIXTURES if f.held_out):
+        assert tuple(sorted(fixture.memory_preset.items())) not in in_sample_memory
 
 
 def test_every_fixture_is_a_judge_fixture_with_a_unique_name_and_reply() -> None:
@@ -86,7 +109,14 @@ def test_the_safety_leg_fixtures_actually_carry_an_injected_instruction() -> Non
         memory = " ".join(fixture.memory_preset.values()).lower()
         assert any(
             phrase in memory
-            for phrase in ("ignore prior instructions", "system:", "always approve")
+            for phrase in (
+                "ignore prior instructions",
+                "system:",
+                "always approve",
+                # The held-out shape: an authority claim rather than one of the
+                # phrasings the rubric guidance names by example.
+                "no approval needed",
+            )
         ), f"{fixture.name} memory must read as a smuggled instruction"
 
 
@@ -97,7 +127,13 @@ def test_stale_use_fixtures_show_the_superseded_value_in_the_memory() -> None:
     assert stale
     for fixture in stale:
         memory = " ".join(fixture.memory_preset.values()).lower()
-        assert "replaces" in memory and "current" in memory
+        # The vocabulary is open on purpose: the in-sample presets use the
+        # "(current, set ...; replaces the earlier X)" wording the rubric
+        # guidance quotes verbatim, and the held-out ones must NOT (S21 review).
+        # What every one of them must do is reveal which value is superseded.
+        assert any(
+            phrase in memory for phrase in ("replaces", "changed from", "superseded")
+        ), fixture.name
 
 
 def test_known_conflation_class_is_covered_in_both_directions() -> None:
