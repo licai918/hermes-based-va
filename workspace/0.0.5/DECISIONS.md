@@ -268,6 +268,21 @@ emit an append-only hit event (migration 0026) or reuse S09's ledger rows as the
 `hit_count` on the lexicon row is a **materialized column maintained by a scheduled rollup**,
 never written in-turn. S20 and S26 read the materialized column.
 
+**Two properties of that column that its name does not reveal — S20 and S26 both read it and
+neither will read migration 0026:**
+
+- **`hit_count` is a LIFETIME total, not a windowed one.** The rollup consumes its hit events, so
+  the events are gone afterwards and the column only ever grows. **Windowed usage — "did this
+  entry fire in the last N days" — must come from S09's `injection_ledger`, not from here.** An
+  entry that fired heavily a year ago and never since has a large `hit_count` and zero recent
+  usage, which is precisely the retirement candidate S20 exists to find.
+- **The rollup must never touch `updated_at`.** The console derives its "(edited …)" marker from
+  `updated_at > (decided_at ?? created_at)` and `lexicon_version` is `MAX(updated_at)`, so a
+  rollup stamping it would make every hot entry render "the content may not be the decider's"
+  beside a decider who never edited, and would churn the cache version on hit traffic — building
+  a cache and its own defeat in one slice. Pinned by `test_the_rollup_does_not_move_updated_at`
+  and `test_hit_traffic_never_moves_the_lexicon_version`.
+
 ## D7. S02 — edit semantics are PINNED (the either/or is withdrawn)
 
 "In-place UPDATE with an old→new audit row" and "retire-old-then-write-new" are not
