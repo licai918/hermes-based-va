@@ -8,11 +8,15 @@ automated run already proved.
 reading the rows back out of Postgres. The **browser DOM layer** has since been
 executed too — see [The browser pass](#the-browser-pass).
 
-The one step that does NOT pass is **PAC-1 step 2**, the simulator-driven
-subject, and it fails for a real reason rather than an environmental one:
-**nothing in the running system ever marks a turn `auto_handled`**, so the
-auto-handled audit list can only ever contain fixtures. See
-[Why PAC-1 step 2 fails](#why-pac-1-step-2-fails).
+**PAC-1 step 2** — the simulator-driven subject — failed on the first run for a
+real reason rather than an environmental one: nothing in the running system ever
+marked a turn `auto_handled`, so the auto-handled audit list could only contain
+fixtures. That has since been fixed; see
+[Why PAC-1 step 2 failed, and what fixed it](#why-pac-1-step-2-failed-and-what-fixed-it).
+The fix ships with tests that drive the real writers, but the **live re-run is
+still owed** — the gateway and turn worker run from a baked
+`toee-hermes-runtime:local` image, so proving it end to end again needs that
+image rebuilt.
 
 ---
 
@@ -211,7 +215,7 @@ capture really did fail. That is the double-send hole, shut.
 
 ---
 
-## Why PAC-1 step 2 fails
+## Why PAC-1 step 2 failed, and what fixed it
 
 Driving a real conversation through the simulator works end to end — the gateway
 accepts the tokened webhook, the turn worker runs the turn, and the agent answers
@@ -247,6 +251,45 @@ external mechanism is considered live.
 It is also exactly the defect the automated run could not have caught: that run
 *created its subject as a fixture with `auto_handled = true`*. Only driving a real
 conversation exposes it — which is why this step was left for a human pass.
+
+### The fix
+
+The flag is now written rather than hardcoded, and the signal it reads is the
+one already present in the data: **the gateway's per-inbound case is a
+placeholder and carries no `contact_reason`; a real escalation always has one.**
+So `auto_handled` is "no *triaged* case is open on this thread", which keeps the
+placeholder — and therefore keeps every conversation visible in the rep queue.
+Nothing about queue behaviour changes.
+
+Three things had to move together:
+
+1. Both gateway writers compute the flag instead of hardcoding `FALSE`. The
+   outbound writer decides it, because the escalation happens *during* the turn —
+   at inbound the agent has not run yet, so it would always read "not escalated".
+2. When the turn did escalate, the inbound that triggered it is settled to
+   `FALSE` too. Otherwise the customer's message reads auto-handled while the
+   reply escalating it does not, and `active_case_segment` hides the very turn
+   that opened the case.
+3. `create_case` now attaches to the thread it was raised from (via the
+   ADR-0107 turn binding on the context). It previously dropped the link
+   entirely — the mock twin accepted `channelThreadId` and the Postgres handler
+   ignored it — so an agent escalation was invisible to every thread-scoped
+   read. Without this, fixing only the writers would have made escalated
+   conversations show up *as auto-handled*, which is worse than the original bug.
+
+`contact_reason` is not a required parameter, so an escalation raised from a
+live turn without one is recorded as `unspecified` rather than being left
+indistinguishable from the placeholder.
+
+This reproduces the `0005_dev_bootstrap` seed exactly: `thread_ar`'s April pair
+is auto-handled, and both June turns — after `case_ar_urgent` opened with
+`contact_reason = 'order_status'` — are not.
+
+Six of the seven behaviours above are pinned by tests that drive the **real**
+writers (`test_postgres_gateway_store.py`), each verified to go red when its own
+part of the fix is reverted. Every pre-existing test in the tree seeds
+`auto_handled` by hand, which is precisely how the writer stayed unimplemented
+from the first Postgres port until a live acceptance run went looking.
 
 ---
 

@@ -413,3 +413,192 @@ def test_replayed_opt_out_sends_one_confirmation_through_postgres(datastore) -> 
 
     assert codes == [200] * 5
     assert len(sent) == 1
+
+
+# --- auto_handled: the flag the Auto-Handled Audit View reads (ADR-0037) -----
+#
+# These drive the REAL writers. Every other test in the tree seeds auto_handled
+# by hand, which is exactly how the writer stayed unimplemented from the first
+# Postgres port (a5295c6) until a live PAC run drove a real conversation and
+# found the audit list permanently empty.
+
+
+def _accepted_inbound(conn, *, event_id: str, phone: str, body: str):
+    from toee_hermes.gateway.ingress import SessionIdentitySnapshot
+    from toee_hermes.gateway.normalize import InboundChannelEvent
+    from toee_hermes.gateway.pipeline import InboundDecision
+
+    store = PostgresGatewayStore(connection=conn)
+    event = InboundChannelEvent(
+        channel="simpletexting_sms",
+        provider="simpletexting",
+        event_id=event_id,
+        conversation_id=f"conv-{event_id}",
+        from_phone=phone,
+        body=body,
+        received_at="2026-01-01T00:00:00Z",
+        raw_event_type="message.created",
+        media_urls=None,
+    )
+    decision = InboundDecision(
+        status=200,
+        action="enqueue",
+        stage="accept",
+        event=event,
+        snapshot=SessionIdentitySnapshot(
+            outcome="unmatched_caller", resolved_at="2026-01-01T00:00:00Z"
+        ),
+    )
+    context, _created = store.persist_accepted_inbound(decision)
+    return store, context
+
+
+def _auto_handled_ids(driver):
+    result = execute_tool(
+        tool="toee_workbench_read",
+        action="list_auto_handled",
+        params={},
+        context=ToolExecutionContext(profile="internal_copilot", user_id="acct_supervisor"),
+        driver=driver,
+    )
+    assert result.ok
+    return [r["record_id"] for r in result.data["records"]]
+
+
+def test_a_conversation_the_agent_handles_alone_reaches_the_audit_list(datastore) -> None:
+    """The whole point of the Auto-Handled Audit View: a supervisor can sample
+    conversations the agent completed on its own. Nothing ever marked the turns,
+    so the list could only show hand-seeded fixtures."""
+    driver, conn, _ = datastore
+    store, context = _accepted_inbound(
+        conn,
+        event_id="evt-auto-1",
+        phone="+15559876543",
+        body="Do you carry 225/65R17 winter tires?",
+    )
+    store.persist_agent_outbound(context, "Yes, we stock that size.")
+
+    assert context.customer_thread_id in _auto_handled_ids(driver)
+
+
+def test_an_escalated_conversation_stays_out_of_the_audit_list(datastore) -> None:
+    """The other edge, and the dangerous one: a conversation the agent could NOT
+    finish must never be offered up as auto-handled. It only holds because the
+    escalating create_case attaches to the thread it was raised from."""
+    driver, conn, _ = datastore
+    store, context = _accepted_inbound(
+        conn,
+        event_id="evt-esc-1",
+        phone="+15559876599",
+        body="My invoice is wrong and I need a refund today.",
+    )
+    created = execute_tool(
+        tool="toee_case",
+        action="create_case",
+        params={"contact_reason": "billing", "summary": "invoice dispute"},
+        context=ToolExecutionContext(
+            profile="customer_service_external", sms_session_id=context.sms_session_id
+        ),
+        driver=driver,
+    )
+    assert created.ok
+    store.persist_agent_outbound(context, "This is now with a team member.")
+
+    assert context.customer_thread_id not in _auto_handled_ids(driver)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT auto_handled FROM message_turn WHERE customer_thread_id = %s"
+            " ORDER BY created_at",
+            (context.customer_thread_id,),
+        )
+        flags = [r[0] for r in cur.fetchall()]
+    # Including the INBOUND that triggered the escalation: it belongs to the
+    # human-intervention segment too, even though it was written before the
+    # agent knew it would escalate.
+    assert flags == [False, False]
+
+
+def test_gateway_placeholder_case_stays_untriaged(datastore) -> None:
+    """The contract ``_escalation_case_open`` rests on.
+
+    The gateway opens a case for EVERY accepted inbound so Tier B can show the
+    thread. That placeholder must stay without a contact_reason -- giving it one
+    would read as an escalation and silently empty the audit view again, which
+    is precisely the failure this group of tests exists to prevent.
+    """
+    _driver, conn, _ = datastore
+    _store, context = _accepted_inbound(
+        conn,
+        event_id="evt-placeholder-1",
+        phone="+15559876577",
+        body="What are your hours today?",
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT contact_reason FROM cases WHERE customer_thread_id = %s",
+            (context.customer_thread_id,),
+        )
+        reasons = [r[0] for r in cur.fetchall()]
+
+    assert reasons == [None]
+
+
+def test_escalating_mid_turn_triages_the_placeholder_instead_of_duplicating_it(
+    datastore,
+) -> None:
+    """One conversation, one case. The gateway has already opened a placeholder
+    for the thread, so an escalation raised during that turn should fill in the
+    reason rather than leave a second, unlinked case beside it."""
+    driver, conn, _ = datastore
+    _store, context = _accepted_inbound(
+        conn,
+        event_id="evt-esc-2",
+        phone="+15559876588",
+        body="I was double charged.",
+    )
+    execute_tool(
+        tool="toee_case",
+        action="create_case",
+        params={"contact_reason": "billing", "urgency": "urgent"},
+        context=ToolExecutionContext(
+            profile="customer_service_external", sms_session_id=context.sms_session_id
+        ),
+        driver=driver,
+    )
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT contact_reason, urgency FROM cases WHERE customer_thread_id = %s",
+            (context.customer_thread_id,),
+        )
+        rows = cur.fetchall()
+
+    assert rows == [("billing", "urgent")]
+
+
+def test_escalating_without_a_stated_reason_still_counts_as_escalation(datastore) -> None:
+    """contact_reason is not a required parameter, so a model can escalate
+    without saying why. That must not leave the case indistinguishable from the
+    untriaged gateway placeholder -- otherwise the conversation keeps being
+    offered for auto-handled sampling after it was handed to a human."""
+    driver, conn, _ = datastore
+    store, context = _accepted_inbound(
+        conn,
+        event_id="evt-esc-3",
+        phone="+15559876566",
+        body="Something is very wrong with my account.",
+    )
+    created = execute_tool(
+        tool="toee_case",
+        action="create_case",
+        params={},  # no contact_reason -- the hole this pins shut
+        context=ToolExecutionContext(
+            profile="customer_service_external", sms_session_id=context.sms_session_id
+        ),
+        driver=driver,
+    )
+    assert created.ok
+    store.persist_agent_outbound(context, "A team member will pick this up.")
+
+    assert context.customer_thread_id not in _auto_handled_ids(driver)
