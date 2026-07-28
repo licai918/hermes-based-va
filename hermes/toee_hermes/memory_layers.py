@@ -200,9 +200,19 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # judgments ABOUT the system's output, never content the system reads back
     # into a turn. memory-layers.md enumerates L3 Operational as Follow-up Case
     # / Workbench Audit Log / auto-handled evidence / eval records -- these
-    # tables are none of those and appear nowhere in the layer map, so the three
-    # writes declare no layer (see hermes-runtime/hermes_runtime/datastore/
-    # handlers/feedback.py). list_feedback is a bounded read over both tables.
+    # tables are none of those, so the three writes declare no layer (see
+    # hermes-runtime/hermes_runtime/datastore/handlers/feedback.py).
+    # list_feedback is a bounded read over both tables.
+    #
+    # This USED to say "appear nowhere in the layer map", which made the
+    # declaration rest on the map's silence rather than on a decision -- and a
+    # reader would plausibly have expected these next to "eval records" under
+    # L3. 0.0.5 S06 placed them explicitly: memory-layers.md's "Outside the
+    # layer model, and why" section now carries a row for them, with the rule
+    # that decides it. These four Nones are that row's other half. (Feedback
+    # DERIVED into a proposal is a different thing and does become memory --
+    # that is the `feedback_derived` provenance on an L6/L7 proposal, declared
+    # on the propose action that writes it.)
     ("toee_feedback", "submit_interaction_review"): None,
     ("toee_feedback", "record_draft_outcome"): None,
     ("toee_feedback", "submit_draft_rating"): None,

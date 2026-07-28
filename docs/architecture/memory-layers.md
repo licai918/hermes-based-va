@@ -11,7 +11,8 @@ so it cannot drift out of sync with them.
 > **Maintenance rule.** When an ADR lands that changes a layer, update that layer's row **in the
 > same PR**. No separate doc-maintenance ritual — the ADR is the trigger.
 
-*Last updated: 2026-07-20 (0.0.3 S12 — L5 knowledge ADR + gates harness).*
+*Last updated: 2026-07-28 (0.0.5 S06 — L7 semantic lexicon shipped; the L1–L7 routing
+decision tree and the L7 boundary rows land here).*
 
 ---
 
@@ -25,15 +26,48 @@ so it cannot drift out of sync with them.
 | **L4** | Customer Memory | 4 governed preference slots per customer | `toee_va` Postgres | **exact** `WHERE binding_key = ?`, injected per turn | ✅ shipped (0.0.1 + 0.0.2) |
 | **L5** | **Knowledge** | shared, non-PII company/product corpus | **separate `toee_knowledge` DB** | **hybrid lexical FTS + dense embedding**, top-k chunks | ✅ **shipped** ([ADR-0149](../adr/0149-hybrid-lexical-embedding-knowledge-retriever.md)) |
 | **L6** | **Agent experience** | what the agent learns from doing the job (operational, non-PII) | `toee_va` Postgres (`agent_experience`) | confirmed-only, bounded newest-first, injected per gated turn | ✅ **shipped** ([ADR-0152](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md)) |
-| **L7** | **Semantic lexicon** | domain language: surface→canonical aliases, notation normalizers, contextual defaults (shared, non-PII) | planned: `toee_va` Postgres (`semantic_lexicon`) | planned: **deterministic param normalization (hard)** + bounded `<confirmed_lexicon>` glossary (soft) | 🔬 **exploring** ([0.0.5 exploration](../../workspace/0.0.5/EXPLORATION.md)) |
+| **L7** | **Semantic lexicon** | domain language: surface→canonical aliases, notation normalizers, contextual defaults (shared, non-PII) | `toee_va` Postgres (`semantic_lexicon`) | **deterministic param normalization (hard)** + confirmed-only, bounded newest-20 `<confirmed_lexicon>` glossary per gated turn (soft) | ✅ **shipped** ([ADR-0161](../adr/0161-l7-semantic-lexicon-governed-domain-language-and-its-two-seams.md)) |
 
 L1–L4 are the **four-layer model** of [ADR-0110](../adr/0110-native-memory-four-layer-model.md).
-L5 (Knowledge) and L6 (Agent experience) are the 0.0.3 additions, both now shipped — see below.
-L7 (Semantic lexicon) is a 0.0.5 exploration — see below.
+L5 (Knowledge) and L6 (Agent experience) are the 0.0.3 additions; L7 (Semantic lexicon) is the
+0.0.5 addition. All three are now shipped — see below.
 
-The same Postgres also holds **Workbench Accounts** and **knowledge publish state** (the 6
-governed operational-policy slots + history). Those sit **outside** the four-layer model; they are
-authored content, not memory.
+The same Postgres also holds **Workbench Accounts**, **knowledge publish state** (the 6
+governed operational-policy slots + history), and the **ADR-0154 quality-feedback stores**
+(`interaction_review`, `draft_feedback`). Those sit **outside** the seven-layer model — see
+[Outside the layer model](#outside-the-layer-model-and-why) for why, and for the rule that
+decides it.
+
+---
+
+## Routing — which layer owns a fact
+
+Every branch terminates, which is the point: a branch that ran out of options would be a gap,
+and a fact with two homes would be an overlap. From
+[the 0.0.5 exploration](../../workspace/0.0.5/EXPLORATION.md).
+
+```
+Is it about ONE customer?
+├─ yes → identity link? L1 | the words themselves? L2 | a case/action? L3 | a preference/habit? L4
+├─ no — is it a LIVE business fact (price/stock/order/AR)? → tool read; forbidden in every layer
+└─ no — shared & static →
+   ├─ expressible as surface→canonical or a structured rule ("X means Y")? → L7
+   ├─ prose fact a customer would ask, answer belongs on the website? → L5 (edit Shopify)
+   └─ only expressible as a how-to paragraph? → L6  ← the catch-all shape
+```
+
+**The three easiest-to-blur boundaries:**
+
+- **L6 vs L7** — if it CAN be structured it MUST be L7; only what can't stays L6.
+- **L5 vs L7** — L5 owns CONTENT ("what to know about 205/55R16": prose, retrievable, *may*
+  miss); L7 owns LANGUAGE ("2055516 IS 205/55R16": a mapping, must *not* miss). They compose:
+  normalize first (L7), retrieve second (L5).
+- **L4 vs L7** — SCOPE decides, not shape. "Customers write sizes as 2055516" is shared
+  language → L7. "THIS customer's 'the usual spot' means his side gate" is single-customer
+  semantics → L4.
+
+Scope decides which layer OWNS a fact. When two layers both speak on one turn, **precedence**
+decides which wins — see the L7 section below.
 
 ---
 
@@ -158,26 +192,56 @@ deferred post-launch (ADR-0152).
 
 ---
 
-## L7 — Semantic lexicon *(exploring — [0.0.5 exploration](../../workspace/0.0.5/EXPLORATION.md))*
+## L7 — Semantic lexicon *(shipped)*
 
 *What the company's words mean* — domain language as governed data, distinct from customer
 preferences (L4), prose facts (L5), and how-to guidance (L6). Motivating examples:
 `TOEE ≡ TOEE TIRE`; `2055516 → 205/55R16`; a bare size defaults to the current season's tire
 **with mandatory confirmation**. New product lines keep adding vocabulary, so routine entries
-must be admin-editable without a deploy, and the layer must grow from conversations: a
+are admin-editable without a deploy, and the layer grows from conversations: a
 customer-confirmed clarification ("do you mean 205/55R16?" → "yes") becomes a `proposed` entry
 an admin approves/edits/rejects — the L6 propose→confirm pattern re-instantiated over a
 **structured** store ("port the loop, not the store", again).
 
-**Direction under exploration:** a `semantic_lexicon` table (three entry kinds graded by
-determinism — admin-free `alias` rows, code-owned `normalizer` patterns toggled per domain,
-structured `default_rule` rows), applied at TWO seams — deterministic tool-param normalization
-(hard) and a bounded fenced glossary injection (soft, eval-pinned) — captured by the gateway-side
-review fork (the external agent itself still never proposes; ADR-0152's boundary gets a
-superseding note when this lands). Full design, the L1–L7 routing decision tree, the boundary
-pins (L6/L7, L5/L7, L4/L7), and the anti-gap mechanisms:
-[`workspace/0.0.5/EXPLORATION.md`](../../workspace/0.0.5/EXPLORATION.md). Formal ADRs land with
-the 0.0.5 slices, per this file's maintenance rule.
+**Shipped (0.0.5):** one governed `semantic_lexicon` store with three entry kinds graded by
+determinism (admin-free `alias` rows, code-owned `normalizer` patterns toggled per domain by
+the row's `status`, structured `default_rule` rows), gated **propose → confirm → apply**, and
+applied at **two seams**:
+
+| Seam | What it does | Failure mode |
+| --- | --- | --- |
+| Tool-parameter normalization (**hard**) | rewrites a parameter, verified against the live catalog before anything is asserted | must not miss |
+| `<confirmed_lexicon>` prompt glossary (**soft**) | puts confirmed vocabulary in front of the model, read-only and advisory | may miss; never asserts |
+
+Only `status='confirmed'` entries are ever applied or injected — checked at the store read and
+re-checked at render. The glossary is bounded newest-20 (`LEXICON_GLOSSARY_LIMIT`), fenced,
+fail-closed (a turn never fails on L7), and injected into the copilot draft turn
+(`LEXICON_INJECTION`) and, read-only, the external turn (`LEXICON_EXTERNAL_INJECTION`) — **two
+independent flags, both default OFF**, which is also the eval-determinism pin.
+[ADR-0161](../adr/0161-l7-semantic-lexicon-governed-domain-language-and-its-two-seams.md).
+
+**A default is a question, not an assumption.** `default_rule` conditions are evaluated **at
+render**: `current_season()` picks which seasonal rule applies and a confirmed `season=override`
+row beats the calendar, so at most one seasonal line renders and it is phrased as an imperative
+*ASK*, never a statement. The confirm posture is unswitchable in data (`confirm_required` is a
+read-only property that is always `True`) and unbranched in rendering.
+
+**Cross-layer precedence: L4 beats L7.** A customer's own stated preference outranks a shared
+seasonal default — not "usually". Composition order is L1 snapshot → **L4** → L6 → **L7**, so
+the glossary arrives after the customer's own words are established, and the glossary header
+says so in words (*"the customer's own stated preferences take precedence over every line
+below"*). Both mechanisms are tripwire-tested; either alone is a coin flip on how a model reads
+a prompt. "In winter a bare size means winter tires" is a **default**, and a default that
+overrides what the customer actually told you is a bug that reads as a feature.
+
+**Risks and how they were handled:** model-authored PII → the S01 write-side split scan
+(injection everywhere; PII redacted in place on `evidence`/`proposer_context`, never applied to
+the digit-shaped `surface_form`) + the S02 human confirm gate; a bad admin-typed regex → the
+regex lives in CODE, the row is only the per-domain toggle; poisoned vocabulary blast radius →
+nothing applies until a human confirms, and only `confirmed` is ever read; a fence-closing
+value → escaped at render on every layer (D19, below); eval determinism → both flags default
+OFF and the record path structurally cannot read L7. Remaining: relevance/hit-ranked selection
+(S26) and the real-traffic bound calibration.
 
 ---
 
@@ -208,20 +272,68 @@ designed in up front rather than retrofitted.
 | Knowledge (L5) | the governed operational-policy copy | the 6 eval-gated policy slots |
 | Knowledge (L5) | customer PII | Customer Memory (L4) |
 | Customer Memory (L4) | live facts, policy text, consent state | tools / policy slots / Identity Graph (L1) |
+| **Semantic lexicon (L7)** | **customer PII** | Customer Memory (L4) |
+| **Semantic lexicon (L7)** | **live price / stock / order / AR facts** | real-time Shopify/QBO tool reads |
+| **Semantic lexicon (L7)** | **single-customer semantics** ("*his* usual spot") | Customer Memory (L4) — scope decides, not shape |
 | Any layer | model-supplied write attribution | `source` + `actor_account_id` are framework-derived |
 
-**Machine-checked half (0.0.5 S12, FR-15/16/17).** `toee_hermes/memory_layers.py`'s
+**Machine-checked half (0.0.5 S12/S06, FR-15/16/17).** `toee_hermes/memory_layers.py`'s
 `LAYER_OF_ACTION` declares, for **every** catalog action, the layer it writes — or `None` when it
 writes no memory-layer content. `hermes-runtime/tests/test_memory_boundary_tripwires.py` asserts
 that map against the catalog in both directions (an undeclared new action fails CI), asserts the
-injection composition (≤1 fence per layer, no memory content outside a fence), and turns the
-matrix rows above into tests. Its docstring is the honest ledger of which rows are asserted there,
-which are asserted elsewhere, and which remain **doc-only** — read it before assuming a row is
-enforced.
+injection composition (≤1 fence per layer, no memory content outside a fence, **L4 before L7**,
+and **no layer's own content can close its fence**), and turns the matrix rows above into tests.
+Its docstring is the honest ledger of which rows are asserted there, which are asserted
+elsewhere, and which remain **doc-only** — read it before assuming a row is enforced.
+
+**A fence survives its own body (0.0.5 S06, D19).** A memory value containing one of the
+injection fences' own closing tokens used to close that fence early, putting the rest of the
+value in the same unfenced region as the framework-derived Session Identity Snapshot — a
+*structural* prompt-injection escape that no "ignore previous instructions" pattern catches.
+Closed on both sides: the write scan hard-rejects those tokens (L6/L7 today; L4 when S08 wires
+it), and `toee_hermes/plugin/hooks.py::_fence_safe` neuters them at render on **every** layer,
+which is what covers values already in the store.
+
+---
+
+## Outside the layer model, and why {#outside-the-layer-model-and-why}
+
+Three surfaces live in the same Postgres and are **not** memory layers. The rule that decides
+it is the same one `LAYER_OF_ACTION` applies: a layer holds content the system reads back into
+a turn on behalf of a customer.
+
+| Surface | What it is | Why not a layer |
+| --- | --- | --- |
+| Workbench Accounts | staff identity + roles | operator identity, not customer memory |
+| Knowledge publish state | the 6 governed operational-policy slots + history | authored content; the L5 boundary row pins it as explicitly NOT the corpus |
+| **Quality feedback** (ADR-0154: `interaction_review`, `draft_feedback`) | judgments **about** the system's output — reviews, thumbs, draft outcomes | never read back into a turn; it measures the system, it is not something the system remembers about a customer |
+
+The quality-feedback row is stated rather than left to inference (0.0.5 S06, NFR-8). It arrived
+with the merged 0.0.4 work and had **no row here at all**, so its four `toee_feedback` actions
+were declared non-memory-writes by *absence* — and a reader would plausibly have expected them
+under L3 next to "eval records". They are not: L3 Operational is Follow-up Case / Workbench
+Audit Log / auto-handled evidence / eval records, and these two tables are none of those.
+`toee_hermes/memory_layers.py` declares all four `None`, which agrees with this row.
+
+Feedback *derived* into a proposal is a different thing and does become memory: that is the
+`feedback_derived` provenance value on L6/L7 proposals, which enters through the same governed
+propose→confirm gate as any other proposal.
 
 ---
 
 ## Change log
+
+- **2026-07-28 (0.0.5 S06)** — L7 shipped: the `<confirmed_lexicon>` glossary at both turn
+  seams behind two independent default-OFF flags, `default_rule` conditions evaluated at
+  render with a confirm-first phrasing, and the **L4-over-L7 precedence** rule (order +
+  wording, both tripwire-tested) —
+  [ADR-0161](../adr/0161-l7-semantic-lexicon-governed-domain-language-and-its-two-seams.md).
+  L7 status: 🔬 exploring → ✅ shipped. This entry also lands three things the map was
+  missing: the **L1–L7 routing decision tree**, the **three L7 boundary rows**, and an
+  explicit **outside-the-layer-model** section that finally places the ADR-0154
+  quality-feedback stores (previously placed nowhere, so their actions were declared
+  non-memory-writes by absence rather than by decision). Also records the D19 fence-escape
+  fix on the render side. The **forgetting table** is still outstanding — it lands with S22.
 
 - **2026-07-27 (0.0.5 S12)** — the boundary section gained a machine-checked half:
   `LAYER_OF_ACTION` (a declaration per catalog action) plus the tripwire suite that keeps it
