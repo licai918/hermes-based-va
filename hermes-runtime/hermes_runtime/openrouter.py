@@ -516,12 +516,40 @@ def make_openrouter_run_turn(
         )
         injected = render_injection(identity, memory, experience)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
+        booted = boot_profile(
+            EXTERNAL,
+            conversation_id=context.conversation_id,
+            sms_session_id=getattr(context, "sms_session_id", None),
+            identity=identity,
+            # S10: merges the Customer Memory overlay (S04) with the Knowledge
+            # overlay (S09/FR-5) -- one dict, each gated on its own independent
+            # axis (see _turn_extra_drivers).
+            extra_drivers=_turn_extra_drivers(),
+        )
+        result = run_agent_turn(
+            user_message=user_message,
+            system_message=system_message or EXTERNAL_CUSTOMER_SERVICE_PERSONA,
+            base_url=resolved.base_url,
+            api_key=resolved.api_key,
+            model=resolved.model,
+            max_iterations=max_iterations,
+            openai_factory=factory,
+            governed_tool_names=booted.tool_names,
+            tools_exclusive=tools_exclusive,
+        )
         # S09 (FR-11): record WHICH entries this turn's prompt carried. Written
         # HERE, from the caller, never from render_injection -- that function is
-        # pure, store-less, and shared with the eval record path (D4.2). Only
-        # when something was actually injected; the gate on "is this an eval
-        # path" lives in record_injection (D4.1), and the write itself is
-        # fire-and-forget -- it cannot raise into or delay this turn (NFR-5).
+        # pure, store-less, and shared with the eval record path (D4.2).
+        #
+        # AFTER the model call, deliberately: the write is a synchronous INSERT +
+        # commit, and in front of the model it was a database round-trip on the
+        # reply path, which is the thing NFR-5 exists to prevent. Behind it, the
+        # ledger also says what it means -- a turn that raised on the way to a
+        # reply never produced one, so there is no injected-into-a-reply fact to
+        # record, and no phantom row for S10's blast radius or S26's per-entry
+        # denominator. Only when something was actually injected; each layer's
+        # row is gated on that layer's own injection flag inside record_injection
+        # (D4.1), and the call cannot raise into this turn (NFR-5).
         if injected:
             resolved_binding = binding_key_from_identity(identity)
             record_injection(
@@ -536,26 +564,6 @@ def make_openrouter_run_turn(
                     experience=experience,
                 ),
             )
-        booted = boot_profile(
-            EXTERNAL,
-            conversation_id=context.conversation_id,
-            sms_session_id=getattr(context, "sms_session_id", None),
-            identity=identity,
-            # S10: merges the Customer Memory overlay (S04) with the Knowledge
-            # overlay (S09/FR-5) -- one dict, each gated on its own independent
-            # axis (see _turn_extra_drivers).
-            extra_drivers=_turn_extra_drivers(),
-        )
-        return run_agent_turn(
-            user_message=user_message,
-            system_message=system_message or EXTERNAL_CUSTOMER_SERVICE_PERSONA,
-            base_url=resolved.base_url,
-            api_key=resolved.api_key,
-            model=resolved.model,
-            max_iterations=max_iterations,
-            openai_factory=factory,
-            governed_tool_names=booted.tool_names,
-            tools_exclusive=tools_exclusive,
-        )
+        return result
 
     return run_turn

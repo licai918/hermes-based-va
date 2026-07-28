@@ -8,9 +8,11 @@ else, because it is a schema/SQL claim rather than a Python one:
    ``turn x layer x entry`` JOIN resolves every row back to the live entry in
    its OWN layer -- the C6 6.6 clause S10 (blast radius) and S26 (per-entry
    effectiveness) are both built on.
-2. **The merge survives.** ``merge_provisional_memory`` DELETEs and re-INSERTs
-   L4 rows with FRESH ids. The join still resolves afterwards, because
-   ``entry_ref`` is ``binding_key + slot_name`` and not a row id (D4.3).
+2. **The merge re-points the ledger.** ``merge_provisional_memory`` inserts the
+   slots under ``verified_key`` and deletes the provisional rows -- the binding
+   KEY changes, so a natural key alone does not survive verification either. The
+   merge updates the ledger's ``entry_ref`` in the same transaction, and the
+   pre-verification turn stays joinable (D4.3 as amended).
 3. **No values.** The table carries ids and slot NAMES only -- no slot value,
    no L6 content (NFR-6: the content stays in the layer that owns it).
 4. **The prune.** The windowed DELETE ages rows out and records its run where
@@ -25,9 +27,16 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import psycopg
+import pytest
+
+from toee_hermes.execute import execute_tool
+from toee_hermes.tool_gate import ToolExecutionContext
+
 from hermes_runtime.injection_ledger import (
     LAYER_L4,
     LAYER_L6,
+    LAYERS,
     PRUNE_AUDIT_ACTION,
     PRUNE_WINDOW_SECONDS,
     run_injection_ledger_prune_job,
@@ -40,6 +49,10 @@ _CONFIG = OpenRouterConfig(
 )
 _PHONE = "+14165550199"
 _BINDING_KEY = f"provisional:sms:{_PHONE}"
+# What binding_key_from_identity returns for a verified snapshot: the bare
+# Shopify customer id, kind "verified". The merge moves slots from the former
+# to the latter, which is why the ledger has to move with them.
+_VERIFIED_KEY = "cust_verified_s09"
 _SLOT = "contact_time"
 _L6_ID = "aexp_confirmed_1"
 
@@ -183,30 +196,73 @@ def test_rows_carry_no_memory_values(datastore, monkeypatch) -> None:
     assert columns == {"turn_ref", "case_or_binding_ref", "layer", "entry_ref", "injected_at"}
 
 
-# --- entry_ref survives the merge path's delete-and-reinsert (D4.3) -------------
+# --- the REAL merge re-points the ledger onto the verified key (D4.3) -----------
 
 
-def test_entry_ref_survives_the_merge_paths_delete_and_reinsert(datastore, monkeypatch) -> None:
+def _merge(conn) -> None:
+    """The production merge, not an imitation of it."""
+    from hermes_runtime.postgres_gateway_store import PostgresGatewayStore
+
+    PostgresGatewayStore(connection=conn).merge_provisional_memory(_BINDING_KEY, _VERIFIED_KEY)
+
+
+def test_the_merge_repoints_pre_verification_ledger_rows_onto_the_verified_key(
+    datastore, monkeypatch
+) -> None:
+    """A turn that ran BEFORE verification is still joinable after it.
+
+    The shipped test deleted and re-inserted under the SAME binding key, which
+    is not what ``merge_provisional_memory`` does: it inserts under
+    ``verified_key`` and deletes the provisional rows, so the binding key -- and
+    therefore the L4 ``entry_ref`` built from it -- CHANGES. Without the merge
+    re-pointing the ledger, retiring this customer's ``contact_time`` entry
+    would leave S10's blast radius silently missing every pre-verification turn
+    that used it.
+    """
     _driver, conn, _schema = datastore
     _seed(conn)
-    _run_external_turn(monkeypatch, conn, event_id="evt_merge")
+    _run_external_turn(monkeypatch, conn, event_id="evt_pre_verification")
 
-    # What merge_provisional_memory does to an L4 row: DELETE, then INSERT a NEW
-    # id under the verified key. A row-id entry_ref would be orphaned here.
+    _merge(conn)
+
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM customer_memory_slot WHERE binding_key = %s", (_BINDING_KEY,))
         cur.execute(
-            "INSERT INTO customer_memory_slot "
-            "(id, binding_key, binding_kind, slot_name, slot_value, source) "
-            "VALUES (%s, %s, 'provisional', %s, %s, 'merged_provisional')",
-            ("cms_reinserted_with_a_fresh_id", _BINDING_KEY, _SLOT, "evenings after 6pm"),
+            "SELECT turn_ref, entry_ref FROM injection_ledger WHERE layer = %s", (LAYER_L4,)
+        )
+        assert cur.fetchall() == [("evt_pre_verification", f"{_VERIFIED_KEY}:{_SLOT}")]
+        # ...and the grain join resolves it back to the LIVE (now verified) slot.
+        cur.execute(_GRAIN_JOIN, ("evt_pre_verification",))
+        joined = cur.fetchall()
+    assert (LAYER_L4, f"{_VERIFIED_KEY}:{_SLOT}") in joined
+
+
+def test_the_merge_leaves_other_layers_and_other_customers_alone(datastore, monkeypatch) -> None:
+    # The re-point is scoped to the L4 refs for the slots this merge actually
+    # moved: an L6 ref in the same turn, and another customer's identically-named
+    # slot, must be untouched.
+    _driver, conn, _schema = datastore
+    _seed(conn)
+    _run_external_turn(monkeypatch, conn, event_id="evt_pre_verification")
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO injection_ledger (turn_ref, case_or_binding_ref, layer, entry_ref) "
+            "VALUES (%s, %s, %s, %s)",
+            ("evt_other_customer", "provisional:sms:+14165550188", LAYER_L4,
+             f"provisional:sms:+14165550188:{_SLOT}"),
         )
     conn.commit()
 
+    _merge(conn)
+
     with conn.cursor() as cur:
-        cur.execute(_GRAIN_JOIN, ("evt_merge",))
-        joined = cur.fetchall()
-    assert (LAYER_L4, f"{_BINDING_KEY}:{_SLOT}") in joined
+        cur.execute(
+            "SELECT turn_ref, layer, entry_ref FROM injection_ledger ORDER BY turn_ref, layer"
+        )
+        assert cur.fetchall() == [
+            ("evt_other_customer", LAYER_L4, f"provisional:sms:+14165550188:{_SLOT}"),
+            ("evt_pre_verification", LAYER_L4, f"{_VERIFIED_KEY}:{_SLOT}"),
+            ("evt_pre_verification", LAYER_L6, _L6_ID),
+        ]
 
 
 # --- retention: the windowed prune ----------------------------------------------
@@ -251,3 +307,71 @@ def test_the_prune_job_records_its_run_where_the_sweeps_do(datastore) -> None:
     assert row[0]["deleted"] == 1
     assert row[0]["window_seconds"] == PRUNE_WINDOW_SECONDS
     assert row[0]["run_at"]
+
+
+def _status(driver) -> dict:
+    result = execute_tool(
+        tool="toee_retention",
+        action="get_retention_status",
+        params={},
+        context=ToolExecutionContext(profile="internal_copilot"),
+        driver=driver,
+    )
+    assert result.ok, result
+    return result.data
+
+
+def test_the_prune_last_run_surfaces_on_the_retention_status_read(datastore) -> None:
+    # Writing the audit row is only half of "last-run visibility alongside the
+    # existing sweep surfaces": get_retention_status keys on
+    # action = 'retention_sweep' alone, so until it reads this action too the
+    # prune's last run is a row nothing queries.
+    driver, conn, _schema = datastore
+    _insert_row(conn, turn_ref="old", age_seconds=PRUNE_WINDOW_SECONDS + 3600)
+    run_injection_ledger_prune_job({}, conn=conn)
+
+    prune = _status(driver)["ledger_prune"]
+    assert prune["last_run_at"]
+    assert prune["deleted"] == 1
+    assert prune["window_seconds"] == PRUNE_WINDOW_SECONDS
+
+
+def test_the_retention_status_reports_a_never_run_prune_honestly(datastore) -> None:
+    driver, _conn, _schema = datastore
+    assert _status(driver)["ledger_prune"] == {
+        "last_run_at": None,
+        "deleted": 0,
+        "window_seconds": PRUNE_WINDOW_SECONDS,
+    }
+
+
+# --- the layer column has a domain (a typo is not a new layer) ------------------
+
+
+def test_a_layer_outside_the_known_set_is_rejected_by_the_schema(datastore) -> None:
+    # Without the CHECK, a typo'd layer produces a row that joins to nothing in
+    # any layer -- permanently invisible to both readers, and nothing ever fails.
+    _driver, conn, _schema = datastore
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO injection_ledger (turn_ref, layer, entry_ref) "
+                "VALUES ('t_typo', 'L4', 'x')"
+            )
+    conn.rollback()
+
+
+def test_every_layer_the_writer_can_emit_is_accepted(datastore) -> None:
+    # ...and the constraint must not drift narrower than the writer's own set.
+    _driver, conn, _schema = datastore
+    with conn.cursor() as cur:
+        for index, layer in enumerate(LAYERS):
+            cur.execute(
+                "INSERT INTO injection_ledger (turn_ref, layer, entry_ref) VALUES (%s, %s, 'x')",
+                (f"t_{index}", layer),
+            )
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM injection_ledger")
+        assert cur.fetchone()[0] == len(LAYERS)

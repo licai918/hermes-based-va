@@ -537,6 +537,12 @@ class PostgresGatewayStore:
         slot's real provenance, and FR-3 wants every write to carry it); a conflicting
         slot is not inserted, so the verified slot's own evidence is left intact.
 
+        **It also re-points the injection provenance ledger (S09, D4.3).** The
+        binding key itself changes here, so the L4 ``entry_ref`` built from it
+        (``binding_key || ':' || slot_name``) would otherwise be orphaned by
+        verification -- see :func:`_repoint_injection_ledger`. Same transaction:
+        the slots and their provenance move together or not at all.
+
         Idempotency (RK-5): the provisional rows are locked ``FOR UPDATE`` as the
         first statement, so two concurrent/repeat merges serialize here — the first
         deletes the rows, the second's lock re-check then finds an empty set and is a
@@ -595,6 +601,13 @@ class PostgresGatewayStore:
                         (provisional_key,),
                     )
 
+                    _repoint_injection_ledger(
+                        cur,
+                        provisional_key=provisional_key,
+                        verified_key=verified_key,
+                        slot_names=[row[0] for row in provisional_rows],
+                    )
+
                     details = {"moved": moved, "overridden": overridden}
                     cur.execute(
                         """
@@ -646,6 +659,59 @@ class PostgresGatewayStore:
             except Exception:
                 conn.rollback()
                 raise
+
+
+def _repoint_injection_ledger(
+    cur, *, provisional_key: str, verified_key: str, slot_names: Sequence[str]
+) -> int:
+    """Move this merge's L4 provenance rows onto the verified binding key (S09, D4.3).
+
+    The symmetric other half of what the merge already does to the slots
+    themselves. An L4 ``entry_ref`` is ``binding_key || ':' || slot_name``, and
+    the merge CHANGES the binding key -- so without this, every ledger row
+    written before the customer verified points at a key that no longer names
+    anything, and S10's blast radius silently omits those turns while S26 scores
+    a prompt whose entries it can no longer resolve. Same cursor, same
+    transaction as the slot move: the two cannot half-apply.
+
+    Both moved AND overridden slots re-point: the ledger records which ENTRY
+    reached a turn, and after the merge the customer's ``slot_name`` entry IS
+    the verified one either way. (An overridden slot's *value* was already free
+    to change between the turn and the read -- the ledger never claimed
+    otherwise.)
+
+    The ``NOT EXISTS`` guard is deliberate. ``entry_ref`` is part of the ledger's
+    primary key, so a turn that somehow already held the verified ref would make
+    a bare UPDATE raise a duplicate-key error -- which, inside this transaction,
+    would roll back the customer's memory merge. Provenance bookkeeping must
+    never do that: the guard leaves the stale row behind instead.
+    """
+    if not slot_names:
+        return 0
+    from .injection_ledger import LAYER_L4
+
+    cur.execute(
+        """
+        UPDATE injection_ledger AS il
+        SET entry_ref = %(verified)s || ':' || s.slot_name
+        FROM unnest(%(slots)s::text[]) AS s(slot_name)
+        WHERE il.layer = %(layer)s
+          AND il.entry_ref = %(provisional)s || ':' || s.slot_name
+          AND NOT EXISTS (
+              SELECT 1 FROM injection_ledger dup
+              WHERE dup.turn_ref = il.turn_ref
+                AND dup.layer = %(layer)s
+                AND dup.entry_ref = %(verified)s || ':' || s.slot_name
+          )
+        """,
+        {
+            "verified": verified_key,
+            "provisional": provisional_key,
+            "slots": list(slot_names),
+            "layer": LAYER_L4,
+        },
+    )
+    return cur.rowcount
 
 
 def _ensure_open_case(

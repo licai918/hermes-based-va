@@ -7,11 +7,14 @@ are true with no database at all:
 1. ``entry_ref`` is a STABLE NATURAL KEY (D4.3) -- ``binding_key + slot_name``
    for L4, the entry id for L6 -- never a row id, because the cross-channel
    merge path DELETEs and re-INSERTs L4 rows with fresh ids.
-2. The gate is the EVAL axis, not the injection axis (D4.1): the write is
-   skipped on a non-datastore deployment (which is what the eval record/replay
-   path runs as) and skipped when nothing was injected.
+2. Each layer's row is gated on the flag that layer's INJECTION rode, and every
+   one of those flags is off on the eval record/replay path (D4.1) -- so that
+   path still writes nothing, while an L6-injecting deployment with the memory
+   backend off is no longer silently unrecorded.
 3. A ledger write failure NEVER reaches the turn (NFR-5) -- both turn paths
-   still return their reply/draft.
+   still return their reply/draft -- and the write happens AFTER the model call,
+   so it is not a database round-trip in front of the reply and a turn that
+   failed records nothing.
 4. ``prune_window >= zero_hit_window`` (D12) -- the constant relation that keeps
    garbage collection from manufacturing S20 retirement candidates.
 """
@@ -44,10 +47,13 @@ _EXPERIENCE = [{"id": "aexp_1", "content": "Check get_delivery_status first.", "
 class _LedgerStore:
     """A gateway store whose ledger write is observable (or explosive)."""
 
-    def __init__(self, *, memory=(), experience=(), raise_on_write: bool = False) -> None:
+    def __init__(
+        self, *, memory=(), experience=(), raise_on_write: bool = False, trace=None
+    ) -> None:
         self._memory = list(memory)
         self._experience = list(experience)
         self._raise = raise_on_write
+        self._trace = trace
         self.writes: list[dict] = []
 
     def load_case_identity(self, case_id):
@@ -60,11 +66,18 @@ class _LedgerStore:
         return list(self._experience)
 
     def record_injection_ledger(self, *, turn_ref, case_or_binding_ref, entries):
-        if self._raise:
-            raise RuntimeError("ledger table is on fire")
+        # Records FIRST, then explodes. `record_injection` swallows every
+        # exception (NFR-5), so a store that only raised would leave `writes`
+        # empty whether or not it was called -- every `assert store.writes == []`
+        # below would be unfalsifiable. Recording first makes the call observable
+        # even on the explosive path.
+        if self._trace is not None:
+            self._trace.append("ledger")
         self.writes.append(
             {"turn_ref": turn_ref, "case_or_binding_ref": case_or_binding_ref, "entries": list(entries)}
         )
+        if self._raise:
+            raise RuntimeError("ledger table is on fire")
 
 
 @pytest.fixture(autouse=True)
@@ -109,12 +122,13 @@ def test_l4_refs_need_a_binding_key_to_be_a_stable_natural_key() -> None:
     assert injected_entry_refs(binding_key=None, memory=_MEMORY, experience=None) == []
 
 
-# --- the gate is the eval axis, not the injection axis (D4.1) ------------------
+# --- the gates, per layer, all off on the eval path (D4.1) ---------------------
 
 
 def test_no_write_on_a_non_datastore_deployment_which_is_the_eval_path() -> None:
-    # TOOL_BACKEND unset (the eval record/replay path's backend). The store would
-    # raise if it were reached; it is not.
+    # TOOL_BACKEND unset (the eval record/replay path's backend), so L4's gate is
+    # shut. The store records before it raises, so an unexpected call would show
+    # up here rather than being swallowed into a passing assertion.
     store = _LedgerStore(raise_on_write=True)
     record_injection(store, turn_ref="t1", case_or_binding_ref="k", entries=[(LAYER_L4, "k:s")])
     assert store.writes == []
@@ -129,9 +143,19 @@ def test_no_write_when_nothing_was_injected(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_a_store_without_the_writer_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     # The eval record paths bind scenario-scoped stores that have no ledger writer
-    # at all -- a second, structural reason nothing is recorded there.
+    # at all -- a second, structural reason nothing is recorded there. The thing
+    # that must NOT happen is a fall-through to the default gateway store, which
+    # would reach a real database from a scenario-scoped turn; assert that, or
+    # this test asserts nothing at all and merely reads as coverage.
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    fallbacks: list[int] = []
+    monkeypatch.setattr(
+        "hermes_runtime.injection_ledger._gateway_store",
+        lambda: fallbacks.append(1),
+        raising=True,
+    )
     record_injection(object(), turn_ref="t1", case_or_binding_ref=None, entries=[(LAYER_L6, "a")])
+    assert fallbacks == []
 
 
 def test_neither_render_injection_nor_the_eval_record_path_knows_about_the_ledger() -> None:
@@ -155,7 +179,15 @@ def test_the_external_eval_record_path_writes_nothing(
     # And the same thing from the outside: recording a scenario WITH a memory
     # preset -- the case that renders a real injection block through the shared
     # renderer -- completes without a ledger write even with the datastore
-    # backend forced on. A store that would explode on write proves it.
+    # backend forced on.
+    #
+    # The patch target is `injection_ledger._gateway_store`, NOT
+    # `tool_backend._gateway_store`. `injection_ledger` does
+    # `from .tool_backend import _gateway_store`, so the name is bound in ITS
+    # module namespace at import time and patching the source module never
+    # reaches the call site. This test previously patched the source module and
+    # therefore passed no matter what the eval path did -- verified by making
+    # `record_scenario_turn` write a ledger row and watching it still pass.
     from pathlib import Path
 
     from eval_runner.fixtures import load_scenario
@@ -163,9 +195,9 @@ def test_the_external_eval_record_path_writes_nothing(
     from hermes_runtime.eval_record import record_scenario_turn
 
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
-    store = _LedgerStore(raise_on_write=True)
+    store = _LedgerStore()
     monkeypatch.setattr(
-        "hermes_runtime.tool_backend._gateway_store", lambda: store, raising=True
+        "hermes_runtime.injection_ledger._gateway_store", lambda: store, raising=True
     )
 
     eval_dir = Path(__file__).resolve().parents[2] / "eval"
@@ -182,13 +214,14 @@ def test_the_external_eval_record_path_writes_nothing(
 # --- NFR-5: a ledger failure never reaches the turn ----------------------------
 
 
-def _run_external(monkeypatch, *, store):
+def _run_external(monkeypatch, *, store, model=None):
+    """Drive the external turn. ``model`` replaces the patched model boundary."""
     import hermes_runtime.openrouter as openrouter_mod
 
     monkeypatch.setattr(
         openrouter_mod,
         "run_agent_turn",
-        lambda **_kwargs: {"final_response": "REPLY", "messages": []},
+        model or (lambda **_kwargs: {"final_response": "REPLY", "messages": []}),
     )
     run_turn = make_openrouter_run_turn(
         config=_CONFIG,
@@ -274,6 +307,107 @@ def test_the_copilot_turn_records_the_case_ref_and_a_per_turn_ref(
     assert [w["case_or_binding_ref"] for w in store.writes] == ["case_1", "case_1"]
     # Two draft turns on ONE case are two turns: the grain must not collapse them.
     assert store.writes[0]["turn_ref"] != store.writes[1]["turn_ref"]
+
+
+# --- the write lands AFTER the turn, not on the way into it (NFR-5) ------------
+
+
+def test_the_ledger_write_happens_after_the_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A synchronous INSERT + commit BEFORE the model call is a database
+    # round-trip added to the reply path -- exactly what NFR-5 exists to keep
+    # out of it.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setattr(
+        "hermes_runtime.openrouter.record_memory_injection_metric", lambda _flag: None
+    )
+    order: list[str] = []
+
+    def _model(**_kwargs):
+        order.append("model")
+        return {"final_response": "REPLY", "messages": []}
+
+    _run_external(monkeypatch, store=_LedgerStore(memory=_MEMORY, trace=order), model=_model)
+    assert order == ["model", "ledger"]
+
+
+def test_the_copilot_ledger_write_happens_after_the_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import hermes_runtime.copilot_turn as copilot_mod
+
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setattr(
+        "hermes_runtime.copilot_turn.record_memory_injection_metric", lambda _flag: None
+    )
+    order: list[str] = []
+
+    def _model(**_kwargs):
+        order.append("model")
+        return {"final_response": "DRAFT", "messages": []}
+
+    monkeypatch.setattr(copilot_mod, "run_scripted_agent", _model)
+    run_turn = make_copilot_run_turn(
+        scripted_completions=[{"content": "x"}],
+        store=_LedgerStore(memory=_MEMORY, trace=order),
+    )
+    run_turn(channel="sms", case_id="case_1")
+    assert order == ["model", "ledger"]
+
+
+def test_a_turn_that_never_produced_a_reply_records_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The ledger is the record of which entries were in a reply that HAPPENED.
+    # A turn that died at the model produced none, so it has nothing to record --
+    # and a row for it would put a prompt nobody ever saw into S10's blast radius
+    # and S26's per-entry denominator.
+    monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setattr(
+        "hermes_runtime.openrouter.record_memory_injection_metric", lambda _flag: None
+    )
+
+    def _boom(**_kwargs):
+        raise RuntimeError("the model is down")
+
+    store = _LedgerStore(memory=_MEMORY)
+    with pytest.raises(RuntimeError):
+        _run_external(monkeypatch, store=store, model=_boom)
+    assert store.writes == []
+
+
+# --- each layer's row rides the flag that layer's injection rode ---------------
+
+
+def test_each_layers_row_rides_its_own_injection_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # L6 injection is its OWN axis (AGENT_EXPERIENCE_*_INJECTION), independent of
+    # the L4 memory backend. A single blanket memory_enabled() gate recorded
+    # NOTHING for a deployment running L6 injection with memory disabled -- the
+    # ledger would be silently empty for precisely the entries S10 and S26 care
+    # most about. TOOL_BACKEND stays unset here; only the L6 flag is on.
+    monkeypatch.setenv("AGENT_EXPERIENCE_EXTERNAL_INJECTION", "on")
+    store = _LedgerStore()
+    record_injection(
+        store,
+        turn_ref="t1",
+        case_or_binding_ref="k",
+        entries=[(LAYER_L4, "k:contact_time"), (LAYER_L6, "aexp_1")],
+    )
+    # The L6 row lands (its flag is on); the L4 row does not (its flag is off).
+    assert [w["entries"] for w in store.writes] == [[(LAYER_L6, "aexp_1")]]
+
+
+def test_the_l6_row_lands_from_a_real_turn_with_memory_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The same thing end to end: TOOL_BACKEND unset, L6 external injection on.
+    monkeypatch.setenv("AGENT_EXPERIENCE_EXTERNAL_INJECTION", "on")
+    store = _LedgerStore(memory=_MEMORY, experience=_EXPERIENCE)
+    _run_external(monkeypatch, store=store)
+    assert [w["entries"] for w in store.writes] == [[(LAYER_L6, "aexp_1")]]
 
 
 def test_a_turn_that_injects_nothing_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

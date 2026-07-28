@@ -1,0 +1,33 @@
+-- 0031_injection_ledger_layer_check
+-- Give injection_ledger.layer a domain (0.0.5 S09 review fix; prefix 0031 is the
+-- "spare" row in DECISIONS D1's allocation table, taken because the CHECK the
+-- review asked for cannot live in 0030 -- see below).
+--
+-- 0030 created `layer TEXT NOT NULL` with no constraint. Every reader keys on
+-- (layer, entry_ref): S10's blast radius is `WHERE layer = ? AND entry_ref = ?`
+-- and the grain join dispatches on the layer literal. So a typo'd or invented
+-- layer is not a slightly-wrong row -- it is a row that joins to nothing in ANY
+-- layer, forever, while every query it should have appeared in silently returns
+-- one result fewer. Nothing errors and nothing notices. The writer's own
+-- constants (hermes_runtime.injection_ledger.LAYERS) are the only legitimate
+-- source of this column; this makes that structural.
+--
+-- WHY A SEPARATE MIGRATION RATHER THAN AN EDIT TO 0030.
+-- The runner tracks applied versions in `schema_migrations` and skips anything
+-- already recorded (datastore/migrate.py). Editing 0030 would therefore add the
+-- constraint on fresh databases (CI's throwaway schema, a new clone) and skip it
+-- on every database that has already run 0030 -- including every local dev
+-- database on this branch. That is exactly the schema drift the constraint
+-- exists to prevent, with the added twist that the tests would pass. An ALTER in
+-- its own version runs exactly once on both.
+--
+-- SAFE ON A DATABASE THAT ALREADY RAN 0030. ADD CONSTRAINT validates the
+-- existing rows, and only 'l4' and 'l6' have ever been written (the write path
+-- takes its layer from the LAYER_* constants and from nowhere else), so
+-- validation cannot fail. Postgres has transactional DDL and the runner gives
+-- each migration its own transaction, so a surprise rolls back cleanly rather
+-- than half-applying. The brief ACCESS EXCLUSIVE lock is on a table with no
+-- synchronous reader: the per-turn write is best-effort and post-reply, and the
+-- prune is a scheduled job.
+ALTER TABLE injection_ledger
+    ADD CONSTRAINT injection_ledger_layer_check CHECK (layer IN ('l4', 'l6', 'l7'));

@@ -37,6 +37,10 @@
 -- window is a named constant coupled to S20's zero-hit window by an asserted
 -- test (D12): prune_window >= zero_hit_window, or garbage collection quietly
 -- manufactures retirement candidates for entries that are actively in use.
+--
+-- `layer`'s allowed set is constrained by 0031, NOT here: this migration had
+-- already been applied when the CHECK was added, and the runner never re-runs an
+-- applied version. See 0031_injection_ledger_layer_check.sql.
 CREATE TABLE injection_ledger (
     turn_ref            TEXT NOT NULL,
     layer               TEXT NOT NULL,

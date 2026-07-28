@@ -11,22 +11,28 @@ drags a database dependency into the eval-record path. The two LIVE callers
 refs built by :func:`injected_entry_refs`; ``eval_record`` does not call it at
 all.
 
-**Not gated on the injection axis (D4.1).** The slice text says "gate on the
-same axes the injections themselves are gated on" AND "never on the
-record/replay path", and those are different axes -- ``eval_record`` DOES render
-a scenario's memory preset, so the first clause would write rows during record
-and break the replay gate. The gate here is the EVAL axis, spelled the way the
-existing eval-neutral emit (``tool_backend.record_memory_injection_metric``)
-spells it: :func:`~hermes_runtime.tool_backend.memory_enabled`, i.e. "this
-deployment has a business datastore". The eval record/replay path runs
-``TOOL_BACKEND=mock``, so it is excluded by the same predicate that answers
-"is there a table to write to". Nothing was injected -> nothing is written, as a
-second, independent skip.
+**Gated PER LAYER, on the flag that layer's injection rode (D4.1).** The slice
+text says "gate on the same axes the injections themselves are gated on" AND
+"never on the record/replay path", and D4.1 resolved the apparent conflict in
+favour of the eval axis. One BLANKET eval-axis gate was the wrong reading of it:
+L6 injection rides ``AGENT_EXPERIENCE_*_INJECTION`` while
+:func:`~hermes_runtime.tool_backend.memory_enabled` rides ``TOOL_BACKEND``, so a
+deployment injecting confirmed learnings with the memory backend off recorded
+nothing at all -- an empty ledger for exactly the entries S10 and S26 exist to
+follow. :data:`_LAYER_GATES` gates each row on its own layer's flag instead, and
+D4.1 still holds because EVERY one of those flags is off on the eval
+record/replay path (that is the same L6 default-off that pins eval determinism
+for the injection itself). Two further, independent skips: nothing injected ->
+nothing written, and a store with no ledger writer -> nothing written.
 
-**Never stalls or fails a turn (NFR-5).** :func:`record_injection` is
-fire-and-forget: it never touches ``{final_response, messages}`` and swallows
-every exception to a WARN (exception TYPE only -- never ``str(exc)``, which
-could echo store-supplied content), exactly like the memory read's swallow.
+**Never fails a turn, and never precedes one (NFR-5).** :func:`record_injection`
+never touches ``{final_response, messages}`` and swallows every exception to a
+WARN (exception TYPE only -- never ``str(exc)``, which could echo store-supplied
+content), exactly like the memory read's swallow. The write itself is a
+synchronous INSERT + commit, so both callers make it AFTER the model call
+returns: in front of it, it was a database round-trip on the reply path (the
+thing NFR-5 forbids) and it recorded turns that then failed. "Fire-and-forget"
+here means best-effort and unobserved by the turn -- not asynchronous.
 """
 
 from __future__ import annotations
@@ -37,14 +43,43 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from toee_hermes.plugin.profiles import INTERNAL
 
-from .tool_backend import _gateway_store, memory_enabled
+from .tool_backend import (
+    _gateway_store,
+    agent_experience_external_injection_enabled,
+    agent_experience_injection_enabled,
+    memory_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
-# The memory layers that can reach a prompt. Values are the `layer` column.
+# The memory layers that can reach a prompt. Values are the `layer` column, and
+# the set the table's CHECK constraint enforces (migration 0031) -- a typo'd
+# layer is otherwise a permanently unjoinable row nothing ever notices.
 LAYER_L4 = "l4"  # Customer Memory preference slots (per-customer, PII)
 LAYER_L6 = "l6"  # confirmed agent-experience notes (shared, operational)
 LAYER_L7 = "l7"  # semantic lexicon entries -- additive when S06 renders them
+LAYERS = (LAYER_L4, LAYER_L6, LAYER_L7)
+
+
+def _l6_injection_enabled() -> bool:
+    """Either L6 injection axis -- the external one or the copilot one.
+
+    An L6 ref only exists because one of the two turn paths actually rendered a
+    confirmed entry, and each path gated that render on its OWN flag; so the
+    per-path exactness is already carried by the ref list, and this disjunction
+    is exact for every row that can reach it.
+    """
+    return agent_experience_external_injection_enabled() or agent_experience_injection_enabled()
+
+
+# Each layer's ledger row rides the same flag that layer's INJECTION rode. L7 has
+# no flag of its own yet (S06 renders that block); until it does it falls through
+# to the default below, which is today's behaviour rather than a silent drop --
+# S06 registers the lexicon flag here when it lands.
+_LAYER_GATES = {
+    LAYER_L4: memory_enabled,
+    LAYER_L6: _l6_injection_enabled,
+}
 
 # ponytail: 180 days. The ledger's readers are S10's blast radius ("which open
 # cases did this entry touch?") and S26's effectiveness join, and both want more
@@ -78,10 +113,18 @@ def injected_entry_refs(
 ) -> list[tuple[str, str]]:
     """The ``(layer, entry_ref)`` pairs ``render_injection`` actually rendered.
 
-    Mirrors ``hooks._render_memory`` / ``_render_experience`` skip-for-skip: a
-    slot with no name and an entry with no content are dropped by the renderer,
-    so a ref for either would claim an injection that never happened -- and a
-    false claim is precisely what S26's per-entry score cannot survive.
+    Follows ``hooks._render_memory`` / ``_render_experience``: a slot with no
+    name and an entry with no content are dropped by the renderer, so a ref for
+    either would claim an injection that never happened -- and a false claim is
+    precisely what S26's per-entry score cannot survive.
+
+    Not byte-for-byte identical in one direction, deliberately: the renderer
+    skips a slot only when ``slot`` is ``None``, while this also skips ``""``.
+    Aligning them costs more than the mismatch: matching the renderer would emit
+    ``binding_key + ":"``, a ref that joins to nothing, and making the renderer
+    skip ``""`` would edit an eval-pinned prompt (NFR-4) for a row
+    ``customer_memory_slot`` cannot hold anyway. The residual is one direction
+    only -- the ledger can UNDER-claim an injection, never over-claim it.
 
     ``binding_key`` is required for L4 refs: without it there is no stable
     natural key, so those slots are omitted rather than recorded under a ref
@@ -115,18 +158,27 @@ def record_injection(
     case_or_binding_ref: Optional[str],
     entries: Iterable[tuple[str, str]],
 ) -> None:
-    """Fire-and-forget: record this turn's injected entries. Never raises.
+    """Best-effort: record this turn's injected entries. Never raises.
 
-    Called from the two LIVE turn paths only. ``store`` is the gateway store the
-    turn already holds (tests inject one); ``None`` builds the default. A store
-    without ``record_injection_ledger`` -- the scenario-scoped stores the eval
-    record paths bind -- is a no-op, mirroring
+    Called from the two LIVE turn paths only, and only AFTER the model call has
+    returned -- the write is a synchronous INSERT + commit, so it must not sit in
+    front of the reply (NFR-5), and a turn that never produced a reply has no
+    injection to record. ``store`` is the gateway store the turn already holds
+    (tests inject one); ``None`` builds the default. A store without
+    ``record_injection_ledger`` -- the scenario-scoped stores the eval record
+    paths bind -- is a no-op, mirroring
     :func:`~hermes_runtime.tool_backend.load_confirmed_experience`'s posture.
+
+    Rows are filtered PER LAYER by :data:`_LAYER_GATES`, so an L6 row lands on a
+    deployment that injects confirmed learnings with the memory backend off, and
+    an L4 row still needs that backend.
     """
-    rows = list(entries)
+    rows = [
+        (layer, entry_ref)
+        for layer, entry_ref in entries
+        if _LAYER_GATES.get(layer, memory_enabled)()
+    ]
     if not rows or not turn_ref:
-        return
-    if not memory_enabled():
         return
     try:
         resolved_store = store if store is not None else _gateway_store()
