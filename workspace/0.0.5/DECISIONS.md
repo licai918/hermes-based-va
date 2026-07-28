@@ -191,12 +191,26 @@ every queue — the one thing FR-32 exists to provide.
 
 ## D4. S09 — the ledger's gate and its write sites
 
-1. **The gate is the eval axis, not the injection axis.** S09 says "gate on the same axes the
-   injections are gated on — no injection, no row" AND "never on the record/replay path". Those
-   are different axes: `eval_record.py` DOES call `render_injection` with a scenario memory
-   preset, so the stated rule would write ledger rows during record and break the replay gate
-   (NFR-4) inside S09's own acceptance. **Gate explicitly on "not an eval path"**, the way the
-   existing eval-neutral emits are gated, and additionally skip when nothing was injected.
+1. ~~**The gate is the eval axis, not the injection axis.**~~ **SUPERSEDED — read the correction
+   below before you implement anything from this clause.**
+
+   The original text said: S09's brief contradicted itself ("gate on the same axes the injections
+   are gated on — no injection, no row" versus "never on the record/replay path"), because
+   `eval_record.py` DOES call `render_injection` with a scenario memory preset, so the first
+   clause would write ledger rows during record and break the replay gate (NFR-4). The ruling was
+   to gate on "not an eval path" and additionally skip when nothing was injected.
+
+   **Correction (S09's review, then its fix).** Gating on the eval axis ALONE is not sufficient
+   and was itself the source of a defect: the L6 injection rides
+   `agent_experience_external_injection_enabled()` while the ledger rode `memory_enabled()`, so a
+   deployment with L6 injection on and memory disabled recorded nothing at all. **The gate is
+   PER-LAYER: each layer's ledger row is gated on the same flag that layer's injection rode, AND
+   the whole write is skipped on an eval path.** Both conditions, not either.
+
+   **This clause is the one a later slice will EXECUTE rather than merely read.** S06 adds the L7
+   seat, and following the superseded wording would reproduce, for L7, exactly the hole the fix
+   just closed for L6. If you are S06: register L7's ledger gate against **L7's own injection
+   flag**, not against a global memory flag.
 2. **Never put DB I/O in or around `render_injection`.** It is a pure, store-less function in
    the plugin package with three callers (`openrouter.py`, `copilot_turn.py`,
    `eval_record.py`). Writing from inside it is a layering violation and drags a DB dependency

@@ -9,6 +9,21 @@
 
 ## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
 
+- **⚠ THREE OTHER SLICES LEFT YOU INSTRUCTIONS AND THEY CONTRADICTED EACH OTHER.** A cross-slice
+  audit found S06 is where three landed slices converge, each having recorded what it expected
+  you to do — and the records disagreed. They are reconciled here; this list governs.
+  1. **The ledger gate is PER-LAYER.** D4.1's original wording said to gate the injection-ledger
+     write on the eval axis. That is now marked superseded, but read it: gating on the eval axis
+     *alone* was the source of a real defect — L6's injection rides its own flag while the ledger
+     rode a global memory flag, so a deployment with injection on and memory off recorded
+     nothing. When you add the L7 seat (`injected_entry_refs(lexicon=…)`, already wired by S09 —
+     both write sites need one extra kwarg, no table change), gate L7's ledger row on **L7's own
+     injection flag**, not on a global one. Following the superseded wording reproduces the hole
+     the fix just closed, one layer over.
+  2. **You flip `memory-layers.md`'s L7 row from 🔬 exploring to shipped.** S02 noticed nothing
+     owned it; your Approach does, in the same PR as the L7 ADR. It is genuinely yours.
+  3. `injection_ledger.py`'s module comment names you as the slice that registers the lexicon
+     flag. Consistent with (1) — just do not treat it as a second, separate instruction.
 - **D16** — ship "newest-20" as a named module constant (e.g. `LEXICON_GLOSSARY_LIMIT = 20`),
   not a literal inline in the selection query. S22's knob panel, much later, must read this
   constant to render the glossary-N value; if it is a bare `20` buried in this slice, S22 has to
