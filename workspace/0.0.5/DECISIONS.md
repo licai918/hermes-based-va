@@ -499,3 +499,38 @@ provenance path and adds the regression test.
 `admin_manual` row is possible. It is reachable only through the internal dispatch route behind
 the bearer, not from any customer-facing path, so the risk is bounded — but it is real until
 S02 lands, and it must not be discovered later as a surprise.
+
+## D21. Pre-S08 L4 rows were never scanned, and nothing re-scans them
+
+Found by the S08 implementation. S08 wires `scan_injection` into the L4 write path and
+hard-rejects, which closes the door **for new writes only**. Every L4 slot value written before
+that commit entered the store unscanned and is still there, and it still renders into the prompt
+on every subsequent turn.
+
+**What is already covered, so this is not restated as worse than it is.** D19 assigned the
+render-side fence escape to S06, and S06 shipped it (`_fence_safe`): a stored value carrying a
+closing fence token cannot break out of its block. D19 drew the line itself — a fence-close token
+is a **structural** escape, not a **semantic** one. So the residue is precisely the semantic half:
+a stored `ignore previous instructions` in a pre-S08 row has no backstop except the fence and the
+untrusted-data framing around the L4 block.
+
+**Why that framing is not automatically sufficient here, even though it is for a live message.**
+A customer can type an injection into any message, and the answer to that is exactly the fence
+plus the framing — we do not scan every inbound message. What makes a *stored* value different is
+**persistence**: one accepted injection write replays into every future turn for that binding,
+where a live message is one turn. Persistence is the entire reason FR-10 hard-rejects at write
+time rather than trusting the fence. That reasoning applies with equal force to the rows already
+in the store — they are, by definition, the persistent ones.
+
+**Decision: a one-time re-scan of existing L4 values is in scope for 0.0.5, assigned to S10.**
+S10 already owns the "query the rows an issue affects → emit `review_item`s" shape and ships the
+emitter, so this is a second query against the same machinery, not a new mechanism. It must
+**propose, never auto-delete** (NFR-3): a flagged historical value is a review item for a human,
+because the value may well be legitimate customer data that merely trips a pattern — the same
+false-positive risk that made D2 split the scanners in the first place.
+
+**If the owner would rather accept this as residual risk given the fence and the framing, that is
+a legitimate call — but it must be made as a decision, not left as an oversight.** What is not
+acceptable is the current state, where S08's docstrings and the boundary ledger read as though L4
+is now covered, when what is covered is L4 *going forward*. S08 corrected five stale claims of
+exactly that kind; this decision exists so the sixth does not get written.
