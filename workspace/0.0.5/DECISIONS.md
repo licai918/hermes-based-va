@@ -434,6 +434,19 @@ Nine files move together for any new tool/action: `tool_catalog.py`, `plugin.yam
 time**, in this order: **S01 → S02 → S15 → S11 → S10** (plus S16 if it adds a governed annotate
 action). This is the real width limit of the plan.
 
+**Correction (S10, `0b0b8fb`) — the set is TEN files, not nine.** `memory_layers.py` must move
+too: S12's completeness tripwire (`test_layer_of_action_covers_every_catalog_action_and_nothing_else`)
+is a **set equality over the whole catalog**, so any new action reddens it until `LAYER_OF_ACTION`
+declares a layer. It sits outside the nine because it is not a registration file, which is exactly
+why it kept getting missed. Add it to the standing list.
+
+**Also worth copying, from S10's execution:** its first act was to add the catalog action **alone**
+and watch the tripwires redden — four fired, including S15's two catalog-derived loops. Those loops
+are written so a later action cannot slip past, but they cannot say *which* action they checked, so
+S10 added a **named** assertion beside them with a contrast case (the tool is excluded wholesale,
+so the loop would also pass over an empty registration). Adding the catalog entry before the
+implementation is a free liveness check on every guard in the set, and nobody normally takes it.
+
 ## D18. Inherited debt from the qf merge — not silently "done"
 
 The quality-feedback work merged into this branch carries two undischarged PAC items of its own
@@ -534,6 +547,20 @@ a legitimate call — but it must be made as a decision, not left as an oversigh
 acceptable is the current state, where S08's docstrings and the boundary ledger read as though L4
 is now covered, when what is covered is L4 *going forward*. S08 corrected five stale claims of
 exactly that kind; this decision exists so the sixth does not get written.
+
+**SHIPPED (S10, `0b0b8fb`), with the residual still unquantified.** `rescan_l4_slot_values` reads
+every `customer_memory_slot` row through **S08's own resolver** (`scan_memory_write`, not a second
+copy of the pattern list) and proposes one review item per hit. Propose-only, and note the
+pleasing property: a flagged value **cannot ride along in the item even if someone wanted it to**,
+because `review_item.evidence` is itself injection-scanned — the very pattern that flagged the row
+would block the emission.
+
+**What it found on the dev database: nothing, because there is nothing.** `customer_memory_slot`
+is **0 rows** (and `injection_ledger` 0 rows) on a database that is otherwise populated — 4 cases,
+6 threads, 6 sessions, 4 lexicon entries, 59 audit rows. So the mechanism is proven and the
+exposure is **not measured**. D21's residual remains an open question wherever real L4 data lives;
+the CLI is `python -m hermes_runtime.blast_radius`. Running it against a populated store is the
+step that turns this decision from "handled" into "handled and known to be empty".
 
 ## D22. `hit_count` is STRUCTURALLY zero for `default_rule` — so zero-hit retirement would eat them all
 
