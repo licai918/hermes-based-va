@@ -41,7 +41,7 @@ store's own governed action.
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from psycopg.rows import dict_row
 
