@@ -27,6 +27,21 @@
   column (S05's scheduled rollup, migration 0026) — never computing a count in-turn or
   re-deriving it from raw hit events here. This job reads two already-materialized numbers and
   sums them.
+- **⚠ EXCLUDE `season=override` rows from the retirement candidate set.** S06 found this and could
+  not fix it there. An admin override row is **consulted** by the render — it decides which
+  seasonal default applies — but it is **never itself rendered**, so it earns no ledger row, and
+  crediting it with one would over-claim (D4.3 forbids inventing injection records for things
+  that were not injected). To a zero-hit sweep it therefore looks completely unused.
+  The failure that produces is worth stating in full, because it is silent and it inverts intent:
+  **the sweep proposes retiring the row an admin created specifically to override the calendar,
+  and retiring it hands control back to the calendar.** The admin sees a plausible-looking
+  retirement candidate, approves it, and the behaviour they deliberately turned off turns itself
+  back on. Exclude them, and say in the UI why they are excluded rather than silently omitting
+  them.
+- **`hit_count` is a LIFETIME total** (see D6): the rollup consumes its events, so an entry that
+  fired heavily a year ago and never since carries a large count and zero recent usage — exactly
+  the retirement candidate you are looking for. Windowed usage comes from S09's ledger. Reading
+  `hit_count` for "did this fire lately" inverts the answer.
 
 ## Goal
 

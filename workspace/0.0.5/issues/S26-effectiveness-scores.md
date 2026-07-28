@@ -21,6 +21,14 @@
   deliberately left the rewiring to you, since stratifying the judge sample by ledger presence is
   this slice's FR-31 work. Update that note as part of your diff; a comment asking for a table
   that now exists sends the next reader looking for work already done.
+- **Your ranking is the upgrade path for a known, silent failure.** S06's glossary selects the
+  newest 20 confirmed entries, so once a domain passes 20 entries a `default_rule` can be
+  **evicted** — and a seasonal default that stops rendering does not announce itself; the agent
+  simply stops asking the confirm-first question and nobody sees an error. S06 named this as the
+  ceiling on `LEXICON_GLOSSARY_LIMIT` and pointed at you. When you flip selection to
+  health-ranked, make sure the ranking cannot starve an entry kind that has few hits **by
+  design** — a `default_rule` fires rarely compared with an alias, and rarity is not the same as
+  uselessness.
 - **Per-entry effectiveness is EXTERNAL-PATH ONLY, and must say so where it renders.** The
   copilot path's `turn_ref` is a synthetic id with no durable identity, so its rows cannot be
   attributed per turn. A health score presented without that scope reads as "this entry's
