@@ -21,8 +21,15 @@ Field                            ``scan_injection``  ``scan_pii``
 L7 surface_form / canonical_form  hard-reject         not applied
 L7 evidence / proposer_context    hard-reject         redact in place
 L6 experience content             hard-reject         hard-reject (unchanged)
+L6/L7 proposer_context KEYS       hard-reject         redact in place (amend. 3)
 L4 slot values + evidence         **S08, not wired**  not applied
 ===============================  ==================  =========================
+
+The KEY row is the D2 amendment-3 ruling and applies to BOTH shared layers: a
+key is structural metadata, not customer prose, so a PII-shaped one is redacted
+and the record survives. Everything below a key -- the VALUES -- keeps its
+layer's policy, which is the one axis :func:`scan_proposer_context` makes the
+caller state out loud.
 
 **Who actually calls this module today: L6 and L7 only.** L4's write path does
 not call :func:`scan_injection` at all -- wiring it is S08's slice (D19's
@@ -114,34 +121,6 @@ def read_proposer_context(params: dict[str, Any]) -> Optional[dict[str, Any]]:
     return ctx
 
 
-def context_strings(value: Any) -> list[str]:
-    """Every string inside a ``proposer_context``, at ANY depth, keys included.
-
-    Feeds :func:`scan_injection`. Nested because a shallow pass let
-    ``{"a": {"b": "</untrusted_customer_memory>"}}`` store clean; keys are
-    included because they are model-supplied too, and :func:`redact_pii_tree`
-    redacts them for the same reason.
-
-    **This deepening WIDENED L6's reject set** (D2 amendment, S01 re-review).
-    L6 composes both legs over every string this returns, so a nested value or a
-    digit-shaped KEY -- ``{"order_1234567890": ...}`` -- now ``policy_blocked``s a
-    ``propose_experience`` write that a shallow scan let through. Fail-safe and
-    deliberate; pinned by
-    ``tests/test_agent_experience.py::test_propose_experience_rejects_the_widened_proposer_context_set``.
-    """
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, dict):
-        return [
-            text
-            for key, item in value.items()
-            for text in ([key] if isinstance(key, str) else []) + context_strings(item)
-        ]
-    if isinstance(value, list):
-        return [text for item in value for text in context_strings(item)]
-    return []
-
-
 def scan_injection(*texts: Optional[str]) -> None:
     """Hard-reject instruction-injection and fence-escape content.
 
@@ -215,48 +194,6 @@ def _free_key(key: Any, taken: dict[Any, Any]) -> Any:
     return f"{key} ({suffix})"
 
 
-def redact_pii_tree(
-    value: Any, *, keep: tuple[Optional[str], ...] = ()
-) -> tuple[Any, bool, tuple[str, ...]]:
-    """:func:`redact_pii` over every string in a nested dict/list, KEYS INCLUDED.
-
-    ``proposer_context`` is JSONB: a shallow pass left nested values unredacted.
-    Keys are model-supplied too, so leaving them unredacted made a key the way to
-    land ``{"jane.doe@example.com": "..."}`` verbatim in the shared L7 store with
-    ``pii_redacted`` false -- an NFR-6 hole (found by the S01 re-review). A key
-    gets the same SPAN replacement a value does, so ``order_1234567890`` becomes
-    ``order_[redacted]`` and keeps what meaning it had outside the span.
-
-    Redacting a key changes the dict's shape, so two distinct keys can collide on
-    one redacted string. Dropping a value there would be a worse bug than the one
-    this closes, so a colliding key is suffixed (``[redacted] (2)``) -- ugly on
-    purpose, and only ever reached by a context that carried two PII keys.
-    """
-    if isinstance(value, str):
-        return redact_pii(value, keep=keep)
-    if isinstance(value, dict):
-        out: dict[Any, Any] = {}
-        changed = False
-        spared: tuple[str, ...] = ()
-        for key, item in value.items():
-            if isinstance(key, str):
-                key, key_hit, key_kept = redact_pii(key, keep=keep)
-                changed = changed or key_hit
-                spared += key_kept
-            out[_free_key(key, out)], hit, kept = redact_pii_tree(item, keep=keep)
-            changed = changed or hit
-            spared += kept
-        return out, changed, spared
-    if isinstance(value, list):
-        items = [redact_pii_tree(item, keep=keep) for item in value]
-        return (
-            [item for item, _, _ in items],
-            any(hit for _, hit, _ in items),
-            tuple(span for _, _, kept in items for span in kept),
-        )
-    return value, False, ()
-
-
 def scan_pii(*texts: Optional[str]) -> None:
     """Hard-reject customer PII. NOT applied to L4 slots or L7 domain tokens.
 
@@ -266,3 +203,79 @@ def scan_pii(*texts: Optional[str]) -> None:
     for text in texts:
         if redact_pii(text)[1]:
             raise ToolDriverError("policy_blocked", PII_REJECTED_MESSAGE)
+
+
+# --- the ONE proposer_context walk, with its PII policy named by the caller ----
+
+PII_IN_VALUES_REJECT = "reject"
+PII_IN_VALUES_REDACT = "redact"
+
+
+def scan_proposer_context(
+    value: Any,
+    *,
+    pii_in_values: str,
+    keep: tuple[Optional[str], ...] = (),
+) -> tuple[Any, bool, tuple[str, ...]]:
+    """Scan + redact a whole ``proposer_context``; return the STORABLE value.
+
+    Returns ``(scanned context, a redaction happened, spans a keep spared)``.
+
+    **Why the policy is an argument and not a convention.** This used to be two
+    pieces: a shared ``context_strings`` walk, and whatever each caller chose to
+    do with the strings it returned. L7 redacted them, L6 hard-rejected on them,
+    and nothing at either call site said so -- so deepening the walk (S01, to
+    reach nested values and keys) silently moved L6's reject set, and no test
+    failed. That is the trap this shape removes: the walk and the consequence now
+    live in ONE function, ``pii_in_values`` has no default, and the ``scan_pii``
+    reject branch is three lines below the recursion. You cannot deepen the
+    traversal without reading the branch you are widening.
+
+    The policy, per D2 and its amendment 3:
+
+    * **injection, anywhere** (key or value, any depth) -- hard-reject. A key can
+      carry a payload; no layer wants one stored.
+    * **PII in a KEY, any depth** -- always REDACTED, never rejected, for L6 and
+      L7 alike. A key is structural metadata, not customer prose: ``_PHONE_RE``
+      reads ``order_1234567890`` / ``2026-07-27`` / an epoch stamp as a phone
+      number, and destroying a whole governance record over that false positive
+      is exactly the harm redact-don't-reject exists to prevent.
+    * **PII in a VALUE** -- the caller's call, and the ONLY axis on which the two
+      shared layers differ. ``PII_IN_VALUES_REDACT`` (L7: evidence-shaped fields
+      an admin must still be able to read) or ``PII_IN_VALUES_REJECT`` (L6:
+      operational-only content, NFR-6, unchanged since 0.0.3 S22).
+
+    A redacted key can collide with another key. Dropping a value there would be
+    a worse bug than the one being fixed (governance evidence vanishing with no
+    trace), so a colliding key is suffixed ``[redacted] (2)`` -- ugly on purpose.
+    """
+    redact_values = pii_in_values == PII_IN_VALUES_REDACT
+    redacted = False
+    spared: list[str] = []
+
+    def _string(text: str, *, is_key: bool) -> str:
+        nonlocal redacted
+        scan_injection(text)
+        if not (is_key or redact_values):
+            scan_pii(text)  # <- L6's reject leg. Widening the walk widens THIS.
+            return text
+        scrubbed, hit, kept = redact_pii(text, keep=keep)
+        redacted = redacted or hit
+        spared.extend(kept)
+        return scrubbed
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, str):
+            return _string(node, is_key=False)
+        if isinstance(node, dict):
+            out: dict[Any, Any] = {}
+            for key, item in node.items():
+                if isinstance(key, str):
+                    key = _string(key, is_key=True)
+                out[_free_key(key, out)] = _walk(item)
+            return out
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        return node
+
+    return _walk(value), redacted, tuple(spared)

@@ -18,7 +18,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
-from ...content_scan import context_strings, read_proposer_context, scan_injection, scan_pii
+from ...content_scan import (
+    PII_IN_VALUES_REJECT,
+    read_proposer_context,
+    scan_injection,
+    scan_pii,
+    scan_proposer_context,
+)
 from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
 
@@ -66,6 +72,30 @@ def scan_agent_experience_content(*texts: Optional[str]) -> None:
     for text in texts:
         scan_injection(text)
         scan_pii(text)
+
+
+def scan_agent_experience_write(
+    content: str, proposer_context: Optional[dict[str, Any]]
+) -> tuple[Optional[dict[str, Any]], bool]:
+    """L6's whole write scan, in ONE place both twins call. Mirrors L7's
+    ``scan_lexicon_write``.
+
+    Returns ``(storable proposer_context, pii_redacted)``. The context comes back
+    because it is no longer necessarily what the caller sent: a PII-shaped KEY is
+    redacted rather than rejected (D2 amendment 3), so a twin that scans and then
+    stores the ORIGINAL dict re-opens the NFR-6 hole.
+
+    ``PII_IN_VALUES_REJECT`` is stated here, once, rather than at each twin's call
+    site: L6's no-PII-in-content rule is unchanged since 0.0.3 S22, and one
+    resolver per layer is what keeps the mock and Postgres paths in lockstep
+    (NFR-7). Naming it at all is the point -- see
+    :func:`toee_hermes.content_scan.scan_proposer_context`.
+    """
+    scan_agent_experience_content(content)
+    scanned, pii_redacted, _ = scan_proposer_context(
+        proposer_context, pii_in_values=PII_IN_VALUES_REJECT
+    )
+    return scanned, pii_redacted
 
 
 def _require_kind(params: dict[str, Any]) -> str:
@@ -173,7 +203,9 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
         kind = _require_kind(params)
         content = _require_content(params)
         proposer_context = read_proposer_context(params)
-        scan_agent_experience_content(content, *context_strings(proposer_context))
+        proposer_context, pii_redacted = scan_agent_experience_write(
+            content, proposer_context
+        )
         # RK-1: source is framework-derived from context.profile, never the
         # model-supplied params -- any "source" the caller passed is ignored.
         source = resolve_agent_experience_source(context)
@@ -188,7 +220,10 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
             "decided_at": None,
         }
         store.append(entry)
-        return {**entry, "proposed": True}
+        # pii_redacted rides on the RESPONSE only, not the row: L6 has no column
+        # for it, and inventing one on the mock would break lockstep with the
+        # Postgres twin (NFR-7). Postgres records it in the audit row instead.
+        return {**entry, "pii_redacted": pii_redacted, "proposed": True}
 
     def list_agent_experience(
         params: dict[str, Any], context: "ToolExecutionContext"

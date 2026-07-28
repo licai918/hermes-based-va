@@ -23,11 +23,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from ...content_scan import (
-    context_strings,
+    PII_IN_VALUES_REDACT,
     read_proposer_context,
     redact_pii,
-    redact_pii_tree,
     scan_injection,
+    scan_proposer_context,
 )
 from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
@@ -150,12 +150,13 @@ def scan_lexicon_write(
       seeded surface form, so running it here would ``policy_blocked`` the
       headline demo of the whole iteration.
     * ``evidence`` / ``proposer_context`` -- injection hard-rejects at every
-      depth (:func:`context_strings`); PII is REDACTED IN PLACE, in KEYS as well
-      as values (S01 re-review: a key was a way past NFR-6), and the entry is
-      kept. The evidence is exactly what an admin needs in order to decide;
-      throwing the entry away over a phone number in a quoted exchange is the
-      wrong trade. The entry's own forms are exempt from redaction (see
-      :func:`redact_pii`'s ``keep``).
+      depth; PII is REDACTED IN PLACE, in KEYS as well as values (S01 re-review:
+      a key was a way past NFR-6), and the entry is kept. The evidence is exactly
+      what an admin needs in order to decide; throwing the entry away over a
+      phone number in a quoted exchange is the wrong trade. The entry's own forms
+      are exempt from redaction (see :func:`redact_pii`'s ``keep``).
+      ``PII_IN_VALUES_REDACT`` says that out loud at this call site, because the
+      other shared layer says ``PII_IN_VALUES_REJECT`` over the same walk.
 
     Returns ``(evidence, proposer_context, pii_redacted, pii_keep_exempt)``.
     ``pii_keep_exempt`` names the spans the exemption spared, so a waived
@@ -167,13 +168,12 @@ def scan_lexicon_write(
     removed", the thing an admin cannot see for themselves. The spared spans
     equal this entry's own forms, which are already on the row in front of them.
     """
-    scan_injection(surface_form, canonical_form)
-    scan_injection(evidence, *context_strings(proposer_context))
+    scan_injection(surface_form, canonical_form, evidence)
 
     keep = (surface_form, canonical_form)
     scrubbed_evidence, redacted, spared = redact_pii(evidence, keep=keep)
-    scrubbed_context, context_hit, context_spared = redact_pii_tree(
-        proposer_context, keep=keep
+    scrubbed_context, context_hit, context_spared = scan_proposer_context(
+        proposer_context, pii_in_values=PII_IN_VALUES_REDACT, keep=keep
     )
     return (
         scrubbed_evidence,

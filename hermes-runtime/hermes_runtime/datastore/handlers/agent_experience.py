@@ -16,14 +16,14 @@ from typing import TYPE_CHECKING, Any, Optional
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from toee_hermes.content_scan import context_strings, read_proposer_context
+from toee_hermes.content_scan import read_proposer_context
 from toee_hermes.drivers.mock.agent_experience import (
     _require_content,
     _require_id,
     _require_kind,
     resolve_agent_experience_source,
     resolve_experience_decision_authorization,
-    scan_agent_experience_content,
+    scan_agent_experience_write,
 )
 from toee_hermes.errors import ToolDriverError
 
@@ -44,8 +44,12 @@ def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionCon
     content = _require_content(params)
     proposer_context = read_proposer_context(params)
     # S22 write-side scan (the S09 hardening discipline floor): rejected
-    # content never reaches the INSERT below.
-    scan_agent_experience_content(content, *context_strings(proposer_context))
+    # content never reaches the INSERT below. The context is REASSIGNED from the
+    # scan's return -- a PII-shaped key is redacted, not rejected (D2 amendment
+    # 3), so storing the caller's original dict would re-open the NFR-6 hole.
+    proposer_context, pii_redacted = scan_agent_experience_write(
+        content, proposer_context
+    )
     # RK-1 parity: source is framework-derived from context.profile, never the
     # model-supplied params -- any "source" the caller passed is ignored.
     source = resolve_agent_experience_source(context)
@@ -66,7 +70,7 @@ def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionCon
         action="agent_experience_proposed",
         target_type="agent_experience",
         target_id=entry_id,
-        details={"kind": kind, "source": source},
+        details={"kind": kind, "source": source, "pii_redacted": pii_redacted},
     )
     return {
         "id": entry_id,
@@ -74,6 +78,7 @@ def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionCon
         "status": "proposed",
         "content": content,
         "source": source,
+        "pii_redacted": pii_redacted,
         "proposed": True,
     }
 

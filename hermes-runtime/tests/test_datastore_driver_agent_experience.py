@@ -89,6 +89,33 @@ def test_propose_experience_persists_a_proposed_row(datastore) -> None:
     assert updated_at is not None
 
 
+def test_a_pii_shaped_proposer_context_key_is_redacted_on_the_row(datastore) -> None:
+    """D2 amendment 3, asserted against the REAL JSONB column, not the mock.
+
+    Both twins share ``scan_agent_experience_write``, but only the twin that
+    actually INSERTs the value it returned stores the redacted key -- a twin that
+    scanned and then wrote the original ``proposer_context`` would still be green
+    on the mock. That is what this reads back off the row.
+    """
+    driver, conn, _ = datastore
+    result = _propose(
+        driver,
+        kind="note",
+        content="Route 12 customers prefer morning drop-offs.",
+        proposer_context={"order_1234567890": "route 12"},
+    )
+    assert result.ok
+    assert result.data["pii_redacted"] is True
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT proposer_context FROM agent_experience WHERE id = %s",
+            (result.data["id"],),
+        )
+        row = cur.fetchone()
+    assert row[0] == {"order_[redacted]": "route 12"}
+
+
 def test_propose_experience_source_cannot_be_forged(datastore) -> None:
     driver, conn, _ = datastore
     result = _propose(

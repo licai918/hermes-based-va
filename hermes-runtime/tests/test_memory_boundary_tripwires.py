@@ -49,11 +49,18 @@ mix"). Honest accounting, three buckets:
   test_customer_memory_write_source.py`` and ``hermes-runtime/tests/
   test_copilot_memory_write_overlay.py``.
 - *L6 shared content is operational-only/no-PII* -- write-side scan:
-  ``scan_agent_experience_content`` in ``toee_hermes.drivers.mock
+  ``scan_agent_experience_write`` in ``toee_hermes.drivers.mock
   .agent_experience``, tested in ``hermes/tests/test_agent_experience.py``.
   0.0.5 S01 (D2) split its pattern sets into ``toee_hermes.content_scan``'s
-  ``scan_injection`` / ``scan_pii`` (L6 composes both and is unchanged), tested
-  in ``hermes/tests/test_content_scan.py``.
+  ``scan_injection`` / ``scan_pii``, tested in
+  ``hermes/tests/test_content_scan.py``. ``content`` composes both legs and is
+  unchanged since 0.0.3. ``proposer_context`` is NOT unchanged, and the exact
+  boundary is worth stating rather than implying (D2 amendment 3): injection
+  hard-rejects at every depth, keys included; PII in a nested VALUE hard-rejects;
+  PII in a KEY is **redacted, never rejected**, because a blunt phone regex reads
+  ``order_1234567890`` as a phone number and dropping a whole governance record
+  over that false positive is the harm redact-don't-reject exists to prevent.
+  The PII is still not stored -- it is replaced -- so NFR-6 holds either way.
 - *L7 shared content is operational-only/no-PII* -- the same split scan under
   L7's per-field policy (injection everywhere; PII redacted in place on
   ``evidence``/``proposer_context``, never applied to the digit-shaped
@@ -99,7 +106,7 @@ mix"). Honest accounting, three buckets:
   runtime behaviour change and belongs to its own slice, not to a tripwire
   slice. **Partly closed by 0.0.5 S01 (D19) -- on two layers out of three.**
   ``scan_injection`` hard-rejects fence-delimiter tokens, and the write paths
-  that CALL it are **L6 (``scan_agent_experience_content``) and L7
+  that CALL it are **L6 (``scan_agent_experience_write``) and L7
   (``scan_lexicon_write``) only**, so a value carrying one can no longer be
   stored *in those two* (``hermes/tests/test_content_scan.py``). **L4 does not
   call ``scan_injection`` at all** -- wiring it is S08's slice -- so the value
