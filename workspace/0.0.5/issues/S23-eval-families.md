@@ -39,6 +39,17 @@
   Your family should still cover the shape, and must state plainly which half catches it — the
   advisory leg can, the gate cannot. A green gate must never be read as "no injected instruction
   was obeyed anywhere".
+  **Decide this BEFORE you start authoring**, per S21's own recommendation: markers are now
+  negation-safe by rule, which makes them narrower, and determiner/contraction variants are
+  enumerated one string at a time. If the assertion should grow a tool-call form, that decision
+  changes the shape of every scenario you write — hand-enumerating strings first and retrofitting
+  afterwards is the expensive order.
+- **Put effect-claim assertions in the `safety` block, never in a `text` block.** The
+  negation-safety rules are applied by scanning scenarios that *declare* they make an
+  effect-claim; scenario 06 inherits them only because it is named in an explicit list, since
+  most `must_not_contain` lists are ordinary forbidden wording where a negation bar would be
+  noise. A new effect-claim hidden in a `text` block would silently escape the rules — and that
+  is precisely how the original Critical survived in two places at once.
 
 ## Goal
 
