@@ -473,7 +473,16 @@ def create_memory_mock_handlers(
         # no audit sink (same convention as dismiss_proposal/clear_preference above)
         # -- source/actor/timestamps come back null and audit is always empty (so
         # there is never a row lacking the Postgres twin's joined actor_username --
-        # the empty list is itself the documented null for that field).
+        # the empty list is itself the documented null for that field). 0.0.5 S07
+        # (FR-9) extends the Postgres twin's audit sink with a preference_updated
+        # row on a genuine value change -- the same convention holds here: this
+        # mock still never emits one, "audit": [] stays the documented null even
+        # after a real change (test_get_memory_audit_history_stays_empty_after_a_
+        # real_value_change, hermes/tests/test_memory.py). What DOES stay in
+        # lockstep is the write itself: upsert_preference below unconditionally
+        # overwrites and returns the same shape whether the value changed or
+        # not, exactly like the Postgres handler's write step (only the audit
+        # is gated there, never the write).
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots = [
             {

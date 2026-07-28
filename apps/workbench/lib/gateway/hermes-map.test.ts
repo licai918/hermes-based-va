@@ -295,4 +295,42 @@ describe("mapMemoryAuditEntry", () => {
     });
     expect(entry.value).toBeUndefined();
   });
+
+  // 0.0.5 S07 (FR-9): the write-history section needs a preference_updated
+  // row's old/new pair, not just that a change happened -- lifted from
+  // details.old_value/details.new_value the same way details.value is lifted
+  // for a proposal_dismissed row above.
+  it("lifts details.old_value/new_value onto the entry for a preference_updated row", () => {
+    const entry = mapMemoryAuditEntry({
+      id: "audit_3",
+      account_id: "acct_rep_2",
+      actor_username: "rep_2",
+      action: "preference_updated",
+      target_id: "channel_preference",
+      details: {
+        slot: "channel_preference",
+        binding_key: "cust_900",
+        old_value: "sms",
+        new_value: "email",
+      },
+      created_at: "2026-07-10T09:00:00Z",
+    });
+    expect(entry.action).toBe("preference_updated");
+    expect(entry.slot).toBe("channel_preference");
+    expect(entry.oldValue).toBe("sms");
+    expect(entry.newValue).toBe("email");
+  });
+
+  it("leaves old/new value undefined for a row with no such details (e.g. preference_cleared)", () => {
+    const entry = mapMemoryAuditEntry({
+      id: "audit_4",
+      account_id: "acct_sup_1",
+      action: "preference_cleared",
+      target_id: "channel_preference",
+      details: { slot: "channel_preference", binding_key: "cust_900" },
+      created_at: "2026-07-04T09:00:00Z",
+    });
+    expect(entry.oldValue).toBeUndefined();
+    expect(entry.newValue).toBeUndefined();
+  });
 });

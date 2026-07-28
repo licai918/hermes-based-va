@@ -723,3 +723,56 @@ def test_upsert_without_evidence_stores_nothing() -> None:
     assert result.ok is True
     assert result.data["evidence"] is None
     assert evidence_store == {}
+
+
+# --- preference_updated value-change audit (0.0.5 S07, FR-9) ---------------
+# NFR-7 lockstep: the Postgres twin (hermes_runtime/datastore/handlers/
+# memory.py) writes ONE preference_updated audit row when a write genuinely
+# changes an existing value. The mock has no audit sink at all -- same
+# documented no-op-in-mock-mode convention as preference_cleared/
+# dismiss_proposal above (get_memory_audit's "audit" is always the empty
+# list, itself the documented null for that field). "Lockstep" here means the
+# WRITE behavior stays identical either way (unconditional overwrite, same
+# return shape whether the value changed or not) -- pinned below so a future
+# change can't silently start gating the write itself in one twin only.
+
+
+def test_upsert_overwrite_behavior_is_unconditional_regardless_of_value_change() -> None:
+    driver = _driver()
+    ctx = _verified_ctx()
+
+    first = _call(
+        driver, "upsert_preference",
+        {"key": "channel_preference", "value": "sms"}, ctx,
+    )
+    changed = _call(
+        driver, "upsert_preference",
+        {"key": "channel_preference", "value": "email"}, ctx,
+    )
+    identical = _call(
+        driver, "upsert_preference",
+        {"key": "channel_preference", "value": "email"}, ctx,
+    )
+    assert first.ok and changed.ok and identical.ok
+    assert first.data["stored"] is True
+    assert changed.data["stored"] is True
+    assert identical.data["stored"] is True
+
+    read = _call(driver, "get_preferences", {}, ctx)
+    assert read.data["preferences"]["channel_preference"] == "email"
+
+
+def test_get_memory_audit_history_stays_empty_after_a_real_value_change() -> None:
+    # The mock twin's get_memory_audit never gains a preference_updated row --
+    # the empty audit list is the documented convention, even though the
+    # Postgres twin would write one here (a genuine sms -> email change).
+    driver = _driver()
+    ctx = _verified_ctx()
+
+    _call(driver, "upsert_preference", {"key": "channel_preference", "value": "sms"}, ctx)
+    _call(driver, "upsert_preference", {"key": "channel_preference", "value": "email"}, ctx)
+
+    result = _call(driver, "get_memory_audit", {}, ctx)
+    assert result.ok is True
+    assert result.data["audit"] == []
+    assert result.data["slots"][0]["slot_value"] == "email"

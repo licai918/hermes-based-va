@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { clearMemorySlot, getMemoryAudit } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
-import type { MemoryAuditView, MemoryPreferenceSlot } from "@/lib/gateway/types";
+import type { MemoryAuditEntry, MemoryAuditView, MemoryPreferenceSlot } from "@/lib/gateway/types";
 import { SLOT_LABELS } from "@/components/copilot/CustomerPreferences";
 
 const th: React.CSSProperties = { textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" };
@@ -25,6 +25,18 @@ function formatTime(ms: number): string {
 function slotLabel(slot: string | null): string {
   if (!slot) return "—";
   return (SLOT_LABELS as Record<string, string>)[slot] ?? slot;
+}
+
+// 0.0.5 S07 (FR-9): the write-history Detail column shows a readable old->new
+// pair for a preference_updated row instead of the raw JSON details blob
+// entry.detail otherwise falls back to; every other action keeps entry.detail
+// unchanged. A pure function, same as deriveProposalHistory below, so it's
+// unit-testable without going through rendering.
+export function historyDetail(entry: MemoryAuditEntry): string {
+  if (entry.action === "preference_updated" && entry.oldValue !== undefined && entry.newValue !== undefined) {
+    return `${entry.oldValue} → ${entry.newValue}`;
+  }
+  return entry.detail ?? "";
 }
 
 export interface ProposalHistoryRow {
@@ -213,7 +225,7 @@ export function MemoryAuditConsole() {
                       <td style={td}>{entry.action}</td>
                       <td style={td}>{entry.slot ?? "—"}</td>
                       <td style={td}>{entry.actorUsername ?? entry.actorAccountId ?? "—"}</td>
-                      <td style={td}>{entry.detail ?? ""}</td>
+                      <td style={td}>{historyDetail(entry)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -574,6 +574,116 @@ def test_clear_preference_verified_external_customer_clears_own_slot_and_audits(
     assert details["initiator"] == "customer"
 
 
+# --- preference_updated value-change audit (0.0.5 S07, FR-9) ----------------
+# "Every L4 overwrite records preference_updated with {old_value, new_value}"
+# -- closes verified gap 1: a value change becomes auditable (and later
+# rollback-able) instead of vanishing the instant the new value lands. Fires
+# only on a genuine change to an EXISTING value (an "overwrite"); the
+# first-ever write of a slot has no prior value to diff against and stays
+# silent here -- it's already fully attributed by the slot row itself
+# (source/actor/created_at), so a second "changed from nothing" row would be
+# pure noise. An identical rewrite (the common re-confirm case) also adds
+# nothing -- same idempotent-noise-free posture as every other audit action
+# in this file.
+
+
+def test_first_write_of_a_slot_records_no_preference_updated_row(datastore) -> None:
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550070"}
+    up = _run(driver, "upsert_preference",
+              {"key": "channel_preference", "value": "sms"}, identity=identity)
+    assert up.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'preference_updated'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_overwrite_with_a_different_value_writes_exactly_one_row_with_old_and_new(
+    datastore,
+) -> None:
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550071"}
+    up1 = _run(driver, "upsert_preference",
+               {"key": "channel_preference", "value": "sms"}, identity=identity)
+    assert up1.ok
+    binding_key = up1.data["binding_key"]
+
+    up2 = _run(
+        driver, "upsert_preference", {"key": "channel_preference", "value": "email"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_9",
+    )
+    assert up2.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, action, target_type, target_id, details "
+            "FROM workbench_audit_log WHERE action = 'preference_updated' "
+            "AND target_id = %s",
+            ("channel_preference",),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    account_id, action, target_type, target_id, details = rows[0]
+    assert account_id == "acct_rep_9"
+    assert action == "preference_updated"
+    assert target_type == "customer_memory_slot"
+    assert target_id == "channel_preference"
+    assert details["slot"] == "channel_preference"
+    assert details["binding_key"] == binding_key
+    assert details["old_value"] == "sms"
+    assert details["new_value"] == "email"
+
+
+def test_overwrite_with_the_identical_value_adds_no_further_row(datastore) -> None:
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550072"}
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+    # A real change -- exactly one row so far.
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "email"}, identity=identity)
+    # A re-confirm of the SAME value must add nothing further.
+    again = _run(driver, "upsert_preference",
+                 {"key": "channel_preference", "value": "email"}, identity=identity)
+    assert again.ok
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log WHERE action = 'preference_updated' "
+            "AND target_id = %s",
+            ("channel_preference",),
+        )
+        assert cur.fetchone()[0] == 1
+
+
+def test_preference_updated_row_surfaces_in_get_memory_audit(datastore) -> None:
+    # "The supervisor view gets the rows for free" -- get_memory_audit already
+    # returns the unfiltered workbench_audit_log trail for the binding (S20
+    # design); no new read path, this just proves preference_updated isn't
+    # filtered out, same as proposal_dismissed/preference_cleared already
+    # aren't (test_get_memory_audit_surfaces_dismissed_and_cleared_history_
+    # not_filtered above).
+    driver, _, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550073"}
+    _run(driver, "upsert_preference",
+         {"key": "channel_preference", "value": "sms"}, identity=identity)
+    _run(
+        driver, "upsert_preference", {"key": "channel_preference", "value": "email"},
+        identity=identity, profile="internal_copilot", user_id="acct_rep_10",
+    )
+
+    result = _run(driver, "get_memory_audit", {}, identity=identity)
+    assert result.ok
+    history = result.data["audit"]
+    row = next(r for r in history if r["action"] == "preference_updated")
+    assert row["details"]["old_value"] == "sms"
+    assert row["details"]["new_value"] == "email"
+    assert row["account_id"] == "acct_rep_10"
+
+
 # --- self-service-usage counter (0.0.4 S21, FR-30) --------------------------
 
 

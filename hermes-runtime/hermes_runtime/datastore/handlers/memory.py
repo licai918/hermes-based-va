@@ -64,6 +64,17 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
     # makes for source (PRD §9).
     actor_account_id = context.user_id
     with conn.cursor() as cur:
+        # FR-9 (0.0.5 S07): the prior value, read in the SAME transaction/
+        # cursor the write below uses -- no second round trip, no
+        # read-then-write race. ``None`` when this is the slot's first-ever
+        # write (nothing to diff against yet).
+        cur.execute(
+            "SELECT slot_value FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (binding_key, slot),
+        )
+        row = cur.fetchone()
+        old_value = row[0] if row else None
         cur.execute(
             """
             INSERT INTO customer_memory_slot
@@ -81,6 +92,28 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
             """,
             (new_id("mem"), binding_key, binding_kind, slot, value, source, evidence,
              actor_account_id),
+        )
+    # FR-9: a genuine overwrite of an EXISTING value records ONE preference_
+    # updated audit row carrying old->new -- value-change history becomes
+    # auditable (and later rollback-able). Idempotent noise-free (an
+    # identical re-write adds nothing) and silent on the slot's first-ever
+    # write (old_value is None -- nothing to diff, and the slot row itself
+    # already attributes that write), so a supervisor's history isn't padded
+    # with "changed from nothing" entries for every new slot.
+    if old_value is not None and old_value != value:
+        insert_audit(
+            conn,
+            profile=context.profile,
+            account_id=actor_account_id,
+            action="preference_updated",
+            target_type="customer_memory_slot",
+            target_id=slot,
+            details={
+                "slot": slot,
+                "binding_key": binding_key,
+                "old_value": old_value,
+                "new_value": value,
+            },
         )
     return {
         "binding_key": binding_key,
@@ -221,9 +254,10 @@ def _get_memory_audit(conn, params: dict[str, Any], context: "ToolExecutionConte
     current ``customer_memory_slot`` rows -- who wrote what's live now, with
     source/actor/evidence/timestamps; (2) the append-only ``workbench_audit_log``
     trail for this binding (``proposal_dismissed`` from S15, ``preference_cleared``
-    from this slice, and any future merge-audit row that carries the same
-    ``binding_key`` in its ``details`` -- S16 joins accepted proposals into the
-    same view later, so this deliberately does not filter any action out).
+    from this slice, ``preference_updated`` from 0.0.5 S07 (FR-9, old_value/
+    new_value in ``details``), and any future merge-audit row that carries the
+    same ``binding_key`` in its ``details`` -- S16 joins accepted proposals into
+    the same view later, so this deliberately does not filter any action out).
     Read-only: no write, no schema change. Never registered as an LLM-callable
     tool (see ``_AGENT_EXCLUDED_ACTIONS``) -- reached only from the admin BFF's
     deterministic ``tools:dispatch`` call.

@@ -243,6 +243,12 @@ export function mapMemoryAuditEntry(raw: unknown): MemoryAuditEntry {
   // proposal-history section needs it to show what was proposed, not just
   // that a slot was dismissed.
   if (detailsObj && typeof detailsObj.value === "string") entry.value = detailsObj.value;
+  // 0.0.5 S07 (FR-9): a preference_updated row's old/new pair, pulled from
+  // details.old_value/details.new_value the same way value is pulled above --
+  // the write-history section renders the pair instead of the raw JSON blob
+  // optionalDetail below would otherwise fall back to.
+  if (detailsObj && typeof detailsObj.old_value === "string") entry.oldValue = detailsObj.old_value;
+  if (detailsObj && typeof detailsObj.new_value === "string") entry.newValue = detailsObj.new_value;
   const detail = optionalDetail(details);
   if (detail) entry.detail = detail;
   return entry;

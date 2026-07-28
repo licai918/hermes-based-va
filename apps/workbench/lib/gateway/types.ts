@@ -250,6 +250,12 @@ export interface MemoryAuditEntry {
   // ``details.slot`` above -- so the proposal-history section can show what
   // was proposed, not just that something was dismissed.
   value?: string;
+  // 0.0.5 S07 (FR-9): the old->new pair for a preference_updated row, lifted
+  // from ``details.old_value``/``details.new_value`` the same way ``value``
+  // is lifted above -- so the write-history section can render what changed,
+  // not just that a change happened.
+  oldValue?: string;
+  newValue?: string;
 }
 
 export interface MemoryAuditView {
