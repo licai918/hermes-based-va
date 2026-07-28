@@ -50,7 +50,7 @@ hole.
 | 0024 | S03 | seeded domain #1 rows |
 | 0025 | S13 | proposal `annotations` JSONB (D8) |
 | 0026 | S05 | lexicon hit accounting (D6) |
-| 0027 | S25 | aggregator watermark |
+| 0027 | ~~S25~~ **FREE** | S25 landed (`e682982`) with **no migration** — the watermark is one number, so it rides a `workbench_audit_log` row, the surface the retention sweep, ledger prune and L7 hit rollup already use. The allocation was made before that shape was known; 0027 is unclaimed. |
 | 0028 | S26 | effectiveness rollup |
 | 0029 | S27 | `draft_feedback.sent_text` (D11 — owner-flagged) |
 | 0030 | **S09** | `injection_ledger` + its query indexes — **moved here from 0021**, see above. **LANDED** |
@@ -534,3 +534,67 @@ a legitimate call — but it must be made as a decision, not left as an oversigh
 acceptable is the current state, where S08's docstrings and the boundary ledger read as though L4
 is now covered, when what is covered is L4 *going forward*. S08 corrected five stale claims of
 exactly that kind; this decision exists so the sixth does not get written.
+
+## D22. `hit_count` is STRUCTURALLY zero for `default_rule` — so zero-hit retirement would eat them all
+
+Found by S26 while building the health ranking. `hit_count` counts **deterministic-seam
+applications**, and the seam (`lexicon_seam.normalize_product_query`) only ever applies `alias`
+and `normalizer` rows. A `default_rule` is never applied by the seam — it renders into the prompt
+as an imperative ASK. **So every `default_rule` earns exactly zero hits, permanently, no matter
+how well it works.**
+
+This is not a bug in the rollup. It is a property of what the two mechanisms mean, and D6 already
+warned that `hit_count` carries properties its name does not reveal. But it has two consequences
+that were not visible until the ranking work forced them out:
+
+**It is a ratchet.** Out of season a `default_rule` earns no ledger injections either. Newest-20
+selection evicts it → it is not rendered → it is not injected → it is never scored → it never
+comes back. The eviction is self-reinforcing and silent, which is the same shape as the
+`LEXICON_GLOSSARY_LIMIT` ceiling and for the same underlying reason.
+
+**Decision 1 — the ranking fills the window round-robin across entry kinds**, not by global score.
+Shipped in S26 (`2f10054`), proven against 26 entries at a limit of 20 where all 24 aliases are
+both newer and hotter than the two seasonal defaults: newest-20 evicts both, health-ranked keeps
+both, and aliases still take 18 of 20 seats. It is a **per-kind share, not an exemption for one
+kind**, and there is no threshold to tune.
+
+**Decision 2 — S20 must read `entry_effectiveness`, NOT `hit_count == 0`.** This is the load-
+bearing half. FR-20's zero-hit retirement feed, implemented literally against `hit_count`, would
+place **every `default_rule` in the system** into the retirement queue on day one — including the
+two seeded seasonal rows that are the iteration's flagship behaviour. `health_for_rows` and
+`entry_effectiveness_for` are public and layer-generic for exactly this; S26 named the seam in the
+module docstring.
+
+**Known and deliberately left alone:** the Memory Hub's "Zero-hit confirmed entries" tile (S14)
+now permanently includes every `default_rule`. Its label is not false — it says "lifetime
+`hit_count` = 0" — so S26 left it rather than widening scope. It should move to the effectiveness
+read whenever someone is next in that file.
+
+## D23. Six of eleven feedback tags have nowhere legal to emit — OWNER DECISION
+
+Found by S25 while building the aggregator. Of the eleven declared feedback tags in C6 §6.2, only
+**five can reach a queue through a governed propose action**. S25 did not fabricate destinations
+for the rest; each carries its reason at its own routing-table entry and the run's audit row
+counts them.
+
+- `policy_violation` — KnowledgeOps has no propose-shaped action. `update_policy_slot` writes slot
+  **content** and requires a human actor, so a scheduled job writing there is precisely the
+  auto-write NFR-3 forbids.
+- `missed_information` / `missing_context` — these want an "L5 gap / L4 injection-miss" review
+  item, and **D9 pins the `review_item` kind enum at six values, none of which is that**. There is
+  nothing legal to emit.
+- `factual_error` — the L5 half is the same auto-write block; the L7 half needs a
+  `surface_form → canonical_form` **pair**, which a tag cluster does not contain. Deriving one is
+  edit-diff mining (FR-33, S27).
+- `other` — deliberately unrouted: its meaning lives in the reviewer's comment, so the tag alone
+  says nothing.
+
+**This is the owner's call, and it is a real product gap, not a technicality.** A reviewer who
+tags "missed information" today gets a counted-but-silent outcome: the signal is recorded and
+reaches nobody. The cheapest honest route is a **seventh `review_item` kind** for the
+information-gap shape — which requires amending **D9**, not adding a dict entry in the aggregator.
+The alternative is to accept that those tags are collection-only in 0.0.5 and say so where the
+reviewer tags them, so the UI does not imply an action that never happens.
+
+Recorded rather than decided, because either answer is defensible and the choice belongs to
+whoever owns what a reviewer is promised when they click the tag.
