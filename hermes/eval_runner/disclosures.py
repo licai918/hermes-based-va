@@ -1,13 +1,16 @@
 """Deterministic disclosure detector for the Launch Eval (ADR-0072, ADR-0118).
 
-Disclosure assertions name policy-level expectations about an outbound reply. Most
-of them (the fixed email support signature, the "no registered phone/email"
-recovery scripts) are governed by Operational Policy Knowledge Slot 6 (ADR-0057)
-and are enforced mechanically per-scenario via ``text.must_not_contain`` /
-``text.must_contain`` — so they are intentionally NOT phrase-guessed here.
+Disclosure assertions name policy-level expectations about an outbound reply. This
+module derives only the disclosures that are **content-free and structural**, i.e.
+provable from the scenario's channel alone without reading the reply at all.
 
-This module derives only the disclosures that are **content-free and structural**,
-i.e. provable from the scenario's channel without knowing any policy wording.
+The reply-dependent ones live one layer up in :mod:`eval_runner.turn_result`:
+``no_account_disclosure`` from the turn's governed tool calls, and the directory /
+recovery-script invariants from the turn's governed outbound send. The fixed email
+support signature's WORDING is the one that stays out of both — it is governed by
+Operational Policy Knowledge Slot 6 (ADR-0057) and asserted per-scenario via
+``text.must_contain`` when a scenario needs the literal string; what this module
+derives is only the channel-structural fact that an email outbound carries one.
 """
 
 from __future__ import annotations

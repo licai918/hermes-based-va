@@ -2,10 +2,11 @@
 
 Only content-free, ADR-grounded disclosures are derived here. ADR-0056 fixes that
 the email channel never carries an SMS Session Opener (ADR-0024), so
-``no_sms_session_opener`` is true by construction on the email channel. The
-policy-slot-governed disclosure wording (the fixed signature, recovery scripts)
-lives in Operational Policy Knowledge Slot 6 (ADR-0057) and is intentionally NOT
-phrase-guessed here.
+``no_sms_session_opener`` is true by construction on the email channel. Everything
+that depends on what the turn actually sent — including the recovery-script
+invariants — lives in :mod:`eval_runner.turn_result` (see
+``test_eval_turn_result.py``); the fixed signature's WORDING stays governed by
+Operational Policy Knowledge Slot 6 (ADR-0057) and is not phrase-guessed anywhere.
 """
 
 from __future__ import annotations
