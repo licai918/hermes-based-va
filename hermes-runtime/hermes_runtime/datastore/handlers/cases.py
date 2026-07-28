@@ -495,13 +495,22 @@ def _capture_sms_send(
 def _auto_handled_outcome(
     conn, thread_id: str
 ) -> tuple[str, bool, str]:
-    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread."""
+    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread.
+
+    ``contact_reason IS NOT NULL`` is the same triage test the writer uses
+    (postgres_gateway_store._escalation_case_open). The gateway opens an
+    untriaged placeholder case for EVERY inbound so Tier B can show the thread,
+    so without it every auto-handled record would read ``escalated_to_case`` and
+    ``auto_resolved`` would be unreachable -- the two must agree on what counts
+    as an escalation or the list contradicts the flag that put the row in it.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             SELECT tool_failure, summary FROM cases
             WHERE customer_thread_id = %s
-              AND contact_reason IS DISTINCT FROM 'sales_outreach'
+              AND contact_reason IS NOT NULL
+              AND contact_reason <> 'sales_outreach'
             ORDER BY opened_at DESC LIMIT 1
             """,
             (thread_id,),

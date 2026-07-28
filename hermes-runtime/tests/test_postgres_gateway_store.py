@@ -602,3 +602,35 @@ def test_escalating_without_a_stated_reason_still_counts_as_escalation(datastore
     store.persist_agent_outbound(context, "A team member will pick this up.")
 
     assert context.customer_thread_id not in _auto_handled_ids(driver)
+
+
+def _outcome_of(driver, record_id):
+    result = execute_tool(
+        tool="toee_workbench_read",
+        action="list_auto_handled",
+        params={},
+        context=ToolExecutionContext(profile="internal_copilot", user_id="acct_supervisor"),
+        driver=driver,
+    )
+    assert result.ok
+    return next(r["outcome"] for r in result.data["records"] if r["record_id"] == record_id)
+
+
+def test_an_untriaged_placeholder_does_not_read_as_escalated(datastore) -> None:
+    """The list must agree with the flag that put the row in it.
+
+    ``_auto_handled_outcome`` counts any non-sales case as an escalation, and the
+    gateway opens a placeholder for EVERY inbound -- so without the same triage
+    test the writer uses, every auto-handled record would read
+    ``escalated_to_case`` and ``auto_resolved`` would be unreachable.
+    """
+    driver, conn, _ = datastore
+    store, context = _accepted_inbound(
+        conn,
+        event_id="evt-outcome-1",
+        phone="+15559876522",
+        body="What are your Saturday hours?",
+    )
+    store.persist_agent_outbound(context, "We are open 9am-5pm on Saturdays.")
+
+    assert _outcome_of(driver, context.customer_thread_id) == "auto_resolved"
