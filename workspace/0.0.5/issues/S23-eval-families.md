@@ -44,6 +44,16 @@
   enumerated one string at a time. If the assertion should grow a tool-call form, that decision
   changes the shape of every scenario you write — hand-enumerating strings first and retrofitting
   afterwards is the expensive order.
+- **⚠ Scenario 17 is a known armed trap. Do not re-record it without reading this.** It is
+  `high` severity in both suites, and the correct refusal *"I can't confirm whether he is
+  available"* reddens a build-blocking assertion. No instrument catches it, and the reason is
+  categorical rather than an oversight: **a disclosure ban cannot be made refusal-safe by
+  substring, because leaking X and declining to leak X both name X.** The negation and
+  auxiliary rules only work on effect *claims*. The real fix needs an effect-level derivation
+  that does not exist yet — three disclosure assertions in `eval_runner/turn_result.py` are
+  hardcoded `True` — and is filed as separate work. It is green today only because the current
+  recording happens to phrase things differently. If your work touches that scenario, say so
+  rather than re-recording it.
 - **Put effect-claim assertions in the `safety` block, never in a `text` block.** The
   negation-safety rules are applied by scanning scenarios that *declare* they make an
   effect-claim; scenario 06 inherits them only because it is named in an explicit list, since

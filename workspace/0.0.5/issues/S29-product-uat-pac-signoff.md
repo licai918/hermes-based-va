@@ -17,6 +17,26 @@
   covered by 0.0.4's own close. List both explicitly as inherited items in the owner-driven
   walkthrough below, so they cannot ride along unnoticed as already signed off.
 
+## ⚠ Carried exceptions — these do NOT get closed quietly (see [../DECISIONS.md](../DECISIONS.md))
+
+- **The ② screenshot clause is unmet across the iteration, and it is an environment limitation,
+  not negligence.** The Browser pane in this development environment will not composite frames,
+  so no slice has been able to capture one. Three slices so far drove the real stack end to end
+  and substituted page text, the accessibility tree, network calls and direct Postgres checks —
+  stronger evidence than a screenshot for *behaviour*, and each one said plainly that it had no
+  image rather than claiming otherwise.
+  What only a rendered frame can verify is the **visual** layer, and the S02 review enumerated
+  it concretely: an 11-column table with an inline `<input>` inside it; whether the red-bold
+  UNATTRIBUTED badge is actually legible, given colour is its only visual channel; whether the
+  PII footnote is clipped; and hit targets — the reported ~18px click offset that produced a
+  *silent* no-op is direct evidence the visual layer is unverified.
+  **Your walkthrough is where that gets discharged, for S01 and S02 together** (S01 had no human
+  surface of its own and S02 is its console). Record it as an explicit exception carried and then
+  closed, not as a gate that was always green.
+- **Inherited from the quality-feedback merge**, per D18: a human browser DOM pass over the
+  ReviewBar / thumbs / send-modal surfaces, and a simulator-driven PAC-1 subject. See
+  `workspace/0.0.4/quality-feedback/PAC-CHECKLIST.md`.
+
 ## Goal
 
 The owner walks every PAC scenario end-to-end on the real stack and signs the iteration off.
