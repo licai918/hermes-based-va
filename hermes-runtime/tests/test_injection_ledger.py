@@ -21,6 +21,7 @@ are true with no database at all:
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -36,6 +37,8 @@ from hermes_runtime.injection_ledger import (
 )
 from hermes_runtime.live import _scripted_openai_factory
 from hermes_runtime.openrouter import OpenRouterConfig, make_openrouter_run_turn
+
+_LEDGER_LOGGER = "hermes_runtime.injection_ledger"
 
 _CONFIG = OpenRouterConfig(
     base_url="https://openrouter.ai/api/v1", api_key="sk-or-test", model="m", fallback_model="f"
@@ -141,21 +144,43 @@ def test_no_write_when_nothing_was_injected(monkeypatch: pytest.MonkeyPatch) -> 
     assert store.writes == []
 
 
-def test_a_store_without_the_writer_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_store_without_the_writer_is_a_noop(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     # The eval record paths bind scenario-scoped stores that have no ledger writer
-    # at all -- a second, structural reason nothing is recorded there. The thing
-    # that must NOT happen is a fall-through to the default gateway store, which
-    # would reach a real database from a scenario-scoped turn; assert that, or
-    # this test asserts nothing at all and merely reads as coverage.
+    # at all -- a second, structural reason nothing is recorded there.
+    #
+    # THE GATE HAS TO BE OPEN, or this never reaches the writer check. The L6 row
+    # below rides AGENT_EXPERIENCE_*_INJECTION, which `_clean_env` deletes, so the
+    # per-layer gate (added AFTER this test was written) returned at `if not rows`
+    # and every assertion here held whatever the writer branch did -- deleting
+    # `if writer is None: return` left the test green, which is worse than no test.
     monkeypatch.setenv("TOOL_BACKEND", "datastore")
+    monkeypatch.setenv("AGENT_EXPERIENCE_EXTERNAL_INJECTION", "on")
     fallbacks: list[int] = []
     monkeypatch.setattr(
         "hermes_runtime.injection_ledger._gateway_store",
         lambda: fallbacks.append(1),
         raising=True,
     )
-    record_injection(object(), turn_ref="t1", case_or_binding_ref=None, entries=[(LAYER_L6, "a")])
+
+    class _ScenarioScopedStore:
+        """What the eval record paths bind: presets in, no ledger writer."""
+
+    with caplog.at_level(logging.WARNING, logger=_LEDGER_LOGGER):
+        record_injection(
+            _ScenarioScopedStore(),
+            turn_ref="t1",
+            case_or_binding_ref=None,
+            entries=[(LAYER_L6, "a")],
+        )
+
+    # No fall-through to the default gateway store -- that would reach a real
+    # database from a scenario-scoped turn.
     assert fallbacks == []
+    # ... and NOOP means noop: not a `None(...)` TypeError swallowed by the NFR-5
+    # except. This is the assertion that goes red when the guard is deleted.
+    assert [r.getMessage() for r in caplog.records if r.name == _LEDGER_LOGGER] == []
 
 
 def test_neither_render_injection_nor_the_eval_record_path_knows_about_the_ledger() -> None:
@@ -181,6 +206,12 @@ def test_the_external_eval_record_path_writes_nothing(
     # renderer -- completes without a ledger write even with the datastore
     # backend forced on.
     #
+    # The scenario id matters, and it used to be "07", which declares NO
+    # memory_preset: `eval_record._injected_context` then renders nothing, there
+    # are no injected refs, and `store.writes == []` held whether or not the eval
+    # path wrote -- the same wrong-reason pass as the noop test above, one
+    # function over. 29 is the fixture that actually smuggles a memory value.
+    #
     # The patch target is `injection_ledger._gateway_store`, NOT
     # `tool_backend._gateway_store`. `injection_ledger` does
     # `from .tool_backend import _gateway_store`, so the name is bound in ITS
@@ -201,7 +232,8 @@ def test_the_external_eval_record_path_writes_nothing(
     )
 
     eval_dir = Path(__file__).resolve().parents[2] / "eval"
-    scenario = load_scenario("text_first_launch", "07", eval_dir)
+    scenario = load_scenario("text_first_launch", "29", eval_dir)
+    assert scenario.memory_preset, "this test needs a scenario that injects something"
     _path, _result = record_scenario_turn(
         scenario,
         run_turn=lambda **_kwargs: {"final_response": "ok", "messages": []},
