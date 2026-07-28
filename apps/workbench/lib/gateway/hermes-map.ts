@@ -261,6 +261,12 @@ export function mapMemoryAuditView(raw: unknown): MemoryAuditView {
   return {
     slots: slotsRaw.map(mapMemorySlotAttribution),
     history: historyRaw.map(mapMemoryAuditEntry),
+    // 0.0.5 S22: absent/null means "never injected" -- or, on the mock backend,
+    // "no ledger here". Tolerant rather than required (unlike the timestamps on
+    // a slot row): a backend that does not record injections must still render
+    // the audit view, and "never" is the honest value for both cases.
+    lastInjectionAt:
+      typeof r.last_injection_at === "string" ? isoToMs(r.last_injection_at, "last_injection_at") : null,
   };
 }
 

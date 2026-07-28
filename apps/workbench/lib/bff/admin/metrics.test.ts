@@ -40,7 +40,75 @@ function rawMetrics(overrides: Record<string, unknown> = {}) {
     self_service_usage: 3,
     l6_confirmed_entries: 2,
     latency: rawLatency(),
+    deletion_success: rawDeletionSuccess(),
+    lifecycle: rawLifecycle(),
+    knobs: rawKnobs(),
     ...overrides,
+  };
+}
+
+// S11/FR-14 shape, mirroring toee_hermes...memory.deletion_success_payload.
+function rawDeletionSuccess(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    window_days: 30,
+    erased_bindings: 5,
+    flagged_bindings: 2,
+    residue_bindings: 1,
+    reappeared_bindings: 1,
+    rate: 0.6,
+    flagged_slots: { contact_time_preference: 2 },
+    label: "share of erases whose bindings are still empty",
+    ...over,
+  };
+}
+
+// S22/FR-34a shape, mirroring toee_hermes.lifecycle_metrics.lifecycle_payload.
+// Every count is a DIFFERENT number, so a mapper that read the wrong row or
+// collapsed the list would show up as a wrong value rather than as a coincidence.
+function rawCount(key: string, value: number | null, over: Record<string, unknown> = {}) {
+  return {
+    key,
+    label: `label for ${key}`,
+    detail: `what ${key} counts, and what it deliberately does not`,
+    value,
+    ...over,
+  };
+}
+
+function rawLifecycle(): unknown[] {
+  return [
+    rawCount("conflict_overwrites", 7),
+    rawCount("pollution_rejected_writes", 3),
+    rawCount("privacy_deflection_self_service", 4),
+    rawCount("privacy_deflection_erasures", 1),
+    rawCount("prompt_layer_drops_L4", 0),
+    rawCount("prompt_layer_drops_L6", 2),
+    rawCount("prompt_layer_drops_L7", 9),
+  ];
+}
+
+function rawKnobs(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    label: "Read-only. These knobs move by deploy-time config commit.",
+    knobs: [
+      {
+        key: "LEXICON_GLOSSARY_LIMIT",
+        label: "L7 prompt glossary window",
+        value: "20",
+        source: "hermes_runtime.tool_backend",
+        env: null,
+        note: "how many confirmed entries the prompt glossary may carry",
+      },
+      {
+        key: "LEXICON_SELECTION",
+        label: "L7 glossary selection strategy (effective)",
+        value: "newest",
+        source: "hermes_runtime.tool_backend",
+        env: "LEXICON_SELECTION",
+        note: "fail-safe: an unrecognised value resolves to the shipped behaviour",
+      },
+    ],
+    ...over,
   };
 }
 
@@ -175,7 +243,123 @@ describe("handleGetAggregateMetricsViaApi", () => {
     // and label are gone from these two tiles.
     expect(body.selfServiceUsage).toBe(3);
     expect(body.l6ConfirmedEntries).toBe(2);
-    expect(JSON.stringify(body)).not.toContain("proxy");
+    // Scoped past the S22 lifecycle block, whose privacy-deflection row is an
+    // honestly labelled proxy (FR-34a, owner ⑤). A whole-body grep cannot tell
+    // "still secretly a proxy" from "correctly says it is one"; everything the
+    // old scan covered on these two tiles is still covered.
+    const { lifecycle: _lifecycle, ...rest } = body as Record<string, unknown>;
+    expect(JSON.stringify(rest)).not.toContain("proxy");
+  });
+
+  // --- 0.0.5 S22 (FR-34a): the lifecycle half ---------------------------------
+
+  it("carries every FR-34a lifecycle count with the scope its label claims", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { lifecycle: AggregateMetrics["lifecycle"] };
+
+    const byKey = Object.fromEntries(body.lifecycle.map((c) => [c.key, c.value]));
+    expect(byKey).toEqual({
+      conflict_overwrites: 7,
+      pollution_rejected_writes: 3,
+      privacy_deflection_self_service: 4,
+      privacy_deflection_erasures: 1,
+      prompt_layer_drops_L4: 0,
+      prompt_layer_drops_L6: 2,
+      prompt_layer_drops_L7: 9,
+    });
+    // The house rule S14 set and S26 extended: no count reaches a renderer
+    // without the caveat that makes it readable.
+    for (const count of body.lifecycle) {
+      expect(count.label.length).toBeGreaterThan(0);
+      expect(count.detail.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("refuses a lifecycle count that arrives without its scope rather than showing the bare number", async () => {
+    // A count whose label or detail was lost in transit is a number nobody can
+    // read correctly -- and 0 vs "0 of what" is exactly the difference this
+    // panel exists to keep. Same stance as mapHealth's scope/basis refusal.
+    for (const missing of [{ label: "" }, { detail: "" }]) {
+      const client = apiClient(async () =>
+        dispatchResponse(
+          rawMetrics({ lifecycle: [rawCount("conflict_overwrites", 7, missing)] }),
+        ),
+      );
+      expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+    }
+  });
+
+  it("keeps a lifecycle component with no source honestly absent, never a zero", async () => {
+    // `null` is "nothing feeds this yet" and 0 is "it happened zero times" --
+    // the S21 `no_stale_use` rule, applied to a count.
+    const client = apiClient(async () =>
+      dispatchResponse(rawMetrics({ lifecycle: [rawCount("conflict_overwrites", null)] })),
+    );
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { lifecycle: AggregateMetrics["lifecycle"] };
+    expect(body.lifecycle[0]?.value).toBeNull();
+  });
+
+  it("carries S11's deletion-success components, not just the rate (FR-14)", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { deletionSuccess: AggregateMetrics["deletionSuccess"] };
+
+    expect(body.deletionSuccess.erasedBindings).toBe(5);
+    expect(body.deletionSuccess.flaggedBindings).toBe(2);
+    expect(body.deletionSuccess.residueBindings).toBe(1);
+    expect(body.deletionSuccess.reappearedBindings).toBe(1);
+    expect(body.deletionSuccess.rate).toBe(0.6);
+    expect(body.deletionSuccess.windowDays).toBe(30);
+    expect(body.deletionSuccess.flaggedSlots).toEqual({ contact_time_preference: 2 });
+  });
+
+  it("reports a null deletion-success rate as not-computed, never as 100%", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({
+          deletion_success: rawDeletionSuccess({
+            erased_bindings: 0,
+            flagged_bindings: 0,
+            residue_bindings: 0,
+            reappeared_bindings: 0,
+            rate: null,
+            flagged_slots: {},
+          }),
+        }),
+      ),
+    );
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { deletionSuccess: AggregateMetrics["deletionSuccess"] };
+    expect(body.deletionSuccess.rate).toBeNull();
+    expect(body.deletionSuccess.erasedBindings).toBe(0);
+  });
+
+  it("carries the read-only knob panel with each knob's source and env override", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { knobs: AggregateMetrics["knobs"] };
+
+    expect(body.knobs?.label).toContain("Read-only");
+    const glossary = body.knobs?.knobs.find((k) => k.key === "LEXICON_GLOSSARY_LIMIT");
+    expect(glossary?.value).toBe("20");
+    expect(glossary?.source).toBe("hermes_runtime.tool_backend");
+    // No env override for this one; the next knob has one.
+    expect(glossary?.env).toBeNull();
+    expect(body.knobs?.knobs.find((k) => k.key === "LEXICON_SELECTION")?.env).toBe(
+      "LEXICON_SELECTION",
+    );
+  });
+
+  it("accepts a backend that reports no knob values at all (the mock twin)", async () => {
+    // toee_hermes must not import hermes_runtime, so the mock twin sends null
+    // rather than a copy of the constants. Null is renderable as "not reported
+    // by this backend"; a 502 here would break the whole panel on dev.
+    const client = apiClient(async () => dispatchResponse(rawMetrics({ knobs: null })));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as AggregateMetrics).knobs).toBeNull();
   });
 
   it("carries per-layer p50/p95 and the SLO verdict per tile (S18/FR-26)", async () => {

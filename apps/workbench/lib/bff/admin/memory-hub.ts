@@ -303,14 +303,37 @@ function buildMemoryHubRows(sources: Sources): MemoryHubRow[] {
             "and off-season default_rule rows are dropped at render",
         ),
         counted(
-          // Scoped twice over, and both halves are in the label: only CONFIRMED
-          // rows can be retirement candidates (a rejected row is already dead),
-          // and `hit_count` is D6's LIFETIME rollup column, so this is "never
-          // fired since the rollup began", not "idle lately". Windowed usage
-          // comes from S09's injection_ledger, never from here.
-          tally(lexicon, (e) => e.status === "confirmed" && e.hitCount === 0),
-          "Zero-hit confirmed entries — lifetime hit_count = 0 since the rollup " +
-            "began, not a recent-usage window (D6)",
+          // 0.0.5 S22 / D22. This used to be `confirmed AND hitCount === 0`,
+          // and that reading is knowably misleading: `hit_count` counts
+          // DETERMINISTIC-SEAM applications, and the seam only ever applies
+          // `alias` and `normalizer` rows. A `default_rule` renders into the
+          // prompt as an imperative ask and is never "applied", so it earns
+          // exactly zero hits for ever, however well it works -- which put
+          // every seasonal default permanently inside this count. The same
+          // finding is why FR-20's retirement feed reads effectiveness too.
+          //
+          // The effectiveness read answers the question the label asks: hits
+          // (lifetime, S05's rollup) AND ledger injections (windowed by the
+          // ledger's own retention) both zero. Both halves matter -- an entry
+          // reaching prompts with no seam applications is USED, and an entry
+          // with old hits and no recent injections is the retirement candidate.
+          //
+          // An entry whose health did not survive the mapper (no scope, no
+          // basis -- S26's refusal) is left OUT of the count rather than
+          // guessed at: a score whose meaning was lost cannot answer this.
+          tally(
+            lexicon,
+            (e) =>
+              e.status === "confirmed" &&
+              e.health !== null &&
+              e.health.usage.hits === 0 &&
+              e.health.usage.injections === 0,
+          ),
+          "Confirmed entries with no recorded use — no deterministic-seam hit " +
+            "(lifetime) AND no prompt injection in the ledger's retention window. " +
+            "Reads entry_effectiveness, not hit_count alone: hit_count is " +
+            "structurally zero for every default_rule, so a hit-only count would " +
+            "permanently include every seasonal rule (D22)",
         ),
       ],
       note: null,

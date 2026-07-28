@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryAuditEntry, MemoryAuditView } from "@/lib/gateway/types";
-import { deriveProposalHistory, historyDetail } from "./MemoryAuditConsole";
+import {
+  deriveMemoryHealth,
+  deriveProposalHistory,
+  historyDetail,
+} from "./MemoryAuditConsole";
 
 // S16 (FR-17, audit finding 14): a dismissed proposal writes no slot, so the
 // slot list alone can never show it. deriveProposalHistory is the pure
@@ -50,6 +54,7 @@ const baseView: MemoryAuditView = {
       slot: "channel_preference",
     },
   ],
+  lastInjectionAt: Date.parse("2026-07-08T09:00:00Z"),
 };
 
 describe("deriveProposalHistory", () => {
@@ -83,7 +88,91 @@ describe("deriveProposalHistory", () => {
   });
 
   it("returns an empty list when there are no proposal outcomes", () => {
-    expect(deriveProposalHistory({ slots: [], history: [] })).toEqual([]);
+    expect(deriveProposalHistory({ slots: [], history: [], lastInjectionAt: null })).toEqual([]);
+  });
+});
+
+// 0.0.5 S22 (FR-34a): the per-customer memory-health strip. Composed from reads
+// that already exist -- slot ages and the audit trail come from the same
+// payload the tables below render, and only last-injection recency needed a new
+// query. Pure function, same convention as the two above; the strip is four
+// {label, value} pairs, because a number on an admin page without the thing it
+// counts is the failure this whole slice is about.
+describe("deriveMemoryHealth", () => {
+  const NOW = Date.parse("2026-07-11T09:00:00Z");
+
+  function factFor(view: MemoryAuditView, key: string, now = NOW): string {
+    const fact = deriveMemoryHealth(view, now).find((f) => f.key === key);
+    if (!fact) throw new Error(`no fact ${key}`);
+    return fact.value;
+  }
+
+  it("ages the slots from the OLDEST one, not the newest", () => {
+    // The two slots are 10 and 6 days old. Taking the newest would report a
+    // memory as fresher than it is, which is the direction that matters: a
+    // strip exists to show a supervisor when a preference has gone stale.
+    expect(factFor(baseView, "slots")).toBe("2 on file · oldest 10 days");
+  });
+
+  it("counts value corrections from the preference_updated rows, not from every audit row", () => {
+    // The base view's two history rows are a dismissal and a clear -- neither
+    // is a correction, so a count of `history.length` reads 2 and the right
+    // answer is 0.
+    expect(factFor(baseView, "corrections")).toBe("0 recorded");
+    const corrected: MemoryAuditView = {
+      ...baseView,
+      history: [
+        ...baseView.history,
+        {
+          entryId: "audit_3",
+          at: Date.parse("2026-07-09T09:00:00Z"),
+          actorAccountId: "acct_rep_2",
+          actorUsername: "rep_2",
+          action: "preference_updated",
+          slot: "channel_preference",
+          oldValue: "sms",
+          newValue: "email",
+        },
+      ],
+    };
+    expect(factFor(corrected, "corrections")).toBe("1 recorded");
+  });
+
+  it("separates slot clears from whole-binding erasures", () => {
+    const erased: MemoryAuditView = {
+      ...baseView,
+      history: [
+        ...baseView.history,
+        {
+          entryId: "audit_4",
+          at: Date.parse("2026-07-10T09:00:00Z"),
+          actorAccountId: "acct_sup_1",
+          actorUsername: "sup_1",
+          action: "memory_erased",
+          slot: null,
+        },
+      ],
+    };
+    // 1 clear (the base view's) and 1 erase -- summing them into "2 deletions"
+    // would hide that this customer asked to be forgotten entirely.
+    expect(factFor(erased, "clears")).toBe("1 slot clear · 1 whole-binding erasure");
+  });
+
+  it("reports last-injection recency, and 'never' rather than a fabricated time", () => {
+    expect(factFor(baseView, "lastInjection")).toBe("3 days ago");
+    expect(factFor({ ...baseView, lastInjectionAt: null }, "lastInjection")).toBe("never");
+  });
+
+  it("says nothing is on file rather than reporting an age of zero", () => {
+    const empty: MemoryAuditView = { slots: [], history: [], lastInjectionAt: null };
+    expect(factFor(empty, "slots")).toBe("none on file");
+  });
+
+  it("gives every fact a label, so no number reaches the page bare", () => {
+    for (const fact of deriveMemoryHealth(baseView, NOW)) {
+      expect(fact.label.length).toBeGreaterThan(0);
+      expect(fact.value.length).toBeGreaterThan(0);
+    }
   });
 });
 

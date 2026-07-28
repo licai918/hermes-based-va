@@ -337,6 +337,52 @@ counted as `metric_event.metric = 'memory_pollution_rejected'` (S22's pollution 
 
 ---
 
+## Forgetting — how each layer loses content
+
+Every layer above says what it *remembers*. This says what makes it stop, which is the half a
+memory architecture is judged on: a system that can only accumulate is one nobody can correct.
+
+The rule across all seven: **nothing here deletes memory content on a score, a signal or a
+sweep's opinion** (NFR-3). Age-out is time, not judgement; everything else is a human action or
+a status flip a human made. Where a mechanism only *proposes*, the table says so.
+
+| Layer | Mechanism | Who triggers it | What it removes | Where it is counted |
+| --- | --- | --- | --- | --- |
+| L1 Identity Graph | — | — | **None shipped.** Links and match history accumulate | — |
+| L2 Conversation | — | — | **None shipped.** Threads and turns accumulate | — |
+| L3 Operational | — | — | **None shipped.** The audit log is deliberately append-only and retained 7 years (ADR-0004) | — |
+| **L4** Customer Memory | per-slot **clear** | rep/supervisor, or the **verified customer themselves** (self-service) | one slot row; an audit row records who and, for a customer, that it was self-service | metrics panel — *Self-service usage* / lifecycle *privacy-deflection* |
+| **L4** | **whole-binding erase** (0.0.5 S11, FR-13) | administrator, one confirm | every slot on the verified binding **and on every linked channel's provisional binding** (D10) — otherwise the cross-channel merge restores them on the next turn | lifecycle *whole-binding erasures*; whether it **stayed** erased is the *Erases that stayed erased* tile |
+| **L4** | scheduled **retention sweep** | the background worker (daily) | slot rows untouched past their class window — `VERIFIED_RETENTION_DAYS` / `PROVISIONAL_RETENTION_DAYS`, keyed on `last_interaction_at` | Memory Hub — *Slots that sweep deleted*, per class |
+| L5 Knowledge | re-ingest replaces | operator-run ingest | superseded chunks for re-ingested pages. **No age-out**: authored content does not expire on a clock | Memory Hub — corpus counts, last ingest |
+| **L6** Agent experience | `reject_experience` | administrator | nothing physical — the row stays, `status='rejected'`, and stops being injected | Memory Hub — pending vs confirmed |
+| **L6** | — | — | **A CONFIRMED L6 entry cannot be retired today.** There is no retire action in the catalog, so the only way back out is rejecting it before it is confirmed. Stated because its absence is easy to mistake for symmetry with L7 | — |
+| **L7** Semantic lexicon | `reject_lexicon_entry` / `retire_lexicon_entry` | administrator | nothing physical — a status flip; the row survives so `hit_count`, the audit trail and the blast-radius join stay intact | Memory Hub — confirmed vs *no recorded use* |
+| **L7** | **eviction from the prompt window** — *not* forgetting, and the distinction matters | nobody: it is a side effect of `LEXICON_GLOSSARY_LIMIT` | nothing. The entry is still confirmed and still applies at the deterministic seam; it simply stops being *rendered*, silently. `LEXICON_SELECTION=health` is what stops a seasonal `default_rule` being evicted by hotter aliases (D22) | knob panel — the limit and the strategy |
+| *(not a layer)* injection ledger | windowed **prune** | the background worker | ledger rows past `PRUNE_WINDOW_SECONDS`. It must stay **≥** the zero-hit window, or garbage collection manufactures retirement candidates for entries that are in active use (D12) | Retention panel — ledger prune last run |
+
+**Two things the table deliberately separates.**
+
+*Deleting content* versus *not rendering it.* L6's reject, L7's retire and L7's glossary eviction
+all end with an entry that no longer reaches a prompt, but only the first two were decided by a
+human. Eviction is a **capacity** effect, and it is silent by construction — the agent just stops
+using the entry, with no row, no audit and no alert. That is why the bound and the selection
+strategy are on the knob panel rather than buried in a module.
+
+*Erased* versus *stayed erased.* An erase that reported success and left a row behind (residue),
+or a binding that was written to again afterwards (re-appearance), are different failures and are
+counted apart (FR-14). Neither is ever auto-re-deleted: both raise a flag for a human, because a
+loop that re-deletes on its own is a memory-loss actuator nobody approved.
+
+**What the knobs are, and how one moves (D14).** Every window and bound named above is a module
+constant, rendered read-only on the metrics page's knob panel beside the module it lives in and
+its env override where one exists. **There is no in-app mutation**: a knob moves by a deploy-time
+config commit, and its audit trail is git history. NFR-3's "knobs move only by admin action" is
+satisfied that way for 0.0.5, with no in-app enforcement — see
+[ADR-0163](../adr/0163-memory-control-loop-lifecycle-metrics-and-read-only-knobs.md).
+
+---
+
 ## Outside the layer model, and why
 
 Four surfaces live in the same Postgres and are **not** memory layers. The rule that decides
@@ -373,6 +419,15 @@ propose→confirm gate as any other proposal.
 ---
 
 ## Change log
+
+- **2026-07-28 (0.0.5 S22)** — the **forgetting table** landed (the section above), closing the
+  item S11 and S06 both recorded as outstanding: every layer's mechanism for losing content, who
+  triggers it, and where it is counted — including the three places where the honest answer is
+  "none shipped" and the one where a confirmed L6 entry has no way back out. It also draws the
+  line the layer sections did not: L7 glossary **eviction** is a capacity effect, not forgetting,
+  and it is silent. Knob values and the read-only-by-deploy-commit rule (D14) are recorded in
+  [ADR-0163](../adr/0163-memory-control-loop-lifecycle-metrics-and-read-only-knobs.md), which
+  also carries the D22 correction to the Memory Hub's zero-hit tile.
 
 - **2026-07-28 (0.0.5 S11)** — L4 gained the **whole-binding erase** and its deletion-success
   tripwire (FR-13/FR-14, US7): a governed loop over the existing per-slot clear, reaching the

@@ -189,15 +189,16 @@ _METRIC_LAYER.update({skip_metric(m): _METRIC_LAYER[m] for m in SLO_TOTAL_METRIC
 # Tile order + labels, shared by the live aggregation and the zero-sample payload
 # so the Postgres twin and the mock twin cannot render different tiles.
 #
-# ponytail: S19's skip metrics are deliberately NOT tiled here. A skip row is a
-# `metric_event` row like any other and is countable as it stands
-# (`WHERE metric = 'latency_l7_load_skipped'`), which is what FR-27 asks for; a
-# tile is what acceptance ② asks for, and adding one means editing the mock twin
-# (`toee_hermes/drivers/mock/metrics.py`, which restates this table and is pinned
-# to it by full equality) — a file carrying another slice's uncommitted work this
-# wave. Two derived lines on each side once the tree is quiet; a permanently
-# empty tile for a mechanism that ships OFF is not worth taking someone else's
-# diff hostage for.
+# S19's skip metrics are still NOT tiled here, and since 0.0.5 S22 that is a
+# decision rather than a deferral. Every tile in this table is a DURATION tile:
+# p50/p95 over `duration_ms`, judged against a budget. A skip is an EVENT — the
+# number that matters is how many turns lost a layer, and its p95 would only ever
+# report how long the deadline is. Rendered here, a layer nothing has ever
+# dropped would read "Not yet measured", which is the opposite of the truth.
+# S22 places the tile where the shape fits: `toee_hermes.lifecycle_metrics`
+# renders one COUNT per injected layer, and `datastore/handlers/metrics.py`
+# derives the metric names from `skip_metric` + `_METRIC_LAYER` below rather than
+# restating them.
 _TILE_LABELS = (
     (LATENCY_L4_LOAD, "L4", "L4 customer memory read"),
     (LATENCY_L6_LOAD, "L6", "L6 confirmed learnings read"),

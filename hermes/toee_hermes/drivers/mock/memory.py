@@ -744,7 +744,17 @@ def create_memory_mock_handlers(
             }
             for slot, value in slots_for(binding_key).items()
         ]
-        return {"binding_key": binding_key, "slots": slots, "audit": []}
+        # 0.0.5 S22 (FR-34a): the memory-health strip's last-injection recency
+        # comes from the injection ledger, which is Postgres-only -- there is no
+        # ledger behind the mock backend and no turn writes one. `None` is the
+        # documented null here for the same reason `audit` is `[]`, and the
+        # strip renders it as "never", not as a fabricated timestamp.
+        return {
+            "binding_key": binding_key,
+            "slots": slots,
+            "audit": [],
+            "last_injection_at": None,
+        }
 
     return {
         "toee_customer_memory": {

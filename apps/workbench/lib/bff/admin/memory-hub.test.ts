@@ -58,7 +58,7 @@ const EXPERIENCE_ENTRIES = [
   experienceRow("exp_r1", "rejected"),
 ];
 
-function lexiconRow(id: string, status: string, hitCount: number) {
+function lexiconRow(id: string, status: string, hitCount: number, injections = 0) {
   return {
     id,
     domain: "tire",
@@ -76,21 +76,41 @@ function lexiconRow(id: string, status: string, hitCount: number) {
     hit_count: hitCount,
     created_at: "2026-07-01T10:00:00Z",
     updated_at: "2026-07-01T10:00:00Z",
+    // 0.0.5 S26: both twins always attach this. `scope` and `basis` are what
+    // make the mapper keep the score rather than null it.
+    entry_health: {
+      score: 0.5,
+      scope: "external customer turns only",
+      basis: "turn-level attribution",
+      usage: { hits: hitCount, injections, saturation: 10 },
+      honored: { rate: null, passed: 0, determinate: 0, undetermined: 0 },
+      misapplied: { rate: null, passed: 0, determinate: 0, undetermined: 0 },
+      stale: { rate: null, passed: 0, determinate: 0, undetermined: 0 },
+      weights: { usage: 0.5, honored: 0.5, misapplied: 0.3, stale: 0.2 },
+    },
   };
 }
 
-// 10 rows: 3 proposed (one of them zero-hit), 5 confirmed (2 zero-hit), 1
-// rejected zero-hit and 1 retired zero-hit. So "count every row" gives 10,
-// "count every zero-hit row" gives 5, and the only correct zero-hit answer is 2.
+// 10 rows: 3 proposed (one of them unused), 5 confirmed, 1 rejected and 1
+// retired, both unused. So "count every row" gives 10 and "count every unused
+// row" gives 4.
+//
+// D22 is the reason `lex_c2` exists. `hit_count` counts deterministic-seam
+// applications, and the seam only ever applies aliases and normalizers -- so a
+// `default_rule` earns exactly zero hits for ever, however well it works.
+// `lex_c2` is that row: zero hits, five ledger injections. The old
+// `confirmed AND hit_count = 0` count answered 2 and permanently included every
+// seasonal default; the effectiveness read answers 1. Regress to hit_count and
+// this fixture says 2.
 const LEXICON_ENTRIES = [
   lexiconRow("lex_p1", "proposed", 0),
   lexiconRow("lex_p2", "proposed", 4),
   lexiconRow("lex_p3", "proposed", 7),
-  lexiconRow("lex_c1", "confirmed", 0),
-  lexiconRow("lex_c2", "confirmed", 0),
-  lexiconRow("lex_c3", "confirmed", 3),
-  lexiconRow("lex_c4", "confirmed", 11),
-  lexiconRow("lex_c5", "confirmed", 2),
+  lexiconRow("lex_c1", "confirmed", 0, 0),
+  lexiconRow("lex_c2", "confirmed", 0, 5),
+  lexiconRow("lex_c3", "confirmed", 3, 2),
+  lexiconRow("lex_c4", "confirmed", 11, 9),
+  lexiconRow("lex_c5", "confirmed", 2, 0),
   lexiconRow("lex_x1", "rejected", 0),
   lexiconRow("lex_x2", "retired", 0),
 ];
@@ -245,11 +265,29 @@ describe("handleGetMemoryHubViaApi", () => {
       },
       {
         label:
-          "Zero-hit confirmed entries — lifetime hit_count = 0 since the rollup " +
-          "began, not a recent-usage window (D6)",
-        value: "2",
+          "Confirmed entries with no recorded use — no deterministic-seam hit " +
+          "(lifetime) AND no prompt injection in the ledger's retention window. " +
+          "Reads entry_effectiveness, not hit_count alone: hit_count is " +
+          "structurally zero for every default_rule, so a hit-only count would " +
+          "permanently include every seasonal rule (D22)",
+        value: "1",
       },
     ]);
+  });
+
+  // D22, as its own assertion rather than only as a number in the list above:
+  // the row that separates the two readings is a confirmed entry with zero
+  // lifetime hits and real ledger usage. Counting it is what would have fed
+  // every seasonal default_rule to a zero-hit retirement queue.
+  it("does not call an entry unused when the ledger says it reached prompts (D22)", async () => {
+    const { body } = await view();
+    const unused = rowFor(body, "L7").counts[2];
+    expect(unused?.value).toBe("1");
+    // Sanity that the fixture still separates the two readings: 2 confirmed
+    // rows have hit_count 0, so a regression to the old query reads "2".
+    expect(
+      LEXICON_ENTRIES.filter((e) => e.status === "confirmed" && e.hit_count === 0),
+    ).toHaveLength(2);
   });
 
   // The same class on the sibling path: L6's injection is bounded newest-first
@@ -373,9 +411,21 @@ describe("handleGetMemoryHubViaApi", () => {
     }
     if (docPath === null) throw new Error(`memory-layers.md not found from ${process.cwd()}`);
     const md = readFileSync(docPath, "utf8");
-    const documented = [...md.matchAll(/^\|\s*\*{0,2}(L[1-7])\*{0,2}\s*\|\s*([^|]+?)\s*\|/gm)].map(
-      (m) => ({ layer: String(m[1]), name: String(m[2]).replace(/\*/g, "").trim() }),
-    );
+    // Scoped to the at-a-glance SECTION, which is what this test says it reads.
+    // The unscoped scrape matched any table row whose first cell was a bare
+    // layer id, so 0.0.5 S22's forgetting table -- which needs several rows per
+    // layer -- broke it by existing. Narrowing to the section keeps exactly the
+    // drift this fires on (a layer renamed or reordered in the table the hub
+    // mirrors) and stops unrelated tables from deciding the answer. The section
+    // slice is asserted below, so a renamed heading fails loudly rather than
+    // silently yielding zero rows.
+    const start = md.indexOf("## At a glance");
+    expect(start, "memory-layers.md lost its '## At a glance' heading").toBeGreaterThan(-1);
+    const rest = md.slice(start + 1);
+    const glance = rest.slice(0, rest.indexOf("\n## "));
+    const documented = [
+      ...glance.matchAll(/^\|\s*\*{0,2}(L[1-7])\*{0,2}\s*\|\s*([^|]+?)\s*\|/gm),
+    ].map((m) => ({ layer: String(m[1]), name: String(m[2]).replace(/\*/g, "").trim() }));
     expect(documented).toHaveLength(7);
 
     const { body } = await view();

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ...lifecycle_metrics import lifecycle_payload
 from .driver import MockHandlerRegistry
 from .memory import deletion_success_payload
 
@@ -132,6 +133,18 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             # package (the L4 module), so hermes_runtime imports it too and the
             # dependency direction never inverts.
             "deletion_success": deletion_success_payload(),
+            # S22/FR-34a: same SHARED builder the Postgres twin calls, with no
+            # counts -- a storeless deployment has recorded no overwrites, no
+            # rejections and no erases, and zero is the true answer for each.
+            # Every label and every "what is NOT in this number" caveat comes
+            # from that one builder, so the two twins cannot drift.
+            **lifecycle_payload(),
+            # S22/FR-34a: the knob panel is `hermes_runtime`'s to build -- the
+            # constants live there and this package must not import back (the
+            # same reason the mock retention twin reports a null ledger-prune
+            # window). `None` is the honest "this backend does not report
+            # them"; a copy of the numbers would be wrong the day one is tuned.
+            "knobs": None,
         }
 
     return {"toee_metrics": {"get_aggregate_metrics": get_aggregate_metrics}}

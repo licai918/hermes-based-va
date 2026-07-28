@@ -91,6 +91,83 @@ export function deriveProposalHistory(view: MemoryAuditView): ProposalHistoryRow
   return [...accepted, ...dismissed].sort((a, b) => b.at - a.at);
 }
 
+// 0.0.5 S22 (FR-34a): the per-customer memory-health strip.
+//
+// Four facts a supervisor cannot get from the tables below without counting rows
+// by eye: how old this customer's memory is, how often it has been corrected,
+// when it last reached a prompt, and what has been deleted. Composed from reads
+// that ALREADY EXIST -- everything but last-injection recency is derived from
+// the same payload the tables render, and that one is a scalar the audit read
+// now returns.
+//
+// A `{label, value}` pair, not a bare number, for the same reason the Memory Hub
+// uses that shape: "2" beside "Corrections" means nothing, and "2 recorded" under
+// "Value corrections (S07 preference_updated rows)" means exactly one thing.
+export interface MemoryHealthFact {
+  key: string;
+  label: string;
+  value: string;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function agoDays(from: number, now: number): number {
+  return Math.max(0, Math.floor((now - from) / DAY_MS));
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+export function deriveMemoryHealth(view: MemoryAuditView, now: number): MemoryHealthFact[] {
+  // OLDEST, not newest: the strip exists to show when a preference has gone
+  // stale, and the newest slot would report the memory as fresher than it is.
+  const oldest = view.slots.reduce<number | null>(
+    (acc, s) => (acc === null || s.createdAt < acc ? s.createdAt : acc),
+    null,
+  );
+  const corrections = view.history.filter((e) => e.action === "preference_updated").length;
+  const clears = view.history.filter((e) => e.action === "preference_cleared").length;
+  const erasures = view.history.filter((e) => e.action === "memory_erased").length;
+
+  return [
+    {
+      key: "slots",
+      label: "Slots on file, and how long the oldest has been remembered",
+      value:
+        oldest === null
+          ? "none on file"
+          : `${view.slots.length} on file · oldest ${plural(agoDays(oldest, now), "day")}`,
+    },
+    {
+      key: "corrections",
+      label:
+        "Value corrections — writes that replaced an existing value with a different one " +
+        "(S07 preference_updated rows). A first write is not a correction.",
+      value: `${corrections} recorded`,
+    },
+    {
+      key: "lastInjection",
+      label:
+        "Last time this customer's memory reached a prompt (S09 injection ledger, " +
+        "windowed by the ledger's own retention — 'never' also reads as 'not recorded " +
+        "on this backend')",
+      value:
+        view.lastInjectionAt === null
+          ? "never"
+          : `${plural(agoDays(view.lastInjectionAt, now), "day")} ago`,
+    },
+    {
+      key: "clears",
+      // Kept apart rather than summed: one slot cleared and a whole binding
+      // erased are different events, and a customer who asked to be forgotten
+      // must not disappear into a "2 deletions" total.
+      label: "Deletions — per-slot clears and whole-binding erasures, counted separately",
+      value: `${plural(clears, "slot clear")} · ${plural(erasures, "whole-binding erasure")}`,
+    },
+  ];
+}
+
 export function MemoryAuditConsole() {
   const [caseId, setCaseId] = useState("");
   const [view, setView] = useState<MemoryAuditView | null>(null);
@@ -176,6 +253,26 @@ export function MemoryAuditConsole() {
 
       {view ? (
         <>
+          <section aria-label="Memory health" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
+            {deriveMemoryHealth(view, Date.now()).map((fact) => (
+              <div
+                key={fact.key}
+                data-fact={fact.key}
+                style={{
+                  border: "1px solid #e2e2e2",
+                  borderRadius: "0.5rem",
+                  padding: "0.5rem 0.75rem",
+                  maxWidth: "18rem",
+                }}
+              >
+                <p style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.15rem" }}>
+                  {fact.value}
+                </p>
+                <p style={{ fontSize: "0.75rem", opacity: 0.7, margin: 0 }}>{fact.label}</p>
+              </div>
+            ))}
+          </section>
+
           <div>
             {/* The erase sits beside the heading, not in the table, and stays
                 available when the table is EMPTY on purpose: this view shows the

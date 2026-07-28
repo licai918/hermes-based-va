@@ -421,12 +421,17 @@ def test_the_skip_metric_is_derived_from_the_read_it_replaces() -> None:
 
 def test_a_skip_is_countable_without_disturbing_the_tile_set() -> None:
     # A skip is a plain `metric_event` row under its own name, so it is countable
-    # in SQL as it stands. It is deliberately NOT tiled yet -- see the ponytail
-    # note beside `_TILE_LABELS`. This pins the state honestly in both
-    # directions, so "the panel shows skips" cannot be believed of this commit,
-    # and so a later slice adding the tile has to change a test rather than
-    # discover the gap: the skip metrics are registered for GATING (or they would
-    # be dropped by the fail-closed emit filter) but absent from the tiles.
+    # in SQL as it stands. It stays OUT of the LATENCY tiles, which are duration
+    # tiles judged against a budget -- a count rendered there would report the
+    # deadline's own length as a p95, and would read "Not yet measured" for a
+    # layer nothing has ever dropped. The skip metrics are registered for GATING
+    # (or the fail-closed emit filter would drop them and leave a breach
+    # uncountable) and absent from the tiles: both halves, because either alone
+    # is satisfiable by accident.
+    #
+    # 0.0.5 S22 placed the tile, as a COUNT per injected layer on the lifecycle
+    # block -- see `test_lifecycle_metrics.py`. That is why this assertion is now
+    # a boundary between two shapes rather than a note about unfinished work.
     from hermes_runtime.latency import _METRIC_LAYER
 
     tiles = {tile["metric"] for tile in empty_latency_metrics()["layers"]}

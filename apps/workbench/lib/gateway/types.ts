@@ -261,6 +261,10 @@ export interface MemoryAuditEntry {
 export interface MemoryAuditView {
   slots: MemorySlotAttribution[];
   history: MemoryAuditEntry[];
+  // 0.0.5 S22 (FR-34a): when this binding's memory last reached a prompt, from
+  // S09's injection ledger. `null` is "never" -- and also what the mock backend
+  // reports, since there is no ledger behind it. Never a fabricated timestamp.
+  lastInjectionAt: number | null;
 }
 
 // L6 Agent-experience store (0.0.3 S22, FR-23/NFR-3): "what the agent learns

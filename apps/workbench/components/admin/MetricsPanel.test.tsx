@@ -27,8 +27,54 @@ function metrics(overrides: Partial<AggregateMetrics> = {}): AggregateMetrics {
     selfServiceUsage: 0,
     l6ConfirmedEntries: 0,
     latency: latency(),
+    deletionSuccess: {
+      windowDays: 30,
+      erasedBindings: 5,
+      flaggedBindings: 2,
+      residueBindings: 1,
+      reappearedBindings: 1,
+      rate: 0.6,
+      flaggedSlots: { contact_time_preference: 2 },
+      label: "Share of erases whose bindings are still empty.",
+    },
+    lifecycle: [
+      count("conflict_overwrites", "Conflicting L4 overwrites", 7),
+      count("pollution_rejected_writes", "L4 writes rejected by the injection scan", 3),
+      count("privacy_deflection_self_service", "Customer self-service clears", 4),
+      count("privacy_deflection_erasures", "Whole-binding erasures (forget-me)", 1),
+      count("prompt_layer_drops_L7", "L7 dropped from a prompt (deadline)", 0),
+    ],
+    knobs: {
+      label: "Read-only. These knobs move by deploy-time config commit.",
+      knobs: [
+        {
+          key: "LEXICON_GLOSSARY_LIMIT",
+          label: "L7 prompt glossary window",
+          value: "20",
+          source: "hermes_runtime.tool_backend",
+          env: null,
+          note: "how many confirmed entries the prompt glossary may carry",
+        },
+        {
+          key: "LEXICON_SELECTION",
+          label: "L7 glossary selection strategy (effective)",
+          value: "newest",
+          source: "hermes_runtime.tool_backend",
+          env: "LEXICON_SELECTION",
+          note: "fail-safe: an unrecognised value resolves to the shipped behaviour",
+        },
+      ],
+    },
     ...overrides,
   };
+}
+
+function count(
+  key: string,
+  label: string,
+  value: number | null,
+): AggregateMetrics["lifecycle"][number] {
+  return { key, label, detail: `what ${key} counts, and what it does not`, value };
 }
 
 // S18/FR-26: per-layer latency tiles + the total-vs-SLO tile.
@@ -201,5 +247,124 @@ describe("MetricsPanel per-layer latency tiles (S18, FR-26)", () => {
     // Digit-anchored so the SLO caption's own "150 ms" isn't mistaken for it.
     expect(section.textContent).not.toMatch(/(^|[^\d.])0(\.0)? ?ms/);
     expect(section.textContent).not.toMatch(/within/i);
+  });
+});
+
+describe("MetricsPanel lifecycle block (S22, FR-34a)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders every lifecycle count with the scope its detail carries", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /memory lifecycle/i });
+
+    for (const key of [
+      "conflict_overwrites",
+      "pollution_rejected_writes",
+      "privacy_deflection_self_service",
+      "privacy_deflection_erasures",
+      "prompt_layer_drops_L7",
+    ]) {
+      const tile = section.querySelector(`[data-lifecycle="${key}"]`);
+      expect(tile, key).not.toBeNull();
+      // Value AND its caveat -- a tile that dropped `detail` would render a
+      // number nobody can read correctly.
+      expect(tile?.textContent).toContain("what " + key + " counts");
+    }
+    expect(section.textContent).toContain("7");
+    expect(section.textContent).toContain("3");
+  });
+
+  it("renders a component with no source as not-recorded, never as a zero", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(metrics({ lifecycle: [count("conflict_overwrites", "Conflicts", null)] })),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /memory lifecycle/i });
+    const tile = section.querySelector('[data-lifecycle="conflict_overwrites"]');
+    expect(tile?.textContent).toMatch(/not recorded/i);
+    expect(tile?.textContent).not.toMatch(/(^|[^\d])0([^\d]|$)/);
+  });
+
+  it("renders deletion success as its components, never as a bare rate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /memory lifecycle/i });
+    const tile = section.querySelector('[data-lifecycle="deletion_success"]');
+    // Residue and re-appearance are different failures and are shown apart; the
+    // 30-day window is what the number is scoped to.
+    expect(tile?.textContent).toMatch(/residue/i);
+    expect(tile?.textContent).toMatch(/re-?appear/i);
+    expect(tile?.textContent).toContain("30");
+    expect(tile?.textContent).toContain("5");
+  });
+
+  it("reports a null deletion-success rate as not computed, never as 100%", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          metrics({
+            deletionSuccess: {
+              windowDays: 30,
+              erasedBindings: 0,
+              flaggedBindings: 0,
+              residueBindings: 0,
+              reappearedBindings: 0,
+              rate: null,
+              flaggedSlots: {},
+              label: "Share of erases whose bindings are still empty.",
+            },
+          }),
+        ),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const tile = (
+      await screen.findByRole("region", { name: /memory lifecycle/i })
+    ).querySelector('[data-lifecycle="deletion_success"]');
+    expect(tile?.textContent).toMatch(/no erases/i);
+    expect(tile?.textContent).not.toContain("100%");
+  });
+});
+
+describe("MetricsPanel knob panel (S22, D14)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders each knob's value, where it lives, and its env override", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /knob/i });
+    expect(section.textContent).toContain("LEXICON_GLOSSARY_LIMIT");
+    expect(section.textContent).toContain("20");
+    expect(section.textContent).toContain("hermes_runtime.tool_backend");
+    expect(section.textContent).toContain("LEXICON_SELECTION");
+  });
+
+  it("says plainly that it changes nothing, and offers no control that could (D14)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /knob/i });
+    expect(section.textContent).toMatch(/read-only/i);
+    // NFR-3: a knob moves by deploy-time config commit. A control here would be
+    // an ungoverned write surface -- so there must not be one to click.
+    expect(section.querySelectorAll("button, input, select, textarea")).toHaveLength(0);
+  });
+
+  it("says the backend reports no knobs rather than rendering an empty panel", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics({ knobs: null }))));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /knob/i });
+    expect(section.textContent).toMatch(/not reported by this backend/i);
   });
 });

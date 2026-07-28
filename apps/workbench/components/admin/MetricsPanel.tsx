@@ -124,6 +124,138 @@ function LatencySection({ latency }: { latency: AggregateMetrics["latency"] }) {
   );
 }
 
+// --- S22 (FR-34a): the memory-lifecycle block + the read-only knob panel -----
+//
+// Counts, not rates, and that is deliberate: nothing records how many L4 writes
+// were ATTEMPTED, so a conflict or pollution "rate" would have an invented
+// denominator -- a percentage that reads as accuracy and is not. Each tile shows
+// its number beside the `detail` the BFF refused to let travel without it.
+
+function LifecycleTile({
+  id,
+  title,
+  main,
+  detail,
+}: {
+  id: string;
+  title: string;
+  main: string;
+  detail: string;
+}) {
+  return (
+    <div data-lifecycle={id} style={{ ...tile, maxWidth: "20rem" }}>
+      <p style={label}>{title}</p>
+      <p style={value}>{main}</p>
+      <p style={caption}>{detail}</p>
+    </div>
+  );
+}
+
+function LifecycleSection({
+  lifecycle,
+  deletion,
+}: {
+  lifecycle: AggregateMetrics["lifecycle"];
+  deletion: AggregateMetrics["deletionSuccess"];
+}) {
+  return (
+    <section
+      aria-label="Memory lifecycle"
+      style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
+    >
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Memory lifecycle</h2>
+      <div style={grid}>
+        {lifecycle.map((c) => (
+          <LifecycleTile
+            key={c.key}
+            id={c.key}
+            title={c.label}
+            // `null` is "nothing feeds this yet", which is not the same fact as
+            // zero and must not be rendered as one.
+            main={c.value === null ? "Not recorded" : String(c.value)}
+            detail={c.detail}
+          />
+        ))}
+        {/* S11's FR-14 tile, placed here (S22 owns the placement). Components,
+            not just the rate: residue (a row the erase left) and re-appearance
+            (a row written afterwards) are different failures, and a rate over
+            zero erases is "not computed", never a perfect score. */}
+        <LifecycleTile
+          id="deletion_success"
+          title="Erases that stayed erased"
+          main={
+            deletion.rate === null
+              ? "No erases yet"
+              : `${pct(deletion.rate)} of ${deletion.erasedBindings}`
+          }
+          detail={
+            `${deletion.flaggedBindings} flagged — ${deletion.residueBindings} residue, ` +
+            `${deletion.reappearedBindings} re-appeared · watched for ${deletion.windowDays} days · ` +
+            deletion.label
+          }
+        />
+      </div>
+    </section>
+  );
+}
+
+// D14: READ-ONLY, and the section says so. There is deliberately no control here
+// -- a knob moves by deploy-time config commit whose audit trail is git history
+// (NFR-3), and a toggle that looked mutable and was not would be worse than no
+// panel at all.
+function KnobSection({ knobs }: { knobs: AggregateMetrics["knobs"] }) {
+  return (
+    <section
+      aria-label="Knob panel"
+      style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
+    >
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Knobs (read-only)</h2>
+      <p style={caption}>
+        {knobs
+          ? knobs.label
+          : "Read-only. Knob values are not reported by this backend — the mock driver " +
+            "does not run them. On a Postgres deployment this panel lists every one."}
+      </p>
+      {knobs ? (
+        <table style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" }}>
+                Knob
+              </th>
+              <th style={{ textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" }}>
+                Value
+              </th>
+              <th style={{ textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" }}>
+                Changed by editing
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {knobs.knobs.map((knob) => (
+              <tr key={knob.key} data-knob={knob.key}>
+                <td style={{ padding: "0.35rem 1rem 0.35rem 0", verticalAlign: "top" }}>
+                  <div style={{ fontWeight: 600 }}>{knob.label}</div>
+                  <div style={caption}>{knob.note}</div>
+                </td>
+                <td style={{ padding: "0.35rem 1rem 0.35rem 0", verticalAlign: "top", fontWeight: 600 }}>
+                  {knob.value}
+                </td>
+                <td style={{ padding: "0.35rem 1rem 0.35rem 0", verticalAlign: "top" }}>
+                  <code>
+                    {knob.source}.{knob.key}
+                  </code>
+                  {knob.env ? <div style={caption}>env override: {knob.env}</div> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </section>
+  );
+}
+
 export function MetricsPanel() {
   const [metrics, setMetrics] = useState<AggregateMetrics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -200,6 +332,10 @@ export function MetricsPanel() {
       </div>
 
       <LatencySection latency={metrics.latency} />
+
+      <LifecycleSection lifecycle={metrics.lifecycle} deletion={metrics.deletionSuccess} />
+
+      <KnobSection knobs={metrics.knobs} />
 
       <div>
         <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.5rem" }}>Slots-populated distribution</h2>

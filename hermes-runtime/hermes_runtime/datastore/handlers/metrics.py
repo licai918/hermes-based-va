@@ -28,10 +28,29 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
+from toee_hermes.drivers.mock.memory import (
+    MEMORY_ACTION_ERASED,
+    MEMORY_ACTION_PREFERENCE_UPDATED,
+)
+from toee_hermes.lifecycle_metrics import lifecycle_payload
+
 from ...honored_rate import honored_rate_metric
-from ...latency import latency_metrics
-from ._common import METRIC_L6_CONFIRMED, METRIC_SELF_SERVICE_USAGE
+from ...knobs import knob_panel
+from ...latency import _METRIC_LAYER, SLO_TOTAL_METRICS, latency_metrics, skip_metric
+from ._common import (
+    METRIC_L6_CONFIRMED,
+    METRIC_MEMORY_POLLUTION_REJECTED,
+    METRIC_SELF_SERVICE_USAGE,
+)
 from .memory import deletion_success_metric
+
+# 0.0.5 S22: the metric name a dropped layer records -> the layer it dropped,
+# DERIVED from the two tables `latency` already owns rather than restated. S19
+# emits the skip rows and left the tile to this slice; a second copy of the
+# metric->layer mapping is exactly how the L6 hole D4.1 corrected got in.
+_DROP_METRIC_LAYER = {
+    skip_metric(metric): _METRIC_LAYER[metric].upper() for metric in SLO_TOTAL_METRICS
+}
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -67,20 +86,37 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # _common constants, so the emit and aggregation sides can't drift (the
         # _common docstring's promise). memory_injection/knowledge_search have no
         # shared constant (no separate emit-site literal to drift from).
+        # S22/FR-34a adds the pollution counter and S19's per-layer drop
+        # counters to the SAME query -- they are `metric_event` rows like the
+        # rest, so a second round trip would buy nothing. The drop names are
+        # derived (`skip_metric`), never spelled out here.
         cur.execute(
             """
             SELECT metric, COUNT(*) FILTER (WHERE flag) AS hits, COUNT(*) AS total
             FROM metric_event
-            WHERE metric IN ('memory_injection', 'knowledge_search', %s, %s)
+            WHERE metric IN ('memory_injection', 'knowledge_search')
+               OR metric = ANY(%s)
             GROUP BY metric
             """,
-            (METRIC_SELF_SERVICE_USAGE, METRIC_L6_CONFIRMED),
+            (
+                [
+                    METRIC_SELF_SERVICE_USAGE,
+                    METRIC_L6_CONFIRMED,
+                    METRIC_MEMORY_POLLUTION_REJECTED,
+                    *_DROP_METRIC_LAYER,
+                ],
+            ),
         )
         counters = {metric: (hits, total) for metric, hits, total in cur.fetchall()}
         mem_hits, mem_total = counters.get("memory_injection", (0, 0))
         know_hits, know_total = counters.get("knowledge_search", (0, 0))
         self_service_count = counters.get(METRIC_SELF_SERVICE_USAGE, (0, 0))[1]
         l6_confirmed_count = counters.get(METRIC_L6_CONFIRMED, (0, 0))[1]
+        pollution_count = counters.get(METRIC_MEMORY_POLLUTION_REJECTED, (0, 0))[1]
+        layer_drops = {
+            layer: counters.get(metric, (0, 0))[1]
+            for metric, layer in _DROP_METRIC_LAYER.items()
+        }
 
         # --- slots-populated distribution: customer_memory_slot --------------
         cur.execute(
@@ -131,6 +167,20 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # it anchors on live beside each other. S22 places the tile.
         deletion_success = deletion_success_metric(cur)
 
+        # --- lifecycle counts: workbench_audit_log (0.0.5 S22, FR-34a) --------
+        # ONE grouped query over the two governed actions FR-34a counts, keyed
+        # by the SAME action constants the emit sites use, so the count and the
+        # row it counts cannot drift into two spellings. Scoped by `action`
+        # alone on purpose: an erase writes one summary row per binding, and a
+        # differing-value overwrite writes exactly one row, so the row IS the
+        # event -- no DISTINCT, and no join that could multiply either.
+        cur.execute(
+            "SELECT action, COUNT(*) FROM workbench_audit_log "
+            "WHERE action = ANY(%s) GROUP BY action",
+            ([MEMORY_ACTION_PREFERENCE_UPDATED, MEMORY_ACTION_ERASED],),
+        )
+        lifecycle_audit = dict(cur.fetchall())
+
     accepted_total = correction_count + dismissed_count
 
     return {
@@ -166,6 +216,21 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # module (toee_hermes.drivers.mock.memory.deletion_success_payload), which
         # the mock twin calls too -- one builder, not two spellings.
         "deletion_success": deletion_success,
+        # S22/FR-34a: conflict, pollution, privacy-deflection proxy and the
+        # per-layer prompt drops. Same shared-builder posture as
+        # `deletion_success` above -- the mock twin calls `lifecycle_payload`
+        # with no counts, so neither twin can invent a tile the other lacks.
+        **lifecycle_payload(
+            conflict_overwrites=lifecycle_audit.get(MEMORY_ACTION_PREFERENCE_UPDATED, 0),
+            pollution_rejected=pollution_count,
+            self_service_clears=self_service_count,
+            binding_erasures=lifecycle_audit.get(MEMORY_ACTION_ERASED, 0),
+            layer_drops=layer_drops,
+        ),
+        # S22/FR-34a: the READ-ONLY knob panel (D14). Postgres-side only -- see
+        # `hermes_runtime.knobs` for why the mock twin reports null here rather
+        # than a copy of these values.
+        "knobs": knob_panel(),
     }
 
 
