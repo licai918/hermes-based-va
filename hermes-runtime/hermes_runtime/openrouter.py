@@ -43,6 +43,7 @@ from hermes_runtime.latency import (
     LATENCY_L4_MERGE,
     LATENCY_L6_LOAD,
     LATENCY_L7_LOAD,
+    load_reads,
     measure,
     record_latency_samples,
 )
@@ -509,44 +510,52 @@ def make_openrouter_run_turn(
         # fail-closed when not verified or memory is disabled.
         with measure(latency, LATENCY_L4_MERGE):
             merge_fired = _merge_provisional_memory(identity, store)
+        # S19 (FR-27): the three INDEPENDENT pre-turn reads, each deadline-bounded
+        # and fail-open, run from one pool when the budget flag is on and inline
+        # in this exact order when it is off (the default -- see `load_reads`).
+        # The merge above is a WRITE and stays out: its ordering matters (its
+        # result must be visible to the L4 read below) and abandoning a write is
+        # not the same kind of harmless as abandoning a SELECT.
+        #
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
         # Prepend the snapshot + Customer Memory here so the model sees verified
         # identity and prior preferences (ADR-0140, S07/FR-1). The memory read is
         # gated + fail-closed in _load_turn_memory (nothing injected when disabled,
         # unbound, or the store errors).
-        with measure(latency, LATENCY_L4_LOAD):
-            memory = _load_turn_memory(identity, store)
-        _log_turn_memory(identity, memory, merge_fired)
-        # S26 (FR-28): memory-injection counter emit -- turn-safe + gated on the
-        # SAME axis as the feature (never touches DB in a mock/unset deployment,
-        # never fails the turn on any DB error). Reflects L4 Customer Memory
-        # specifically (bool(memory)), not the combined injection block.
-        record_memory_injection_metric(bool(memory))
+        #
         # S25 (FR-25): the external turn READS confirmed L6 learnings (read-only,
         # never proposing -- S23 kept propose off the external profile) behind its
         # OWN independent flag, so it can be disabled without touching the copilot
         # path. Default OFF -- the eval path sets neither flag, so nothing is
         # injected there (determinism, NFR-6). Bounded + fail-closed (NFR-5); only
         # status='confirmed' rows ever come back.
-        with measure(latency, LATENCY_L6_LOAD):
-            experience = (
-                load_confirmed_experience(store)
-                if agent_experience_external_injection_enabled()
-                else None
-            )
+        #
         # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the EXTERNAL lexicon
         # flag -- its own axis, independent of the copilot one and of L6's pair.
         # Default OFF, so the eval path renders no glossary (determinism, NFR-4).
         # The RAW read goes to the renderer (hooks.glossary_entries must see the
         # whole set to resolve a default_rule's condition); the ledger below
         # re-derives the selected rows so it records what the prompt carried.
-        with measure(latency, LATENCY_L7_LOAD):
-            lexicon = (
-                load_confirmed_lexicon(store)
-                if lexicon_external_injection_enabled()
-                else None
-            )
+        memory, experience, lexicon = load_reads(
+            latency,
+            (
+                (LATENCY_L4_LOAD, lambda: _load_turn_memory(identity, store)),
+                (
+                    LATENCY_L6_LOAD,
+                    lambda: load_confirmed_experience(store)
+                    if agent_experience_external_injection_enabled()
+                    else None,
+                ),
+                (
+                    LATENCY_L7_LOAD,
+                    lambda: load_confirmed_lexicon(store)
+                    if lexicon_external_injection_enabled()
+                    else None,
+                ),
+            ),
+        )
+        _log_turn_memory(identity, memory, merge_fired)
         # ONE clock read per turn, threaded to BOTH consumers. Two independent
         # date.today() calls -- one inside the render, one inside the ledger's
         # re-derivation below -- can land on either side of midnight, and on
@@ -609,6 +618,17 @@ def make_openrouter_run_turn(
                     lexicon=glossary_entries(lexicon, today),
                 ),
             )
+        # S26 (FR-28): memory-injection counter emit -- turn-safe + gated on the
+        # SAME axis as the feature (never touches DB in a mock/unset deployment,
+        # never fails the turn on any DB error). Reflects L4 Customer Memory
+        # specifically (bool(memory)), not the combined injection block.
+        #
+        # Moved behind the model call by S19 (FR-27). It is a synchronous,
+        # unpooled INSERT + commit; in front of the model it was a database
+        # round-trip standing between the customer and their reply -- bounded
+        # since b989048, so never a hang, but exactly the shape NFR-5 forbids and
+        # exactly what S09's ledger and S18's own emit already sit behind.
+        record_memory_injection_metric(bool(memory))
         # S18 (FR-26): one batched metric write for the whole turn, AFTER the
         # model call for the same NFR-5 reason the ledger is written here.
         # UNconditional, unlike the ledger: a read that returned nothing still

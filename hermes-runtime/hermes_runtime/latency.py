@@ -1,8 +1,26 @@
-"""Per-layer memory-read latency: measure, emit, aggregate (0.0.5 S18, FR-26).
+"""Per-layer memory-read latency: measure, emit, aggregate, ENFORCE (S18 + S19).
 
-S18 is measure-first. It builds the histogram S19 will later enforce against and
-ships **no** deadline of its own -- shipping one here would take S19's decision
-away before its evidence exists.
+S18 (FR-26) is measure-first: it built the histogram and shipped no budget.
+S19 (FR-27) is the enforcement half that reads it -- :func:`load_reads`, the
+per-layer deadline, the fail-open skip and the pool. The two live in one module
+because they are one seam: the thing that times a read is the thing that has to
+give up on it.
+
+**S19 ships OFF, and that is what the evidence says to do.** FR-27 is explicit
+that only what the histogram indicts may be optimized, and on this deployment the
+histogram indicts nothing: the whole pre-turn read total tops out at 41ms against
+a 150ms p95 line. So :func:`load_reads` defaults to the sequential inline path
+the two turn seams already had, and
+:func:`~hermes_runtime.tool_backend.memory_read_budget_enabled` is the switch for
+the day a total tile goes red.
+
+**One caveat on the total under the pool**, because the tile's meaning shifts and
+a silent shift would be worse than the shift: :data:`LATENCY_PRE_TURN_TOTAL` is
+the per-turn SUM of the three reads. Sequentially that is exactly the wall clock
+the turn spent. In parallel the three overlap, so the sum becomes an upper bound
+on it -- never an understatement. Left as the sum deliberately: an SLO tile that
+flattered a turn would be a worse failure than one that over-charges it, and a
+second wall-clock metric would need a gate of its own for a mode that is off.
 
 **Where the numbers come from.** Each pre-turn read site in the two live turn
 paths (``openrouter.run_turn``, ``copilot_turn.run_turn``) is wrapped in
@@ -38,19 +56,25 @@ measured and tiled against its OWN shipped budget (``knowledge/driver.py``'s
 as a number anywhere in this module) and excluded from the total, because that
 budget is several times the SLO and a total including it could never meet it.
 The provisional->verified merge is a WRITE, so it gets its own tile outside the
-total too. Neither this module nor the tiles invent a budget for anything else:
-an unbudgeted tile reports its percentiles and no verdict.
+total too. No budget in this module is invented: S19's per-layer deadline is
+derived from the connect budget for the reasons written at
+:data:`MEMORY_READ_DEADLINE_MS`, and every other tile reports its percentiles and
+passes no verdict.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
-from typing import Any, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Iterable, Iterator, List, Optional, Sequence, Tuple
 
+from .datastore.config import CONNECT_TIMEOUT_TURN_SECONDS
 from .injection_ledger import LAYER_L4, LAYER_L6, LAYER_L7, _LAYER_GATES
 from .metrics import KNOWLEDGE_SEARCH, emit_metric_samples
+from .tool_backend import _flag_on
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +102,72 @@ SLO_TOTAL_METRICS: Tuple[str, ...] = (LATENCY_L4_LOAD, LATENCY_L6_LOAD, LATENCY_
 
 NOT_MEASURED_LABEL = "Not yet measured (no latency samples on this deployment)"
 
+# --- S19 (FR-27): the budget ---------------------------------------------------
+
+# The switch for the whole enforcement half of this module.
+#
+# DEFAULT OFF, and that is a decision made against evidence rather than caution.
+# FR-27 says to optimize only what the histogram indicts, and on this deployment
+# S18's histogram indicts nothing: 415 measured turns, the whole pre-turn read
+# total topping out at 41ms against a 150ms p95 line. So the mechanism lands
+# ready and dark; the day a total tile goes red, this is the switch. Off, the
+# reads run inline exactly as they did before -- which is what keeps the existing
+# turn suites and the replay gate byte-identical (NFR-4).
+#
+# ONE flag for both halves on purpose: a deadline can only be ENFORCED
+# off-thread (a bound checked after the slow call returns is a comment), so the
+# pool is the enforcement vehicle, not a separate feature to switch separately.
+# It reuses `tool_backend._flag_on` -- the shared fail-closed parser every other
+# injection flag uses -- rather than a sixth spelling of "is this on". Reaching
+# for that module's underscore name is the established pattern here, not a new
+# liberty: `openrouter.py` already imports `_gateway_store` and
+# `_turn_extra_drivers` from it for the same "one implementation, no drift"
+# reason. The flag lives HERE rather than beside the injection flags because it
+# switches THIS module's behaviour, and because `tool_backend.py` is not S19's
+# file to touch this wave.
+MEMORY_READ_BUDGET_ENV = "MEMORY_READ_BUDGET"
+
+
+def memory_read_budget_enabled() -> bool:
+    """Whether pre-turn memory reads run under the S19 deadline + pool (FR-27).
+
+    Fail-closed: unset, empty, or anything outside the shared on-set is ``False``.
+    """
+    return _flag_on(MEMORY_READ_BUDGET_ENV)
+
+
+# The deadline ONE pre-turn layer read gets before it is dropped.
+#
+# DERIVED, never a third number. `b989048` already decided how long anything on
+# the reply path may wait for the database, and decided it against a measured
+# 130-second hang on an unbounded connect: `CONNECT_TIMEOUT_TURN_SECONDS`, whose
+# own comment sets the bar at "shorter than a person notices". A layer READ asks
+# exactly that question, so it inherits exactly that answer.
+#
+# It also cannot sensibly be SHORTER. A read that has to open its connection
+# spends up to the connect budget before it has issued any SQL at all, so a
+# tighter read deadline would fire on every cold connect -- a layer dropped
+# because it was first, not because the database was slow. That converts a
+# working fail-open into routine, invisible context loss.
+#
+# What it actually buys, since the connect is already bounded: the pooled
+# acquire. `datastore/pool.py` deliberately leaves the pool's queue-wait at 30s
+# (shortening it turns queuing under load into errors under load), so under
+# saturation a memory read can block for half a minute with the customer's reply
+# behind it. Nothing bounded that before this constant.
+MEMORY_READ_DEADLINE_MS = CONNECT_TIMEOUT_TURN_SECONDS * 1000.0
+
+# A breach emits its own countable row alongside the timing row. Derived from the
+# read's metric name so there is one naming rule and no read site can invent a
+# second convention that leaves its skips uncountable.
+SKIP_SUFFIX = "_skipped"
+
+
+def skip_metric(metric: str) -> str:
+    """The countable "this layer was dropped by the deadline" metric for ``metric``."""
+    return metric + SKIP_SUFFIX
+
+
 # metric -> the memory layer whose injection flag gates it. Resolved through the
 # ledger's `_LAYER_GATES` rather than restating the flags: a second copy of that
 # table is how the L6 hole D4.1 corrected got in, and the rule is identical here
@@ -89,9 +179,25 @@ _METRIC_LAYER = {
     LATENCY_L6_LOAD: LAYER_L6,
     LATENCY_L7_LOAD: LAYER_L7,
 }
+# A skip row rides the SAME gate as the read it replaces, derived from the table
+# above rather than restated -- so it is impossible to add a skip that lands on
+# the eval record/replay path when the read itself would not have. The budgeted
+# reads are exactly the SLO's reads: the merge is a write (D5.3) and L5 enforces
+# its own deadline (D5.2), so neither is ever skipped by this mechanism.
+_METRIC_LAYER.update({skip_metric(m): _METRIC_LAYER[m] for m in SLO_TOTAL_METRICS})
 
 # Tile order + labels, shared by the live aggregation and the zero-sample payload
 # so the Postgres twin and the mock twin cannot render different tiles.
+#
+# ponytail: S19's skip metrics are deliberately NOT tiled here. A skip row is a
+# `metric_event` row like any other and is countable as it stands
+# (`WHERE metric = 'latency_l7_load_skipped'`), which is what FR-27 asks for; a
+# tile is what acceptance ② asks for, and adding one means editing the mock twin
+# (`toee_hermes/drivers/mock/metrics.py`, which restates this table and is pinned
+# to it by full equality) — a file carrying another slice's uncommitted work this
+# wave. Two derived lines on each side once the tree is quiet; a permanently
+# empty tile for a mechanism that ships OFF is not worth taking someone else's
+# diff hostage for.
 _TILE_LABELS = (
     (LATENCY_L4_LOAD, "L4", "L4 customer memory read"),
     (LATENCY_L6_LOAD, "L6", "L6 confirmed learnings read"),
@@ -102,6 +208,8 @@ _TILE_LABELS = (
 _TOTAL_LABEL = (LATENCY_PRE_TURN_TOTAL, "L4+L6+L7", "Pre-turn reads, total")
 
 LatencySample = Tuple[str, float]
+# (metric, thunk) -- one independent pre-turn layer read, ready to run.
+LayerRead = Tuple[str, Callable[[], Any]]
 
 
 # --- measurement ---------------------------------------------------------------
@@ -123,6 +231,121 @@ def measure(samples: List[LatencySample], metric: str) -> Iterator[None]:
         yield
     finally:
         samples.append((metric, (time.perf_counter() - started) * 1000.0))
+
+
+# --- enforcement: the deadline + the pool (S19, FR-27) --------------------------
+
+
+def _timed(read: Callable[[], Any]) -> Tuple[Any, float]:
+    """Run ``read`` on a worker thread, returning ``(value, elapsed_ms)``.
+
+    The timing is taken INSIDE the worker and carried back with the value rather
+    than appended to the caller's sample list, so a worker abandoned by a
+    deadline never mutates a list the caller is already reading. It also keeps
+    the per-layer number honest under the pool: the caller's own wait for the
+    second and third futures is near zero once it has waited for the first.
+    """
+    started = time.perf_counter()
+    return read(), (time.perf_counter() - started) * 1000.0
+
+
+def _inline(samples: List[LatencySample], metric: str, read: Callable[[], Any]) -> Any:
+    """Today's path: run the read on this thread, timed, unbounded."""
+    with measure(samples, metric):
+        return read()
+
+
+def _collect(samples: List[LatencySample], metric: str, future: Any) -> Any:
+    """Wait out ``future`` under the deadline; on breach drop the layer, countably."""
+    waited_from = time.perf_counter()
+
+    def waited_ms() -> float:
+        return (time.perf_counter() - waited_from) * 1000.0
+
+    try:
+        value, elapsed_ms = future.result(timeout=MEMORY_READ_DEADLINE_MS / 1000.0)
+    except FutureTimeoutError:
+        # Fail OPEN: this layer contributes nothing to the prompt and the turn
+        # carries on. Two rows: the time it cost (so the breach stays visible on
+        # the SLO tile rather than making a struggling deployment read as a fast
+        # one) and the countable skip.
+        logger.warning(
+            "pre-turn memory read deadline exceeded metric=%s deadline_ms=%s; "
+            "the layer is skipped for this turn and the reply is unaffected",
+            metric,
+            MEMORY_READ_DEADLINE_MS,
+        )
+        spent = waited_ms()
+        samples.append((metric, spent))
+        samples.append((skip_metric(metric), spent))
+        return None
+    except Exception as exc:
+        # Every reader below this already swallows its own errors, so this is the
+        # backstop for a future that raised anyway. NOT counted as a skip: a
+        # failed read is not a breached budget, and conflating them would inflate
+        # the number the owner reads as "the deadline is too tight".
+        logger.warning(
+            "pre-turn memory read failed metric=%s error_type=%s; "
+            "the layer is skipped for this turn and the reply is unaffected",
+            metric,
+            type(exc).__name__,
+        )
+        samples.append((metric, waited_ms()))
+        return None
+    samples.append((metric, elapsed_ms))
+    return value
+
+
+def load_reads(samples: List[LatencySample], reads: Sequence[LayerRead]) -> List[Any]:
+    """Run the independent pre-turn layer reads; return their values IN ORDER.
+
+    Off (the default, :func:`memory_read_budget_enabled`),
+    each read runs inline under :func:`measure` -- byte-for-byte the sequential
+    path both turn seams had before, which is what keeps the existing turn suites
+    and the replay gate unmoved (NFR-4).
+
+    On, all of them are submitted to ONE :class:`~concurrent.futures.ThreadPoolExecutor`
+    and collected under :data:`MEMORY_READ_DEADLINE_MS` each. Running off-thread
+    is not an optimization bolted onto the deadline, it is the only way to HAVE
+    one: a bound checked after the slow call returns has already waited.
+
+    **What happens to abandoned work, stated rather than implied.**
+    ``concurrent.futures`` cannot cancel a running future, and ``shutdown(wait=False)``
+    -- the same choice ``KnowledgeDriver`` makes for the L5 deadline -- means the
+    turn does not block on it either. So a breached read keeps running and keeps
+    its pooled connection until its own query returns. That is acceptable here,
+    bounded on three sides: every read is a side-effect-free ``SELECT``, so
+    abandoning it corrupts nothing and its result is simply discarded; the merge
+    is a WRITE and is deliberately NOT in this pool (D5.3), so no write is ever
+    abandoned or double-run; and connection consumption is capped by the pool's
+    own ``max_size``, past which the reader's existing fail-closed wrapper
+    swallows the ``PoolTimeout`` and the turn still answers. What is NOT bounded
+    is the SQL execution itself -- a ``statement_timeout`` on the read connection
+    is the belt-and-braces half, the same follow-up ``KnowledgeDriver`` names, and
+    it is out of this slice because it would move every datastore call in the
+    process, not just these three.
+
+    ANY pool failure degrades to the sequential path with the same results
+    (FR-27). Since the reads are idempotent ``SELECT``s, a failure part-way
+    through submission may re-run one; nothing is written twice.
+    """
+    # `and reads` because `ThreadPoolExecutor(max_workers=0)` raises, and it would
+    # raise HERE -- outside the try below -- i.e. straight into a turn. No caller
+    # passes an empty sequence today; one word is cheaper than trusting that.
+    if reads and memory_read_budget_enabled():
+        pool = ThreadPoolExecutor(max_workers=len(reads))
+        try:
+            futures = [(metric, pool.submit(_timed, read)) for metric, read in reads]
+            return [_collect(samples, metric, future) for metric, future in futures]
+        except Exception as exc:
+            logger.warning(
+                "pre-turn memory read pool unavailable error_type=%s; "
+                "falling back to the sequential path",
+                type(exc).__name__,
+            )
+        finally:
+            pool.shutdown(wait=False)
+    return [_inline(samples, metric, read) for metric, read in reads]
 
 
 def record_latency_samples(samples: Iterable[LatencySample]) -> None:

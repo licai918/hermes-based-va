@@ -64,7 +64,7 @@ from hermes_runtime.latency import (
     LATENCY_L4_LOAD,
     LATENCY_L6_LOAD,
     LATENCY_L7_LOAD,
-    measure,
+    load_reads,
     record_latency_samples,
 )
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
@@ -528,11 +528,49 @@ def make_copilot_run_turn(
         # copilot seam than from the external one. Stated rather than split:
         # separating them would buy a tile nobody asked for.
         latency: list[tuple[str, float]] = []
-        with measure(latency, LATENCY_L4_LOAD):
-            identity, memory = _load_case_memory(case_id, store)
-        # S26 (FR-28): memory-injection counter emit, same gate/rationale as the
-        # external turn (openrouter.py) -- turn-safe, gated on memory_enabled().
-        record_memory_injection_metric(bool(memory))
+        # S19 (FR-27): the three independent pre-turn reads, deadline-bounded and
+        # fail-open under the budget flag, inline in this order when it is off
+        # (the default). L6 and L7 are read HERE rather than after the boot they
+        # do not feed, so all three are one parallelizable set; nothing between
+        # them changed order.
+        #
+        # S25 (FR-25): confirmed L6 learnings for the draft, gated on the COPILOT
+        # injection flag (its OWN axis, default OFF -- the eval record/replay path
+        # sets neither flag, so nothing is read/injected there and the gate stays
+        # deterministic, NFR-6). Read is bounded + fail-closed (returns None on any
+        # error, NFR-5); only status='confirmed' rows ever come back.
+        #
+        # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the COPILOT lexicon
+        # flag -- its own axis, so the external read is disable-able without
+        # touching this path. Default OFF (the eval record/replay path sets
+        # neither, NFR-4). The RAW read goes to the renderer; the ledger below
+        # re-derives the SELECTED rows (see hooks.glossary_entries -- it is not
+        # idempotent, so pre-narrowing here would drop an admin season override).
+        case_memory, experience, lexicon = load_reads(
+            latency,
+            (
+                (LATENCY_L4_LOAD, lambda: _load_case_memory(case_id, store)),
+                (
+                    LATENCY_L6_LOAD,
+                    lambda: load_confirmed_experience(store)
+                    if agent_experience_injection_enabled()
+                    else None,
+                ),
+                (
+                    LATENCY_L7_LOAD,
+                    lambda: load_confirmed_lexicon(store)
+                    if lexicon_injection_enabled()
+                    else None,
+                ),
+            ),
+        )
+        # A breached L4 read on THIS seam costs more than a memory block: the same
+        # call resolves the case IDENTITY, so the draft then boots unbound and its
+        # business-tool reads lose their verification subject. Stated because it is
+        # a real cost, and accepted because the alternative is worse -- NFR-5 is
+        # absolute, and a draft that stalls behind a hung identity lookup helps
+        # nobody. The turn degrades; it never fails.
+        identity, memory = case_memory if case_memory else (None, None)
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
@@ -553,27 +591,6 @@ def make_copilot_run_turn(
         )
         system_message = _system_message(channel)
         base_user_message = _user_message(channel, case_id, prompt)
-        # S25 (FR-25): confirmed L6 learnings for the draft, gated on the COPILOT
-        # injection flag (its OWN axis, default OFF -- the eval record/replay path
-        # sets neither flag, so nothing is read/injected there and the gate stays
-        # deterministic, NFR-6). Read is bounded + fail-closed (returns None on any
-        # error, NFR-5); only status='confirmed' rows ever come back.
-        with measure(latency, LATENCY_L6_LOAD):
-            experience = (
-                load_confirmed_experience(store)
-                if agent_experience_injection_enabled()
-                else None
-            )
-        # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the COPILOT lexicon
-        # flag -- its own axis, so the external read is disable-able without
-        # touching this path. Default OFF (the eval record/replay path sets
-        # neither, NFR-4). The RAW read goes to the renderer; the ledger below
-        # re-derives the SELECTED rows (see hooks.glossary_entries -- it is not
-        # idempotent, so pre-narrowing here would drop an admin season override).
-        with measure(latency, LATENCY_L7_LOAD):
-            lexicon = (
-                load_confirmed_lexicon(store) if lexicon_injection_enabled() else None
-            )
         # Memory + confirmed learnings + glossary — the case identity is not
         # surfaced as a snapshot block (the agent gathers case detail via its
         # governed read tools, ADR-0147 decision 2). render_injection returns None
@@ -677,6 +694,12 @@ def make_copilot_run_turn(
                     lexicon=glossary_entries(lexicon, today),
                 ),
             )
+        # S26 (FR-28): memory-injection counter emit, same gate/rationale as the
+        # external turn (openrouter.py) -- turn-safe, gated on memory_enabled().
+        # Moved behind the model call by S19 (FR-27) on BOTH seams: it is a
+        # synchronous, unpooled INSERT + commit, and in front of the model it was
+        # a database round-trip standing between the rep and their draft.
+        record_memory_injection_metric(bool(memory))
         # S18 (FR-26): one batched metric write for the whole draft turn, AFTER
         # the model call for the same NFR-5 reason the ledger is. Unconditional,
         # unlike the ledger -- a read that returned nothing still took time.
