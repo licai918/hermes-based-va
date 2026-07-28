@@ -29,6 +29,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Iterable, Optional
 
 from ...honored_rate import honored_rate_metric
+from ...latency import latency_metrics
 from ._common import METRIC_L6_CONFIRMED, METRIC_SELF_SERVICE_USAGE
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -117,6 +118,12 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # empty table returns the honest "not yet computed" state, never a zero.
         honored_rate = honored_rate_metric(cur)
 
+        # --- per-layer read latency: metric_event.duration_ms (S18, FR-26) ----
+        # Same table, different shape: `duration_ms IS NOT NULL` separates the
+        # latency samples from the boolean counters above, which is why
+        # knowledge_search can be both without either query seeing the other.
+        latency = latency_metrics(cur)
+
     accepted_total = correction_count + dismissed_count
 
     return {
@@ -145,6 +152,9 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # drift from the emit side.
         METRIC_SELF_SERVICE_USAGE: self_service_count,
         METRIC_L6_CONFIRMED: l6_confirmed_count,
+        # S18/FR-26: p50/p95 per memory layer + the total-vs-SLO tile. Shape owned
+        # by hermes_runtime.latency so the mock twin renders the same tiles.
+        "latency": latency,
     }
 
 

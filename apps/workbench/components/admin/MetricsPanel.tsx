@@ -16,7 +16,7 @@
 import { useEffect, useState } from "react";
 import { getAggregateMetrics } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
-import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { AggregateMetrics, LatencyTile } from "@/lib/bff/admin/metrics";
 
 const tile: React.CSSProperties = {
   border: "1px solid #e2e2e2",
@@ -57,6 +57,70 @@ function Tile({ title, main, sub }: { title: string; main: string; sub?: string 
       <p style={value}>{main}</p>
       {sub ? <p style={caption}>{sub}</p> : null}
     </div>
+  );
+}
+
+// --- S18 (FR-26): per-layer read latency + the total-vs-SLO tile -------------
+// Measurement only. This slice ships NO deadline (S19 owns enforcement), so a
+// tile with no budget shows its percentiles and passes no judgement, and a tile
+// with no samples says so rather than showing a 0ms that would read as the best
+// possible latency. A breach is rendered as words + colour, not as one more
+// number the reader has to compare by eye.
+
+function ms(v: number | null): string {
+  return v === null ? "—" : `${Math.round(v * 100) / 100} ms`;
+}
+
+function LatencyTileView({ tile: t, notMeasured }: { tile: LatencyTile; notMeasured: string }) {
+  const measured = t.samples > 0;
+  const breached = t.breached === true;
+  return (
+    <div
+      data-metric={t.metric}
+      style={{
+        ...tile,
+        borderColor: breached ? "#8a1c1c" : "#e2e2e2",
+        borderWidth: breached ? 2 : 1,
+      }}
+    >
+      <p style={label}>
+        {t.layer} · {t.label}
+      </p>
+      <p style={{ ...value, color: breached ? "#8a1c1c" : undefined }}>
+        {measured ? `p95 ${ms(t.p95Ms)}` : "Not yet measured"}
+      </p>
+      <p style={caption}>
+        {measured
+          ? `p50 ${ms(t.p50Ms)} · ${t.samples} samples${
+              t.budgetMs === null ? " · no budget (S19)" : ` · budget ${ms(t.budgetMs)}`
+            }`
+          : notMeasured}
+      </p>
+      {breached ? (
+        <p style={{ ...caption, color: "#8a1c1c", fontWeight: 600 }}>
+          Over budget — p95 {ms(t.p95Ms)} exceeds {ms(t.budgetMs)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function LatencySection({ latency }: { latency: AggregateMetrics["latency"] }) {
+  return (
+    <section aria-label="Per-layer memory read latency" style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Per-layer memory read latency</h2>
+      <p style={caption}>
+        SLO: pre-turn reads (L4 + L6 + L7) at or under {ms(latency.sloP95Ms)} p95. L5 knowledge
+        retrieval is measured against its own retrieval deadline and excluded from that total; the
+        provisional merge is a write and is excluded too.
+      </p>
+      <div style={grid}>
+        <LatencyTileView tile={latency.total} notMeasured={latency.notMeasuredLabel} />
+        {latency.layers.map((t) => (
+          <LatencyTileView key={t.metric} tile={t} notMeasured={latency.notMeasuredLabel} />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -134,6 +198,8 @@ export function MetricsPanel() {
           sub="agent-experience confirm events"
         />
       </div>
+
+      <LatencySection latency={metrics.latency} />
 
       <div>
         <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.5rem" }}>Slots-populated distribution</h2>

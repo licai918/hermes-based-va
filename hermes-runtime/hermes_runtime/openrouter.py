@@ -38,6 +38,14 @@ from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
 from hermes_runtime.injection_ledger import injected_entry_refs, record_injection
+from hermes_runtime.latency import (
+    LATENCY_L4_LOAD,
+    LATENCY_L4_MERGE,
+    LATENCY_L6_LOAD,
+    LATENCY_L7_LOAD,
+    measure,
+    record_latency_samples,
+)
 from hermes_runtime.live import run_agent_turn
 from hermes_runtime.tool_backend import (
     _gateway_store,
@@ -488,18 +496,27 @@ def make_openrouter_run_turn(
             context.from_phone,
             getattr(context, "channel", SIMPLETEXTING_SMS),
         )
+        # S18 (FR-26): per-layer read durations for this turn. Collected into a
+        # plain list here and written ONCE after the model call -- see
+        # `record_latency_samples` below. `measure` costs two perf_counter reads
+        # and an append, and nothing it records ever reaches the prompt or the
+        # result, so the instrumentation is both off the critical path and
+        # eval-neutral (NFR-4/NFR-5).
+        latency: list[tuple[str, float]] = []
         # S10/FR-4: on a verified ingress, merge the caller's pre-verification
         # provisional slots onto the verified record BEFORE the read below, so the
         # just-merged preferences are injected on this same turn (PAC-3). No-op /
         # fail-closed when not verified or memory is disabled.
-        merge_fired = _merge_provisional_memory(identity, store)
+        with measure(latency, LATENCY_L4_MERGE):
+            merge_fired = _merge_provisional_memory(identity, store)
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
         # Prepend the snapshot + Customer Memory here so the model sees verified
         # identity and prior preferences (ADR-0140, S07/FR-1). The memory read is
         # gated + fail-closed in _load_turn_memory (nothing injected when disabled,
         # unbound, or the store errors).
-        memory = _load_turn_memory(identity, store)
+        with measure(latency, LATENCY_L4_LOAD):
+            memory = _load_turn_memory(identity, store)
         _log_turn_memory(identity, memory, merge_fired)
         # S26 (FR-28): memory-injection counter emit -- turn-safe + gated on the
         # SAME axis as the feature (never touches DB in a mock/unset deployment,
@@ -512,22 +529,24 @@ def make_openrouter_run_turn(
         # path. Default OFF -- the eval path sets neither flag, so nothing is
         # injected there (determinism, NFR-6). Bounded + fail-closed (NFR-5); only
         # status='confirmed' rows ever come back.
-        experience = (
-            load_confirmed_experience(store)
-            if agent_experience_external_injection_enabled()
-            else None
-        )
+        with measure(latency, LATENCY_L6_LOAD):
+            experience = (
+                load_confirmed_experience(store)
+                if agent_experience_external_injection_enabled()
+                else None
+            )
         # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the EXTERNAL lexicon
         # flag -- its own axis, independent of the copilot one and of L6's pair.
         # Default OFF, so the eval path renders no glossary (determinism, NFR-4).
         # The RAW read goes to the renderer (hooks.glossary_entries must see the
         # whole set to resolve a default_rule's condition); the ledger below
         # re-derives the selected rows so it records what the prompt carried.
-        lexicon = (
-            load_confirmed_lexicon(store)
-            if lexicon_external_injection_enabled()
-            else None
-        )
+        with measure(latency, LATENCY_L7_LOAD):
+            lexicon = (
+                load_confirmed_lexicon(store)
+                if lexicon_external_injection_enabled()
+                else None
+            )
         # ONE clock read per turn, threaded to BOTH consumers. Two independent
         # date.today() calls -- one inside the render, one inside the ledger's
         # re-derivation below -- can land on either side of midnight, and on
@@ -590,6 +609,13 @@ def make_openrouter_run_turn(
                     lexicon=glossary_entries(lexicon, today),
                 ),
             )
+        # S18 (FR-26): one batched metric write for the whole turn, AFTER the
+        # model call for the same NFR-5 reason the ledger is written here.
+        # UNconditional, unlike the ledger: a read that returned nothing still
+        # took time, and dropping those turns would bias the histogram towards
+        # the customers who have memory on file. Per-layer gating and the SLO
+        # total live in `record_latency_samples`; it never raises.
+        record_latency_samples(latency)
         return result
 
     return run_turn

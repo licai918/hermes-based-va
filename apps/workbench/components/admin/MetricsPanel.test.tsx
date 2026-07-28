@@ -26,7 +26,65 @@ function metrics(overrides: Partial<AggregateMetrics> = {}): AggregateMetrics {
     proposalOutcomes: { accepted: 0, dismissed: 0, rate: null },
     selfServiceUsage: 0,
     l6ConfirmedEntries: 0,
+    latency: latency(),
     ...overrides,
+  };
+}
+
+// S18/FR-26: per-layer latency tiles + the total-vs-SLO tile.
+function tile(
+  metric: string,
+  over: Partial<AggregateMetrics["latency"]["total"]> = {},
+): AggregateMetrics["latency"]["total"] {
+  return {
+    metric,
+    layer: "L4",
+    label: `Label ${metric}`,
+    p50Ms: null,
+    p95Ms: null,
+    samples: 0,
+    budgetMs: null,
+    inSloTotal: true,
+    breached: null,
+    ...over,
+  };
+}
+
+function latency(
+  over: Partial<AggregateMetrics["latency"]> = {},
+): AggregateMetrics["latency"] {
+  return {
+    sloP95Ms: 150,
+    notMeasuredLabel: "Not yet measured (no latency samples on this deployment)",
+    total: tile("latency_pre_turn_total", {
+      layer: "L4+L6+L7",
+      label: "Pre-turn reads, total",
+      p50Ms: 31.5,
+      p95Ms: 128.25,
+      samples: 400,
+      budgetMs: 150,
+      inSloTotal: false,
+      breached: false,
+    }),
+    layers: [
+      tile("latency_l4_load", {
+        label: "L4 customer memory read",
+        p50Ms: 12.5,
+        p95Ms: 40,
+        samples: 400,
+      }),
+      tile("knowledge_search", {
+        layer: "L5",
+        label: "L5 knowledge retrieval",
+        p50Ms: 210,
+        p95Ms: 900,
+        samples: 25,
+        budgetMs: 800,
+        inSloTotal: false,
+        breached: true,
+      }),
+    ],
+    ...over,
   };
 }
 
@@ -83,5 +141,65 @@ describe("MetricsPanel honored-rate caption", () => {
     render(<MetricsPanel />);
     // Both the tile value and the honest sub-label read "Not yet computed".
     expect((await screen.findAllByText("Not yet computed")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("MetricsPanel per-layer latency tiles (S18, FR-26)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders p50/p95 per layer and the total against the 150ms SLO line", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /read latency/i });
+
+    // The per-layer histogram: both statistics, not just one.
+    expect(section.textContent).toContain("12.5");
+    expect(section.textContent).toContain("40");
+    // The total tile carries the owner's recorded line.
+    expect(section.textContent).toContain("128.25");
+    expect(section.textContent).toMatch(/150\s*ms/);
+    expect(section.textContent).toMatch(/p95/i);
+  });
+
+  it("renders a breach visibly rather than as another number", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    // L5 is over its own 800ms budget in this fixture; the L4 tile is not
+    // budgeted at all. Exactly one tile may claim a breach.
+    const breaches = await screen.findAllByText(/over budget/i);
+    expect(breaches).toHaveLength(1);
+    expect(breaches[0]?.closest("[data-metric]")?.getAttribute("data-metric")).toBe(
+      "knowledge_search",
+    );
+  });
+
+  it("shows the honest not-measured label instead of a zero before any sample", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          metrics({
+            latency: latency({
+              total: tile("latency_pre_turn_total", {
+                label: "Pre-turn reads, total",
+                budgetMs: 150,
+              }),
+              layers: [tile("latency_l4_load", { label: "L4 customer memory read" })],
+            }),
+          }),
+        ),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /read latency/i });
+    expect(section.textContent).toMatch(/not yet measured/i);
+    // A "0 ms" tile would read as the best possible latency on a deployment
+    // that has measured nothing, and a green "within SLO" would be a lie.
+    // Digit-anchored so the SLO caption's own "150 ms" isn't mistaken for it.
+    expect(section.textContent).not.toMatch(/(^|[^\d.])0(\.0)? ?ms/);
+    expect(section.textContent).not.toMatch(/within/i);
   });
 });

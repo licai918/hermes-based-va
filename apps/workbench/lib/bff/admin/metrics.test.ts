@@ -39,7 +39,56 @@ function rawMetrics(overrides: Record<string, unknown> = {}) {
     proposal_outcomes: { accepted: 1, dismissed: 1, rate: 0.5 },
     self_service_usage: 3,
     l6_confirmed_entries: 2,
+    latency: rawLatency(),
     ...overrides,
+  };
+}
+
+// S18/FR-26 shape, mirroring hermes_runtime.latency's payload.
+function rawTile(
+  metric: string,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    metric,
+    layer: "L4",
+    label: `label for ${metric}`,
+    p50_ms: null,
+    p95_ms: null,
+    samples: 0,
+    budget_ms: null,
+    in_slo_total: true,
+    breached: null,
+    ...over,
+  };
+}
+
+function rawLatency(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    slo_p95_ms: 150,
+    not_measured_label: "Not yet measured (no latency samples on this deployment)",
+    total: rawTile("latency_pre_turn_total", {
+      layer: "L4+L6+L7",
+      p50_ms: 31.5,
+      p95_ms: 128.25,
+      samples: 400,
+      budget_ms: 150,
+      in_slo_total: false,
+      breached: false,
+    }),
+    layers: [
+      rawTile("latency_l4_load", { p50_ms: 12.5, p95_ms: 40, samples: 400 }),
+      rawTile("knowledge_search", {
+        layer: "L5",
+        p50_ms: 210,
+        p95_ms: 900,
+        samples: 25,
+        budget_ms: 800,
+        in_slo_total: false,
+        breached: true,
+      }),
+    ],
+    ...over,
   };
 }
 
@@ -127,6 +176,61 @@ describe("handleGetAggregateMetricsViaApi", () => {
     expect(body.selfServiceUsage).toBe(3);
     expect(body.l6ConfirmedEntries).toBe(2);
     expect(JSON.stringify(body)).not.toContain("proxy");
+  });
+
+  it("carries per-layer p50/p95 and the SLO verdict per tile (S18/FR-26)", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { latency: AggregateMetrics["latency"] };
+
+    expect(body.latency.sloP95Ms).toBe(150);
+    expect(body.latency.total.p95Ms).toBe(128.25);
+    expect(body.latency.total.budgetMs).toBe(150);
+    expect(body.latency.total.breached).toBe(false);
+
+    const l4 = body.latency.layers.find((t) => t.metric === "latency_l4_load");
+    expect(l4?.p50Ms).toBe(12.5);
+    expect(l4?.samples).toBe(400);
+    // Measured but not budgeted: this slice ships no deadline of its own (S19
+    // owns enforcement), so an unbudgeted layer renders percentiles and no verdict.
+    expect(l4?.budgetMs).toBeNull();
+    expect(l4?.breached).toBeNull();
+    expect(l4?.inSloTotal).toBe(true);
+
+    // L5 is judged against its OWN 800ms budget and excluded from the SLO total
+    // (D5.2): 900ms p95 breaches that budget, not the 150ms line.
+    const l5 = body.latency.layers.find((t) => t.metric === "knowledge_search");
+    expect(l5?.budgetMs).toBe(800);
+    expect(l5?.breached).toBe(true);
+    expect(l5?.inSloTotal).toBe(false);
+  });
+
+  it("keeps an unmeasured latency tile honestly unmeasured, never a zero (S18)", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({
+          latency: rawLatency({
+            total: rawTile("latency_pre_turn_total", { budget_ms: 150 }),
+            layers: [rawTile("latency_l4_load")],
+          }),
+        }),
+      ),
+    );
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { latency: AggregateMetrics["latency"] };
+    expect(body.latency.total.p95Ms).toBeNull();
+    expect(body.latency.total.samples).toBe(0);
+    // `false` here would render a green "within SLO" tile for a deployment that
+    // has never measured anything.
+    expect(body.latency.total.breached).toBeNull();
+    expect(body.latency.notMeasuredLabel.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a latency block whose tiles are malformed rather than passing it through", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(rawMetrics({ latency: rawLatency({ layers: ["not a tile"] }) })),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
   });
 
   it("maps a governed denial to its per-class status (ADR-0104)", async () => {

@@ -46,6 +46,63 @@ _HONORED_RATE_NOT_COMPUTED = {
 }
 
 
+# S18 (0.0.5 FR-26): per-layer read-latency tiles. Same reasoning as the honored
+# rate -- there is no store behind the mock, so every tile is honestly "not yet
+# measured" rather than a fabricated 0ms, which would render as the best possible
+# latency on a deployment that has measured nothing.
+#
+# This restates ``hermes_runtime.latency.empty_latency_metrics()`` rather than
+# importing it: ``hermes_runtime`` depends on ``toee_hermes``, so importing back
+# would invert the package dependency. The restatement is not left to trust --
+# ``tests/test_latency.py::test_the_mock_twin_reports_the_same_zero_sample_payload``
+# asserts FULL equality with the Postgres twin's zero-sample payload, so any
+# drift in either direction is red rather than a silently different panel.
+_LATENCY_SLO_P95_MS = 150.0
+_LATENCY_L5_BUDGET_MS = 800.0
+_LATENCY_NOT_MEASURED_LABEL = "Not yet measured (no latency samples on this deployment)"
+# (metric, layer, label, budget_ms, in_slo_total)
+_LATENCY_TILES = (
+    ("latency_l4_load", "L4", "L4 customer memory read", None, True),
+    ("latency_l6_load", "L6", "L6 confirmed learnings read", None, True),
+    ("latency_l7_load", "L7", "L7 lexicon glossary read", None, True),
+    ("latency_l4_merge", "L4", "L4 provisional merge (write)", None, False),
+    ("knowledge_search", "L5", "L5 knowledge retrieval", _LATENCY_L5_BUDGET_MS, False),
+)
+_LATENCY_TOTAL_TILE = (
+    "latency_pre_turn_total",
+    "L4+L6+L7",
+    "Pre-turn reads, total",
+    _LATENCY_SLO_P95_MS,
+    False,
+)
+
+
+def _latency_tile(metric, layer, label, budget_ms, in_slo_total) -> dict[str, Any]:
+    return {
+        "metric": metric,
+        "layer": layer,
+        "label": label,
+        "p50_ms": None,
+        "p95_ms": None,
+        "samples": 0,
+        "budget_ms": budget_ms,
+        "in_slo_total": in_slo_total,
+        # None, never False: "no verdict", not "within budget".
+        "breached": None,
+    }
+
+
+def _latency_not_measured() -> dict[str, Any]:
+    """Fresh per call -- the nested tiles are mutable, so a shared dict would hand
+    every caller the same one (the ``leg_results`` lesson above)."""
+    return {
+        "slo_p95_ms": _LATENCY_SLO_P95_MS,
+        "not_measured_label": _LATENCY_NOT_MEASURED_LABEL,
+        "total": _latency_tile(*_LATENCY_TOTAL_TILE),
+        "layers": [_latency_tile(*spec) for spec in _LATENCY_TILES],
+    }
+
+
 def create_metrics_mock_handlers() -> MockHandlerRegistry:
     def get_aggregate_metrics(
         params: dict[str, Any], context: "ToolExecutionContext"
@@ -64,6 +121,8 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             # proxied -- plain totals, zero on a storeless mock deployment.
             "self_service_usage": 0,
             "l6_confirmed_entries": 0,
+            # S18/FR-26: honestly unmeasured, never a fabricated 0ms.
+            "latency": _latency_not_measured(),
         }
 
     return {"toee_metrics": {"get_aggregate_metrics": get_aggregate_metrics}}

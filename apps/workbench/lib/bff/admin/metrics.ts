@@ -50,6 +50,34 @@ export interface ProposalOutcomes {
   rate: number | null;
 }
 
+// Per-layer read latency (0.0.5 S18, FR-26). One tile per memory-read site plus
+// the total-vs-SLO tile; percentiles come from `metric_event.duration_ms`
+// (migration 0023) via hermes_runtime.latency.
+//
+// `budgetMs` is null for most tiles ON PURPOSE: S18 measures and displays, S19
+// owns enforcement, so only two lines exist today -- the owner's 150ms p95 on
+// the total, and L5's own shipped retrieval deadline. `breached` is null (never
+// false) wherever there is no budget or no sample: a false would render an
+// unmeasured tile as a green "within budget".
+export interface LatencyTile {
+  metric: string;
+  layer: string;
+  label: string;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  samples: number;
+  budgetMs: number | null;
+  inSloTotal: boolean;
+  breached: boolean | null;
+}
+
+export interface LatencyMetrics {
+  sloP95Ms: number;
+  notMeasuredLabel: string;
+  total: LatencyTile;
+  layers: LatencyTile[];
+}
+
 export interface AggregateMetrics {
   memoryInjection: { injected: number; total: number; rate: number | null };
   knowledgeSearch: { found: number; total: number; rate: number | null };
@@ -62,6 +90,8 @@ export interface AggregateMetrics {
   // like mergeCount/correctionCount.
   selfServiceUsage: number;
   l6ConfirmedEntries: number;
+  // S18/FR-26: per-layer read latency + the SLO tile.
+  latency: LatencyMetrics;
 }
 
 function malformed(detail: string): never {
@@ -104,6 +134,37 @@ function requireString(value: unknown, field: string): string {
 function requireObject(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null) malformed(field);
   return value as Record<string, unknown>;
+}
+
+function nullableBoolean(value: unknown, field: string): boolean | null {
+  if (value === null || value === undefined) return null;
+  return requireBoolean(value, field);
+}
+
+function mapLatencyTile(raw: unknown, field: string): LatencyTile {
+  const t = requireObject(raw, field);
+  return {
+    metric: requireString(t.metric, `${field}.metric`),
+    layer: requireString(t.layer, `${field}.layer`),
+    label: requireString(t.label, `${field}.label`),
+    p50Ms: nullableNumber(t.p50_ms, `${field}.p50_ms`),
+    p95Ms: nullableNumber(t.p95_ms, `${field}.p95_ms`),
+    samples: requireNumber(t.samples, `${field}.samples`),
+    budgetMs: nullableNumber(t.budget_ms, `${field}.budget_ms`),
+    inSloTotal: requireBoolean(t.in_slo_total, `${field}.in_slo_total`),
+    breached: nullableBoolean(t.breached, `${field}.breached`),
+  };
+}
+
+function mapLatency(raw: unknown): LatencyMetrics {
+  const l = requireObject(raw, "latency");
+  if (!Array.isArray(l.layers)) malformed("latency.layers");
+  return {
+    sloP95Ms: requireNumber(l.slo_p95_ms, "latency.slo_p95_ms"),
+    notMeasuredLabel: requireString(l.not_measured_label, "latency.not_measured_label"),
+    total: mapLatencyTile(l.total, "latency.total"),
+    layers: (l.layers as unknown[]).map((tile, i) => mapLatencyTile(tile, `latency.layers[${i}]`)),
+  };
 }
 
 export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
@@ -151,6 +212,10 @@ export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
     },
     selfServiceUsage: requireNumber(r.self_service_usage, "self_service_usage"),
     l6ConfirmedEntries: requireNumber(r.l6_confirmed_entries, "l6_confirmed_entries"),
+    // Required, not optional: both twins ship the block (the mock's zero-sample
+    // copy is pinned equal to the Postgres one). A tolerant mapper would let a
+    // twin silently drop it and render "not yet measured" forever.
+    latency: mapLatency(r.latency),
   };
 }
 

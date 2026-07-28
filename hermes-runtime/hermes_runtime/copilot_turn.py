@@ -60,6 +60,13 @@ from hermes_runtime.boot import boot_profile
 from hermes_runtime.datastore.handlers._common import new_id
 from hermes_runtime.injection_ledger import injected_entry_refs, record_injection
 from hermes_runtime.job_queue import L6_REVIEW_JOB_TYPE, PostgresJobQueue
+from hermes_runtime.latency import (
+    LATENCY_L4_LOAD,
+    LATENCY_L6_LOAD,
+    LATENCY_L7_LOAD,
+    measure,
+    record_latency_samples,
+)
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
 from hermes_runtime.openrouter import (
     OpenRouterConfig,
@@ -513,7 +520,16 @@ def make_copilot_run_turn(
         # (gated + fail-closed in _load_case_memory). Boot bound to that identity so
         # an employee-confirmed correction write binds from context, and prepend the
         # memory block so the draft is grounded in prior preferences.
-        identity, memory = _load_case_memory(case_id, store)
+        # S18 (FR-26): this turn's per-layer read durations, written once after
+        # the model call (see `record_latency_samples` below). The L4 sample on
+        # THIS path covers the case-identity lookup as well as the slot read --
+        # `_load_case_memory` is one read site and both halves are on the draft's
+        # critical path -- so the L4 histogram pools slightly more work from the
+        # copilot seam than from the external one. Stated rather than split:
+        # separating them would buy a tile nobody asked for.
+        latency: list[tuple[str, float]] = []
+        with measure(latency, LATENCY_L4_LOAD):
+            identity, memory = _load_case_memory(case_id, store)
         # S26 (FR-28): memory-injection counter emit, same gate/rationale as the
         # external turn (openrouter.py) -- turn-safe, gated on memory_enabled().
         record_memory_injection_metric(bool(memory))
@@ -542,20 +558,22 @@ def make_copilot_run_turn(
         # sets neither flag, so nothing is read/injected there and the gate stays
         # deterministic, NFR-6). Read is bounded + fail-closed (returns None on any
         # error, NFR-5); only status='confirmed' rows ever come back.
-        experience = (
-            load_confirmed_experience(store)
-            if agent_experience_injection_enabled()
-            else None
-        )
+        with measure(latency, LATENCY_L6_LOAD):
+            experience = (
+                load_confirmed_experience(store)
+                if agent_experience_injection_enabled()
+                else None
+            )
         # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the COPILOT lexicon
         # flag -- its own axis, so the external read is disable-able without
         # touching this path. Default OFF (the eval record/replay path sets
         # neither, NFR-4). The RAW read goes to the renderer; the ledger below
         # re-derives the SELECTED rows (see hooks.glossary_entries -- it is not
         # idempotent, so pre-narrowing here would drop an admin season override).
-        lexicon = (
-            load_confirmed_lexicon(store) if lexicon_injection_enabled() else None
-        )
+        with measure(latency, LATENCY_L7_LOAD):
+            lexicon = (
+                load_confirmed_lexicon(store) if lexicon_injection_enabled() else None
+            )
         # Memory + confirmed learnings + glossary — the case identity is not
         # surfaced as a snapshot block (the agent gathers case detail via its
         # governed read tools, ADR-0147 decision 2). render_injection returns None
@@ -659,6 +677,10 @@ def make_copilot_run_turn(
                     lexicon=glossary_entries(lexicon, today),
                 ),
             )
+        # S18 (FR-26): one batched metric write for the whole draft turn, AFTER
+        # the model call for the same NFR-5 reason the ledger is. Unconditional,
+        # unlike the ledger -- a read that returned nothing still took time.
+        record_latency_samples(latency)
 
         draft = turn["final_response"]
         result: dict[str, Any] = {"draft": draft, "model": model, "profile": INTERNAL}

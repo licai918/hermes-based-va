@@ -20,6 +20,7 @@ import hashlib
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import TYPE_CHECKING, Any, Optional
@@ -54,18 +55,24 @@ def _not_found() -> dict[str, Any]:
     return {"results": []}
 
 
-def _emit_found(flag: bool) -> None:
+def _emit_found(flag: bool, duration_ms: Optional[float] = None) -> None:
     """Fire-and-forget knowledge found/miss counter emit (0.0.3 S26, FR-28 gap #2).
 
     Gated on :func:`knowledge_enabled` -- the SAME axis the feature itself is
     gated on -- so unit tests that construct :class:`KnowledgeDriver` directly
     (without setting ``KNOWLEDGE_BACKEND``) never attempt a metrics DB
-    connection. Only a boolean ever leaves this call site: no query text, no
-    result content (FR-4/RK-2). Not called for the empty-query branch -- a
-    guessed/omitted param is a caller bug, not a genuine search attempt."""
+    connection. Only a boolean and a duration ever leave this call site: no query
+    text, no result content (FR-4/RK-2). Not called for the empty-query branch --
+    a guessed/omitted param is a caller bug, not a genuine search attempt.
+
+    ``duration_ms`` is L5's seat in the S18 latency histogram (FR-26). It rides
+    the row this function already writes rather than a second emit, so measuring
+    L5 costs no extra connection on the turn path -- see migration 0023. Every
+    branch below stamps it, so a retrieval that blew its deadline or raised is
+    counted at its real cost instead of vanishing from the percentiles."""
     if not knowledge_enabled():
         return
-    emit_metric_event(KNOWLEDGE_SEARCH, flag)
+    emit_metric_event(KNOWLEDGE_SEARCH, flag, duration_ms)
 
 
 def knowledge_enabled(value: object = _UNSET) -> bool:
@@ -181,6 +188,14 @@ class KnowledgeDriver:
         # Log length/hash only -- the raw query text must never reach logs (FR-4).
         query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
 
+        # S18 (FR-26): L5's wall-clock, measured over the whole retrieval call --
+        # the same span `deadline` bounds -- and stamped onto the found/miss row
+        # every branch below already writes.
+        started = time.perf_counter()
+
+        def elapsed_ms() -> float:
+            return (time.perf_counter() - started) * 1000.0
+
         pool = ThreadPoolExecutor(max_workers=1)
         try:
             future = pool.submit(self._retrieve, query, embed_query_fn=self._embed_query_fn)
@@ -193,7 +208,7 @@ class KnowledgeDriver:
                     len(query),
                     deadline,
                 )
-                _emit_found(False)
+                _emit_found(False, elapsed_ms())
                 return _not_found()
             except Exception:
                 logger.exception(
@@ -201,16 +216,16 @@ class KnowledgeDriver:
                     query_hash,
                     len(query),
                 )
-                _emit_found(False)
+                _emit_found(False, elapsed_ms())
                 return _not_found()
         finally:
             pool.shutdown(wait=False)
 
         if not chunks:
-            _emit_found(False)
+            _emit_found(False, elapsed_ms())
             return _not_found()
 
-        _emit_found(True)
+        _emit_found(True, elapsed_ms())
         return {
             "results": [
                 {
