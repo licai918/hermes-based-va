@@ -23,6 +23,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from ...errors import ToolDriverError
+from ...lexicon_seam import (
+    LexiconVocabulary,
+    current_lexicon_vocabulary,
+    filter_products,
+    resolve_product_query,
+)
 from ..base import resolve_integration_driver
 from ..gadget import QboAttribution, _canonical_qbo_id, build_qbo_attribution
 from ..qbo_ar import ar_summary
@@ -129,6 +135,11 @@ class ActionSpec:
     action_slug: str  # Composio toolkit action; slugs verified live (0.0.4 S12)
     request_mapper: RequestMapper | None = None
     response_mapper: ResponseMapper | None = None
+    # 0.0.5 S05 (FR-5): the product-read action name this spec serves, for the L7
+    # deterministic seam. Set on exactly the two product reads; ``None`` everywhere
+    # else means "this action carries no customer domain language", which is the
+    # reason the seam is per-handler rather than dispatch middleware.
+    lexicon_action: str | None = None
     # QBO customer-scoped attribution mode (0.0.4 S27/S13). ``"single"`` / ``"list"``
     # / ``"ar_summary"`` tell the driver to enforce ownership via the Gadget bridge
     # AFTER the pure response mapper shapes the payload — these are the only actions
@@ -406,7 +417,10 @@ def _shopify_list_orders_response(raw: dict[str, Any], _ctx: "ToolExecutionConte
 def _shopify_search_request(
     _params: dict[str, Any], _ctx: "ToolExecutionContext"
 ) -> dict[str, Any]:
-    # SHOPIFY_GET_PRODUCTS lists the catalog; query filtering is a Toee gate concern.
+    # SHOPIFY_GET_PRODUCTS takes no query: it lists the catalog. The `query` param
+    # is applied AFTER shaping, by `_product_read_with_lexicon` (0.0.5 S05), with
+    # the same matcher the mock twin uses -- before S05 it was applied nowhere on
+    # this path, so the live driver returned the whole catalog for every query.
     return {}
 
 
@@ -725,9 +739,14 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
         "SHOPIFY_GET_PRODUCTS",
         _shopify_search_request,
         _shopify_search_response,
+        lexicon_action="search_products",
     ),
     ("toee_shopify_read", "get_product"): ActionSpec(
-        SHOPIFY, "SHOPIFY_GET_PRODUCT", _shopify_get_product_request, _shopify_get_product_response
+        SHOPIFY,
+        "SHOPIFY_GET_PRODUCT",
+        _shopify_get_product_request,
+        _shopify_get_product_response,
+        lexicon_action="get_product",
     ),
     ("toee_qbo_read", "get_invoice"): ActionSpec(
         QBO,
@@ -777,6 +796,7 @@ class ComposioDriver:
         user_id: str | None,
         connected_accounts: dict[str, str],
         attributor: "QboAttribution | None" = None,
+        vocabulary: "LexiconVocabulary | None" = None,
     ) -> None:
         self._client = client
         self._user_id = user_id
@@ -787,6 +807,16 @@ class ComposioDriver:
         # without a Gadget key still serves Shopify/Square and only QBO
         # customer-scoped reads that need the live join fail closed.
         self._attributor = attributor or _UNCONFIGURED_ATTRIBUTION
+        # 0.0.5 S05: the L7 vocabulary for the two product reads. ``None`` (the
+        # default) defers to the process-installed one, so a deployment wires L7
+        # in ONE place and both twins read the same store (NFR-7). Explicit only
+        # in tests, which must not depend on process-global state.
+        self._vocabulary = vocabulary
+
+    def _lexicon_vocabulary(self) -> "LexiconVocabulary | None":
+        if self._vocabulary is not None:
+            return self._vocabulary
+        return current_lexicon_vocabulary()
 
     def execute(self, request: "ToolRequest", context: "ToolExecutionContext") -> Any:
         spec = ACTION_MAPPING.get((request.tool, request.action))
@@ -804,33 +834,18 @@ class ComposioDriver:
             # account so the message names the real reason, not a missing account.
             raise spec.unavailable
 
-        connected_account_id = self._connected_accounts.get(spec.app)
-        if not connected_account_id:
+        if not self._connected_accounts.get(spec.app):
             raise ToolDriverError(
                 "configuration_missing",
                 f"No Composio connected account configured for toolkit '{spec.app}'.",
             )
 
-        vendor_params = spec.request_mapper(request.params, context)
-        try:
-            raw = self._client.execute_action(
-                action=spec.action_slug,
-                params=vendor_params,
-                connected_account_id=connected_account_id,
-                user_id=self._user_id,
-            )
-        except ToolDriverError:
-            # The client already classified the failure (auth_expired/vendor_timeout/...).
-            raise
-        except Exception as err:  # noqa: BLE001 - convert ANY vendor/SDK error to governed
-            # Never leak the raw vendor/Composio/OAuth error to the caller (ADR-0136);
-            # the raw message stays on this exception for logs/audit only.
-            raise ToolDriverError(
-                "composio_api_error",
-                f"Composio action '{spec.action_slug}' failed: {err}",
-            ) from err
+        if spec.lexicon_action is not None:
+            # 0.0.5 S05 call sites 1 and 2 in this twin (FR-5). Both go through
+            # the SAME shared helper the mock twin uses.
+            return _product_read_with_lexicon(self, spec, request, context)
 
-        shaped = spec.response_mapper(raw, context)
+        shaped = self._invoke(spec, request.params, context)
         # QBO customer-scoped attribution runs AFTER shaping (0.0.4 S27): the shaped
         # invoice carries the private qbo_customer_id the Gadget join needs. Both
         # arms fail closed on an unattributable read rather than disclosing or
@@ -849,6 +864,83 @@ class ComposioDriver:
             owned = _qbo_owned_invoices(shaped, context, self._attributor)
             return ar_summary(verified, owned)
         return shaped
+
+    def _invoke(
+        self,
+        spec: ActionSpec,
+        params: dict[str, Any],
+        context: "ToolExecutionContext",
+    ) -> Any:
+        """One backend round trip for one parameter set: map -> call -> shape.
+
+        Extracted from :meth:`execute` (0.0.5 S05) so the product-read seam can
+        run it twice -- once with the normalized parameters, once with the raw
+        ones when the catalog does not confirm the canonical. Nothing about the
+        mapping, the error classification, or the shaping changed.
+        """
+        vendor_params = spec.request_mapper(params, context)
+        try:
+            raw = self._client.execute_action(
+                action=spec.action_slug,
+                params=vendor_params,
+                connected_account_id=self._connected_accounts.get(spec.app),
+                user_id=self._user_id,
+            )
+        except ToolDriverError:
+            # The client already classified the failure (auth_expired/vendor_timeout/...).
+            raise
+        except Exception as err:  # noqa: BLE001 - convert ANY vendor/SDK error to governed
+            # Never leak the raw vendor/Composio/OAuth error to the caller (ADR-0136);
+            # the raw message stays on this exception for logs/audit only.
+            raise ToolDriverError(
+                "composio_api_error",
+                f"Composio action '{spec.action_slug}' failed: {err}",
+            ) from err
+        return spec.response_mapper(raw, context)
+
+
+def _product_read_with_lexicon(
+    driver: "ComposioDriver",
+    spec: ActionSpec,
+    request: "ToolRequest",
+    context: "ToolExecutionContext",
+) -> Any:
+    """The live twin's product reads, through the shared L7 seam (S05, FR-5).
+
+    ``search_products`` costs ONE backend call whatever happens: SHOPIFY_GET_PRODUCTS
+    takes no query (see :func:`_shopify_search_request`), so the catalog comes back
+    whole and both the normalized attempt and the raw fallback are filtered from it
+    in process — with :func:`~toee_hermes.lexicon_seam.product_matches`, the same
+    matcher the mock twin uses.
+
+    **That filter is new on this path and is the point.** The live driver used to
+    return the entire catalog for every query while the mock filtered, so a
+    normalization proven in the mock would have reached production and changed
+    nothing at all — precisely the mock/live divergence NFR-7 exists to stop.
+
+    ``get_product`` is by id/sku, so its lookup IS a backend call. It costs one
+    call normally and two only when a normalized sku matched nothing and the raw
+    one has to be tried — a path the model reaches rarely, because it sources that
+    sku from a previous ``search_products`` result.
+    # ponytail: the second call is the honest price of never asserting an
+    # unverified canonical. Cache the first response per (turn, sku) only if a
+    # real trace ever shows this path is hot.
+    """
+    vocabulary = driver._lexicon_vocabulary()
+    if spec.lexicon_action == "search_products":
+        catalog = driver._invoke(spec, request.params, context)
+        return resolve_product_query(
+            "search_products",
+            request.params,
+            lookup=lambda resolved: filter_products(resolved.get("query"), catalog),
+            vocabulary=vocabulary,
+        ).value
+    return resolve_product_query(
+        spec.lexicon_action,
+        request.params,
+        lookup=lambda resolved: driver._invoke(spec, resolved, context),
+        vocabulary=vocabulary,
+    ).value
 
 
 # Default attributor for a driver built without a Gadget key (unit tests, or a

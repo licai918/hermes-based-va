@@ -42,6 +42,7 @@ from hermes_runtime.job_queue import (
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
+    LEXICON_HIT_ROLLUP_JOB_TYPE,
     RETENTION_JOB_TYPE,
     PostgresJobQueue,
     Schedule,
@@ -260,12 +261,15 @@ def test_the_shipped_schedules_are_daily_retention_15min_probe_and_daily_honored
     # the honored-rate judge run (S22, FR-31) is a daily cadence (slow quality
     # trend, and each run costs up to SAMPLE_CAP billed judge calls); the
     # injection-ledger prune (0.0.5 S09, FR-11) is daily against a 180-DAY window,
-    # for the same reason retention is.
+    # for the same reason retention is; the L7 hit rollup (0.0.5 S05, FR-5/D6) is
+    # daily because it feeds a retirement heuristic, not a live signal, and it
+    # CONSUMES the events it folds, so a day is the table's size not a backlog.
     assert [(s.job_type, s.interval_seconds) for s in SCHEDULES] == [
         (RETENTION_JOB_TYPE, 86400),
         (INTEGRATION_PROBE_JOB_TYPE, 900),
         (HONORED_RATE_JOB_TYPE, 86400),
         (INJECTION_LEDGER_PRUNE_JOB_TYPE, 86400),
+        (LEXICON_HIT_ROLLUP_JOB_TYPE, 86400),
     ]
 
 

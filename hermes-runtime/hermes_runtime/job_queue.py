@@ -100,6 +100,11 @@ HONORED_RATE_JOB_TYPE = "honored_rate"
 # DELETE is idempotent, so a retry is free and a persistently failing prune must
 # be visible rather than quietly letting the table grow.
 INJECTION_LEDGER_PRUNE_JOB_TYPE = "injection_ledger_prune"
+# S05 (0.0.5, FR-5 / D6): the L7 hit rollup. Applications append hit events on the
+# turn; this folds them into `semantic_lexicon.hit_count` and consumes them. Plain
+# default retry/dead-letter -- the fold is one atomic statement, so a retry either
+# repeats nothing (the events were already consumed) or does the whole job.
+LEXICON_HIT_ROLLUP_JOB_TYPE = "lexicon_hit_rollup"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

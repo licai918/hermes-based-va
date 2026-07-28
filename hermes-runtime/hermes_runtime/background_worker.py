@@ -49,6 +49,7 @@ from .job_queue import (
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
+    LEXICON_HIT_ROLLUP_JOB_TYPE,
     RETENTION_JOB_TYPE,
     Job,
     LeaseLost,
@@ -68,6 +69,7 @@ BACKGROUND_JOB_TYPES = (
     INTEGRATION_PROBE_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
+    LEXICON_HIT_ROLLUP_JOB_TYPE,
 )
 
 # ponytail: 5 s, against the turn worker's 250 ms. Nothing here has a latency
@@ -133,6 +135,14 @@ HONORED_RATE_INTERVAL_SECONDS = 24 * 60 * 60
 # idempotent, so a missed day just deletes slightly more on the next run.
 INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
 
+# ponytail: 24 h for the L7 hit rollup (0.0.5 S05, FR-5), matching every other
+# aggregate on this tick. `hit_count` is read by a retirement heuristic and an
+# effectiveness score, neither of which is a real-time signal -- and the events it
+# folds are CONSUMED, so a day's worth is the table's whole size rather than a
+# backlog. Shorten it only if `lexicon_hit_event` ever grows enough to notice; the
+# cost of a shorter interval is linear `job`-row growth, exactly as for the probe.
+LEXICON_HIT_ROLLUP_INTERVAL_SECONDS = 24 * 60 * 60
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule(job_type=RETENTION_JOB_TYPE, interval_seconds=RETENTION_INTERVAL_SECONDS),
     Schedule(
@@ -146,6 +156,10 @@ SCHEDULES: tuple[Schedule, ...] = (
     Schedule(
         job_type=INJECTION_LEDGER_PRUNE_JOB_TYPE,
         interval_seconds=INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=LEXICON_HIT_ROLLUP_JOB_TYPE,
+        interval_seconds=LEXICON_HIT_ROLLUP_INTERVAL_SECONDS,
     ),
 )
 
@@ -244,6 +258,7 @@ def job_bodies() -> dict[str, JobBody]:
     from .honored_rate import run_honored_rate_job
     from .injection_ledger import run_injection_ledger_prune_job
     from .integration_probe import run_integration_probe_job
+    from .lexicon_hits import run_lexicon_hit_rollup_job
     from .retention_sweep import run_retention_sweep_job
 
     def l6_review(payload: Mapping[str, Any]) -> None:
@@ -263,6 +278,7 @@ def job_bodies() -> dict[str, JobBody]:
         INTEGRATION_PROBE_JOB_TYPE: run_integration_probe_job,
         HONORED_RATE_JOB_TYPE: run_honored_rate_job,
         INJECTION_LEDGER_PRUNE_JOB_TYPE: run_injection_ledger_prune_job,
+        LEXICON_HIT_ROLLUP_JOB_TYPE: run_lexicon_hit_rollup_job,
     }
 
 

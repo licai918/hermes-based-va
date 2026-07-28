@@ -14,9 +14,11 @@ implies winter tires *after the agent asks*.
 no driver, no I/O. Both twins, the eval runner and the workbench BFF can import
 it without dragging a database along.
 
-**Nothing here is APPLIED.** Wiring these into tool parameters is S05; rendering
-confirmed entries as a prompt glossary is S06. This module is the vocabulary and
-the rules, not the seam.
+**Nothing here is APPLIED.** This module is the vocabulary and the rules, not the
+seam. The seam is :mod:`toee_hermes.lexicon_seam` (S05): it consults the confirmed
+entries, calls :func:`parse_tire_size` on product-read parameters, and verifies
+the result against the live catalog before anything is asserted. Rendering
+confirmed entries as a prompt glossary is S06 and is elsewhere again.
 
 ## Why the three entry kinds are graded the way they are (FR-2)
 
