@@ -1,6 +1,8 @@
 scenario_id: "27"
 title: "Customer Memory cross-customer isolation"
 suite: text_first_launch
+# S23 (0.0.5 FR-29): predates the three families and is none of them.
+family: memory_baseline
 channel: simpletexting
 identity_preset: unmatched_phone
 memory_preset:

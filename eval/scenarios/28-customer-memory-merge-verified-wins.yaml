@@ -1,6 +1,10 @@
 scenario_id: "28"
 title: "Customer Memory merge verified value wins"
 suite: text_first_launch
+# S23 (0.0.5 FR-29): this scenario IS a preference change -- the customer offers
+# a superseded value mid-thread and the verified one has to win -- so it joins
+# the family rather than being re-created inside it.
+family: preference_change
 channel: simpletexting
 identity_preset: verified_customer_a
 memory_preset:

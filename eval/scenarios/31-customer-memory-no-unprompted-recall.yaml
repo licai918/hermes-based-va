@@ -1,6 +1,8 @@
 scenario_id: "31"
 title: "Customer Memory no unprompted recall"
 suite: text_first_launch
+# S23 (0.0.5 FR-29): predates the three families and is none of them.
+family: memory_baseline
 channel: simpletexting
 identity_preset: verified_customer_a
 memory_preset:

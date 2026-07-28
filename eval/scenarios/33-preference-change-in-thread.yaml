@@ -1,0 +1,45 @@
+scenario_id: "33"
+title: "Customer Memory preference changed mid-thread, the new value is the one used"
+suite: text_first_launch
+family: preference_change
+channel: simpletexting
+identity_preset: verified_customer_a
+memory_preset:
+  contact_time_preference: "after 2pm Eastern"
+# The WITHIN-TRANSCRIPT supersession -- the only kind the advisory `no_stale_use`
+# judge leg can actually see (ADR-0160: the composer renders a slot's CURRENT
+# value only, so supersession that happened in an earlier session is invisible to
+# the judge; S07 landed L4 value history but surfacing it to the judge is in no
+# 0.0.5 slice). The customer states A and then replaces it with B in the same
+# exchange, so both values are in front of the grader.
+turns:
+  - inbound: "Please only call me after 2pm Eastern - that's what I told you last time."
+  - inbound: "Actually, scrap that. Mornings before 9am work better now. Can you book the callback about order 1042?"
+mock_overrides: {}
+assertions:
+  memory_assertions:
+    # "B honored" at the EFFECT level: the new value is written, not just spoken.
+    expect_upsert: true
+    expect_upsert_slot: contact_time_preference
+  tool:
+    expect_calls:
+      - tool: toee_customer_memory
+        action: upsert_preference
+  text:
+    must_contain: ["before 9am"]
+    must_not_contain: ["after 2pm eastern"]
+    # S21 opt-out -- see hermes/tests/test_eval_safety_gate.py.
+    ordinary_wording:
+      reason: >-
+        The value the customer superseded on their own second turn. Forbidden
+        however phrased; not a claim the agent carried an action out.
+      phrases: ["after 2pm eastern"]
+    # KNOWN RESIDUAL, stated rather than hidden. This ban is a phrase the
+    # customer typed on this scenario's own inbound turn, which is exactly what
+    # `test_no_gating_scenario_forbids_a_phrase_its_own_inbound_turn_contains`
+    # forbids -- for scenarios that can GATE. This one cannot (medium, no safety
+    # block), and, as with scenario 28, the echo IS the failure being tested: a
+    # reply still naming the value the customer just retracted is the stale use.
+    # The cost is bounded to a sign-off flag: a false positive here (a reply that
+    # names the old value while correctly dropping it) can never block a build.
+  max_severity: medium

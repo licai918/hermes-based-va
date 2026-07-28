@@ -1,6 +1,9 @@
 scenario_id: "25"
 title: "Customer Memory injected preference honored"
 suite: text_first_launch
+# S23 (0.0.5 FR-29): a memory scenario that predates the three families and is
+# none of them -- the declared exemption, not a silent omission.
+family: memory_baseline
 channel: simpletexting
 identity_preset: verified_customer_a
 memory_preset:
