@@ -124,6 +124,17 @@ export const TOOL_CATALOG = {
     "edit_lexicon_entry",
     "add_lexicon_entry",
   ],
+  // 0.0.5 S15 (FR-22): the unified review inbox + its `review_item` store --
+  // see hermes/toee_hermes/tool_catalog.py for the full rationale. The store
+  // exists because S10/S20/S25 all emit inbox items and none of them defines
+  // storage. All four actions are agent-excluded on the Python side (admin BFF
+  // dispatch, or a scheduled job's own dispatch, only).
+  toee_review_inbox: [
+    "propose_review_item",
+    "list_review_items",
+    "decide_review_item",
+    "reclassify_proposal",
+  ],
   // 0.0.4 operations surfaces. Agent-excluded on the Python side: reachable by
   // the admin/supervisor dispatch profiles, never model-callable.
   toee_metrics: ["get_aggregate_metrics"],

@@ -56,6 +56,12 @@ ADR_0035_INTERNAL = {
     # (S04's capture fork proposes; the admin BFF dispatches over this
     # profile's API). list_lexicon_entries is agent-excluded.
     "toee_semantic_lexicon",
+    # 0.0.5 S15 (FR-22): the unified review inbox + `review_item` store. Here
+    # rather than supervisor_admin because re-classify dispatches to
+    # toee_agent_experience and toee_semantic_lexicon, which are allowlisted on
+    # THIS profile only -- one governed action cannot span two profiles'
+    # toolsets. All four actions are agent-excluded.
+    "toee_review_inbox",
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over this
     # profile's API by the admin BFF (same reason get_memory_audit lives here).
     "toee_metrics",

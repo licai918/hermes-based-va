@@ -35,6 +35,8 @@ def test_catalog_lists_every_v1_tool() -> None:
         "toee_agent_experience",
         # 0.0.5 S01 (FR-1/FR-3): the L7 Semantic Lexicon store.
         "toee_semantic_lexicon",
+        # 0.0.5 S15 (FR-22): the unified review inbox + `review_item` store.
+        "toee_review_inbox",
         "toee_metrics",
         "toee_retention",
         # 0.0.4 S05 (FR-13): dead-letter view + governed Replay.
@@ -88,6 +90,26 @@ def test_semantic_lexicon_actions_match_fr_1() -> None:
     # There is no second read action, and no delete: retirement is a status.
     assert is_tool_action("toee_semantic_lexicon", "list_lexicon_queue") is False
     assert is_tool_action("toee_semantic_lexicon", "delete_lexicon_entry") is False
+
+
+def test_review_inbox_actions_match_fr_22() -> None:
+    # 0.0.5 S15 (FR-22): the unified review inbox. propose_review_item is the
+    # EMISSION seam S10/S20/S25 write through; decide_review_item is the audited
+    # acknowledge/dismiss over this store's own rows; reclassify_proposal is
+    # Re-classify. All four are admin/job-only (_AGENT_EXCLUDED_ACTIONS).
+    assert TOOL_CATALOG["toee_review_inbox"] == (
+        "propose_review_item",
+        "list_review_items",
+        "decide_review_item",
+        "reclassify_proposal",
+    )
+    assert is_tool_action("toee_review_inbox", "propose_review_item") is True
+    assert is_tool_action("toee_review_inbox", "reclassify_proposal") is True
+    # There is no per-decision action pair: ONE decide action carries the
+    # terminal status, because both decisions come from `open` and differ only in
+    # the value they land (unlike L7's three from-status-guarded transitions).
+    assert is_tool_action("toee_review_inbox", "acknowledge_review_item") is False
+    assert is_tool_action("toee_review_inbox", "dismiss_review_item") is False
 
 
 def test_metrics_actions_match_fr_28() -> None:

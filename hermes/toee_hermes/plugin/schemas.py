@@ -19,6 +19,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..drivers.mock.review_item import (
+    RECLASSIFY_ROUTES,
+    REVIEW_ITEM_DECISIONS,
+    REVIEW_ITEM_KINDS,
+    REVIEW_ITEM_STATUS_VALUES,
+)
 from ..tool_catalog import TOOL_CATALOG
 
 # The two Review Reason Tag enums (ADR-0154, 0.0.4 S02). EXTERNAL is used by
@@ -324,6 +330,114 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             },
         },
         "required": ["domain", "entry_kind", "surface_form", "canonical_form"],
+    },
+    # 0.0.5 S15 (FR-22): the unified review inbox. None of the four is
+    # LLM-callable (all are in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's
+    # deterministic dispatch -- and S10/S20/S25's job dispatch -- run the same
+    # schema/param validation, so params are declared explicitly rather than left
+    # to an open object. `status`, `decider` and `annotations` are deliberately
+    # ABSENT from the emission: they are framework-derived or another slice's
+    # column, and advertising them would only invite a forged param.
+    ("toee_review_inbox", "propose_review_item"): {
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_KINDS),
+                "description": (
+                    "Which kind of pending decision this is. L6/L7 proposals are "
+                    "NOT stored here -- they have their own governed propose "
+                    "actions and tables."
+                ),
+            },
+            "subject_ref": {
+                "type": "string",
+                "description": (
+                    "Stable reference to whatever the item is ABOUT -- an "
+                    "agent_experience id, a lexicon entry id, an L4 binding+slot."
+                ),
+            },
+            "evidence": {
+                "type": "object",
+                "description": (
+                    "The emitter's reason to believe: hit counts, affected case "
+                    "ids, the window it looked at."
+                ),
+            },
+        },
+        "required": ["kind", "subject_ref"],
+    },
+    ("toee_review_inbox", "list_review_items"): {
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_STATUS_VALUES),
+                "description": "Optional status filter; omit for every item.",
+            },
+            "kind": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_KINDS),
+                "description": "Optional kind filter; omit for every kind.",
+            },
+        },
+    },
+    ("toee_review_inbox", "decide_review_item"): {
+        "properties": {
+            "id": {"type": "string", "description": "The review_item id to decide."},
+            "decision": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_DECISIONS),
+                "description": (
+                    "The terminal status to land. There is no re-open: that "
+                    "would erase the decider of the decision it undid."
+                ),
+            },
+        },
+        "required": ["id", "decision"],
+    },
+    # FR-22's Re-classify: reject-in-source + propose-in-target in ONE governed
+    # action, so a mis-filed proposal moves with its evidence instead of being
+    # rejected and retyped. The target fields are the L7 proposal's own --
+    # `evidence` is not among them, because it is ALWAYS the source's content.
+    ("toee_review_inbox", "reclassify_proposal"): {
+        "properties": {
+            "source_kind": {
+                "type": "string",
+                "enum": list(RECLASSIFY_ROUTES),
+                "description": "The queue the mis-filed proposal is in today.",
+            },
+            "id": {
+                "type": "string",
+                "description": "The still-pending source proposal's id.",
+            },
+            "domain": {
+                "type": "string",
+                "description": (
+                    "Target lexicon vocabulary, e.g. 'tire' or 'company'. Open "
+                    "vocabulary, not an enum."
+                ),
+            },
+            "entry_kind": {
+                "type": "string",
+                "enum": ["alias", "normalizer", "default_rule"],
+                "description": "The target lexicon entry's kind.",
+            },
+            "surface_form": {
+                "type": "string",
+                "description": "Exactly what the customer wrote, e.g. '2055516'.",
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": "What it means in Toee's vocabulary, e.g. '205/55R16'.",
+            },
+        },
+        "required": [
+            "source_kind",
+            "id",
+            "domain",
+            "entry_kind",
+            "surface_form",
+            "canonical_form",
+        ],
     },
     # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
     # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still

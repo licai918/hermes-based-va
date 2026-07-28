@@ -306,7 +306,7 @@ counted as `metric_event.metric = 'memory_pollution_rejected'` (S22's pollution 
 
 ## Outside the layer model, and why
 
-Three surfaces live in the same Postgres and are **not** memory layers. The rule that decides
+Four surfaces live in the same Postgres and are **not** memory layers. The rule that decides
 it is the same one `LAYER_OF_ACTION` applies: a layer holds content the system reads back into
 a turn on behalf of a customer.
 
@@ -315,6 +315,16 @@ a turn on behalf of a customer.
 | Workbench Accounts | staff identity + roles | operator identity, not customer memory |
 | Knowledge publish state | the 6 governed operational-policy slots + history | authored content; the L5 boundary row pins it as explicitly NOT the corpus |
 | **Quality feedback** (ADR-0154: `interaction_review`, `draft_feedback`) | judgments **about** the system's output — reviews, thumbs, draft outcomes | never read back into a turn; it measures the system, it is not something the system remembers about a customer |
+| **Review items** (0.0.5 S15: `review_item`) | pending **decisions about** memory — graduation, blast-radius, persona-review and retirement candidates raised by S10/S20/S25 | a queue entry, not an entry: it references memory by `subject_ref` and carries the emitter's evidence, and no turn ever reads it back. Deciding one changes only that row's status |
+
+**One known limitation, recorded here rather than discovered later.** S15's
+`reclassify_proposal` is the first catalog action that writes **two** layers: it rejects an L6
+proposal and proposes an L7 entry in one governed action. `LAYER_OF_ACTION` maps one action to
+one layer, so it declares `L7` — the layer whose content is *created*, which is why an admin
+re-classifies at all. The L6 half is not lost from the governance record: it runs through
+`reject_experience` (declared L6 in its own right) and lands its own audit row, plus a
+`review_item_reclassified` row linking the two ids. If a second two-layer action ever appears,
+the map's value type is what should change.
 
 The quality-feedback row is stated rather than left to inference (0.0.5 S06, NFR-8). It arrived
 with the merged 0.0.4 work and had **no row here at all**, so its four `toee_feedback` actions

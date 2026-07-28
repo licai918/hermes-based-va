@@ -22,6 +22,7 @@ from .knowledge import knowledge_handlers
 from .memory import memory_handlers
 from .metrics import metrics_handlers
 from .retention import retention_handlers
+from .review_item import review_item_handlers
 from .semantic_lexicon import semantic_lexicon_handlers
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -51,6 +52,7 @@ def build_datastore_registry() -> DatastoreRegistry:
         eval_review_handlers(),
         agent_experience_handlers(),
         semantic_lexicon_handlers(),
+        review_item_handlers(),
         metrics_handlers(),
         retention_handlers(),
         dead_letter_handlers(),

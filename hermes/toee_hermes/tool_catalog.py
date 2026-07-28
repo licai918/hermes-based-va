@@ -140,6 +140,28 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "edit_lexicon_entry",
         "add_lexicon_entry",
     ),
+    # 0.0.5 S15 (FR-22): the unified review inbox and its `review_item` store --
+    # ONE queue holding every pending memory decision. The store exists because
+    # L6/L7 proposals have tables of their own but S10's blast-radius reviews,
+    # S20's graduation/retirement candidates and S25's persona_review routing do
+    # not, and none of those slices defines storage (gap audit).
+    # propose_review_item is the EMISSION seam those three call: propose-only,
+    # profile-gated, no actor required (a scheduled sweep has no human), and
+    # idempotent on the still-open set so an hourly job cannot manufacture a
+    # queue. decide_review_item acknowledges/dismisses ONE of this store's rows.
+    # reclassify_proposal is FR-22's Re-classify: reject-in-source +
+    # propose-in-target in ONE governed action, dispatching to the layers' OWN
+    # existing governed actions rather than adding a decision primitive.
+    # ALL FOUR are agent-excluded (_AGENT_EXCLUDED_ACTIONS): an emission is what
+    # a sweep does, not what a model does, and a model that could dismiss its own
+    # review item would make the whole queue decorative -- the
+    # confirm_experience precedent.
+    "toee_review_inbox": (
+        "propose_review_item",
+        "list_review_items",
+        "decide_review_item",
+        "reclassify_proposal",
+    ),
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
     # over existing tables + the new metric_event counters (memory injection,
     # knowledge found/miss). Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the

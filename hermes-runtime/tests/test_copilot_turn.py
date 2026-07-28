@@ -121,6 +121,28 @@ REVIEWED_INTERNAL_ALLOWLIST = frozenset(
         # proposes, and list_lexicon_entries is admin-only and excluded from
         # LLM registration entirely (_AGENT_EXCLUDED_ACTIONS).
         "toee_semantic_lexicon",
+        # 0.0.5 S15 (FR-22): reviewed addition. toee_review_inbox is the unified
+        # review inbox + its `review_item` store. Its writes raise, decide and
+        # re-classify PENDING MEMORY DECISIONS -- an emission lands an inert
+        # `open` row, a decision flips that row's status, and reclassify_proposal
+        # rejects an L6 proposal and proposes an L7 one. None of that contacts the
+        # customer or moves money, so it does not weaken the no-auto-send
+        # invariant this tripwire guards.
+        #
+        # STRONGER than the toee_agent_experience/toee_semantic_lexicon shape
+        # above, and deliberately so: ALL FOUR of its catalog actions are WHOLLY
+        # excluded from LLM registration (_AGENT_EXCLUDED_ACTIONS), including the
+        # propose. It never registers a handler and never appears in a booted
+        # tool_names() set (see _wholly_excluded_toolsets below) -- the
+        # toee_metrics/toee_retention/toee_feedback shape. propose_review_item is
+        # excluded because it is the seam S10's blast-radius pass, S20's sweep and
+        # S25's aggregator emit through, not something a live turn may reach: a
+        # model that could raise its own review items would be writing the queue
+        # that exists to check it. Declared here purely so the allowlist gate lets
+        # those jobs' and the admin BFF's deterministic tools:dispatch calls reach
+        # it -- and because re-classify dispatches to toee_agent_experience and
+        # toee_semantic_lexicon, which live on this profile alone.
+        "toee_review_inbox",
     }
 )
 

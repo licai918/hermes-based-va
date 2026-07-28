@@ -178,6 +178,32 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     ("toee_semantic_lexicon", "edit_lexicon_entry"): "L7",
     # The admin's own entry, inserted already confirmed.
     ("toee_semantic_lexicon", "add_lexicon_entry"): "L7",
+    # --- unified review inbox (0.0.5 S15, FR-22) ---------------------------
+    # A `review_item` row is a PENDING DECISION about memory, not memory. It
+    # holds a kind, a reference to whatever it is about, and the emitter's
+    # evidence -- nothing a turn ever reads back, which is the same rule that
+    # puts ADR-0154's two feedback tables outside the layer model above.
+    # memory-layers.md's "Outside the layer model, and why" section carries the
+    # matching row; these declarations are its other half. Deciding an item
+    # changes only that row's status, so it stays outside too.
+    ("toee_review_inbox", "propose_review_item"): None,
+    ("toee_review_inbox", "list_review_items"): None,
+    ("toee_review_inbox", "decide_review_item"): None,
+    # **The first catalog action that writes TWO layers, and this map cannot say
+    # so.** Re-classify rejects an L6 proposal (an L6 content-state change, per
+    # reject_experience above) AND proposes an L7 entry, in one governed action.
+    # A dict key holds one value, so the shape forces a choice rather than
+    # allowing an honest pair.
+    #
+    # Declared L7: the layer whose content the action CREATES, which is the
+    # reason the action exists -- an admin re-classifies in order to get the
+    # lexicon entry. The L6 half is not lost from the governance record, it is
+    # just not visible HERE: it runs through `reject_experience`, which has its
+    # own declaration above and writes its own audit row, plus the
+    # `review_item_reclassified` row that links the two. Recorded as a known
+    # limitation of this fixture rather than papered over -- if a second
+    # two-layer action ever lands, the map's value type is what should change.
+    ("toee_review_inbox", "reclassify_proposal"): "L7",
     # --- metrics -----------------------------------------------------------
     ("toee_metrics", "get_aggregate_metrics"): None,
     # --- L4 retention ------------------------------------------------------

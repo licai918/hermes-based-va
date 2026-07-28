@@ -239,6 +239,35 @@ def test_propose_experience_is_registered_as_an_llm_tool_for_internal_copilot() 
     assert "toee_agent_experience__propose_experience" in ctx.registered_names()
 
 
+# --- 0.0.5 S15: no review-inbox action is ever LLM-callable (governance) ---
+
+
+def test_no_review_inbox_action_is_registered_as_an_llm_tool() -> None:
+    # toee_review_inbox is allowlisted for internal_copilot only (re-classify
+    # dispatches to L6 and L7, which live on that profile). EVERY action is
+    # excluded, and the loop is derived from the catalog so a fifth action added
+    # later cannot slip past by nobody remembering to add a line here -- the
+    # "loop over every governed action that ran three of four" shape.
+    #
+    # propose_review_item is excluded for its own reason: it is the seam S10's
+    # blast-radius pass, S20's sweep and S25's aggregator emit through, not an
+    # admin action. A model that could raise its own review items would be
+    # writing the queue that exists to check it.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        for action in TOOL_CATALOG["toee_review_inbox"]:
+            assert f"toee_review_inbox__{action}" not in ctx.registered_names()
+
+
+def test_every_review_inbox_action_is_listed_in_the_exclusion_set() -> None:
+    # The registration test above proves the OUTCOME on the two profiles that
+    # exist today; this proves the MECHANISM, so a future profile gaining the
+    # toolset cannot expose an action nobody excluded.
+    for action in TOOL_CATALOG["toee_review_inbox"]:
+        assert ("toee_review_inbox", action) in _AGENT_EXCLUDED_ACTIONS
+
+
 # --- 0.0.3 S26: get_aggregate_metrics is never LLM-callable (governance) ---
 
 

@@ -19,6 +19,7 @@ import type {
 } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
 import type { QualityGatesView } from "@/lib/bff/admin/quality-gates";
+import type { InboxItem } from "@/lib/bff/admin/review-inbox";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
 import type {
   AgentExperienceEntry,
@@ -329,4 +330,43 @@ export function reprobeIntegration(integrationKey: string): Promise<ReprobeRecei
   return sendJson<ReprobeReceipt>("POST", "/api/admin/integrations/reprobe", {
     integrationKey,
   });
+}
+
+// --- Unified review inbox (0.0.5 S15, FR-22) ---------------------------------
+
+export type { InboxItem };
+
+export function listInbox(): Promise<{ items: InboxItem[]; count: number }> {
+  return getJson<{ items: InboxItem[]; count: number }>("/api/admin/inbox");
+}
+
+// The kind rides the body, not the path: an inbox id is only unique within its
+// own store, and the routing table keys on (kind, decision).
+export function decideInboxItem(
+  kind: string,
+  id: string,
+  decision: string,
+): Promise<{ kind: string; id: string; result: unknown }> {
+  return sendJson<{ kind: string; id: string; result: unknown }>(
+    "POST",
+    "/api/admin/inbox/decide",
+    { kind, id, decision },
+  );
+}
+
+// FR-22 Re-classify: ONE governed action rejects the source and proposes the
+// target, audited on both sides with the evidence preserved.
+export function reclassifyInboxItem(body: {
+  sourceKind: string;
+  id: string;
+  domain: string;
+  entryKind: string;
+  surfaceForm: string;
+  canonicalForm: string;
+}): Promise<{ source: unknown; target: unknown; reclassified: unknown }> {
+  return sendJson<{ source: unknown; target: unknown; reclassified: unknown }>(
+    "POST",
+    "/api/admin/inbox/reclassify",
+    body,
+  );
 }

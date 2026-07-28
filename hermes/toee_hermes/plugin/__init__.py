@@ -145,6 +145,18 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_semantic_lexicon", "retire_lexicon_entry"),
         ("toee_semantic_lexicon", "edit_lexicon_entry"),
         ("toee_semantic_lexicon", "add_lexicon_entry"),
+        # 0.0.5 S15 (FR-22): the unified review inbox. All four actions are
+        # excluded. The read and the two writes are the get_memory_audit /
+        # confirm_experience precedent -- an admin surface reached only by the
+        # admin BFF's deterministic dispatch. propose_review_item is excluded for
+        # a DIFFERENT reason worth stating: it is not an admin action at all, it
+        # is the seam S10's blast-radius pass, S20's sweep and S25's aggregator
+        # emit through. A model that could raise its own review items would be
+        # writing the queue that exists to check it.
+        ("toee_review_inbox", "propose_review_item"),
+        ("toee_review_inbox", "list_review_items"),
+        ("toee_review_inbox", "decide_review_item"),
+        ("toee_review_inbox", "reclassify_proposal"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
         ("toee_retention", "enqueue_retention_sweep"),

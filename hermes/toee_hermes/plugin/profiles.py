@@ -64,6 +64,15 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # dispatch over this profile's API (S02) -- never external, never
             # supervisor. Same precedent as toee_agent_experience above.
             "toee_semantic_lexicon",
+            # 0.0.5 S15 (FR-22): the unified review inbox + `review_item` store.
+            # Here rather than on supervisor_admin because re-classify dispatches
+            # to toee_agent_experience and toee_semantic_lexicon, which are
+            # allowlisted on THIS profile only -- one governed action cannot span
+            # two profiles' toolsets. The admin BFF reaches it over this
+            # profile's API exactly as it does for L6/L7; all four actions are in
+            # _AGENT_EXCLUDED_ACTIONS, so this opens the dispatch gate and
+            # nothing on the model's tool-calling surface.
+            "toee_review_inbox",
             # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over
             # this profile's API by the admin BFF -- same reason
             # toee_customer_memory.get_memory_audit lives here (ADR-0140).

@@ -51,6 +51,7 @@ from .qbo import (
     qbo_baseline_data,
 )
 from .retention import create_retention_mock_handlers
+from .review_item import create_review_inbox_mock_handlers
 from .semantic_lexicon import create_semantic_lexicon_mock_handlers
 from .shopify import (
     ShopifyMockData,
@@ -71,6 +72,14 @@ from .sms_reply import (
 
 def create_all_mock_handlers() -> MockHandlerRegistry:
     """Merge every tool's baseline mock fragment into one registry (all 17 v1 tools)."""
+    # 0.0.5 S15: the review inbox's re-classify dispatches to the L6 and L7
+    # fragments' OWN governed handlers ("no new decision primitives"), so those
+    # two are built first and handed over rather than merged blind. Each mock
+    # fragment closes over its own store, so passing the registries is the only
+    # way one fragment can reach another's -- and it is exactly what the Postgres
+    # twin does by calling its sibling handlers.
+    agent_experience = create_agent_experience_mock_handlers()
+    semantic_lexicon = create_semantic_lexicon_mock_handlers()
     return merge_registries(
         create_identity_mock_handlers(),
         create_shopify_mock_handlers(),
@@ -83,8 +92,12 @@ def create_all_mock_handlers() -> MockHandlerRegistry:
         create_sms_reply_mock_handlers(),
         create_square_mock_handlers(),
         create_admin_stub_mock_handlers(),
-        create_agent_experience_mock_handlers(),
-        create_semantic_lexicon_mock_handlers(),
+        agent_experience,
+        semantic_lexicon,
+        create_review_inbox_mock_handlers(
+            agent_experience=agent_experience["toee_agent_experience"],
+            semantic_lexicon=semantic_lexicon["toee_semantic_lexicon"],
+        ),
         create_metrics_mock_handlers(),
         create_retention_mock_handlers(),
         create_feedback_mock_handlers(),
@@ -130,6 +143,7 @@ __all__ = [
     "create_admin_stub_mock_handlers",
     "create_agent_experience_mock_handlers",
     "create_semantic_lexicon_mock_handlers",
+    "create_review_inbox_mock_handlers",
     "create_metrics_mock_handlers",
     "create_retention_mock_handlers",
     "create_feedback_mock_handlers",
