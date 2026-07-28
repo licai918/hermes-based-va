@@ -290,6 +290,35 @@ describe("handleGetMemoryHubViaApi", () => {
     ).toHaveLength(2);
   });
 
+  // Found by running this against the live stack: its dispatch image predates
+  // the effectiveness score, so every entry arrived with `entry_health` absent
+  // -- and the tile answered "0 with no recorded use" when the truth was "with
+  // no effectiveness data, nobody can say". A zero there is the exact defect
+  // this hub's `{label, value}` shape exists to prevent, so the third state gets
+  // used: unavailable.
+  it("says unavailable, not 0, when a confirmed entry arrived with no effectiveness score", async () => {
+    const noHealth = LEXICON_ENTRIES.map(({ entry_health: _h, ...rest }) => rest);
+    const fetchImpl = async (_url: string, init: RequestInit): Promise<Response> => {
+      const sent = JSON.parse(init.body as string) as SentDispatch;
+      return dispatchResponse(
+        sent.action === "list_lexicon_entries"
+          ? { entries: noHealth, lexicon_version: null }
+          : PAYLOAD_BY_ACTION[sent.action],
+      );
+    };
+    const client = (baseUrl: string) =>
+      new HermesApiClient({ baseUrl, token: "tok", actorAccountId: "seed-supervisor", fetchImpl });
+    const res = await handleGetMemoryHubViaApi(
+      client("http://copilot.internal"),
+      client("http://admin.internal"),
+    );
+    const body = (await res.json()) as MemoryHubView;
+    expect(rowFor(body, "L7").counts[2]?.value).toBe(MEMORY_HUB_UNAVAILABLE);
+    // ... and the two counts that do not depend on the score still render.
+    expect(rowFor(body, "L7").counts[0]?.value).toBe("3");
+    expect(rowFor(body, "L7").counts[1]?.value).toBe("5");
+  });
+
   // The same class on the sibling path: L6's injection is bounded newest-first
   // too, so its confirmed count is no more "what the prompt carries" than L7's.
   it("scopes the L6 counts the same way, bound included", async () => {

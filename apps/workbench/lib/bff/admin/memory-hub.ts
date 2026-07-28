@@ -170,6 +170,24 @@ function tally<T>(rows: T[] | null, predicate: (row: T) => boolean): number | nu
   return rows === null ? null : rows.filter(predicate).length;
 }
 
+// 0.0.5 S22 / D22: confirmed L7 entries with no recorded use at all.
+//
+// `null` -- which renders as "unavailable", not as a number -- whenever ANY
+// confirmed entry arrived without an effectiveness score. Found by running the
+// hub against a live stack whose dispatch image predated the score: every entry
+// came back with `entry_health` absent, and counting only the entries that DID
+// have one answered "0 with no recorded use" when the truth was "with no
+// effectiveness data, nobody can say". A zero there is the same lie as an
+// under-scoped label, which is what this whole file exists to avoid.
+function unusedConfirmedLexicon(rows: LexiconEntry[] | null): number | null {
+  if (rows === null) return null;
+  const confirmed = rows.filter((e) => e.status === "confirmed");
+  if (confirmed.some((e) => e.health === null)) return null;
+  return confirmed.filter(
+    (e) => e.health !== null && e.health.usage.hits === 0 && e.health.usage.injections === 0,
+  ).length;
+}
+
 function buildMemoryHubRows(sources: Sources): MemoryHubRow[] {
   const { experience, lexicon, corpus, retention, metrics } = sources;
 
@@ -319,16 +337,9 @@ function buildMemoryHubRows(sources: Sources): MemoryHubRow[] {
           // with old hits and no recent injections is the retirement candidate.
           //
           // An entry whose health did not survive the mapper (no scope, no
-          // basis -- S26's refusal) is left OUT of the count rather than
-          // guessed at: a score whose meaning was lost cannot answer this.
-          tally(
-            lexicon,
-            (e) =>
-              e.status === "confirmed" &&
-              e.health !== null &&
-              e.health.usage.hits === 0 &&
-              e.health.usage.injections === 0,
-          ),
+          // basis -- S26's refusal) makes the whole count "unavailable" rather
+          // than shrinking it silently; see unusedConfirmedLexicon.
+          unusedConfirmedLexicon(lexicon),
           "Confirmed entries with no recorded use — no deterministic-seam hit " +
             "(lifetime) AND no prompt injection in the ledger's retention window. " +
             "Reads entry_effectiveness, not hit_count alone: hit_count is " +
