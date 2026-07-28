@@ -290,9 +290,17 @@ elsewhere, and which remain **doc-only** — read it before assuming a row is en
 injection fences' own closing tokens used to close that fence early, putting the rest of the
 value in the same unfenced region as the framework-derived Session Identity Snapshot — a
 *structural* prompt-injection escape that no "ignore previous instructions" pattern catches.
-Closed on both sides: the write scan hard-rejects those tokens (L6/L7 today; L4 when S08 wires
-it), and `toee_hermes/plugin/hooks.py::_fence_safe` neuters them at render on **every** layer,
-which is what covers values already in the store.
+Closed on both sides: the write scan hard-rejects those tokens on **every** fenced layer — L6/L7
+since 0.0.5 S01, L4 since **0.0.5 S08** (FR-10), which closed the reachable half, since a slot
+value is the one an ordinary customer can write — and `toee_hermes/plugin/hooks.py::_fence_safe`
+neuters them at render on every layer, which is what covers values already in the store.
+
+**L4's write scan is the injection leg only, deliberately (0.0.5 S08, D2).** `scan_memory_write`
+runs `scan_injection` over the slot value and its `evidence` and hard-rejects — the write fails,
+nothing is scrubbed and stored. It does **not** run `scan_pii`: NFR-6's no-PII rule governs the
+*shared* layers, and L4 is the layer a customer's own callback number belongs in, so a PII leg
+here would reject correct data (`leave at back door, call 604-555-1212`). The rejection is
+counted as `metric_event.metric = 'memory_pollution_rejected'` (S22's pollution numerator).
 
 ---
 

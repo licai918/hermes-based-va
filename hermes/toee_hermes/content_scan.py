@@ -13,7 +13,7 @@ write scan:
   only"). A legitimate delivery-habit slot reads "leave at back door, call
   604-555-1212"; running the PII leg there rejects correct customer data.
 
-Per-field policy (D2). The last row is D2's TARGET, not today's behaviour:
+Per-field policy (D2), every row now describing shipped behaviour:
 
 ===============================  ==================  =========================
 Field                            ``scan_injection``  ``scan_pii``
@@ -22,7 +22,7 @@ L7 surface_form / canonical_form  hard-reject         not applied
 L7 evidence / proposer_context    hard-reject         redact in place
 L6 experience content             hard-reject         hard-reject (unchanged)
 L6/L7 proposer_context KEYS       hard-reject         redact in place (amend. 3)
-L4 slot values + evidence         **S08, not wired**  not applied
+L4 slot values + evidence         hard-reject (S08)   not applied
 ===============================  ==================  =========================
 
 The KEY row is the D2 amendment-3 ruling and applies to BOTH shared layers: a
@@ -31,10 +31,11 @@ and the record survives. Everything below a key -- the VALUES -- keeps its
 layer's policy, which is the one axis :func:`scan_proposer_context` makes the
 caller state out loud.
 
-**Who actually calls this module today: L6 and L7 only.** L4's write path does
-not call :func:`scan_injection` at all -- wiring it is S08's slice (D19's
-correction). Nothing here reaches L4 by being shared; a resolver only covers its
-callers.
+**Who actually calls this module today: L4, L6 and L7.** L4 joined in 0.0.5 S08
+(FR-10) via ``toee_hermes.drivers.mock.memory.scan_memory_write``, the injection
+leg only. Nothing here reaches a layer by being shared; a resolver only covers
+its callers, so the honest way to read this module is still "which write paths
+import it" -- and the answer changes only when a slice adds a call.
 
 ONE module, imported by both the mock and the Postgres twins, so the two can
 never drift on what counts as a governed rejection (NFR-7, the S15/S21 lesson).
@@ -132,10 +133,10 @@ def scan_injection(*texts: Optional[str]) -> None:
     """Hard-reject instruction-injection and fence-escape content.
 
     An injection pattern is never legitimate content in any field of any layer,
-    so every CALLER applies it to everything it writes. Callers today are L6
-    (``scan_agent_experience_content``) and L7 (``scan_lexicon_write``); L4 is
-    S08's to wire. ``None``/empty positionals are skipped so callers can pass an
-    optional field straight through.
+    so every CALLER applies it to everything it writes. Callers today are L4
+    (``scan_memory_write``, 0.0.5 S08), L6 (``scan_agent_experience_content``)
+    and L7 (``scan_lexicon_write``). ``None``/empty positionals are skipped so
+    callers can pass an optional field straight through.
     """
     for text in texts:
         if not text:

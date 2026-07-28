@@ -29,15 +29,18 @@ value carrying ``</untrusted_customer_memory>`` closes its own prompt fence earl
 and lands the rest of itself outside it. That is a STRUCTURAL escape, not a
 semantic one, so none of the S22 patterns see it.
 
-**Reach, stated honestly (corrected by the S01 review).** Putting the pattern in
-this shared resolver covers exactly the layers that CALL the resolver, which today
-is **L6 and L7 only** -- ``scan_agent_experience_content`` and
-``scan_lexicon_write``. **L4's write path does not call ``scan_injection`` at
-all**; wiring it is S08's job (D19), and until S08 lands, a customer-authored slot
-value can still carry a fence token into the store. **0.0.5 S06 closed the RENDER
-side for every layer** (``hooks._fence_safe``), so a token that is already stored
-can no longer break a fence — which is what covers L4 until S08 lands, and covers
-rows on any layer that predate this guard.
+**Reach, stated honestly (corrected by the S01 review, updated when S08 landed).**
+Putting the pattern in this shared resolver covers exactly the layers that CALL
+the resolver, which is now **L4, L6 and L7** -- ``scan_memory_write``,
+``scan_agent_experience_content`` and ``scan_lexicon_write``. L4 was the gap this
+paragraph used to record: until 0.0.5 S08 (FR-10) its write path did not call
+``scan_injection`` at all, so a customer-authored slot value could carry a fence
+token into the store. It is wired now, and the L4 behaviour is asserted where the
+L4 write path is -- ``hermes/tests/test_memory.py`` (mock) and
+``hermes-runtime/tests/test_datastore_driver_memory.py`` (Postgres) -- not here.
+**0.0.5 S06 closed the RENDER side for every layer** (``hooks._fence_safe``), so a
+token that is ALREADY stored can no longer break a fence; that still matters, for
+rows on any layer written before its layer's write guard existed.
 """
 
 from __future__ import annotations

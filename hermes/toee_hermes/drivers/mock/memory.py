@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ...content_scan import scan_injection
 from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
 
@@ -163,6 +164,46 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
             f"{MEMORY_EVIDENCE_MAX_LENGTH} characters.",
         )
     return evidence
+
+
+def scan_memory_write(value: str, evidence: str | None) -> None:
+    """L4's whole write scan, in ONE place both twins call (0.0.5 S08, FR-10).
+
+    Mirrors L6's ``scan_agent_experience_write`` and L7's ``scan_lexicon_write``:
+    one named resolver per layer, imported by the mock driver AND the Postgres
+    datastore handler, so the two cannot drift on what a governed rejection is
+    (NFR-7, the S15/S21 lesson). Raises ``policy_blocked``; returns nothing,
+    because L4 stores exactly what it was given or nothing at all.
+
+    **Injection ONLY. The PII leg is deliberately NOT applied, and that is the
+    whole reason this function exists rather than a bare ``scan_injection`` call
+    at each site.** NFR-6's no-PII rule governs the SHARED layers (L6/L7); L4 is
+    the layer customer PII legitimately lives in, bound to its own customer (D2).
+    A correct delivery habit reads ``leave at back door, call 604-555-1212``, and
+    ``scan_pii``'s phone heuristic would ``policy_blocked`` it. Adding
+    :func:`toee_hermes.content_scan.scan_pii` here would not harden L4; it would
+    break the one layer that is supposed to remember a customer.
+
+    **Hard-reject, never scrub-and-store.** A slot value is re-injected into the
+    prompt every turn, so instructions hidden in one are a live prompt-injection
+    surface -- but a sanitized value that still persists would record something
+    the customer never said, in the store a rep reads to decide what to do. So
+    the write fails and the prior value stands.
+
+    ``evidence`` is scanned too, on a weaker but real justification: unlike the
+    slot value it is NOT injected into the turn prompt (``get_preferences``
+    withholds it deliberately), so it is not a live injection surface today. It
+    is a verbatim customer phrase persisted for audit and rendered to a human in
+    the Memory Audit console -- and S16's copilot triage will read the same rows
+    back to a model. Rejecting the write is also the only coherent option: the
+    value and its evidence are one governed write, so accepting half of one would
+    store a slot whose stated justification was thrown away.
+
+    The read-side fence (``hooks._fence_safe``, S06) stays as defence in depth
+    for rows written before this guard existed; it is not a substitute for it --
+    escaping a stored instruction still leaves the instruction stored.
+    """
+    scan_injection(value, evidence)
 
 
 def is_verified_customer_identity(identity: Any) -> bool:
@@ -397,6 +438,11 @@ def create_memory_mock_handlers(
         slot = _require_slot(params)
         value = _require_value(params)
         write_evidence = _read_evidence(params)
+        # S08 (FR-10): the shared L4 write scan, same call as the Postgres twin.
+        # Placed after the type/length checks so those keep their own governed
+        # error class, and before any store mutation so a rejection leaves the
+        # slot exactly as it was.
+        scan_memory_write(value, write_evidence)
         # RK-1: source is framework-derived from context.profile, never the
         # model-supplied params — any "source" the caller passed is ignored.
         source = resolve_memory_write_source(context)

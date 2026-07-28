@@ -43,6 +43,22 @@ mix"). Honest accounting, three buckets:
 - *Customer Memory (L4) never holds live facts, policy text, consent state* --
   the slot enum is closed: ``hermes/tests/test_memory.py::
   test_upsert_rejects_open_ended_key`` (and its ``clear``/``dismiss`` siblings).
+- *Customer Memory (L4) never holds INSTRUCTIONS* -- write-side scan, added by
+  0.0.5 S08 (FR-10): ``scan_memory_write`` in ``toee_hermes.drivers.mock.memory``
+  calls ``scan_injection`` on the slot value and its ``evidence``, hard-rejecting
+  in BOTH twins (``hermes/tests/test_memory.py``, ``hermes-runtime/tests/
+  test_datastore_driver_memory.py``). It is the INJECTION leg only, and that is a
+  ruling rather than an omission (D2): NFR-6's no-PII rule governs the SHARED
+  layers, while L4 is the layer a customer's own phone number belongs in, so
+  running ``scan_pii`` here would reject correct data. Pinned from both sides --
+  a fence-closing value is rejected, a value containing a callback number is
+  stored verbatim.
+  Scope limit, since this file is where such limits are recorded: the scan is on
+  the ``upsert_preference`` path only. ``dismiss_proposal`` shares
+  ``_require_value`` but persists no slot -- its value reaches an audit row, never
+  a prompt -- and blocking it would leave a rep unable to dismiss the very
+  proposal the scan exists to keep out (pinned by
+  ``test_dismissing_an_injection_carrying_proposal_is_not_blocked``).
 - *No layer holds model-supplied write attribution* (ADR-0148) -- source and
   actor are framework-derived: ``hermes/tests/
   test_customer_memory_write_source.py`` and ``hermes-runtime/tests/
@@ -108,13 +124,17 @@ mix"). Honest accounting, three buckets:
   that KNOWN-GOOD values sit inside their fence and nowhere outside, which a
   malicious value's *prefix* still satisfies -- nothing asserted that a fence
   survives its own body.
-  **Write side (0.0.5 S01):** ``scan_injection`` hard-rejects fence-delimiter
-  tokens, and the write paths that CALL it are **L6
-  (``scan_agent_experience_write``) and L7 (``scan_lexicon_write``) only**, so a
-  value carrying one can no longer be stored *in those two*
-  (``hermes/tests/test_content_scan.py``). **L4 does not call ``scan_injection``
-  at all** -- wiring it is S08's slice -- so the customer-authored slot value,
-  the REACHABLE one, is still storable today.
+  **Write side (0.0.5 S01, completed by S08):** ``scan_injection`` hard-rejects
+  fence-delimiter tokens, and the write paths that CALL it are **L4
+  (``scan_memory_write``), L6 (``scan_agent_experience_write``) and L7
+  (``scan_lexicon_write``)** (``hermes/tests/test_content_scan.py``). L4 was the
+  hole this paragraph used to name: it called nothing until 0.0.5 S08 (FR-10), so
+  the customer-authored slot value -- the REACHABLE one, the only one an attacker
+  can write without an admin -- was storable. It is rejected now
+  (``hermes/tests/test_memory.py::
+  test_upsert_hard_rejects_a_value_that_closes_its_own_fence`` and its Postgres
+  twin). Rows written BEFORE S08 are still in the store; the render side below is
+  what contains them.
   **Render side (0.0.5 S06):** ``hooks._fence_safe`` neuters every
   fence-delimiter token in EVERY interpolated value, on all three fenced layers
   and the unfenced snapshot, so a value already in the store cannot break the

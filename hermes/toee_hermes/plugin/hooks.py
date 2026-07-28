@@ -72,9 +72,11 @@ def _fence_safe(value: Any) -> str:
     catches it.
 
     Defence in DEPTH, not the only defence. ``content_scan.scan_injection``
-    hard-rejects these tokens on the write side, but only L6 and L7 call it
-    today (L4 is S08's slice), and nothing rewrites rows that predate the guard.
-    This is what covers a value that is already stored.
+    hard-rejects these tokens on the write side, and all three MEMORY layers
+    rendered below call it as of 0.0.5 S08 (L4 was the last to be wired) -- but
+    nothing rewrites rows that predate each layer's guard. This is what covers a
+    value that is already stored. The snapshot block has no write scan of its
+    own and needs none: it is framework-derived, not customer-authored.
 
     A no-op for every value that carries no token, which is the eval-determinism
     property that matters: the recorded prompts are byte-identical (NFR-4).

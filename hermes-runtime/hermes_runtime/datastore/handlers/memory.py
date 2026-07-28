@@ -35,10 +35,12 @@ from toee_hermes.drivers.mock.memory import (
     resolve_clear_authorization,
     resolve_customer_memory_binding,
     resolve_memory_write_source,
+    scan_memory_write,
 )
 from toee_hermes.errors import ToolDriverError
 
 from ._common import (
+    METRIC_MEMORY_POLLUTION_REJECTED,
     METRIC_SELF_SERVICE_USAGE,
     insert_audit,
     insert_metric_event,
@@ -54,6 +56,21 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
     slot = _require_slot(params)
     value = _require_value(params)
     evidence = _read_evidence(params)
+    # S08 (FR-10): the shared L4 write scan -- the SAME resolver the mock twin
+    # calls, injection leg only (see its docstring for why L4 gets no PII leg).
+    try:
+        scan_memory_write(value, evidence)
+    except ToolDriverError:
+        # S22 counts rejections as its pollution numerator, so a rejection that
+        # leaves no trace is a rejection S22 cannot see. The re-raise below makes
+        # PostgresDriver.execute roll this unit of work back, which would take an
+        # ordinary insert_metric_event row with it -- so this one is committed on
+        # the spot. Safe precisely because the scan runs before ANY write:
+        # nothing else is pending, so the commit commits exactly the counter and
+        # zero slot rows, which is what a hard reject means.
+        insert_metric_event(conn, metric=METRIC_MEMORY_POLLUTION_REJECTED)
+        conn.commit()
+        raise
     # RK-1: source is framework-derived from context.profile (shared resolver, same
     # as the mock twin), never the model-supplied params — any "source" the caller
     # passed is ignored.
