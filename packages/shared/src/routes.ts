@@ -12,6 +12,9 @@ export const ROUTES = {
   adminMemoryAudit: "/admin/memory-audit",
   // L6 Agent-experience minimal admin list (0.0.3 S22, FR-23).
   adminAgentExperience: "/admin/agent-experience",
+  // L7 Semantic Lexicon console (0.0.5 S02, FR-3/FR-8): the human gate over the
+  // domain language -- approve/edit/reject/retire plus manual add.
+  adminLexicon: "/admin/lexicon",
   // Aggregate-metrics admin panel (0.0.3 S26, FR-28).
   adminMetrics: "/admin/metrics",
   // Integrations status page (0.0.4 S15, FR-23). Admin-ONLY (a credential

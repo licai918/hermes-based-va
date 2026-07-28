@@ -122,11 +122,23 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # internal_copilot only, because S04's capture fork is the agent that
     # proposes -- exactly the propose_experience precedent above.
     # list_lexicon_entries is admin-only (_AGENT_EXCLUDED_ACTIONS, the
-    # list_agent_experience precedent). The decide/CRUD actions and the console
-    # are S02; nothing APPLIES an entry until S03/S05/S06.
+    # list_agent_experience precedent); nothing APPLIES an entry until S03/S05/S06.
+    # 0.0.5 S02 (FR-3 decide side / FR-8): the human gate --
+    # confirm/reject/retire flip status, edit_lexicon_entry is D7's IN-PLACE
+    # update of the mapping (stable id, hit_count continues), and
+    # add_lexicon_entry is the admin's own entry, landing `confirmed` +
+    # `admin_manual` because the admin IS the gate. All five are admin-only
+    # (_AGENT_EXCLUDED_ACTIONS): a model that could confirm or author its own
+    # lexicon entry would make the propose->confirm gate decorative, which is
+    # the confirm_experience precedent above.
     "toee_semantic_lexicon": (
         "propose_lexicon_entry",
         "list_lexicon_entries",
+        "confirm_lexicon_entry",
+        "reject_lexicon_entry",
+        "retire_lexicon_entry",
+        "edit_lexicon_entry",
+        "add_lexicon_entry",
     ),
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
     # over existing tables + the new metric_event counters (memory injection,

@@ -68,15 +68,26 @@ def test_semantic_lexicon_actions_match_fr_1() -> None:
     # 0.0.5 S01 (FR-1/FR-3): the L7 store's governed write (propose_lexicon_entry,
     # writes status='proposed' ONLY) and its admin-only read
     # (list_lexicon_entries, in _AGENT_EXCLUDED_ACTIONS -- the
-    # list_agent_experience precedent). The decide/CRUD actions are S02's.
+    # list_agent_experience precedent).
+    # 0.0.5 S02 (FR-3 decide side/FR-8): the human gate's five admin-only
+    # actions. S02 EXTENDED list_lexicon_entries with the queue filters rather
+    # than adding a second read -- there is exactly one L7 read action.
     assert TOOL_CATALOG["toee_semantic_lexicon"] == (
         "propose_lexicon_entry",
         "list_lexicon_entries",
+        "confirm_lexicon_entry",
+        "reject_lexicon_entry",
+        "retire_lexicon_entry",
+        "edit_lexicon_entry",
+        "add_lexicon_entry",
     )
     assert is_tool_action("toee_semantic_lexicon", "propose_lexicon_entry") is True
     assert is_tool_action("toee_semantic_lexicon", "list_lexicon_entries") is True
-    # Not yet in the catalog: an entry can only be decided from S02.
-    assert is_tool_action("toee_semantic_lexicon", "confirm_lexicon_entry") is False
+    assert is_tool_action("toee_semantic_lexicon", "confirm_lexicon_entry") is True
+    assert is_tool_action("toee_semantic_lexicon", "add_lexicon_entry") is True
+    # There is no second read action, and no delete: retirement is a status.
+    assert is_tool_action("toee_semantic_lexicon", "list_lexicon_queue") is False
+    assert is_tool_action("toee_semantic_lexicon", "delete_lexicon_entry") is False
 
 
 def test_metrics_actions_match_fr_28() -> None:

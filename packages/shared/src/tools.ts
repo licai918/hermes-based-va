@@ -69,9 +69,20 @@ export const TOOL_CATALOG = {
   // 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon store -- see
   // hermes/toee_hermes/tool_catalog.py for the full rationale.
   // propose_lexicon_entry writes status='proposed' only; list_lexicon_entries is
-  // agent-excluded on the Python side (admin BFF dispatch only). The decide/CRUD
-  // actions and the console are S02.
-  toee_semantic_lexicon: ["propose_lexicon_entry", "list_lexicon_entries"],
+  // agent-excluded on the Python side (admin BFF dispatch only). 0.0.5 S02
+  // (FR-3 decide side/FR-8) adds the human gate: confirm/reject/retire flip
+  // status, edit_lexicon_entry is D7's in-place mapping update (stable id), and
+  // add_lexicon_entry lands the admin's own entry already confirmed. All five
+  // are agent-excluded on the Python side too -- admin BFF dispatch only.
+  toee_semantic_lexicon: [
+    "propose_lexicon_entry",
+    "list_lexicon_entries",
+    "confirm_lexicon_entry",
+    "reject_lexicon_entry",
+    "retire_lexicon_entry",
+    "edit_lexicon_entry",
+    "add_lexicon_entry",
+  ],
   // 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- see
   // hermes/toee_hermes/tool_catalog.py for the full rationale. Fixed
   // four-action enum; no handlers/UI yet (S03/S06/S08/S10 add those). Every

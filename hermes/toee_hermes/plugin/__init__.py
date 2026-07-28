@@ -114,6 +114,15 @@ DriverSelector = Callable[[str], ToolDriver]
 # call. propose_lexicon_entry is deliberately NOT here -- it is the governed
 # write S04's capture fork calls, exactly like propose_experience.
 #
+# 0.0.5 S02 (FR-3 decide side/FR-8) adds the other five L7 actions for the same
+# reason confirm_experience/reject_experience are excluded: the human gate must
+# never become a model-callable primitive. A model that could confirm its own
+# proposal -- or, worse, call add_lexicon_entry, which lands a CONFIRMED row with
+# no proposal step at all -- would make the propose->confirm gate decorative and
+# NFR-3 false. edit and retire are the same class of authority over live L7
+# content. All five are reached only from the admin BFF's deterministic
+# tools:dispatch call.
+#
 # 0.0.4 S02 (ADR-0154) adds all four toee_feedback actions. This is the load-
 # bearing governance guarantee of the manual-scoring-feedback module: the tool
 # is allowlisted (internal_copilot for the three writes, supervisor_admin for
@@ -131,6 +140,11 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_agent_experience", "confirm_experience"),
         ("toee_agent_experience", "reject_experience"),
         ("toee_semantic_lexicon", "list_lexicon_entries"),
+        ("toee_semantic_lexicon", "confirm_lexicon_entry"),
+        ("toee_semantic_lexicon", "reject_lexicon_entry"),
+        ("toee_semantic_lexicon", "retire_lexicon_entry"),
+        ("toee_semantic_lexicon", "edit_lexicon_entry"),
+        ("toee_semantic_lexicon", "add_lexicon_entry"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
         ("toee_retention", "enqueue_retention_sweep"),

@@ -107,10 +107,15 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_agent_experience", "reject_experience")).toBe(true);
   });
 
-  it("exposes the L7 Semantic Lexicon store actions (0.0.5 S01, FR-1/FR-3)", () => {
+  it("exposes the L7 Semantic Lexicon store actions (0.0.5 S01/S02, FR-1/FR-3/FR-8)", () => {
     expect(TOOL_CATALOG.toee_semantic_lexicon).toEqual([
       "propose_lexicon_entry",
       "list_lexicon_entries",
+      "confirm_lexicon_entry",
+      "reject_lexicon_entry",
+      "retire_lexicon_entry",
+      "edit_lexicon_entry",
+      "add_lexicon_entry",
     ]);
     expect(isToolAction("toee_semantic_lexicon", "propose_lexicon_entry")).toBe(
       true,
@@ -118,8 +123,14 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_semantic_lexicon", "list_lexicon_entries")).toBe(
       true,
     );
-    // The decide/CRUD actions are S02's -- not in the catalog yet.
     expect(isToolAction("toee_semantic_lexicon", "confirm_lexicon_entry")).toBe(
+      true,
+    );
+    expect(isToolAction("toee_semantic_lexicon", "add_lexicon_entry")).toBe(true);
+    // S02 EXTENDED the one read with filters instead of adding a second, and
+    // retirement is a status -- there is no delete.
+    expect(isToolAction("toee_semantic_lexicon", "list_lexicon_queue")).toBe(false);
+    expect(isToolAction("toee_semantic_lexicon", "delete_lexicon_entry")).toBe(
       false,
     );
   });

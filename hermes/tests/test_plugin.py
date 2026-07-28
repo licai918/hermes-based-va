@@ -289,6 +289,50 @@ def test_confirm_and_reject_experience_are_never_registered_as_llm_tools() -> No
     assert "toee_agent_experience__reject_experience" not in ctx.registered_names()
 
 
+# --- 0.0.5 S01/S02: the L7 admin surface is never LLM-callable (governance) ---
+
+
+def test_the_lexicon_admin_actions_are_never_registered_as_llm_tools() -> None:
+    # The human gate (FR-3/FR-8), the confirm_experience precedent one layer up:
+    # a model that could confirm its own L7 proposal -- or call add_lexicon_entry,
+    # which lands a CONFIRMED row with no proposal step at all -- would make the
+    # propose->confirm gate decorative and NFR-3 false. edit and retire carry the
+    # same authority over live L7 content. list is admin-only for the
+    # list_agent_experience reason. Reached only from the admin BFF's gated
+    # dispatch, on every profile that could otherwise expose the toolset.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        names = ctx.registered_names()
+        for action in (
+            "list_lexicon_entries",
+            "confirm_lexicon_entry",
+            "reject_lexicon_entry",
+            "retire_lexicon_entry",
+            "edit_lexicon_entry",
+            "add_lexicon_entry",
+        ):
+            assert f"toee_semantic_lexicon__{action}" not in names
+
+
+def test_propose_lexicon_entry_stays_llm_callable_for_internal_copilot() -> None:
+    # Contrast with the exclusions above: propose_lexicon_entry IS the governed
+    # write S04's capture fork calls, exactly like propose_experience. If this
+    # ever flips, L7 loses its only agent-side input.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert "toee_semantic_lexicon__propose_lexicon_entry" in ctx.registered_names()
+
+
+def test_the_lexicon_admin_actions_stay_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would try to exploit.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_semantic_lexicon__add_lexicon_entry" not in ctx.registered_names()
+    assert "toee_semantic_lexicon__confirm_lexicon_entry" not in ctx.registered_names()
+
+
 # --- 0.0.3 S21: get_my_memory_summary IS LLM-callable on EXTERNAL (FR-21) ---
 
 

@@ -20,6 +20,11 @@ const GOVERNANCE: NavItem[] = [
   { label: "Memory Audit", href: ROUTES.adminMemoryAudit },
   // FR-23 (0.0.3 S22): L6 Agent-experience minimal admin list.
   { label: "Agent Experience", href: ROUTES.adminAgentExperience },
+  // FR-3/FR-8 (0.0.5 S02): the L7 Semantic Lexicon console -- the human gate
+  // over the domain language. Supervisor+admin like its L6 sibling above:
+  // /admin/* is that group by ADR-0093, and this is a governance surface, not a
+  // credential one.
+  { label: "Lexicon", href: ROUTES.adminLexicon },
   // FR-28 (0.0.3 S26): aggregate-metrics admin panel.
   { label: "Metrics", href: ROUTES.adminMetrics },
 ];

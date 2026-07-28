@@ -167,6 +167,17 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # declaration follows the WRITE, not the injectability).
     ("toee_semantic_lexicon", "propose_lexicon_entry"): "L7",
     ("toee_semantic_lexicon", "list_lexicon_entries"): None,
+    # 0.0.5 S02 (FR-3 decide side/FR-8): confirm/reject/retire flip `status`,
+    # which is what makes an entry applicable (or permanently not) -- an L7
+    # content-state change, exactly the confirm_experience reasoning above.
+    ("toee_semantic_lexicon", "confirm_lexicon_entry"): "L7",
+    ("toee_semantic_lexicon", "reject_lexicon_entry"): "L7",
+    ("toee_semantic_lexicon", "retire_lexicon_entry"): "L7",
+    # D7: an in-place UPDATE of the mapping on the SAME row -- the most direct
+    # L7 content change there is.
+    ("toee_semantic_lexicon", "edit_lexicon_entry"): "L7",
+    # The admin's own entry, inserted already confirmed.
+    ("toee_semantic_lexicon", "add_lexicon_entry"): "L7",
     # --- metrics -----------------------------------------------------------
     ("toee_metrics", "get_aggregate_metrics"): None,
     # --- L4 retention ------------------------------------------------------

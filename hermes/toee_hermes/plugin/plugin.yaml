@@ -73,6 +73,11 @@ provides_tools:
   - toee_agent_experience__reject_experience
   - toee_semantic_lexicon__propose_lexicon_entry
   - toee_semantic_lexicon__list_lexicon_entries
+  - toee_semantic_lexicon__confirm_lexicon_entry
+  - toee_semantic_lexicon__reject_lexicon_entry
+  - toee_semantic_lexicon__retire_lexicon_entry
+  - toee_semantic_lexicon__edit_lexicon_entry
+  - toee_semantic_lexicon__add_lexicon_entry
   - toee_metrics__get_aggregate_metrics
   - toee_retention__trigger_retention_sweep
   - toee_retention__enqueue_retention_sweep

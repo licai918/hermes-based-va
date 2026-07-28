@@ -22,6 +22,9 @@ import type { QualityGatesView } from "@/lib/bff/admin/quality-gates";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
 import type {
   AgentExperienceEntry,
+  LexiconEntry,
+  LexiconEntryKind,
+  LexiconStatus,
   MemoryAuditView,
   MemoryPreferenceSlot,
 } from "@/lib/gateway/types";
@@ -211,6 +214,60 @@ export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
     "POST",
     `/api/admin/agent-experience/${encodeURIComponent(id)}/reject`,
   ).then((b) => b.entry);
+}
+
+// --- L7 Semantic Lexicon console (0.0.5 S02, FR-3/FR-8) -----------------------
+// One read with optional queue filters (S01's action, EXTENDED -- not a second
+// read), plus the four governed writes. Every write goes through the admin BFF,
+// which attaches the signed-in account as the actor; nothing here supplies one.
+
+export function listLexiconEntries(filters: {
+  status?: LexiconStatus;
+  domain?: string;
+} = {}): Promise<LexiconEntry[]> {
+  const query = new URLSearchParams();
+  if (filters.status) query.set("status", filters.status);
+  if (filters.domain) query.set("domain", filters.domain);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return getJson<{ entries: LexiconEntry[] }>(`/api/admin/lexicon${suffix}`).then(
+    (b) => b.entries,
+  );
+}
+
+export function decideLexiconEntry(
+  id: string,
+  decision: "confirm" | "reject" | "retire",
+): Promise<LexiconEntry> {
+  return sendJson<{ entry: LexiconEntry }>(
+    "POST",
+    `/api/admin/lexicon/${encodeURIComponent(id)}/${decision}`,
+  ).then((b) => b.entry);
+}
+
+// D7: an in-place UPDATE (PATCH on the entry), so the id and hit_count survive.
+export function editLexiconEntry(
+  id: string,
+  changes: { surfaceForm?: string; canonicalForm?: string },
+): Promise<LexiconEntry> {
+  return sendJson<{ entry: LexiconEntry }>(
+    "PATCH",
+    `/api/admin/lexicon/${encodeURIComponent(id)}`,
+    changes,
+  ).then((b) => b.entry);
+}
+
+export interface AddLexiconEntryInput {
+  domain: string;
+  entryKind: LexiconEntryKind;
+  surfaceForm: string;
+  canonicalForm: string;
+  evidence?: string;
+}
+
+export function addLexiconEntry(input: AddLexiconEntryInput): Promise<LexiconEntry> {
+  return sendJson<{ entry: LexiconEntry }>("POST", "/api/admin/lexicon", input).then(
+    (b) => b.entry,
+  );
 }
 
 // --- Aggregate-metrics admin panel (0.0.3 S26, FR-28) -------------------------

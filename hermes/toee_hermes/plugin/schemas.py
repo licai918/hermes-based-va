@@ -246,6 +246,85 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         },
         "required": ["domain", "entry_kind", "surface_form", "canonical_form"],
     },
+    # 0.0.5 S02 (FR-3 decide side/FR-8): the human gate. None of these five is
+    # LLM-callable (all are in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's
+    # deterministic dispatch runs the same schema/param validation, so params are
+    # declared explicitly -- the confirm_experience precedent above.
+    ("toee_semantic_lexicon", "confirm_lexicon_entry"): {
+        "properties": {
+            "id": {"type": "string", "description": "The lexicon entry id to confirm."},
+        },
+        "required": ["id"],
+    },
+    ("toee_semantic_lexicon", "reject_lexicon_entry"): {
+        "properties": {
+            "id": {"type": "string", "description": "The lexicon entry id to reject."},
+        },
+        "required": ["id"],
+    },
+    ("toee_semantic_lexicon", "retire_lexicon_entry"): {
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The CONFIRMED lexicon entry id to retire.",
+            },
+        },
+        "required": ["id"],
+    },
+    # D7: an edit is an IN-PLACE update of the MAPPING and the entry id is stable.
+    # domain/entry_kind are deliberately absent -- changing either makes it a
+    # different entry, which is the retire-then-add intent, not an edit.
+    ("toee_semantic_lexicon", "edit_lexicon_entry"): {
+        "properties": {
+            "id": {"type": "string", "description": "The lexicon entry id to edit."},
+            "surface_form": {
+                "type": "string",
+                "description": "Replacement surface form. Omit to leave unchanged.",
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": "Replacement canonical form. Omit to leave unchanged.",
+            },
+        },
+        "required": ["id"],
+    },
+    # The admin's own entry: no proposal step, because the admin IS the gate.
+    ("toee_semantic_lexicon", "add_lexicon_entry"): {
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": (
+                    "The vocabulary this term belongs to, e.g. 'tire' or "
+                    "'company'. Open vocabulary, not an enum."
+                ),
+            },
+            "entry_kind": {
+                "type": "string",
+                "enum": ["alias", "normalizer", "default_rule"],
+                "description": (
+                    "'alias' for an exact surface->canonical mapping, "
+                    "'normalizer' for a pattern class, 'default_rule' for a "
+                    "conditional default that must still be confirmed."
+                ),
+            },
+            "surface_form": {
+                "type": "string",
+                "description": "Exactly what the customer writes, e.g. 'TOEE'.",
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": "What it means in Toee's own vocabulary.",
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Optional note on why this mapping exists. Customer PII in "
+                    "it is redacted, not rejected."
+                ),
+            },
+        },
+        "required": ["domain", "entry_kind", "surface_form", "canonical_form"],
+    },
     # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
     # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still
     # goes through this schema/param validation, so params are declared explicitly.

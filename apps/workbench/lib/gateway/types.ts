@@ -283,3 +283,43 @@ export interface AgentExperienceEntry {
   decidedAt: number | null;
   createdAt: number;
 }
+
+// L7 Semantic Lexicon (0.0.5 S01/S02, FR-1/FR-3/FR-8): the governed store of the
+// domain language the business speaks -- "TOEE" means "TOEE TIRE"; "2055516" and
+// "205 55 16" are the same tire size. The seventh and last memory layer, distinct
+// from L4 (per-customer PII), L5 (authored corpus) and L6 above.
+export type LexiconEntryKind = "alias" | "normalizer" | "default_rule";
+export type LexiconStatus = "proposed" | "confirmed" | "rejected" | "retired";
+export type LexiconProvenance =
+  | "admin_manual"
+  | "conversation_confirmed"
+  | "feedback_derived";
+
+export interface LexiconEntry {
+  id: string;
+  domain: string;
+  entryKind: LexiconEntryKind;
+  surfaceForm: string;
+  canonicalForm: string;
+  status: LexiconStatus;
+  provenance: LexiconProvenance;
+  evidence: string | null;
+  proposerContext: Record<string, unknown> | null;
+  // "A PII span WAS removed from evidence/proposer_context." The FALSE case is
+  // NOT a clean bill of health: D2's keep exemption waives a span that exactly
+  // equals this entry's own surface/canonical form (it must -- the seeded
+  // "205 55 16" matches the phone pattern), and the waiver is recorded only in
+  // the audit row's `pii_keep_exempt`. Any UI showing this must say what it means.
+  piiRedacted: boolean;
+  deciderAccountId: string | null;
+  // D20: an `admin_manual` claim with nobody attached. Only reachable for rows
+  // written between S01 and S02, before the provenance path became fail-closed --
+  // derived server-side so the console can render it distinctly from an entry a
+  // named admin actually approved.
+  provenanceUnattributed: boolean;
+  decidedAt: number | null;
+  // Materialized by a scheduled rollup (D6), never an in-turn UPDATE.
+  hitCount: number;
+  createdAt: number;
+  updatedAt: number | null;
+}

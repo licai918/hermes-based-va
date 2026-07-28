@@ -9,11 +9,9 @@ describe("navItemsForRole (ADR-0084)", () => {
     expect(items[1]?.href).toBe("/copilot/simulator");
   });
 
-  it("gives a supervisor the simulator plus the six governance entries", () => {
-    const labels = navItemsForRole(WORKBENCH_ROLES.supervisor).map(
-      (i) => i.label,
-    );
-    expect(labels).toEqual([
+  it("gives a supervisor the simulator plus the seven governance entries", () => {
+    const items = navItemsForRole(WORKBENCH_ROLES.supervisor);
+    expect(items.map((i) => i.label)).toEqual([
       "Copilot",
       "Simulator",
       "Knowledge",
@@ -21,8 +19,11 @@ describe("navItemsForRole (ADR-0084)", () => {
       "Accounts",
       "Memory Audit",
       "Agent Experience",
+      // FR-3/FR-8 (0.0.5 S02): the L7 Semantic Lexicon console.
+      "Lexicon",
       "Metrics",
     ]);
+    expect(items.find((i) => i.label === "Lexicon")?.href).toBe("/admin/lexicon");
   });
 
   it("gives an admin the supervisor entries plus the admin-only Integrations page", () => {
