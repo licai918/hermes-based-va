@@ -49,6 +49,7 @@ column a scheduled rollup maintains (``hermes_runtime.lexicon_hits``).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Optional, Sequence
@@ -58,6 +59,7 @@ from .lexicon import (
     ENTRY_KIND_ALIAS,
     ENTRY_KIND_NORMALIZER,
     STATUS_CONFIRMED,
+    TIRE_SIZE_PATTERN,
     parse_tire_size,
 )
 
@@ -116,22 +118,81 @@ class ProductQueryResult:
     entry_ids: tuple[str, ...] = ()
 
 
+# The SAME grammar as the parameter parser, unanchored, for reading a size out of
+# a shop-authored title or sku. The digit lookarounds preserve the parser's
+# refusal of an 8-or-more-digit run, so an order number embedded in a title can
+# still never masquerade as a size.
+_TIRE_SIZE_IN_TEXT_RE = re.compile(rf"(?<!\d){TIRE_SIZE_PATTERN}(?!\d)")
+
+
+def tire_sizes_in(text: Any) -> set[str]:
+    """Canonical forms of every tire size spelled anywhere in ``text``.
+
+    This is an EXTRACTOR, which :func:`~toee_hermes.lexicon.parse_tire_size`
+    deliberately is not -- and the difference is which side of the seam it reads.
+    The parser handles the customer's parameter, where fishing a size out of prose
+    would rewrite words nobody chose. This reads the CATALOG, where nothing is
+    rewritten: the only question asked of the answer is "does this product carry
+    the size we already parsed", so a wrong extraction costs a non-match, never a
+    mangled query. Every candidate is re-validated by the parser, plausibility
+    bounds included.
+    """
+    if not isinstance(text, str):
+        return set()
+    return {
+        size.canonical
+        for match in _TIRE_SIZE_IN_TEXT_RE.finditer(text)
+        if (size := parse_tire_size(match.group())) is not None
+    }
+
+
+def is_canonical_size(term: Any) -> bool:
+    """Is ``term`` exactly a canonical tire size (``205/55R16``)?
+
+    True only of the vocabulary's own output and of a customer who happened to
+    type it that way -- never of ``20555r16``, which is a notation the confirmed
+    normalizer row decides about. That asymmetry is what keeps the catalog-side
+    tolerance below from quietly becoming ungoverned normalization.
+    """
+    size = parse_tire_size(term)
+    return size is not None and size.canonical == term.strip()
+
+
 def product_matches(term: Optional[str], product: dict[str, Any]) -> bool:
     """Does ``product`` match ``term``? The one matcher both twins use.
 
     Case-insensitive substring over :data:`PRODUCT_MATCH_FIELDS`, which is what
     the mock twin has always done. An empty/absent term matches everything --
     ``search_products`` with no query lists the catalog.
+
+    **Plus, for a canonical size only, the catalog's own spelling.** The seam
+    parses the customer's text; a raw substring made the catalog's spelling the
+    contract, so a shop that writes ``205/55 R16`` or ``205-55-16`` -- or puts the
+    size in the sku -- fails verification, the seam downgrades to the raw
+    notation, that fails too, and the agent reports a tire on the shelf as one we
+    do not carry. So the size is parsed out of the title/sku and compared, rather
+    than being required to match our spelling character for character.
+
+    Strictly additive: the substring is tried first and still decides everything
+    it decided before.
     """
     if not isinstance(term, str) or not term:
         return True
     needle = term.strip().casefold()
     if not needle:
         return True
-    return any(
+    if any(
         needle in value.casefold()
         for field in PRODUCT_MATCH_FIELDS
         if isinstance(value := product.get(field), str)
+    ):
+        return True
+    if not is_canonical_size(term):
+        return False
+    canonical = term.strip()
+    return any(
+        canonical in tire_sizes_in(product.get(field))
+        for field in PRODUCT_MATCH_FIELDS
     )
 
 
@@ -309,33 +370,50 @@ class LexiconVocabulary:
         self._version = version
         self._confirmed = confirmed
         self._record_hits = record_hits
-        # Serialized like the S10 embedder singleton: driver handlers run on
-        # per-request worker threads, so two turns can reach this at once. The
-        # critical section is a dict comparison plus (rarely) one SELECT.
+        # Guards the SWAP and nothing else: three assignments, no I/O, no waiting.
+        # Both callables take a pooled connection and do a Postgres round trip, so
+        # holding this across either one would serialize concurrent turns on a
+        # mutex for the length of a query -- and a thread that saturates the pool
+        # would then wait for a connection while holding it. That is D6's own
+        # hazard (something on the reply path that can stall it, NFR-5) rebuilt one
+        # layer up. Pinned by
+        # `test_neither_the_version_probe_nor_the_load_holds_the_process_lock`.
         self._lock = threading.Lock()
         self._cached: tuple[dict[str, Any], ...] = ()
         self._cached_version: Optional[str] = None
         self._primed = False
 
     def entries(self) -> tuple[dict[str, Any], ...]:
-        """The confirmed rows, from cache unless the version moved."""
+        """The confirmed rows, from cache unless the version moved.
+
+        Both database calls run OUTSIDE the lock; only the swap is inside it.
+        ponytail: so a version bump can have two concurrent turns each load the
+        confirmed set once, and the loser's work is discarded. That costs one
+        duplicated SELECT on an admin's timescale, which is the right trade
+        against every turn queueing behind one -- add single-flight only if a
+        trace ever shows a bump storm.
+        """
+        try:
+            version = self._version()
+        except Exception as exc:  # noqa: BLE001
+            self._warn("version probe", exc)
+            return self._cached
+        if self._primed and version == self._cached_version:
+            return self._cached
+        try:
+            rows = tuple(self._confirmed())
+        except Exception as exc:  # noqa: BLE001
+            self._warn("load", exc)
+            return self._cached
         with self._lock:
-            try:
-                version = self._version()
-            except Exception as exc:  # noqa: BLE001
-                self._warn("version probe", exc)
-                return self._cached
-            if self._primed and version == self._cached_version:
-                return self._cached
-            try:
-                rows = tuple(self._confirmed())
-            except Exception as exc:  # noqa: BLE001
-                self._warn("load", exc)
-                return self._cached
+            # Rows BEFORE version, and version before `_primed`: readers outside
+            # the lock must never see a new version paired with the old rows,
+            # which would pin the stale set until the next bump. The reverse
+            # (an old version beside new rows) costs one redundant reload.
             self._cached = rows
             self._cached_version = version
             self._primed = True
-            return rows
+        return rows
 
     def record_hits(self, entry_ids: Sequence[str]) -> None:
         """Fire-and-forget: note that these entries just changed a real query.

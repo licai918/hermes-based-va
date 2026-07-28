@@ -783,6 +783,13 @@ ACTION_MAPPING: dict[tuple[str, str], ActionSpec] = {
     ),
 }
 
+# `execute` returns at the lexicon branch, BEFORE the ownership branches, so a
+# spec carrying both would skip the ownership enforcement it declared -- silently,
+# and only on the day someone sets it. Assert the invariant instead of depending
+# on it (0.0.5 S05). Also held by test_action_mapping_covers_exactly_the_layer1_actions,
+# which `python -O` cannot strip.
+assert not any(s.lexicon_action and s.ownership for s in ACTION_MAPPING.values())
+
 
 class ComposioDriver:
     """A :class:`toee_hermes.execute.ToolDriver` backed by Composio toolkits."""

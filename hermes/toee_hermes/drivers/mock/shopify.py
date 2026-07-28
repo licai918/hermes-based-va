@@ -22,6 +22,7 @@ from ...lexicon_seam import (
     LexiconVocabulary,
     current_lexicon_vocabulary,
     filter_products,
+    is_canonical_size,
     product_matches,
     resolve_product_query,
 )
@@ -267,19 +268,38 @@ def _search_products(
 def _find_product(
     data: ShopifyMockData, params: dict[str, Any]
 ) -> ShopifyProduct | None:
+    """An EXACT id/sku lookup, with one narrow fallback for a normalized size.
+
+    The exact pass runs over the WHOLE catalog first. Anything else lets catalog
+    order decide the answer: a substring hit on an earlier product's title would
+    outrank the exact sku match on a later one, and ``get_product`` would return a
+    different product than the one it was asked for.
+
+    The fallback exists because a normalized sku (``205/55R16``) is a size, not a
+    stock code, so it has to be matched the way search matches or the seam could
+    only ever hurt this action. It is gated on the value BEING a canonical size,
+    which is the only thing the seam can hand this handler -- so with no
+    vocabulary installed (eval, replay, every mock deployment) this stays the
+    exact lookup it has always been (NFR-4).
+    """
     product_id = _read_string(params, "product_id", "productId")
     sku = _read_string(params, "sku")
-    return next(
+    exact = next(
         (
             candidate
             for candidate in data.products
             if (product_id is not None and candidate.product_id == product_id)
             or (sku is not None and candidate.sku == sku)
-            # A normalized sku ("205/55R16") is a size, not a stock code, so it
-            # is matched the same way search matches -- otherwise the seam could
-            # only ever hurt this action. The raw-parameter fallback still wins
-            # whenever the customer's own value finds something.
-            or (sku is not None and product_matches(sku, _to_public_product(candidate)))
+        ),
+        None,
+    )
+    if exact is not None or not is_canonical_size(sku):
+        return exact
+    return next(
+        (
+            candidate
+            for candidate in data.products
+            if product_matches(sku, _to_public_product(candidate))
         ),
         None,
     )

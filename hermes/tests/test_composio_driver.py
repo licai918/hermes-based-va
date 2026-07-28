@@ -1139,6 +1139,11 @@ def test_action_mapping_covers_exactly_the_layer1_actions() -> None:
         assert spec.app in {"shopify", "qbo", "square"}
         callable_spec = spec.request_mapper is not None and spec.response_mapper is not None
         assert callable_spec != (spec.unavailable is not None), key
+        # 0.0.5 S05: `execute` returns at the lexicon branch, BEFORE the ownership
+        # branches, so a spec carrying both would silently skip the ownership
+        # enforcement it declared. Held here as well as by the module-level assert
+        # in driver.py, which `python -O` strips.
+        assert not (spec.lexicon_action and spec.ownership), key
 
 
 # --- S16 probe: connected-account STATUS honesty (0.0.4 S28 fold-in, FR-24) ---

@@ -88,9 +88,15 @@ TIRE_ASPECT_RATIO_RANGE = (25, 85)
 TIRE_RIM_IN_RANGE = (12, 26)
 
 # Three digit groups (3-2-2) with optional `/`, `-` or space separators and an
-# optional R construction marker. Anchored end to end: this normalizes a tool
-# PARAMETER, it does not go fishing for a size inside prose.
-_TIRE_SIZE_RE = re.compile(r"^(\d{3})[\s/-]*(\d{2})[\s/-]*[rR]?[\s/-]*(\d{2})$")
+# optional R construction marker. Anchored end to end HERE: this normalizes a
+# tool PARAMETER, it does not go fishing for a size inside prose.
+#
+# The pattern is public and the anchors are not, because the seam's catalog
+# verification scans a shop-authored TITLE with the same grammar unanchored
+# (`toee_hermes.lexicon_seam.tire_sizes_in`). Two copies of this regex is how
+# "205/55 R16" ends up meaning one thing to the parser and another to the matcher.
+TIRE_SIZE_PATTERN = r"(\d{3})[\s/-]*(\d{2})[\s/-]*[rR]?[\s/-]*(\d{2})"
+_TIRE_SIZE_RE = re.compile(rf"^{TIRE_SIZE_PATTERN}$")
 
 
 def _in_range(value: int, bounds: tuple[int, int]) -> bool:

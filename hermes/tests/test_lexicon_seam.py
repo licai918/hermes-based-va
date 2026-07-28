@@ -107,6 +107,24 @@ def product(size: str) -> ShopifyProduct:
     )
 
 
+def listing(name: str, *, sku: str, title: str) -> ShopifyProduct:
+    """A product whose sku and title are stated rather than derived from a size.
+
+    :func:`product` builds a catalog that always spells the size the way this
+    codebase does, which is exactly the fixture bias the catalog-verification
+    tests below have to escape.
+    """
+    return ShopifyProduct(
+        product_id=f"gid://shopify/Product/{name}",
+        sku=sku,
+        title=title,
+        product_url=f"https://shop.toee.example/products/{name}",
+        media_url=f"https://cdn.toee.example/products/{name}.jpg",
+        price="189.99",
+        inventory=24,
+    )
+
+
 def catalog(*sizes: str) -> ShopifyMockData:
     return ShopifyMockData(products=tuple(product(size) for size in sizes))
 
@@ -117,6 +135,18 @@ def mock_search(
     handlers = create_shopify_mock_handlers(data, vocabulary=vocabulary)
     return handlers["toee_shopify_read"]["search_products"](
         {"query": query}, ToolExecutionContext(profile="customer_service_external")
+    )
+
+
+def mock_get_product(
+    params: dict[str, Any],
+    *,
+    data: ShopifyMockData,
+    vocabulary: LexiconVocabulary | None,
+) -> dict[str, Any]:
+    handlers = create_shopify_mock_handlers(data, vocabulary=vocabulary)
+    return handlers["toee_shopify_read"]["get_product"](
+        params, ToolExecutionContext(profile="customer_service_external")
     )
 
 
@@ -236,6 +266,41 @@ def test_a_size_absent_from_the_catalog_downgrades_to_the_raw_query() -> None:
 
 
 def test_the_downgrade_returns_what_the_raw_term_would_have_found() -> None:
+    # Stated with the ALIAS entry, not the tire normalizer: now that verification
+    # parses the catalog, any field carrying the raw NOTATION carries the size,
+    # so "the canonical misses where the raw hits" is no longer expressible for a
+    # size (see the test below, which pins that consequence directly). The
+    # guarantee is unchanged -- the downgrade runs the customer's own term and
+    # returns what IT finds -- and an alias can still express it.
+    data = ShopifyMockData(
+        products=(
+            ShopifyProduct(
+                product_id="gid://shopify/Product/odd",
+                sku="HOUSE-BRAND-9",
+                title="TOEE clearance lot",
+                product_url="https://shop.toee.example/products/odd",
+                media_url="https://cdn.toee.example/products/odd.jpg",
+            ),
+        )
+    )
+    vocab = RecordingVocabulary(seed_rows())
+    # The canonical "TOEE TIRE" matches nothing here; the raw "TOEE" matches the
+    # title. The downgrade must return that, not the canonical's empty result.
+    found = mock_search("TOEE", data=data, vocabulary=vocab)
+    assert [item["product_id"] for item in found] == ["gid://shopify/Product/odd"]
+    assert vocab.hits == []
+
+
+def test_the_old_clearance_sku_now_verifies_instead_of_downgrading() -> None:
+    """The exact fixture the downgrade test used before, run against the new
+    mechanism, because this is where the two differ.
+
+    ``20555R16-CLEARANCE`` DOES carry 205/55R16 -- spelled the shop's way. Under
+    the substring check the canonical missed it and the seam fell back to the raw
+    notation, reaching the product but crediting nobody. Parsing the catalog makes
+    it what it always was: a verified application. Same product either way; the
+    entry now gets the hit it earned.
+    """
     data = ShopifyMockData(
         products=(
             ShopifyProduct(
@@ -248,11 +313,97 @@ def test_the_downgrade_returns_what_the_raw_term_would_have_found() -> None:
         )
     )
     vocab = RecordingVocabulary(seed_rows())
-    # The canonical 205/55R16 matches nothing here; the raw 20555r16 matches the
-    # sku. The downgrade must return that, not the canonical's empty result.
     found = mock_search("20555r16", data=data, vocabulary=vocab)
     assert [item["product_id"] for item in found] == ["gid://shopify/Product/odd"]
+    assert vocab.hits == [TIRE_NORMALIZER_ID]
+
+
+# --- gate 1: the CATALOG spells sizes its own way ------------------------------------
+#
+# The fixture bias this section exists to escape: every product built by
+# `product()` above carries the canonical spelling in its title, so a substring
+# check of the canonical passes for free. A real shop writes `205/55 R16` or
+# `205-55-16`, and then verification fails, the seam downgrades, the raw notation
+# fails too, and the agent tells the customer we do not carry a tire on the shelf.
+
+CATALOG_SPELLINGS = ("205/55 R16", "205-55-16", "205 55 16", "2055516", "205/55-16")
+
+
+@pytest.mark.parametrize("spelling", CATALOG_SPELLINGS)
+def test_a_catalog_that_spells_the_size_its_own_way_still_verifies(
+    spelling: str,
+) -> None:
+    data = ShopifyMockData(
+        products=(
+            # The product the lookup must EXCLUDE. Without it, "every product in
+            # the fixture matches" and the filter is untested.
+            listing("other", sku="TIRE-225-60R16", title="All-Season 225/60R16"),
+            listing("odd", sku="TIRE-4417", title=f"All-Season {spelling} 91V"),
+        )
+    )
+    vocab = RecordingVocabulary(seed_rows())
+    found = mock_search("20555r16", data=data, vocabulary=vocab)
+    assert [item["product_id"] for item in found] == ["gid://shopify/Product/odd"]
+    # Verified, so the entry that produced the canonical is credited.
+    assert vocab.hits == [TIRE_NORMALIZER_ID]
+
+
+def test_the_size_may_live_in_the_sku_rather_than_the_title() -> None:
+    data = ShopifyMockData(
+        products=(
+            listing("other", sku="TIRE-225-60R16", title="All-Season 225/60R16"),
+            listing("odd", sku="TOEE-205-55-16-91V", title="All-Season touring"),
+        )
+    )
+    vocab = RecordingVocabulary(seed_rows())
+    found = mock_search("20555r16", data=data, vocabulary=vocab)
+    assert [item["product_id"] for item in found] == ["gid://shopify/Product/odd"]
+
+
+def test_both_twins_accept_the_catalogs_own_spelling() -> None:
+    # The live path is the one that matters here -- a real Shopify title is where
+    # the divergence lives -- and it must reach the same product as the mock.
+    data = ShopifyMockData(
+        products=(
+            listing("other", sku="TIRE-225-60R16", title="All-Season 225/60R16"),
+            listing("odd", sku="TIRE-4417", title="All-Season 205/55 R16 91V"),
+        )
+    )
+    mock_result = mock_search(
+        "20555r16", data=data, vocabulary=RecordingVocabulary(seed_rows())
+    )
+    live_result = composio_search(
+        "20555r16", data=data, vocabulary=RecordingVocabulary(seed_rows())
+    )
+    assert [item["product_id"] for item in mock_result] == ["gid://shopify/Product/odd"]
+    assert [item["product_id"] for item in live_result] == [
+        item["product_id"] for item in mock_result
+    ]
+
+
+def test_a_size_the_catalog_does_not_carry_at_all_still_downgrades() -> None:
+    # Parsing the catalog widens what the canonical can VERIFY against; it must
+    # not make verification unfalsifiable. A catalog of other sizes still fails.
+    data = ShopifyMockData(
+        products=(listing("other", sku="TIRE-4417", title="All-Season 225-60-16"),)
+    )
+    vocab = RecordingVocabulary(seed_rows())
+    assert mock_search("20555r16", data=data, vocabulary=vocab) == []
     assert vocab.hits == []
+
+
+def test_the_catalog_spelling_tolerance_is_not_ungoverned_normalization() -> None:
+    """The tolerance applies to the CANONICAL the vocabulary produced, never to
+    the customer's raw notation. Otherwise the matcher would quietly normalize
+    every notation on its own and the confirmed normalizer row -- the thing an
+    admin retires to switch this off -- would stop deciding anything."""
+    data = ShopifyMockData(
+        products=(listing("odd", sku="TIRE-4417", title="All-Season 205-55-16 91V"),)
+    )
+    assert mock_search("20555r16", data=data, vocabulary=None) == []
+    retired = RecordingVocabulary(seed_rows(status="retired"))
+    assert mock_search("20555r16", data=data, vocabulary=retired) == []
+    assert retired.hits == []
 
 
 # --- gate 1: hit accounting ---------------------------------------------------------
@@ -306,6 +457,38 @@ def test_a_retirement_stops_applying_on_the_first_request_after_the_bump() -> No
     vocab.rows = seed_rows(status="retired", updated_at=_V2)
     vocab.version_value = _V2
     assert mock_search("20555r16", data=data, vocabulary=vocab) == []
+
+
+def test_neither_the_version_probe_nor_the_load_holds_the_process_lock() -> None:
+    """D6's own hazard, one layer up: nothing that talks to Postgres runs inside
+    the mutex.
+
+    Both callables take a pooled connection and do a round trip. Held under a
+    process-global :class:`threading.Lock`, concurrent turns serialize on that
+    mutex for the length of a query -- and a thread that blocks on the pool blocks
+    while HOLDING the lexicon lock. ``Lock`` is not reentrant, so a failed
+    non-blocking acquire from inside these callables is exactly "the lock is held
+    across the round trip".
+    """
+    held: dict[str, bool] = {}
+
+    def note(what: str) -> None:
+        free = vocab._lock.acquire(blocking=False)
+        held[what] = not free
+        if free:
+            vocab._lock.release()
+
+    def version() -> str:
+        note("probe")
+        return _V1
+
+    def confirmed() -> list[dict[str, Any]]:
+        note("load")
+        return seed_rows()
+
+    vocab = LexiconVocabulary(version=version, confirmed=confirmed)
+    assert vocab.entries()
+    assert held == {"probe": False, "load": False}
 
 
 # --- gate 1: fail-open --------------------------------------------------------------
@@ -385,6 +568,72 @@ def test_get_product_falls_back_to_the_raw_sku_it_was_given() -> None:
     )
     assert found["sku"] == "TIRE-225-60R16"
     assert vocab.hits == []
+
+
+def test_get_product_prefers_an_exact_sku_over_an_earlier_title_match() -> None:
+    """An id/sku lookup is an EXACT lookup; catalog order must not decide it.
+
+    The decoy is FIRST in the catalog and matches only on its TITLE; the product
+    the customer named is second and matches its sku exactly. A first-match-wins
+    substring scan returns the decoy -- a different product entirely.
+    """
+    data = ShopifyMockData(
+        products=(
+            listing("decoy", sku="TIRE-KIT-9000", title="Fitment kit for 205/55R16"),
+            listing("exact", sku=CANONICAL, title="All-Season touring"),
+        )
+    )
+    for vocab in (RecordingVocabulary(seed_rows()), None):
+        found = mock_get_product({"sku": CANONICAL}, data=data, vocabulary=vocab)
+        assert found["product_id"] == "gid://shopify/Product/exact"
+
+
+def test_get_product_prefers_an_exact_product_id_over_an_earlier_title_match() -> None:
+    # The sibling parameter: `product_id` is a vendor gid and is never normalized,
+    # but it shares `_find_product` with `sku`, so it shares the ordering bug.
+    data = ShopifyMockData(
+        products=(
+            listing("decoy", sku="TIRE-KIT-9000", title="Fitment kit for 205/55R16"),
+            listing("exact", sku=CANONICAL, title="All-Season touring"),
+        )
+    )
+    found = mock_get_product(
+        {"product_id": "gid://shopify/Product/exact"}, data=data, vocabulary=None
+    )
+    assert found["product_id"] == "gid://shopify/Product/exact"
+
+
+def test_get_product_still_finds_a_size_that_is_no_shops_stock_code() -> None:
+    """The narrow fallback under the exact pass, pinned.
+
+    Nothing else requires it: every other get_product test has the canonical AS
+    the sku, so they all stay green with the fallback deleted, and an early
+    return that no test can reach is a branch nobody is allowed to trust. Here
+    the sku is a stock code and the size lives in the title -- spelled the shop's
+    way, so this is also the F3 tolerance on the get_product path -- and the
+    first product is one the lookup must exclude.
+    """
+    data = ShopifyMockData(
+        products=(
+            listing("other", sku="TIRE-225-60R16", title="All-Season 225/60R16"),
+            listing("odd", sku="TIRE-4417", title="All-Season 205/55 R16 91V"),
+        )
+    )
+    vocab = RecordingVocabulary(seed_rows())
+    found = mock_get_product({"sku": "20555r16"}, data=data, vocabulary=vocab)
+    assert found["product_id"] == "gid://shopify/Product/odd"
+    assert vocab.hits == [TIRE_NORMALIZER_ID]
+
+
+def test_get_product_without_a_vocabulary_is_still_an_exact_lookup() -> None:
+    """NFR-4: with nothing installed -- eval, replay, every mock deployment --
+    this action must behave exactly as it did before the seam existed. A stock
+    code fragment is not a lookup key, and turning it into one would silently
+    resolve reads that used to fail closed."""
+    data = catalog("225/60R16")
+    for fragment in ("225", "TIRE-225", "All-Season"):
+        with pytest.raises(ToolDriverError):
+            mock_get_product({"sku": fragment}, data=data, vocabulary=None)
 
 
 def test_get_product_still_fails_closed_when_nothing_matches_either_form() -> None:
