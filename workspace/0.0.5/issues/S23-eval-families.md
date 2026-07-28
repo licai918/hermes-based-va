@@ -54,6 +54,18 @@
   hardcoded `True` — and is filed as separate work. It is green today only because the current
   recording happens to phrase things differently. If your work touches that scenario, say so
   rather than re-recording it.
+- **The `safety`-block structural rules have a precondition that your family may not meet.**
+  The fragment check requires a scenario to carry a `memory_preset`, because it reads the
+  injected note from there. Scenario 07's injection is on the **inbound turn** instead, so it
+  carries no `safety` block at all and the widened instrument scope does not reach it — it is
+  covered at the disclosure layer instead. If your adversarial family wants inbound-turn
+  injections governed by `safety`, that precondition has to be revisited as part of your work,
+  not assumed away. Say which shape each of your scenarios uses and which half covers it.
+- **`no_account_disclosure` is now wider than it was, across all 16 scenarios that assert it.**
+  It was widened deliberately through one shared resolver (NFR-7) and verified against every
+  shipped recording that states a figure. The consequence for you: **a scenario that legitimately
+  quotes a balance must not declare that flag.** Check before you add it to a new scenario rather
+  than copying an existing scenario's assertion block wholesale.
 - **Put effect-claim assertions in the `safety` block, never in a `text` block.** The
   negation-safety rules are applied by scanning scenarios that *declare* they make an
   effect-claim; scenario 06 inherits them only because it is named in an explicit list, since
