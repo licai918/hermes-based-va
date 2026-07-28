@@ -18,6 +18,16 @@
   profiles.py, plugin/__init__.py, mock/__init__.py, handlers/__init__.py, tools.ts, drift
   tests) is clear of in-flight work from the earlier slices before you touch it, and re-list it
   in your report as the earlier slices did.
+- **Never group blast radius by `case_or_binding_ref` alone.** S09's merge now re-points
+  `entry_ref` when a provisional binding is verified, so pre- and post-verification rows agree on
+  the entry — but `case_or_binding_ref` is deliberately **not** re-pointed, because that turn
+  genuinely did happen under the provisional binding and rewriting it would falsify history.
+  Group by `entry_ref`; if you also need the case, treat provisional and verified refs for the
+  same customer as one, or a single customer reads as two and the "N open cases touched" count
+  is wrong in the direction that matters.
+- **Dedupe by case on the copilot path.** A draft turn has no durable identity, so its `turn_ref`
+  is a synthetic id that never repeats; the composite primary key therefore cannot dedupe it, and
+  a re-drafted case accumulates duplicate per-entry rows.
 
 ## Goal
 

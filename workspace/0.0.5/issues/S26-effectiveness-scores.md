@@ -15,6 +15,16 @@
   scheduled rollup maintains (migration 0026) — read it, don't recompute it from raw hit events
   or re-derive it from the ledger yourself. Ledger-derived honored/misapplied/stale rates come
   from the join you build here; hits come from the already-materialized column.
+- **You own the judge-sample join, and a stale note is waiting for you.**
+  `honored_rate.sample_transcripts` carries a `ponytail:` comment that still describes the
+  injection ledger as missing — S09 shipped it (`injection_ledger`, migrations 0030/0031) and
+  deliberately left the rewiring to you, since stratifying the judge sample by ledger presence is
+  this slice's FR-31 work. Update that note as part of your diff; a comment asking for a table
+  that now exists sends the next reader looking for work already done.
+- **Per-entry effectiveness is EXTERNAL-PATH ONLY, and must say so where it renders.** The
+  copilot path's `turn_ref` is a synthetic id with no durable identity, so its rows cannot be
+  attributed per turn. A health score presented without that scope reads as "this entry's
+  effectiveness everywhere", which it is not.
 
 ## Goal
 

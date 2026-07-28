@@ -53,8 +53,9 @@ hole.
 | 0027 | S25 | aggregator watermark |
 | 0028 | S26 | effectiveness rollup |
 | 0029 | S27 | `draft_feedback.sent_text` (D11 — owner-flagged) |
-| 0030 | **S09** | `injection_ledger` + its query indexes — **moved here from 0021**, see above |
-| 0031 | spare | |
+| 0030 | **S09** | `injection_ledger` + its query indexes — **moved here from 0021**, see above. **LANDED** |
+| 0031 | **S09** | `CHECK (layer IN …)` on the ledger — **LANDED**. It had to be its own ALTER migration rather than an edit to 0030, because `schema_migrations` skips applied versions: editing 0030 would constrain fresh databases while silently skipping already-migrated ones, which is the exact drift the constraint exists to prevent. |
+| 0032+ | spare | The table has no spare row left below this. Take the next free prefix and say so. |
 
 The 0021 collision is the reason this table exists, and it still happened — because the table
 only allocates numbers to slices the plan predicted would need one. **If your slice needs a
