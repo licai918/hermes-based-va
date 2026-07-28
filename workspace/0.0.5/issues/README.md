@@ -39,8 +39,14 @@ T6 loop:     S21 judge legs ─▶ S23 eval families        S24 S32 knowledge ga
              qf + S01 + S15 ─▶ S25 feedback aggregator ─▶ S27 edit-diff mining
              S09 + S21 ─▶ S26 score×ledger effectiveness (+stratified sampling + FR-6 rank toggle)
              S25 + S26 ─▶ S28 loop-closure metrics
+carry-in:    S31 live escalation signal [EARLY BIRD] ─▶ S30 escalation contract
 close:       ALL + S24 ─▶ S29 product UAT + PAC sign-off [OWNER-DRIVEN]
 ```
+
+**Carry-in (S30/S31)** are not from this iteration's PRD — they are two halves of one defect
+found by the 0.0.4 quality-feedback acceptance run, filed here because 0.0.5 is the open queue.
+They are the only slices that deliver no 0.0.5 FR; see the traceability note below. S31 lands
+first: it is the instrument that makes S30 provable.
 
 Note (gap-audit): the **`review_item` store ships in S15** — S10 (blast_radius), S20
 (graduation/retirement), and S25 (persona_review) all emit into it; none of them defines its
@@ -90,6 +96,8 @@ S24 whenever the owner's question set arrives → **S29 closes the iteration**.
 | [S27](S27-edit-diff-mining.md) | edit-diff mining → L6/L7 proposal shapes | M | FR-33 |
 | [S28](S28-loop-closure-metrics.md) | feedback→proposal conversion + post-fix re-fail + honored trend | S | FR-34(loop) |
 | [S29](S29-product-uat-pac-signoff.md) | product UAT + PAC sign-off (iteration close, owner-driven) | S | PAC-1..9 sign-off |
+| [S30](S30-escalation-contract.md) | the external profile must open a case when it hands off | S-M | carry-in defect |
+| [S31](S31-live-escalation-signal.md) | live-model escalation check on the advisory judge [EARLY BIRD] | S | carry-in defect |
 
 ## Traceability — the gap audit
 
@@ -134,6 +142,14 @@ US16→S20 · US17→S20+S26 · US18→S25 · US19→S28 · US20→S24. **All 20
 **Audit verdict: no gaps.** Every FR/NFR/PAC/US maps to at least one slice; every slice
 delivers at least one FR (S29 delivers the PAC sign-off); dependencies are acyclic; the
 single owner input (S24) is isolated so it blocks nothing else but S29.
+
+**Carry-in exception (S30/S31).** These two deliver no 0.0.5 FR, and that is stated rather than
+papered over: the defect they close is not in this iteration's PRD, which contains no mention
+of escalation at all. They are filed here because 0.0.5 is the open queue, not because the PRD
+grew. The FR→slice mapping above is unchanged and still complete; the "every slice delivers an
+FR" invariant now has exactly these two named exceptions. If 0.0.5's PRD is reopened, the
+honest move is to give escalation an FR and retire this note — not to leave two slices quietly
+outside the traceability the rest of the file asserts.
 
 ## Second-pass gap audit (2026-07-21, owner-requested: 技术缝/结构缝/测试缝/产品缝) — 12 found, 12 patched
 
