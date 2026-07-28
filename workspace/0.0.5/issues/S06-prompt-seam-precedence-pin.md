@@ -29,6 +29,11 @@
 - **D14** — the hit-ranked selection toggle that S26 later adds is flipped by a **deploy-time
   config commit**, not an in-app action; keep this slice's constant shaped so that reading it
   from config is a one-line change, and do not build an in-app mutation path.
+- **L7 ADR carry-in:** redaction can change the *shape* of `proposer_context`, not just its
+  content. A key that redacts to `[redacted]` when a sibling already redacted to the same string
+  is suffixed (`[redacted] (2)`) rather than overwritten — dropping it would destroy governance
+  evidence with no trace. That is an unspecified shape change today; **state it in the L7 ADR**,
+  because S02 and S25 both read `proposer_context` and neither should key off its keys.
 - **NFR-8 carry-in (found during the S12 fix):** `memory-layers.md` has **no row at all** for
   the ADR-0154 quality-feedback stores (`interaction_review`, `draft_feedback`) that arrived
   with the merged qf work. S12 declared their four `toee_feedback` actions as non-memory-writes

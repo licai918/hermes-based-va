@@ -115,6 +115,32 @@ verbatim with `pii_redacted` still false — then blessed in a docstring instead
 docstring that blesses a PII hole is the same defect class as a boundary ledger claiming
 coverage it does not have. Keys get the redact leg too.
 
+**Amendment 3 — a PII-shaped KEY redacts; it does not hard-reject.** Closing the key hole made
+L6 reject on PII-shaped keys, and the implementer located exactly where that will bite:
+`_PHONE_RE` is blunt enough that keys like `order_1234567890`, `2026-07-27`, an epoch stamp, or
+a nested `{"case": {"callback": "+1 416 555 0199"}}` now `policy_blocked` the **whole**
+`propose_experience` write. Today's only caller uses flat `{"case_id": …}` contexts and is
+unaffected — **S04's capture fork is where it breaks**, because order/ticket/date keys and
+nested turn contexts are natural there, and the symptom is a `policy_blocked` citing PII while
+the `content` is visibly clean.
+
+A dictionary key is structural metadata, not customer prose. An order id that happens to match
+a phone pattern is a false positive, and destroying a whole governance record over it is
+precisely the harm that made evidence redact-don't-reject in the first place. So the rule is
+symmetric with that one:
+
+- **Injection patterns in a key → hard-reject** (a key can carry a payload; nobody disputes this).
+- **PII patterns in a key → redact, never reject** — for L6 and L7 alike.
+
+This narrows the accidental L6 widening to its defensible half and keeps NFR-6 satisfied: the
+PII still does not get stored, it gets replaced.
+
+**Structural note (implementer's concern, and it is a real trap):** `context_strings` is now one
+traversal whose two callers have *opposite* consequences — L7 redacts what it finds, L6 rejects
+on it. Any future deepening of that traversal therefore moves L6's reject set again, silently,
+exactly as it did this time. Make the policy explicit at each call site rather than implicit in
+the shared walk, so the next person who deepens it has to state which behaviour they intend.
+
 ## D3. L7 provenance and L6 source enums must be extended — nobody owned this
 
 S25/S27 are told to emit `source = feedback_derived` **through** the governed propose actions.
