@@ -6,6 +6,15 @@ export const ROUTES = {
   copilotSimulator: "/copilot/simulator",
   copilotAuditAutoHandled: "/copilot/audit/auto-handled",
   copilotAuditSalesOutreach: "/copilot/audit/sales-outreach",
+  // Memory Hub (0.0.5 S14, FR-21): the L1-L7 layer map with live counts. Sits
+  // ABOVE the per-layer consoles -- an entry point, never a replacement, so every
+  // deep link below still works.
+  adminMemoryHub: "/admin/memory-hub",
+  // Unified review inbox (0.0.5 S15, FR-22): ONE queue over the L6 and L7
+  // proposal tables plus the `review_item` store, with Accept/Reject and
+  // Re-classify. The per-layer consoles below stay -- they are where a decided
+  // entry's history is read; this is where a pending one is decided.
+  adminInbox: "/admin/inbox",
   adminKnowledge: "/admin/knowledge",
   adminEval: "/admin/eval",
   adminAccounts: "/admin/accounts",
