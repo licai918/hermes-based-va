@@ -136,6 +136,17 @@ def test_get_corpus_status_is_read_only_no_audit_row_on_the_business_conn(datast
 
     driver, conn, _schema = datastore
 
+    # Baseline, then delta. This asserts what the test actually means -- "this
+    # read wrote no audit row" -- rather than "the audit table is empty", which
+    # is a different and much more fragile claim: any unrelated row created by a
+    # migration or a fixture elsewhere would break it while saying nothing about
+    # get_corpus_status. Deliberately NOT scoped by `action` either: that would
+    # weaken it, letting a read that wrote some *unexpected* action slip past.
+    # The delta catches a row of any kind, which is the guarantee being made.
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM workbench_audit_log")
+        audit_rows_before = cur.fetchone()[0]
+
     result = execute_tool(
         tool="toee_knowledge_ops",
         action="get_corpus_status",
@@ -155,4 +166,4 @@ def test_get_corpus_status_is_read_only_no_audit_row_on_the_business_conn(datast
     }
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM workbench_audit_log")
-        assert cur.fetchone()[0] == 0
+        assert cur.fetchone()[0] == audit_rows_before
