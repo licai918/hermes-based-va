@@ -159,6 +159,29 @@ every queue — the one thing FR-32 exists to provide.
    entry id for L6/L7. The cross-channel merge path DELETEs and re-INSERTs L4 rows with new
    ids, so a row id would break S10's blast-radius join and S26's per-entry score.
 
+   **Correction (S09 review) — this clause was imprecise, and the imprecision hid a real gap.**
+   The merge does not merely change row *ids*: `merge_provisional_memory` inserts under the
+   **`verified_key`** and deletes the provisional rows, so **the binding key itself changes**. A
+   natural key is therefore strictly better than a row id but still **does not survive
+   verification** — a `provisional:sms:+1416…:contact_time` ledger row written before the
+   customer was verified joins to nothing afterwards. Concretely: retire a verified customer's
+   `contact_time` entry and S10's blast radius silently omits every pre-verification turn that
+   used it.
+
+   **Ruling: the merge re-points the ledger.** `merge_provisional_memory` already knows both
+   keys and already copies the memory rows across; it updates the ledger's `entry_ref` for the
+   same slots in the same transaction. That is the symmetric other half of something the merge
+   already does, not new machinery. And the test must reproduce the **real** merge — provisional
+   key in, verified key out — because the one that shipped deleted and re-inserted under the
+   *same* key, so it passed for a scenario that never occurs.
+
+   **Copilot-path limitation, recorded here rather than only in a report:** a draft turn has no
+   durable identity, so its `turn_ref` is a synthetic `new_id("copilot_turn")`. The joinable
+   reference on that path is `case_or_binding_ref`, not `turn_ref`, and a re-drafted case
+   accumulates duplicate per-entry rows because the composite primary key cannot dedupe a
+   never-repeating key. **S10 must dedupe by case**; **S26's per-entry effectiveness is
+   external-path only** and must say so where it renders.
+
 ## D5. S18 — the SLO is unmeetable as written and the store cannot hold the data
 
 1. **`metric_event` is `(id, metric TEXT, flag BOOLEAN, created_at)` — no numeric column, so
@@ -254,6 +277,11 @@ candidates for actively-used entries — a memory-loss actuator driven by a GC a
 
 **Decision: both windows are named constants and `prune_window >= zero_hit_window` is asserted
 in a test** that fails if either constant is edited to break the relation.
+
+**Both constants live in `hermes_runtime/injection_ledger.py`** — S09 landed
+`PRUNE_WINDOW_SECONDS` (180 days) and `ZERO_HIT_WINDOW_SECONDS` (90 days) side by side there.
+**S20 imports `ZERO_HIT_WINDOW_SECONDS`; it must not declare its own.** Two copies would leave
+the assertion comparing a constant against itself — technically green, and pinning nothing.
 
 ## D13. S25 / S20 — "job failure leaves queues clean"
 
