@@ -36,7 +36,7 @@ import pytest
 
 from hermes_runtime.copilot_turn import make_copilot_run_turn
 from hermes_runtime.eval_record import scenario_user_message
-from hermes_runtime.injection_ledger import LAYER_L4, LAYER_L7
+from hermes_runtime.injection_ledger import LAYER_L7
 from hermes_runtime.live import _scripted_openai_factory
 from hermes_runtime.openrouter import (
     OPENROUTER_PRIMARY_MODEL,
@@ -376,14 +376,24 @@ def test_the_l7_row_lands_with_the_memory_backend_off(monkeypatch) -> None:
     # D4.1's correction, one layer over. TOOL_BACKEND stays UNSET, so a ledger
     # gated on the global memory flag would record nothing for a deployment that
     # is demonstrably injecting the glossary -- the exact hole the L6 fix closed.
+    #
+    # Asserted as the EXACT ref list, exactly like the L6 twin
+    # (test_injection_ledger.py::test_the_l6_row_lands_from_a_real_turn_with_memory_disabled).
+    # It used to assert only `len(writes) == 1` and `layers == {l7}`, which is
+    # true of EVERY ref list this path can produce -- including one crediting the
+    # seasonal row that never rendered. Its companion `LAYER_L4 not in layers`
+    # could not fail at all: with the memory backend off `_load_turn_memory`
+    # returns None before any store read (openrouter.py, `if not memory_enabled()`),
+    # so no L4 ref exists to exclude. This equality subsumes it and is strictly
+    # wider -- a stray L4 tuple, a missing alias and a wrong season all break it.
     monkeypatch.setenv("LEXICON_EXTERNAL_INJECTION", "on")
     store = _LedgerStore(_CONFIRMED)
     _run_external_capturing(monkeypatch, store=store)
 
-    assert len(store.writes) == 1
-    layers = {layer for layer, _ in store.writes[0]["entries"]}
-    assert layers == {LAYER_L7}
-    assert LAYER_L4 not in layers  # its own flag is off
+    applied = "lex_winter" if current_season(date.today()) == SEASON_WINTER else "lex_all_season"
+    assert [w["entries"] for w in store.writes] == [
+        [(LAYER_L7, "lex_alias"), (LAYER_L7, applied)]
+    ]
 
 
 def test_the_ledger_records_only_the_rows_the_prompt_carried(monkeypatch) -> None:
