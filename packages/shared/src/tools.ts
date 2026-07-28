@@ -130,13 +130,17 @@ export const TOOL_CATALOG = {
   // 0.0.5 S15 (FR-22): the unified review inbox + its `review_item` store --
   // see hermes/toee_hermes/tool_catalog.py for the full rationale. The store
   // exists because S10/S20/S25 all emit inbox items and none of them defines
-  // storage. All four actions are agent-excluded on the Python side (admin BFF
-  // dispatch, or a scheduled job's own dispatch, only).
+  // storage. 0.0.5 S10 (FR-12) adds get_blast_radius, the admin read behind the
+  // blast_radius item: which turns/cases a memory entry reached, from the S09
+  // injection ledger joined to case status. Every action is agent-excluded on
+  // the Python side (admin BFF dispatch, or a scheduled job's own dispatch,
+  // only).
   toee_review_inbox: [
     "propose_review_item",
     "list_review_items",
     "decide_review_item",
     "reclassify_proposal",
+    "get_blast_radius",
   ],
   // 0.0.4 operations surfaces. Agent-excluded on the Python side: reachable by
   // the admin/supervisor dispatch profiles, never model-callable.

@@ -208,6 +208,11 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # limitation of this fixture rather than papered over -- if a second
     # two-layer action ever lands, the map's value type is what should change.
     ("toee_review_inbox", "reclassify_proposal"): "L7",
+    # 0.0.5 S10 (FR-12): a READ over the injection ledger joined to case status.
+    # It changes no layer's content -- and the ledger it reads is itself outside
+    # the layer model (provenance about a write, never content a turn reads back,
+    # the same rule that puts the review_item rows above outside it).
+    ("toee_review_inbox", "get_blast_radius"): None,
     # --- metrics -----------------------------------------------------------
     ("toee_metrics", "get_aggregate_metrics"): None,
     # --- L4 retention ------------------------------------------------------

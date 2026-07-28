@@ -83,6 +83,7 @@ provides_tools:
   - toee_review_inbox__list_review_items
   - toee_review_inbox__decide_review_item
   - toee_review_inbox__reclassify_proposal
+  - toee_review_inbox__get_blast_radius
   - toee_metrics__get_aggregate_metrics
   - toee_retention__trigger_retention_sweep
   - toee_retention__enqueue_retention_sweep

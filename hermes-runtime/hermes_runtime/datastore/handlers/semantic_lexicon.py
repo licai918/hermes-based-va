@@ -36,6 +36,9 @@ from toee_hermes.drivers.mock.semantic_lexicon import (
     resolve_manual_add_provenance,
 )
 
+from toee_hermes.blast_radius import REASON_ENTRY_EDITED, REASON_ENTRY_RETIRED
+
+from ...blast_radius import record_blast_radius
 from ...entry_effectiveness import entry_effectiveness_for, health_for_rows
 from ...injection_ledger import LAYER_L7
 from ._common import insert_audit, new_id, serialize_row
@@ -238,6 +241,18 @@ def _decide_lexicon_entry(
         target_id=entry_id,
         details={"status": to_status},
     )
+    # 0.0.5 S10 (FR-12): a RETIRE stops an entry the agent has been answering
+    # with, so the question "who did I already tell?" becomes live. Only retire:
+    # confirm starts an entry injecting (no radius yet) and reject can only reach
+    # a `proposed` row, which by definition never rendered.
+    if action == "retire_lexicon_entry":
+        record_blast_radius(
+            conn,
+            context,
+            layer=LAYER_L7,
+            entry_ref=entry_id,
+            reason=REASON_ENTRY_RETIRED,
+        )
     return lexicon_entry_view(serialize_row(row))
 
 
@@ -309,6 +324,13 @@ def _edit_lexicon_entry(
             "old": {field: before[field] for field in changes},
             "new": dict(changes),
         },
+    )
+    # 0.0.5 S10 (FR-12): FR-12's "corrected". D7 keeps the id stable across an
+    # edit precisely so this join survives it -- every turn answered with the OLD
+    # mapping is still attributed to this entry_ref, which is the set an admin
+    # who just fixed a typo needs to see.
+    record_blast_radius(
+        conn, context, layer=LAYER_L7, entry_ref=entry_id, reason=REASON_ENTRY_EDITED
     )
     return lexicon_entry_view(serialize_row(row))
 

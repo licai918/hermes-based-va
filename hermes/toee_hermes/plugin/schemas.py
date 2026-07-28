@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..blast_radius import LEDGER_LAYERS
 from ..drivers.mock.review_item import (
     RECLASSIFY_ROUTES,
     REVIEW_ITEM_DECISIONS,
@@ -438,6 +439,37 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             "surface_form",
             "canonical_form",
         ],
+    },
+    # 0.0.5 S10 (FR-12): the blast-radius read behind the blast_radius item.
+    # `layer` has no default on purpose -- see read_blast_radius_query: the same
+    # entry_ref under the wrong layer joins to nothing and reads as "this entry
+    # touched nobody", which is the one wrong answer this action must not give.
+    ("toee_review_inbox", "get_blast_radius"): {
+        "properties": {
+            "layer": {
+                "type": "string",
+                "enum": list(LEDGER_LAYERS),
+                "description": (
+                    "Which memory layer the entry belongs to -- the injection "
+                    "ledger's own layer column."
+                ),
+            },
+            "entry_ref": {
+                "type": "string",
+                "description": (
+                    "The ledger's stable natural key: binding_key + ':' + "
+                    "slot_name for l4, the entry id for l6/l7 (D4)."
+                ),
+            },
+            "since": {
+                "type": "string",
+                "description": (
+                    "Optional ISO-8601 lower bound on injected_at; omit for the "
+                    "whole retained ledger window."
+                ),
+            },
+        },
+        "required": ["layer", "entry_ref"],
     },
     # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
     # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still

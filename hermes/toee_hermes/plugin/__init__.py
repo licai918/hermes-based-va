@@ -164,6 +164,10 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         ("toee_review_inbox", "list_review_items"),
         ("toee_review_inbox", "decide_review_item"),
         ("toee_review_inbox", "reclassify_proposal"),
+        # 0.0.5 S10 (FR-12): the blast-radius read. Admin-only for the
+        # get_memory_audit reason -- it reports which CUSTOMER CASES a memory
+        # entry reached, i.e. a cross-customer view no live turn may reach.
+        ("toee_review_inbox", "get_blast_radius"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
         ("toee_retention", "enqueue_retention_sweep"),

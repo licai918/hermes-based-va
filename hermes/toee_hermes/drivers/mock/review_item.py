@@ -33,6 +33,7 @@ import itertools
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from ...blast_radius import blast_radius_result, read_blast_radius_query
 from ...content_scan import (
     PII_IN_VALUES_REDACT,
     read_proposer_context,
@@ -477,6 +478,24 @@ def create_review_inbox_mock_handlers(
             item["updated_at"] = item["decided_at"]
         return dict(item)
 
+    def get_blast_radius(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        """S10 (FR-12): which turns/cases an entry reached -- unanswerable here.
+
+        The mock driver has no ``injection_ledger``: the ledger is a Postgres
+        table written by the two live turn seams, and there is no in-memory turn
+        history for it to mirror. So this validates the query through the SAME
+        shared resolver the Postgres twin uses (NFR-7) and then says plainly that
+        it has no ledger, rather than returning an empty case list that a console
+        would render as "this entry touched nobody" -- the one answer an admin
+        has no way to check.
+        """
+        layer, entry_ref, since = read_blast_radius_query(params)
+        return blast_radius_result(
+            [], layer=layer, entry_ref=entry_ref, since=since, ledger_available=False
+        )
+
     def reclassify_proposal(
         params: dict[str, Any], context: "ToolExecutionContext"
     ) -> dict[str, Any]:
@@ -502,5 +521,6 @@ def create_review_inbox_mock_handlers(
             "list_review_items": list_review_items,
             "decide_review_item": decide_review_item,
             "reclassify_proposal": reclassify_proposal,
+            "get_blast_radius": get_blast_radius,
         }
     }

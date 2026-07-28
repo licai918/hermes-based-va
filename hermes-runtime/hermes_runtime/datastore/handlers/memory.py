@@ -45,6 +45,10 @@ from toee_hermes.drivers.mock.memory import (
 )
 from toee_hermes.errors import ToolDriverError
 
+from toee_hermes.blast_radius import REASON_SLOT_CLEARED
+
+from ...blast_radius import record_blast_radius
+from ...injection_ledger import LAYER_L4
 from ._common import (
     METRIC_MEMORY_POLLUTION_REJECTED,
     METRIC_SELF_SERVICE_USAGE,
@@ -212,6 +216,27 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
     # already gone (deletes 0) and emits nothing, so it can't double-count.
     if initiator == "customer" and deleted:
         insert_metric_event(conn, metric=METRIC_SELF_SERVICE_USAGE)
+    # 0.0.5 S10 (FR-12): FR-12's "cleared". Gated on the SAME `deleted` rowcount
+    # as the counter above -- a clear that removed nothing changed nothing, so
+    # there is no blast radius to review.
+    #
+    # STAFF-initiated only, and that is a decision with two reasons. FR-12's
+    # blast radius is about a GOVERNANCE correction ("we removed this, who did we
+    # already answer with it?"); a customer exercising FR-21 self-service is
+    # routine, and raising a review item every time one says "forget my delivery
+    # preference" would manufacture the queue S15's idempotence exists to
+    # prevent. It is also the only correct wiring: this action is reachable on
+    # the EXTERNAL profile, and `resolve_review_item_emitter` is INTERNAL-only,
+    # so an unconditional emission would put a `policy_blocked` inside the
+    # customer's own clear.
+    if initiator != "customer" and deleted:
+        record_blast_radius(
+            conn,
+            context,
+            layer=LAYER_L4,
+            entry_ref=f"{binding_key}:{slot}",
+            reason=REASON_SLOT_CLEARED,
+        )
     return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
 
@@ -496,6 +521,44 @@ def _dismiss_proposal(conn, params: dict[str, Any], context: "ToolExecutionConte
     return {"binding_key": binding_key, "slot": slot, "dismissed": True}
 
 
+def last_injection_at(cur, binding_key: str) -> Any:
+    """When this binding's memory last reached a prompt, or ``None`` for never.
+
+    0.0.5 S22 (FR-34a): the one number the per-customer memory-health strip
+    cannot compose from reads that already exist. The other three -- slot age,
+    correction count and clear history -- are already in the Memory Audit
+    payload; this is the ledger's.
+
+    **Scoped by binding, and exactly.** The ledger is org-wide, so without the
+    per-binding filter every customer would show the same (latest) timestamp.
+    ``entry_ref`` is matched EXACTLY against the four possible slot refs rather
+    than by a ``binding_key || ':%'`` prefix, and the difference is real rather
+    than stylistic: exact equality needs no LIKE escaping (a binding key is a
+    raw phone/email/Shopify id and may contain ``%`` or ``_``) and cannot match
+    a longer key that merely starts the same way. ``test_lifecycle_metrics.py``
+    runs both prefix variants against the same fixture to show they answer with
+    rows this read must not claim.
+
+    The ``layer`` filter is not doing the same work -- an L6/L7 ref is an entry
+    id and cannot collide with ``key:slot`` -- it is there so the read rides the
+    ledger's ``(layer, entry_ref, injected_at DESC)`` index and so the scope is
+    stated rather than relied on.
+
+    Returns an ISO-8601 string (``serialize_row``'s convention) so the value
+    crosses the dispatch boundary the same way every other timestamp does.
+    Works on a caller-owned cursor of either row factory -- it reads one scalar
+    by position out of a one-column row, which ``dict_row`` also yields.
+    """
+    cur.execute(
+        "SELECT max(injected_at) FROM injection_ledger "
+        "WHERE layer = %s AND entry_ref = ANY(%s)",
+        (LAYER_L4, [f"{binding_key}:{slot}" for slot in MEMORY_PREFERENCE_SLOTS]),
+    )
+    row = cur.fetchone()
+    value = list(row.values())[0] if isinstance(row, dict) else row[0]
+    return value.isoformat() if value is not None else None
+
+
 def _get_memory_audit(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     """Supervisor Memory Audit View read (0.0.3 S20, FR-20).
 
@@ -537,10 +600,15 @@ def _get_memory_audit(conn, params: dict[str, Any], context: "ToolExecutionConte
             (binding_key,),
         )
         audit_rows = cur.fetchall()
+        # 0.0.5 S22 (FR-34a): the memory-health strip's last-injection recency.
+        # Same cursor, same read -- no new table and no second connection on a
+        # read the supervisor already waits for.
+        injected_at = last_injection_at(cur, binding_key)
     return {
         "binding_key": binding_key,
         "slots": [serialize_row(r) for r in slots],
         "audit": [serialize_row(r) for r in audit_rows],
+        "last_injection_at": injected_at,
     }
 
 

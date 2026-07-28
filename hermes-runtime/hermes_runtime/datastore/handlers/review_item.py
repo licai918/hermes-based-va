@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from toee_hermes.blast_radius import blast_radius_result, read_blast_radius_query
 from toee_hermes.drivers.mock.review_item import (
     REVIEW_ITEM_STATUS_OPEN,
     missing_item_error,
@@ -243,6 +244,33 @@ def _reclassify_proposal(
     return result
 
 
+def _get_blast_radius(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Admin-only read: which turns/cases did this entry reach? (0.0.5 S10, FR-12).
+
+    Never registered as an LLM-callable tool (``_AGENT_EXCLUDED_ACTIONS``, the
+    ``get_memory_audit`` precedent) -- it reports across CUSTOMERS, which is not
+    a view any live turn may reach.
+
+    It sits on this tool rather than on the three layer tools because the answer
+    is layer-generic (one ledger query serves L4 slots, L6 notes and L7 entries)
+    and because the ``blast_radius`` review item it justifies lives in this
+    store. The item carries counts; this carries the case list, live -- see
+    :mod:`toee_hermes.blast_radius` for why the item deliberately does not
+    freeze one.
+    """
+    from ...blast_radius import affected_cases
+
+    layer, entry_ref, since = read_blast_radius_query(params)
+    return blast_radius_result(
+        affected_cases(conn, layer=layer, entry_ref=entry_ref, since=since),
+        layer=layer,
+        entry_ref=entry_ref,
+        since=since,
+    )
+
+
 def review_item_handlers() -> dict[str, dict[str, Any]]:
     """Registry fragment for the unified review inbox's datastore tool."""
     return {
@@ -251,6 +279,7 @@ def review_item_handlers() -> dict[str, dict[str, Any]]:
             "list_review_items": _list_review_items,
             "decide_review_item": _decide_review_item,
             "reclassify_proposal": _reclassify_proposal,
+            "get_blast_radius": _get_blast_radius,
         }
     }
 

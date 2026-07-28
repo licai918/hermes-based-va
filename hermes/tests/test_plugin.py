@@ -310,6 +310,44 @@ def test_every_review_inbox_action_is_listed_in_the_exclusion_set() -> None:
         assert ("toee_review_inbox", action) in _AGENT_EXCLUDED_ACTIONS
 
 
+# --- 0.0.5 S10: get_blast_radius is never LLM-callable (governance) --------
+
+
+def test_get_blast_radius_is_never_registered_as_an_llm_tool() -> None:
+    # The two tests above are catalog-DERIVED loops, which is why they went red
+    # the moment this action entered the catalog -- exactly what S15 wrote them
+    # for. They cannot say WHICH action they checked, so this names it: the
+    # blast-radius read reports which customer CASES a memory entry reached, a
+    # cross-customer view no live turn may reach (the get_memory_audit
+    # precedent).
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_review_inbox__get_blast_radius" not in ctx.registered_names()
+    assert ("toee_review_inbox", "get_blast_radius") in _AGENT_EXCLUDED_ACTIONS
+
+
+def test_get_blast_radius_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would actually try to exploit, and
+    # the one register() alone does not cover (the link_identity precedent).
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_review_inbox__get_blast_radius" not in ctx.registered_names()
+
+
+def test_the_blast_radius_exclusion_is_not_an_empty_registration() -> None:
+    # The contrast S11 shipped, adapted. toee_review_inbox is excluded WHOLESALE,
+    # so there is no same-tool action to contrast against -- which means the
+    # assertions above would also pass if register() had produced no tools at
+    # all. This proves the mechanism was live on the same profile: a governed
+    # action that IS meant to reach the model's surface still does.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert ctx.registered_names(), "register() produced no tools at all"
+    assert "toee_agent_experience__propose_experience" in ctx.registered_names()
+
+
 # --- 0.0.3 S26: get_aggregate_metrics is never LLM-callable (governance) ---
 
 

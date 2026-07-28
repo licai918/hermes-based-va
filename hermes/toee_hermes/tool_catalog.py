@@ -167,11 +167,19 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     # a sweep does, not what a model does, and a model that could dismiss its own
     # review item would make the whole queue decorative -- the
     # confirm_experience precedent.
+    # 0.0.5 S10 (FR-12) adds get_blast_radius: the admin READ behind the
+    # blast_radius item -- "which turns/cases did this entry reach", answered
+    # from S09's injection_ledger and joined to case status. It sits on this
+    # tool rather than on the layer tools because the answer is layer-generic
+    # (one query serves L4 slots, L6 notes and L7 entries) and because the
+    # review item it justifies lives in this store. Agent-excluded like the
+    # other four.
     "toee_review_inbox": (
         "propose_review_item",
         "list_review_items",
         "decide_review_item",
         "reclassify_proposal",
+        "get_blast_radius",
     ),
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
     # over existing tables + the new metric_event counters (memory injection,
