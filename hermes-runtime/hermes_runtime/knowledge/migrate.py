@@ -84,6 +84,7 @@ def ensure_database(url: str | None = None) -> bool:
     from psycopg import sql
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
+    from ..datastore.config import CONNECT_TIMEOUT_OFFLINE_SECONDS
     from .config import knowledge_database_url
 
     dsn = url or knowledge_database_url()
@@ -93,7 +94,14 @@ def ensure_database(url: str | None = None) -> bool:
     conn = None
     for maintenance_db in ("postgres", "toee_va"):
         try:
-            conn = psycopg.connect(make_conninfo(dsn, dbname=maintenance_db), autocommit=True)
+            # The timeout is what makes this loop a fallback rather than a
+            # decoration: without it, a maintenance DB that blackholes hangs the
+            # FIRST attempt indefinitely and the second one is never reached.
+            conn = psycopg.connect(
+                make_conninfo(dsn, dbname=maintenance_db),
+                autocommit=True,
+                connect_timeout=CONNECT_TIMEOUT_OFFLINE_SECONDS,
+            )
             break
         except Exception as exc:  # try the next maintenance DB
             last_exc = exc
@@ -115,11 +123,12 @@ def migrate(url: str | None = None, migrations_dir: Path = MIGRATIONS_DIR) -> li
     distinct connection."""
     import psycopg
 
+    from ..datastore.config import CONNECT_TIMEOUT_OFFLINE_SECONDS
     from .config import knowledge_database_url
 
     dsn = url or knowledge_database_url()
     ensure_database(dsn)
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, connect_timeout=CONNECT_TIMEOUT_OFFLINE_SECONDS) as conn:
         return run_migrations(conn, migrations_dir)
 
 

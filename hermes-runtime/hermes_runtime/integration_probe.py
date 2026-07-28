@@ -62,7 +62,7 @@ from toee_hermes.drivers.easyroutes.driver import (
 from toee_hermes.drivers.gadget import build_qbo_attribution, gadget_configured
 from toee_hermes.errors import ToolDriverError
 
-from .datastore.config import database_url
+from .datastore.config import CONNECT_TIMEOUT_OFFLINE_SECONDS, database_url
 from .openrouter import openrouter_configured, probe_openrouter
 from .simpletexting_reply import (
     probe_simpletexting_token,
@@ -270,7 +270,9 @@ def record_probe_results(
             _write_probe_results(cur, results, retention_days)
         conn.commit()
         return
-    with psycopg.connect(database_url()) as fresh:
+    with psycopg.connect(
+        database_url(), connect_timeout=CONNECT_TIMEOUT_OFFLINE_SECONDS
+    ) as fresh:
         with fresh.cursor() as cur:
             _write_probe_results(cur, results, retention_days)
         fresh.commit()

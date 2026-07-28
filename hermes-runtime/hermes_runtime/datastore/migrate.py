@@ -100,10 +100,10 @@ def migrate(url: str | None = None, migrations_dir: Path = MIGRATIONS_DIR) -> li
     """
     import psycopg
 
-    from .config import database_url
+    from .config import CONNECT_TIMEOUT_OFFLINE_SECONDS, database_url
 
     dsn = url or database_url()
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, connect_timeout=CONNECT_TIMEOUT_OFFLINE_SECONDS) as conn:
         return run_migrations(conn, migrations_dir, exclude=migrate_exclusions())
 
 

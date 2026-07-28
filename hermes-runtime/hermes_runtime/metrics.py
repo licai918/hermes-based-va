@@ -21,7 +21,7 @@ import uuid
 
 import psycopg
 
-from .datastore.config import database_url
+from .datastore.config import CONNECT_TIMEOUT_TURN_SECONDS, database_url
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,18 @@ def emit_metric_event(metric: str, flag: bool) -> None:
     # would turn a "never fail a turn" fire-and-forget emit into a stall --
     # pool it only alongside a bounded, non-blocking acquire (e.g. timeout=0
     # + treat PoolTimeout as just another swallowed failure).
+    #
+    # That reasoning was right about the hazard and wrong about which option
+    # carried it. Avoiding the pool to dodge a BOUNDED 30s wait, and then
+    # connecting with no `connect_timeout`, bought an UNBOUNDED one: a host that
+    # blackholes rather than refuses blocks until the OS TCP timeout, with the
+    # customer's reply queued behind it. The timeout below is what makes the
+    # "swallow ANY failure" promise above actually true.
     """
     try:
-        with psycopg.connect(database_url()) as conn:
+        with psycopg.connect(
+            database_url(), connect_timeout=CONNECT_TIMEOUT_TURN_SECONDS
+        ) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "INSERT INTO metric_event (id, metric, flag) VALUES (%s, %s, %s)",
