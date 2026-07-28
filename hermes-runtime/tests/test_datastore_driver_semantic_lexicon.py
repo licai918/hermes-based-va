@@ -51,8 +51,13 @@ def _list(driver, *, profile="internal_copilot"):
 
 
 def _count(conn) -> int:
+    # Rows a TEST wrote. S03's migration 0024 seeds domain #1 into every migrated
+    # schema, so an unfiltered count now measures the schema's own baseline
+    # instead of the write under test; seeded ids are namespaced `seed_`.
     with conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM semantic_lexicon")
+        cur.execute(
+            "SELECT count(*) FROM semantic_lexicon WHERE NOT starts_with(id, 'seed_')"
+        )
         return cur.fetchone()[0]
 
 
@@ -104,8 +109,11 @@ def test_the_spaced_tire_size_round_trips(datastore) -> None:
     # D2's headline case against real Postgres: '205 55 16' matches the old
     # combined scanner's _PHONE_RE, so an unsplit scan would policy_blocked the
     # seeded surface form of the entire iteration.
+    # `tire`/`205 55 16` is now the seeded flagship row (S03, migration 0024), so
+    # this writes the same surface form into a domain the seed does not own --
+    # the string is what the scanner reacts to, not the domain.
     driver, conn, _ = datastore
-    result = _propose(driver, surface_form="205 55 16")
+    result = _propose(driver, domain="wheel", surface_form="205 55 16")
     assert result.ok, result.error_class
     with conn.cursor() as cur:
         cur.execute(
@@ -116,15 +124,17 @@ def test_the_spaced_tire_size_round_trips(datastore) -> None:
 
 
 def test_list_lexicon_entries_reads_the_row_back(datastore) -> None:
+    # `company`/`TOEE` is seeded (S03), so this uses a domain the seed does not
+    # own and reads back only the row this test wrote.
     driver, _, _ = datastore
     proposed = _propose(driver, surface_form="TOEE", canonical_form="TOEE TIRE",
-                        domain="company")
+                        domain="brand")
     assert proposed.ok
 
     result = _list(driver)
 
     assert result.ok
-    entries = result.data["entries"]
+    entries = [e for e in result.data["entries"] if not e["id"].startswith("seed_")]
     assert len(entries) == 1
     entry = entries[0]
     assert entry["id"] == proposed.data["id"]
@@ -148,14 +158,21 @@ def test_duplicate_domain_and_surface_form_is_a_governed_conflict(datastore) -> 
     # The failed INSERT rolled back cleanly and the original is untouched.
     assert _count(conn) == 1
     with conn.cursor() as cur:
-        cur.execute("SELECT canonical_form FROM semantic_lexicon")
+        # Seed-filtered: unfiltered, this reads whichever row Postgres hands
+        # back first, and the seeded flagship happens to carry the same
+        # canonical form -- so it would pass without proving anything.
+        cur.execute(
+            "SELECT canonical_form FROM semantic_lexicon "
+            "WHERE NOT starts_with(id, 'seed_')"
+        )
         assert cur.fetchone()[0] == "205/55R16"
 
 
 def test_the_same_surface_form_in_another_domain_is_allowed(datastore) -> None:
     driver, conn, _ = datastore
     assert _propose(driver, surface_form="TOEE").ok
-    assert _propose(driver, domain="company", surface_form="TOEE",
+    # `company` is the seeded home of this alias (S03); `wheel` is free.
+    assert _propose(driver, domain="wheel", surface_form="TOEE",
                     canonical_form="TOEE TIRE").ok
     assert _count(conn) == 2
 
