@@ -32,7 +32,7 @@ from toee_hermes.gateway.normalize import (
     normalize_e164,
 )
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
-from toee_hermes.plugin.hooks import render_injection
+from toee_hermes.plugin.hooks import glossary_entries, render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -42,7 +42,9 @@ from hermes_runtime.tool_backend import (
     _gateway_store,
     _turn_extra_drivers,
     agent_experience_external_injection_enabled,
+    lexicon_external_injection_enabled,
     load_confirmed_experience,
+    load_confirmed_lexicon,
     memory_enabled,
     record_memory_injection_metric,
 )
@@ -514,7 +516,18 @@ def make_openrouter_run_turn(
             if agent_experience_external_injection_enabled()
             else None
         )
-        injected = render_injection(identity, memory, experience)
+        # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the EXTERNAL lexicon
+        # flag -- its own axis, independent of the copilot one and of L6's pair.
+        # Default OFF, so the eval path renders no glossary (determinism, NFR-4).
+        # The RAW read goes to the renderer (hooks.glossary_entries must see the
+        # whole set to resolve a default_rule's condition); the ledger below
+        # re-derives the selected rows so it records what the prompt carried.
+        lexicon = (
+            load_confirmed_lexicon(store)
+            if lexicon_external_injection_enabled()
+            else None
+        )
+        injected = render_injection(identity, memory, experience, lexicon=lexicon)
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,
@@ -562,6 +575,7 @@ def make_openrouter_run_turn(
                     binding_key=resolved_binding[0] if resolved_binding else None,
                     memory=memory,
                     experience=experience,
+                    lexicon=glossary_entries(lexicon),
                 ),
             )
         return result

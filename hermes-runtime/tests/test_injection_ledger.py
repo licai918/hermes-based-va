@@ -5,12 +5,13 @@ is ``tests/test_datastore_injection_ledger.py``. This file pins the parts that
 are true with no database at all:
 
 1. ``entry_ref`` is a STABLE NATURAL KEY (D4.3) -- ``binding_key + slot_name``
-   for L4, the entry id for L6 -- never a row id, because the cross-channel
-   merge path DELETEs and re-INSERTs L4 rows with fresh ids.
+   for L4, the entry id for L6 and L7 -- never a row id, because the
+   cross-channel merge path DELETEs and re-INSERTs L4 rows with fresh ids.
 2. Each layer's row is gated on the flag that layer's INJECTION rode, and every
    one of those flags is off on the eval record/replay path (D4.1) -- so that
-   path still writes nothing, while an L6-injecting deployment with the memory
-   backend off is no longer silently unrecorded.
+   path still writes nothing, while an L6- or L7-injecting deployment with the
+   memory backend off is no longer silently unrecorded. Asserted across all four
+   injection flags since 0.0.5 S06 filled the L7 seat.
 3. A ledger write failure NEVER reaches the turn (NFR-5) -- both turn paths
    still return their reply/draft -- and the write happens AFTER the model call,
    so it is not a database round-trip in front of the reply and a turn that
@@ -30,6 +31,7 @@ from hermes_runtime.copilot_turn import make_copilot_run_turn
 from hermes_runtime.injection_ledger import (
     LAYER_L4,
     LAYER_L6,
+    LAYER_L7,
     PRUNE_WINDOW_SECONDS,
     ZERO_HIT_WINDOW_SECONDS,
     injected_entry_refs,
@@ -45,6 +47,16 @@ _CONFIG = OpenRouterConfig(
 )
 _MEMORY = [{"slot": "contact_time", "value": "evenings"}]
 _EXPERIENCE = [{"id": "aexp_1", "content": "Check get_delivery_status first.", "kind": "procedure"}]
+_LEXICON = [
+    {
+        "id": "lex_1",
+        "domain": "company",
+        "entry_kind": "alias",
+        "surface_form": "TOEE",
+        "canonical_form": "TOEE TIRE",
+        "status": "confirmed",
+    }
+]
 
 
 class _LedgerStore:
@@ -90,6 +102,8 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENT_EXPERIENCE_INJECTION", raising=False)
     monkeypatch.delenv("AGENT_EXPERIENCE_EXTERNAL_INJECTION", raising=False)
     monkeypatch.delenv("AGENT_EXPERIENCE_LEARNING", raising=False)
+    monkeypatch.delenv("LEXICON_INJECTION", raising=False)
+    monkeypatch.delenv("LEXICON_EXTERNAL_INJECTION", raising=False)
 
 
 # --- entry_ref shape (D4.3) ----------------------------------------------------
@@ -105,6 +119,23 @@ def test_l4_entry_ref_is_binding_key_plus_slot_name_never_a_row_id() -> None:
 def test_l6_entry_ref_is_the_entry_id() -> None:
     refs = injected_entry_refs(binding_key=None, memory=None, experience=_EXPERIENCE)
     assert refs == [(LAYER_L6, "aexp_1")]
+
+
+def test_l7_entry_ref_is_the_entry_id() -> None:
+    # 0.0.5 S06 filled the lexicon seat. Same natural key as L6 -- the entry id is
+    # stable across an edit (D7 pinned in-place UPDATE), so it survives the one
+    # mutation an L7 row can undergo.
+    refs = injected_entry_refs(binding_key=None, memory=None, lexicon=_LEXICON)
+    assert refs == [(LAYER_L7, "lex_1")]
+
+
+def test_a_lexicon_row_with_no_id_is_dropped_rather_than_recorded() -> None:
+    # Same rule as the other two layers: a ref nothing can join back to is worse
+    # than no ref.
+    refs = injected_entry_refs(
+        binding_key=None, memory=None, lexicon=[{"surface_form": "TOEE"}, *_LEXICON]
+    )
+    assert refs == [(LAYER_L7, "lex_1")]
 
 
 def test_refs_mirror_the_renderer_and_skip_what_it_skips() -> None:
@@ -412,24 +443,37 @@ def test_a_turn_that_never_produced_a_reply_records_nothing(
 # --- each layer's row rides the flag that layer's injection rode ---------------
 
 
+@pytest.mark.parametrize(
+    ("flag", "layer", "entry_ref"),
+    [
+        ("AGENT_EXPERIENCE_EXTERNAL_INJECTION", LAYER_L6, "aexp_1"),
+        ("AGENT_EXPERIENCE_INJECTION", LAYER_L6, "aexp_1"),
+        ("LEXICON_EXTERNAL_INJECTION", LAYER_L7, "lex_1"),
+        ("LEXICON_INJECTION", LAYER_L7, "lex_1"),
+    ],
+)
 def test_each_layers_row_rides_its_own_injection_flag(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, flag: str, layer: str, entry_ref: str
 ) -> None:
-    # L6 injection is its OWN axis (AGENT_EXPERIENCE_*_INJECTION), independent of
-    # the L4 memory backend. A single blanket memory_enabled() gate recorded
-    # NOTHING for a deployment running L6 injection with memory disabled -- the
-    # ledger would be silently empty for precisely the entries S10 and S26 care
-    # most about. TOOL_BACKEND stays unset here; only the L6 flag is on.
-    monkeypatch.setenv("AGENT_EXPERIENCE_EXTERNAL_INJECTION", "on")
+    # L6 and L7 injection each ride their OWN axes, independent of the L4 memory
+    # backend. A single blanket memory_enabled() gate recorded NOTHING for a
+    # deployment running that injection with memory disabled -- the ledger would
+    # be silently empty for precisely the entries S10 and S26 care most about.
+    # TOOL_BACKEND stays unset here; only the one flag under test is on.
+    #
+    # Parametrized over all four injection flags (0.0.5 S06): registering L7's
+    # gate against a global flag would have reproduced the same hole one layer
+    # over, so the sibling paths are asserted rather than assumed.
+    monkeypatch.setenv(flag, "on")
     store = _LedgerStore()
     record_injection(
         store,
         turn_ref="t1",
         case_or_binding_ref="k",
-        entries=[(LAYER_L4, "k:contact_time"), (LAYER_L6, "aexp_1")],
+        entries=[(LAYER_L4, "k:contact_time"), (layer, entry_ref)],
     )
-    # The L6 row lands (its flag is on); the L4 row does not (its flag is off).
-    assert [w["entries"] for w in store.writes] == [[(LAYER_L6, "aexp_1")]]
+    # The gated layer's row lands; the L4 row does not (its flag is off).
+    assert [w["entries"] for w in store.writes] == [[(layer, entry_ref)]]
 
 
 def test_the_l6_row_lands_from_a_real_turn_with_memory_disabled(

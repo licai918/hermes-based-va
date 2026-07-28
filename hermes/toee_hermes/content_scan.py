@@ -74,10 +74,17 @@ _INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 # STRUCTURAL escape none of the semantic patterns above can see. Kept honest
 # against hooks.py by
 # tests/test_content_scan.py::test_fence_tags_cover_every_tag_render_injection_emits;
-# a new fence (S06's glossary) must be added here in the same change.
+# a new fence must be added here in the same change.
+#
+# A COPY of ``hooks.FENCE_TAGS``, not an import, on purpose: this package's write
+# path must not depend on the prompt renderer, and the drift test asserts SET
+# EQUALITY between the two so the copy cannot rot. (It did rot once -- the
+# original drift check was a subset assertion over a render call that could not
+# emit the new tag, so 0.0.5 S06's ``confirmed_lexicon`` slipped past it.)
 FENCE_TAGS: tuple[str, ...] = (
     "untrusted_customer_memory",
     "confirmed_operational_learnings",
+    "confirmed_lexicon",
 )
 
 _FENCE_TOKEN_RE = re.compile(

@@ -52,7 +52,7 @@ from eval_runner.transcript import (
     memory_proposals_from_messages,
 )
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
-from toee_hermes.plugin.hooks import render_injection
+from toee_hermes.plugin.hooks import glossary_entries, render_injection
 from toee_hermes.plugin.profiles import INTERNAL
 
 from hermes_runtime.boot import boot_profile
@@ -72,7 +72,9 @@ from hermes_runtime.tool_backend import (
     _turn_extra_drivers,
     agent_experience_enabled,
     agent_experience_injection_enabled,
+    lexicon_injection_enabled,
     load_confirmed_experience,
+    load_confirmed_lexicon,
     memory_enabled,
     record_memory_injection_metric,
 )
@@ -544,11 +546,21 @@ def make_copilot_run_turn(
             if agent_experience_injection_enabled()
             else None
         )
-        # Memory + confirmed learnings — the case identity is not surfaced as a
-        # snapshot block (the agent gathers case detail via its governed read tools,
-        # ADR-0147 decision 2). render_injection returns None when everything is
-        # empty, so no binding / no slots / no learnings / disabled injects nothing.
-        injected = render_injection(None, memory, experience)
+        # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the COPILOT lexicon
+        # flag -- its own axis, so the external read is disable-able without
+        # touching this path. Default OFF (the eval record/replay path sets
+        # neither, NFR-4). The RAW read goes to the renderer; the ledger below
+        # re-derives the SELECTED rows (see hooks.glossary_entries -- it is not
+        # idempotent, so pre-narrowing here would drop an admin season override).
+        lexicon = (
+            load_confirmed_lexicon(store) if lexicon_injection_enabled() else None
+        )
+        # Memory + confirmed learnings + glossary — the case identity is not
+        # surfaced as a snapshot block (the agent gathers case detail via its
+        # governed read tools, ADR-0147 decision 2). render_injection returns None
+        # when everything is empty, so no binding / no slots / no learnings / no
+        # confirmed vocabulary / disabled injects nothing.
+        injected = render_injection(None, memory, experience, lexicon=lexicon)
         user_message = (
             f"{injected}\n\n{base_user_message}" if injected else base_user_message
         )
@@ -632,6 +644,7 @@ def make_copilot_run_turn(
                     binding_key=resolved_binding[0] if resolved_binding else None,
                     memory=memory,
                     experience=experience,
+                    lexicon=glossary_entries(lexicon),
                 ),
             )
 

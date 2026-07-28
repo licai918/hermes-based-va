@@ -104,12 +104,13 @@ _AGENT_EXPERIENCE_ON_VALUES = frozenset({"1", "on", "true", "enabled", "yes"})
 
 
 def _flag_on(env_var: str, value: object = _UNSET) -> bool:
-    """Shared fail-closed reader for the L6 on/off flags (S25 dedup, review nit).
+    """Shared fail-closed reader for the L6 and L7 on/off flags (S25 dedup).
 
     ``value`` defaults to ``os.environ[env_var]``; True only when it is a string
     in the explicit on-set. One implementation so the three agent-experience
-    flags below can't drift on parsing. (``memory_enabled``/``simulated_mode_
-    enabled`` use different discriminators and stay separate.)
+    flags below and 0.0.5 S06's two lexicon-injection flags can't drift on
+    parsing. (``memory_enabled``/``simulated_mode_enabled`` use different
+    discriminators and stay separate.)
     """
     if value is _UNSET:
         value = os.environ.get(env_var)
@@ -185,6 +186,81 @@ def load_confirmed_experience(store: Optional[Any]) -> Optional[list[dict[str, A
         logger.warning(
             "Agent-experience injection read failed error_type=%s; "
             "turn continues with no confirmed learnings injected",
+            type(exc).__name__,
+        )
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# L7 semantic lexicon: the glossary bound + the two injection flags (0.0.5 S06)
+# --------------------------------------------------------------------------- #
+
+# D16: a NAMED constant from day one, not a literal buried in the selection
+# query. S22's knob panel renders "glossary N" by importing this name; a bare
+# `20` inside postgres_gateway_store would make that a magic-number hunt. Reading
+# it from deploy-time config later is a one-line change here and nowhere else
+# (D14 -- the knob moves by config commit, never by an in-app mutation path).
+#
+# ponytail: newest-first, fixed N. Hit-RANKED selection is S26's toggle; the
+# known ceiling is that a seasonal default_rule row older than the newest 20
+# confirmed entries falls out of the window and stops rendering. Acceptable at
+# the current seeded volume (4 rows); S26's ranking is the upgrade path.
+LEXICON_GLOSSARY_LIMIT = 20
+
+# TWO independent axes, the S25-0.0.3 two-flag precedent: the external read must
+# be disable-able WITHOUT touching the copilot path, and vice versa. Both
+# fail-closed / DEFAULT OFF, so the eval record/replay path -- which sets
+# neither -- never reads or renders a lexicon entry and the injected prompt stays
+# byte-identical (the eval-determinism pin, NFR-4).
+LEXICON_INJECTION_ENV = "LEXICON_INJECTION"  # copilot draft turn
+LEXICON_EXTERNAL_INJECTION_ENV = "LEXICON_EXTERNAL_INJECTION"  # external turn
+
+
+def lexicon_injection_enabled(value: object = _UNSET) -> bool:
+    """Whether the COPILOT draft turn injects the confirmed L7 glossary (S06, FR-6).
+
+    Fail-closed by construction (mirrors :func:`agent_experience_injection_enabled`):
+    unset, empty, or any value outside the on-set returns ``False``. Its OWN axis,
+    default off -- so the copilot eval replay gate stays deterministic."""
+    return _flag_on(LEXICON_INJECTION_ENV, value)
+
+
+def lexicon_external_injection_enabled(value: object = _UNSET) -> bool:
+    """Whether the EXTERNAL turn injects the confirmed L7 glossary (S06, FR-6).
+
+    Fully independent of :func:`lexicon_injection_enabled` (the copilot axis) so
+    the external read is disable-able without touching the copilot path.
+    Fail-closed / default off; the glossary is read-only on both paths -- neither
+    turn proposes lexicon entries."""
+    return _flag_on(LEXICON_EXTERNAL_INJECTION_ENV, value)
+
+
+def load_confirmed_lexicon(store: Optional[Any]) -> Optional[list[dict[str, Any]]]:
+    """Bounded, fail-closed read of CONFIRMED L7 entries for turn injection (S06).
+
+    The L7 mirror of :func:`load_confirmed_experience`, deliberately identical in
+    posture: shared by both turn seams, each caller gates on its OWN injection
+    flag before calling, operational rather than customer-scoped (domain language
+    is shared, so there is no binding key), and fail-closed -- a store without the
+    method (a mock/scenario store) or ANY read error degrades to ``None`` and
+    never raises, because L7 injection is never a hard dependency of a turn
+    (NFR-5). Only ``status='confirmed'`` rows are ever returned (the store method
+    filters, and ``hooks._render_lexicon`` re-checks); ``proposed``/``rejected``/
+    ``retired`` never reach any turn.
+    """
+    resolved_store = store if store is not None else _gateway_store()
+    reader = getattr(resolved_store, "load_confirmed_lexicon", None)
+    if reader is None:
+        return None
+    try:
+        return reader()
+    except Exception as exc:
+        # ponytail: swallow to None so a DB hiccup degrades to "no glossary
+        # injected", never a failed turn (NFR-5). Exception TYPE only -- never
+        # str(exc), which could echo back store-supplied content.
+        logger.warning(
+            "Lexicon glossary injection read failed error_type=%s; "
+            "turn continues with no confirmed lexicon injected",
             type(exc).__name__,
         )
         return None

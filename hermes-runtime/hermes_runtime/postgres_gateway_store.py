@@ -28,6 +28,7 @@ from .datastore.config import database_url
 from .datastore.handlers._common import customer_thread_id, new_id
 from .datastore.pool import get_database_pool
 from .job_queue import AGENT_TURN_JOB_TYPE, insert_job
+from .tool_backend import LEXICON_GLOSSARY_LIMIT
 
 _SMS_CHANNEL = "sms"
 _EMAIL_CHANNEL = "email"
@@ -454,6 +455,47 @@ class PostgresGatewayStore:
         return [
             {"id": entry_id, "content": content, "kind": kind}
             for entry_id, content, kind in rows
+        ]
+
+    def load_confirmed_lexicon(self) -> list[dict[str, Any]]:
+        """Bounded read of CONFIRMED ``semantic_lexicon`` entries (0.0.5 S06, FR-6).
+
+        Shared domain language, so — like :meth:`load_confirmed_experience` and
+        unlike :meth:`load_customer_memory` — it is keyed by nothing but
+        ``status``. Newest-decided first, capped at
+        :data:`~hermes_runtime.tool_backend.LEXICON_GLOSSARY_LIMIT` (D16: a named
+        constant, because S22's knob panel reads it).
+
+        ``status`` is in the projection even though the WHERE clause already
+        pins it: ``hooks._render_lexicon`` re-checks the field rather than
+        trusting its caller, so omitting it here would silently render an empty
+        glossary. ``entry_kind`` and ``domain`` are what let the renderer resolve
+        a ``default_rule``'s condition at render time; ``id`` is S09's L7
+        ``entry_ref``.
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, domain, entry_kind, surface_form, canonical_form, status
+                    FROM semantic_lexicon
+                    WHERE status = 'confirmed'
+                    ORDER BY decided_at DESC NULLS LAST, created_at DESC
+                    LIMIT %s
+                    """,
+                    (LEXICON_GLOSSARY_LIMIT,),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "id": entry_id,
+                "domain": domain,
+                "entry_kind": entry_kind,
+                "surface_form": surface_form,
+                "canonical_form": canonical_form,
+                "status": status,
+            }
+            for entry_id, domain, entry_kind, surface_form, canonical_form, status in rows
         ]
 
     def record_injection_ledger(

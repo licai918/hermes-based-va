@@ -47,6 +47,8 @@ from .tool_backend import (
     _gateway_store,
     agent_experience_external_injection_enabled,
     agent_experience_injection_enabled,
+    lexicon_external_injection_enabled,
+    lexicon_injection_enabled,
     memory_enabled,
 )
 
@@ -57,7 +59,7 @@ logger = logging.getLogger(__name__)
 # layer is otherwise a permanently unjoinable row nothing ever notices.
 LAYER_L4 = "l4"  # Customer Memory preference slots (per-customer, PII)
 LAYER_L6 = "l6"  # confirmed agent-experience notes (shared, operational)
-LAYER_L7 = "l7"  # semantic lexicon entries -- additive when S06 renders them
+LAYER_L7 = "l7"  # semantic lexicon entries (0.0.5 S06 renders the glossary)
 LAYERS = (LAYER_L4, LAYER_L6, LAYER_L7)
 
 
@@ -72,13 +74,25 @@ def _l6_injection_enabled() -> bool:
     return agent_experience_external_injection_enabled() or agent_experience_injection_enabled()
 
 
-# Each layer's ledger row rides the same flag that layer's INJECTION rode. L7 has
-# no flag of its own yet (S06 renders that block); until it does it falls through
-# to the default below, which is today's behaviour rather than a silent drop --
-# S06 registers the lexicon flag here when it lands.
+def _l7_injection_enabled() -> bool:
+    """Either L7 injection axis -- the external one or the copilot one.
+
+    Same disjunction, same reasoning as :func:`_l6_injection_enabled`: an L7 ref
+    only exists because one of the two turn paths actually rendered a confirmed
+    lexicon entry, and each path gated that render on its OWN flag.
+    """
+    return lexicon_external_injection_enabled() or lexicon_injection_enabled()
+
+
+# Each layer's ledger row rides the same flag that layer's INJECTION rode (D4.1
+# as CORRECTED). Registering L7 against a global flag here -- `memory_enabled`,
+# the default this dict used to fall through to -- would reproduce for L7 exactly
+# the hole the L6 fix closed: a deployment with lexicon injection on and the
+# memory backend off would render the glossary and record nothing.
 _LAYER_GATES = {
     LAYER_L4: memory_enabled,
     LAYER_L6: _l6_injection_enabled,
+    LAYER_L7: _l7_injection_enabled,
 }
 
 # ponytail: 180 days. The ledger's readers are S10's blast radius ("which open
@@ -131,8 +145,9 @@ def injected_entry_refs(
     nothing can join back to. (In practice memory is only ever loaded once a
     binding key resolved, so this is belt not braces.)
 
-    ``lexicon`` is the L7 seat, wired when S06 renders that block; today every
-    caller leaves it ``None`` and it contributes nothing.
+    ``lexicon`` is the L7 seat, live since 0.0.5 S06: both turn paths pass the
+    confirmed glossary they rendered. A row with no ``id`` is dropped for the
+    same reason as the other two -- an unjoinable ref.
     """
     refs: list[tuple[str, str]] = []
     if binding_key:

@@ -34,8 +34,10 @@ this shared resolver covers exactly the layers that CALL the resolver, which tod
 is **L6 and L7 only** -- ``scan_agent_experience_content`` and
 ``scan_lexicon_write``. **L4's write path does not call ``scan_injection`` at
 all**; wiring it is S08's job (D19), and until S08 lands, a customer-authored slot
-value can still carry a fence token into the store. The render side stays
-unescaped until S06 either way.
+value can still carry a fence token into the store. **0.0.5 S06 closed the RENDER
+side for every layer** (``hooks._fence_safe``), so a token that is already stored
+can no longer break a fence — which is what covers L4 until S08 lands, and covers
+rows on any layer that predate this guard.
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ from toee_hermes.content_scan import (
 )
 from toee_hermes.drivers.mock.agent_experience import scan_agent_experience_content
 from toee_hermes.errors import ToolDriverError
+from toee_hermes.plugin.hooks import FENCE_TAGS as hooks_fence_tags
 from toee_hermes.plugin.hooks import render_injection
 
 # The three surface forms of ONE tire size (205/55R16) -- the seeded L7 entry
@@ -107,16 +110,44 @@ def test_scan_injection_rejects_fence_delimiter_tokens(text: str) -> None:
 
 def test_fence_tags_cover_every_tag_render_injection_emits() -> None:
     # Anti-drift: FENCE_TAGS is a copy of the tag names hooks.py fences with, so
-    # a new fence (S06's glossary) that nobody adds here would be escapable.
-    # Assert against what render_injection actually emits rather than the source.
+    # a new fence that nobody adds here would be escapable on the WRITE side.
+    #
+    # This test went INERT once and is now pinned two ways so it cannot again.
+    # As written for S01 it rendered only the snapshot/memory/experience layers
+    # and asserted `emitted <= FENCE_TAGS` -- a subset check over a call that
+    # could not produce the new tag. When S06 added `<confirmed_lexicon>` to
+    # hooks.py the assertion still passed, which is precisely the fence it was
+    # supposed to catch.
+    #   (a) SET EQUALITY against hooks.FENCE_TAGS -- catches a fence declared in
+    #       the renderer and never mirrored here (the S06 case);
+    #   (b) the emitted check, now driven with EVERY layer populated -- catches a
+    #       fence the renderer emits without declaring in its own tuple.
+    lexicon = [
+        {
+            "id": "lex_1",
+            "domain": "company",
+            "entry_kind": "alias",
+            "surface_form": "TOEE",
+            "canonical_form": "TOEE TIRE",
+            "status": "confirmed",
+        }
+    ]
     rendered = render_injection(
         {"customer": "known"},
         [{"slot": "delivery_window", "value": "mornings"}],
         [{"content": "Escalate AR disputes over $500."}],
+        lexicon=lexicon,
     )
     emitted = set(re.findall(r"</([a-z_]+)>", rendered or ""))
     assert emitted, "render_injection emitted no fence at all -- test is inert"
+    assert set(FENCE_TAGS) == set(hooks_fence_tags), (
+        "content_scan.FENCE_TAGS has drifted from the fences hooks.py renders; "
+        "the write-side guard would not reject the missing tag"
+    )
     assert emitted <= set(FENCE_TAGS)
+    # ... and every declared tag is one this renderer can actually emit, so the
+    # subset check above is not satisfied by an under-populated call.
+    assert emitted == set(FENCE_TAGS)
 
 
 # --- the two legs, on their own -----------------------------------------------
