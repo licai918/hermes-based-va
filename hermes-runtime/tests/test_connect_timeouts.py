@@ -79,37 +79,63 @@ def test_the_failed_emit_is_still_recorded_rather_than_silently_dropped(
     ), "a bounded failure must still be visible; silence would hide an outage"
 
 
-@pytest.mark.parametrize(
-    "relative_path",
-    [
-        "metrics.py",
-        "integration_probe.py",
-        "datastore/migrate.py",
-        "datastore/pool.py",
-        "knowledge/ingest.py",
-        "knowledge/migrate.py",
-    ],
-)
+# `psycopg.connect(` anywhere in the runtime package, or the pool's own
+# construction. Both open a TCP connection; both need a bound.
+_CONNECT_RE = re.compile(r"psycopg\.connect\s*\(")
+_POOL_RE = re.compile(r"ConnectionPool\s*\(")
+
+
+def _modules_that_open_connections() -> list[str]:
+    """DERIVED, not listed -- the whole point of the completeness check.
+
+    S18's review caught the earlier version of this test: it parametrized over a
+    hardcoded list of six files, so a connect added to a SEVENTH module was
+    invisible to it. A completeness check whose completeness depends on someone
+    remembering to extend it is exactly the opt-in default this project keeps
+    getting bitten by. Walking the package means a new module carrying a connect
+    is in scope the moment it exists.
+    """
+    found: list[str] = []
+    for path in sorted(_RUNTIME_PKG.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        if _CONNECT_RE.search(source) or _POOL_RE.search(source):
+            found.append(path.relative_to(_RUNTIME_PKG).as_posix())
+    return found
+
+
+_CONNECT_MODULES = _modules_that_open_connections()
+
+
+def test_the_discovery_itself_found_something() -> None:
+    """Guards the guard: a broken pattern would silently parametrize over nothing.
+
+    Without this, a typo in the regexes turns the completeness check below into
+    zero test cases -- which pytest reports as success. Same failure mode as a
+    catalog drift check that reports "no tools" when its parser breaks.
+    """
+    assert len(_CONNECT_MODULES) >= 6, (
+        f"only found {_CONNECT_MODULES} -- the runtime package is known to open "
+        "connections in at least six modules, so this discovery is broken rather "
+        "than the package having gotten smaller."
+    )
+
+
+@pytest.mark.parametrize("relative_path", _CONNECT_MODULES)
 def test_every_connect_site_bounds_its_tcp_connect(relative_path: str) -> None:
     """A completeness check, so the next unbounded connect cannot arrive quietly.
 
     Source-level rather than behavioural: several of these are migration and
     ingestion entry points that a unit test cannot reasonably drive, and the
     property -- "this call names a connect timeout" -- is exactly what the source
-    shows. It is deliberately NOT a count: a count passes when someone adds a
-    seventh site and updates the number.
+    shows. It is deliberately NOT a count of sites: a count passes the day someone
+    adds a site and updates the number.
     """
     source = (_RUNTIME_PKG / relative_path).read_text(encoding="utf-8")
 
-    # `psycopg.connect(` in the runtime package, or the pool's own construction.
-    connects = len(re.findall(r"psycopg\.connect\s*\(", source))
-    pools = len(re.findall(r"ConnectionPool\s*\(", source))
-    assert connects + pools > 0, (
-        f"{relative_path} no longer opens a connection -- if that is deliberate, "
-        "drop it from this parametrize list rather than leaving a vacuous case."
-    )
-
+    connects = len(_CONNECT_RE.findall(source))
+    pools = len(_POOL_RE.findall(source))
     timeouts = len(re.findall(r"connect_timeout", source))
+
     assert timeouts >= connects + pools, (
         f"{relative_path} opens {connects + pools} connection(s) but names "
         f"connect_timeout {timeouts} time(s). An unbounded connect turns every "
