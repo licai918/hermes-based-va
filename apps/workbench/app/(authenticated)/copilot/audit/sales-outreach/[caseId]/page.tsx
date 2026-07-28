@@ -5,6 +5,7 @@
 // restricts this whole route to supervisor/admin) drives the review bar's
 // visibility (0.0.4 S04).
 import { getServerSession } from "@/lib/auth/current-session";
+import { decodeRouteParam } from "@/lib/route-param";
 import { SalesOutreachDetail } from "@/components/audit/SalesOutreachDetail";
 
 export default async function SalesOutreachCasePage({
@@ -14,5 +15,8 @@ export default async function SalesOutreachCasePage({
 }) {
   const { caseId } = await params;
   const session = await getServerSession();
-  return <SalesOutreachDetail caseId={caseId} role={session?.role} />;
+  // Case ids happen to be encoding-safe today, so this is the same defect that
+  // bit the auto-handled detail rather than a live one -- fixed together
+  // because a half-fixed class reads as a handled one.
+  return <SalesOutreachDetail caseId={decodeRouteParam(caseId)} role={session?.role} />;
 }

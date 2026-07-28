@@ -236,10 +236,16 @@ class PostgresGatewayStore:
                         INSERT INTO message_turn
                             (id, sms_session_id, customer_thread_id, direction,
                              author, body, auto_handled)
-                        VALUES (%s, %s, %s, 'inbound', 'customer', %s, FALSE)
+                        VALUES (%s, %s, %s, 'inbound', 'customer', %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
-                        (turn_id, session_id, thread_id, event.body),
+                        (
+                            turn_id,
+                            session_id,
+                            thread_id,
+                            event.body,
+                            not _escalation_case_open(cur, thread_id),
+                        ),
                     )
 
                     if snapshot is not None:
@@ -584,16 +590,35 @@ class PostgresGatewayStore:
         with self._connect() as conn:
             try:
                 with conn.cursor() as cur:
+                    # Decided HERE rather than at inbound, because the escalation
+                    # happens DURING the turn: the agent calls toee_case only once
+                    # it knows it cannot finish the request itself. At inbound we
+                    # would always read "no escalation yet" and mark every turn
+                    # auto-handled.
+                    auto_handled = not _escalation_case_open(cur, thread_id)
                     cur.execute(
                         """
                         INSERT INTO message_turn
                             (id, sms_session_id, customer_thread_id, direction,
                              author, body, auto_handled)
-                        VALUES (%s, %s, %s, 'outbound', 'hermes', %s, FALSE)
+                        VALUES (%s, %s, %s, 'outbound', 'hermes', %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
-                        (turn_id, session_id, thread_id, body),
+                        (turn_id, session_id, thread_id, body, auto_handled),
                     )
+                    if not auto_handled and context.inbound_body_ref:
+                        # The inbound that TRIGGERED this escalation belongs to the
+                        # human-intervention segment too. It was written before the
+                        # agent escalated, so it optimistically read auto-handled;
+                        # settle the pair now that the turn's outcome is known.
+                        # Without this the customer's message reads "auto-handled"
+                        # while the reply that escalated it does not -- and
+                        # `active_case_segment` (cases.py) would hide the very turn
+                        # that opened the case from the case segment.
+                        cur.execute(
+                            "UPDATE message_turn SET auto_handled = FALSE WHERE id = %s",
+                            (context.inbound_body_ref,),
+                        )
                     cur.execute(
                         """
                         UPDATE cases SET last_activity_at = now()
@@ -608,6 +633,47 @@ class PostgresGatewayStore:
                 raise
 
 
+def _escalation_case_open(cur, thread_id: str) -> bool:
+    """Is a human actually needed on this thread right now?
+
+    This is what decides ``message_turn.auto_handled`` -- an **Auto-Handled
+    Interaction** is a turn the External Customer Service Profile completes
+    "without opening a Human Intervention Case" (CONTEXT.md), and ADR-0037 is
+    explicit that such threads must NOT enter the rep work queue.
+
+    The test cannot simply be "does a case exist", because ``_ensure_open_case``
+    below opens one on EVERY accepted inbound so Tier B can show the thread.
+    That placeholder is deliberately **untriaged** -- it carries no
+    ``contact_reason``. A case only becomes a real Human Intervention Case once
+    something states WHY a human is needed:
+
+      * the agent escalates and calls ``toee_case`` create_case with a
+        contact_reason (it is in the EXTERNAL Profile Tool Allowlist), or
+      * an employee triages the placeholder in the Workbench ("Edit reason").
+
+    So ``contact_reason IS NOT NULL`` is the escalation signal, and the
+    untriaged placeholder stays out of it. `_ensure_open_case` must therefore
+    keep leaving contact_reason NULL -- ``test_gateway_placeholder_case_stays_untriaged``
+    pins that, because setting one there would silently mark every conversation
+    escalated and empty the auto-handled audit view again.
+
+    ``sales_outreach`` is excluded to match ``_list_auto_handled``, which routes
+    those to the separate Sales Outreach Audit View.
+    """
+    cur.execute(
+        """
+        SELECT 1 FROM cases
+        WHERE customer_thread_id = %s
+          AND status IN ('open', 'in_progress')
+          AND contact_reason IS NOT NULL
+          AND contact_reason <> 'sales_outreach'
+        LIMIT 1
+        """,
+        (thread_id,),
+    )
+    return cur.fetchone() is not None
+
+
 def _ensure_open_case(
     cur,
     *,
@@ -616,7 +682,12 @@ def _ensure_open_case(
     preview: str,
     channel: str = _SMS_CHANNEL,
 ) -> None:
-    """Open a Follow-up Case when none exists so Tier B Workbench shows the thread."""
+    """Open a Follow-up Case when none exists so Tier B Workbench shows the thread.
+
+    Leaves ``contact_reason`` NULL on purpose: an untriaged placeholder, not an
+    escalation. See ``_escalation_case_open`` for why that distinction carries
+    the whole auto-handled read model.
+    """
     cur.execute(
         "SELECT id FROM cases WHERE customer_thread_id = %s AND status IN ('open', 'in_progress') LIMIT 1",
         (thread_id,),
