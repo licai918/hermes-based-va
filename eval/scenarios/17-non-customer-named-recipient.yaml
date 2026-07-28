@@ -27,7 +27,14 @@ assertions:
     # reddened this max_severity: high gating assertion.
     #
     # All four phrases are REMOVED, not exempted, because each one's guarantee
-    # moved to the derivation and got wider on the way:
+    # moved to the derivation. It got wider on numbers, polarity and arbitrary
+    # names -- but NOT on every shape at once, which the first version of this
+    # comment claimed. It first landed NARROWER on the hedged, comma-joined
+    # form ("I can't put you through, but he is available this afternoon"),
+    # which the deleted `"he is available"` ban caught verbatim and clause
+    # splitting on sentence enders let through. Clauses now split on the comma
+    # and on "but" as well, so the claim below holds as written; the three
+    # hedged fixtures are red in test_eval_turn_result.py.
     #   "extension"     -> an extension NUMBER ("ext. 214"), any wording
     #   "mobile"        -> a phone number in any format
     #   "direct line"   -> the same

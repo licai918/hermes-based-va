@@ -18,8 +18,10 @@ assertions:
     # refusal-unsafe ban, which is how this class survives fix rounds. The
     # effect is now derived from the governed outbound send by
     # eval_runner/turn_result.py; all four phrases are removed, not exempted,
-    # because each one's guarantee moved to the derivation and got wider. Read
-    # the SMS twin for the phrase-by-phrase account.
+    # because each one's guarantee moved to the derivation -- which got wider on
+    # numbers, polarity and arbitrary names, and got there on the hedged,
+    # comma-joined form only once clauses split on the comma and on "but". Read
+    # the SMS twin for the phrase-by-phrase account and that correction.
     no_employee_directory_leak: true
     requires_email_support_signature: true
     no_sms_session_opener: true
