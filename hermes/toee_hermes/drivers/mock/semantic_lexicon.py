@@ -530,11 +530,18 @@ def create_semantic_lexicon_mock_handlers(
     """Build ``toee_semantic_lexicon`` handlers backed by an in-memory list.
 
     A fresh store per factory call, closed over by the handlers (mirrors every
-    other mock fragment). No baseline data: S03 seeds domain #1 by calling
-    ``propose_lexicon_entry``. ``store`` is an injection point for tests that must
-    set up state no governed action can produce -- an interim unattributed
-    ``admin_manual`` row (D20 now refuses to write one) or a non-zero
-    ``hit_count`` (D6: a scheduled rollup owns that column).
+    other mock fragment). No baseline data, and deliberately NOT in lockstep with
+    Postgres here: migration 0024 seeds domain #1 into the real table, but the mock
+    stays empty. Seeding it via ``propose_lexicon_entry`` would write
+    ``status='proposed'`` rows, and every L7 reader consumes ``confirmed`` rows
+    only -- so the mock's "baseline" would be invisible to exactly the code it
+    stands in for, which is worse than having none. Tests that need the seeded
+    vocabulary build it explicitly from ``toee_hermes.lexicon.LEXICON_SEED_ENTRIES``.
+
+    ``store`` is an injection point for tests that must set up state no governed
+    action can produce -- an interim unattributed ``admin_manual`` row (D20 now
+    refuses to write one) or a non-zero ``hit_count`` (D6: a scheduled rollup owns
+    that column).
     """
     store = [] if store is None else store
     # Mock/Postgres divergence #2 (S01 review): `f"lex_{len(store) + 1}"` reuses
