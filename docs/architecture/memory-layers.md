@@ -296,7 +296,7 @@ which is what covers values already in the store.
 
 ---
 
-## Outside the layer model, and why {#outside-the-layer-model-and-why}
+## Outside the layer model, and why
 
 Three surfaces live in the same Postgres and are **not** memory layers. The rule that decides
 it is the same one `LAYER_OF_ACTION` applies: a layer holds content the system reads back into
