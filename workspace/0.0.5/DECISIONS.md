@@ -132,6 +132,26 @@ symmetric with that one:
 - **Injection patterns in a key → hard-reject** (a key can carry a payload; nobody disputes this).
 - **PII patterns in a key → redact, never reject** — for L6 and L7 alike.
 
+**Clarification (the implementer caught that this ruling's own example contradicted its rule, and
+declined to guess — correctly).** The `{"case": {"callback": "+1 416 555 0199"}}` example above
+is a nested **value**, not a key, so the rule as written does not cover it. Deciding now, rather
+than leaving it ambiguous:
+
+**Keys redact. VALUES — top-level or nested — keep their existing per-layer behaviour: L7's
+`proposer_context`/`evidence` values redact, L6's values still hard-reject.** The distinction is
+not arbitrary. A key is structural metadata that the writer did not compose as prose. A value is
+content. L7's evidence is *explicitly designated* as a verbatim customer exchange that must
+survive so an admin can judge the proposal; L6's `proposer_context` carries no such designation,
+and L6 is a **shared** layer whose whole NFR-6 rule is that customer PII does not belong in it.
+
+So the surviving asymmetry is exactly one axis — PII in a context *value* — and it is a
+decision, not a leftover.
+
+**Consequence for S04, and it is the right consequence:** a capture fork that puts a customer's
+callback number into an L6 `proposer_context` value will be rejected. That is the guard working.
+The fix is for the fork to carry ids and refs rather than raw contact details, not to weaken the
+guard — pushing customer PII into a shared layer is the thing NFR-6 exists to stop.
+
 This narrows the accidental L6 widening to its defensible half and keeps NFR-6 satisfied: the
 PII still does not get stored, it gets replaced.
 
