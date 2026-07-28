@@ -37,6 +37,7 @@ from toee_hermes.lexicon import (
     SEASON_ALL_SEASON,
     SEASON_OVERRIDE_SURFACE_FORM,
     SEASON_WINTER,
+    SeasonalDefault,
     TireSize,
     current_season,
     normalizer_enabled,
@@ -51,7 +52,12 @@ from toee_hermes.tool_gate import TOOLS_DISPATCH_ROUTE, ToolExecutionContext
 @pytest.mark.parametrize(
     "notation",
     ("2055516", "205 55 16", "20555r16", "20555R16", "205/55R16", "205-55-16",
-     "205/55/16", "  205 55 16  "),
+     "205/55/16", "  205 55 16  ",
+     # `\d` is Unicode-wide, so non-ASCII decimal digits parse too and the
+     # OUTPUT is still canonical ASCII. Claimed in parse_tire_size's boundary
+     # section, so it is pinned here rather than left as an accident.
+     "٢٠٥ ٥٥ ١٦",   # Arabic-Indic 205 55 16
+     "２０５５５１６"),    # fullwidth 2055516
 )
 def test_every_accepted_notation_parses_to_the_same_tire_size(notation: str) -> None:
     # THE headline behaviour of the iteration (US2): a customer texting any of
@@ -146,6 +152,21 @@ def test_confirm_required_cannot_be_switched_off() -> None:
     # Not a field with a default -- a read-only property. There is no
     # constructor argument, no keyword, and no attribute assignment that
     # produces a seasonal default the agent may apply silently.
+    #
+    # Asserting ONLY that assignment raises would pass for the wrong reason:
+    # dataclasses.FrozenInstanceError subclasses AttributeError, so a plain
+    # frozen field `confirm_required: bool = True` raises IDENTICALLY here while
+    # still permitting SeasonalDefault(..., confirm_required=False) at
+    # construction. So pin the two claims the comment above actually makes.
+    assert "confirm_required" not in SeasonalDefault.__dataclass_fields__
+    with pytest.raises(TypeError):
+        SeasonalDefault(  # type: ignore[call-arg]
+            season=SEASON_WINTER,
+            value="winter tires",
+            source="date_derived",
+            confirm_required=False,
+        )
+
     default = resolve_seasonal_default(_confirmed_seed_rows(), today=date(2026, 11, 3))
     assert default is not None
     with pytest.raises(AttributeError):
@@ -197,6 +218,32 @@ def test_an_unconfirmed_override_row_does_not_win() -> None:
     default = resolve_seasonal_default(rows, today=date(2026, 11, 3))
     assert default is not None
     assert default.season == SEASON_WINTER
+    assert default.source == "date_derived"
+
+
+@pytest.mark.parametrize("typo", ("override", "Winter", "wintre", "all season", ""))
+def test_an_override_that_is_not_a_known_season_is_ignored(typo: str) -> None:
+    # Every other typo in this table fails safe. This one did not: an override
+    # row whose canonical_form is the literal "override" used to yield
+    # SeasonalDefault(season="override", value="override") -- and the value is
+    # what S06 reads out to the CUSTOMER as the confirmation question. An
+    # override the code cannot recognise is a typo, not an instruction.
+    rows = _confirmed_seed_rows()
+    rows.append(
+        {
+            "domain": DOMAIN_TIRE,
+            "entry_kind": "default_rule",
+            "surface_form": SEASON_OVERRIDE_SURFACE_FORM,
+            "canonical_form": typo,
+            "status": "confirmed",
+        }
+    )
+
+    default = resolve_seasonal_default(rows, today=date(2026, 11, 3))
+
+    assert default is not None
+    assert default.season == SEASON_WINTER
+    assert default.value == "winter tires"
     assert default.source == "date_derived"
 
 
@@ -294,9 +341,11 @@ def _propose_seed(driver, entry):
     "entry", LEXICON_SEED_ENTRIES, ids=lambda e: e.id
 )
 def test_every_seeded_entry_survives_the_governed_write_scan(entry) -> None:
-    # If the seed bypassed the write scanner, the one thing that matters here
-    # would be untested. D2 split scan_injection from scan_pii precisely so the
-    # rows below are storable.
+    # The seed DOES bypass the scanner in production: migration 0024 is a raw
+    # INSERT and never calls scan_lexicon_write. So the guarantee that these
+    # exact constants would survive the governed path is carried HERE (and on
+    # the PG twin), not by the migration. D2 split scan_injection from scan_pii
+    # precisely so the rows below are storable.
     driver = MockDriver(create_semantic_lexicon_mock_handlers())
     result = _propose_seed(driver, entry)
     assert result.ok is True, result.error_class

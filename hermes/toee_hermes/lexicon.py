@@ -1,4 +1,4 @@
-﻿"""L7 in-code normalizers + seeded domain #1 (0.0.5 S03, FR-2).
+"""L7 in-code normalizers + seeded domain #1 (0.0.5 S03, FR-2).
 
 The seventh memory layer stores the domain language the business speaks. S01
 built the governed store; this module supplies the two halves S01 deliberately
@@ -103,6 +103,12 @@ def parse_tire_size(value: Any) -> Optional[TireSize]:
     ``205/55R16``, ``205-55-16``, ``205/55/16``, in any case, with surrounding
     whitespace. All of them yield one :class:`TireSize`, so a customer who texts
     any of them reaches the same product.
+
+    Also handled, because ``\\d`` is Unicode-wide and this module never turned
+    that off: non-ASCII decimal digits. Arabic-Indic ``٢٠٥ ٥٥ ١٦`` and fullwidth
+    ``２０５５５１６`` both parse, and the OUTPUT is still canonical ASCII
+    ``205/55R16``. Harmless and arguably desirable, but named here because the
+    value of this boundary section is that it is exhaustive.
 
     **What this deliberately does NOT handle**, each returning ``None`` so the
     caller leaves the value exactly as the customer wrote it:
@@ -214,7 +220,10 @@ def resolve_seasonal_default(
 
     Date-derived by :func:`current_season`, unless a confirmed
     ``season=override`` row is present -- an admin who wants the calendar
-    ignored adds that one row from the console and it wins, with no deploy.
+    ignored adds that one row from the console and it wins, with no deploy. Its
+    value must be a season this module knows; anything else is a console typo
+    and is ignored rather than passed through, because ``value`` is read out to
+    the CUSTOMER as the confirmation question.
 
     ``None`` when no confirmed ``default_rule`` covers the resolved season:
     nothing is invented, and the agent simply asks what the customer wants.
@@ -224,6 +233,8 @@ def resolve_seasonal_default(
         for entry in _confirmed(entries, domain, ENTRY_KIND_DEFAULT_RULE)
     }
     override = rules.get(SEASON_OVERRIDE_SURFACE_FORM)
+    if override not in (SEASON_WINTER, SEASON_ALL_SEASON):
+        override = None  # a typo is not an instruction -- fall back to the calendar
     season = override or current_season(today)
     value = rules.get(f"{SEASON_CONDITION_PREFIX}{season}")
     if not value:

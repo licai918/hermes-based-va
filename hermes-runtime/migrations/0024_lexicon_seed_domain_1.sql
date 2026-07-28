@@ -31,8 +31,16 @@
 --
 -- 205 55 16 is the flagship, and it is the string that nearly broke 0.0.5: it
 -- matches the write scanner's _PHONE_RE. D2 split scan_injection from scan_pii
--- so a surface form gets the injection leg only -- test_datastore_lexicon_seed
--- pushes every row below through the real governed write path to prove it.
+-- so a surface form gets the injection leg only.
+--
+-- SCANNER: to be plain about it -- this is a raw INSERT. It does NOT run
+-- scan_lexicon_write; nothing below is scanned at deploy time. That is the
+-- accepted trade for fixed, reviewed content (the same reason no audit row is
+-- written, below). The guarantee that these exact constants WOULD survive the
+-- governed path is carried by TESTS, on both twins: hermes/tests/test_lexicon.py
+-- and tests/test_datastore_lexicon_seed.py each push every row below through
+-- propose_lexicon_entry for real. Change a string here without changing
+-- LEXICON_SEED_ENTRIES and those tests are what catches you -- not this file.
 --
 -- status/provenance: these rows are the owner's CURATED vocabulary, not a
 -- proposal, so they land `confirmed` + `admin_manual` -- S05/S06 read confirmed
