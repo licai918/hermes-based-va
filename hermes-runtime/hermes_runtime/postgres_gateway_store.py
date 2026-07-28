@@ -40,6 +40,26 @@ _SESSION_TTL = "24 hours"
 # can't grow unbounded as the store accumulates. Newest-confirmed first (ADR-0152).
 _CONFIRMED_EXPERIENCE_LIMIT = 20
 
+# The confirmed-glossary read, shared by both selection strategies (S26) so the
+# two can only ever differ in HOW MANY rows come back and in what order -- never
+# in which columns the renderer and the ledger see. `hit_count` rides along for
+# the health score; every other consumer ignores the extra key.
+_CONFIRMED_LEXICON_COLUMNS = (
+    "id",
+    "domain",
+    "entry_kind",
+    "surface_form",
+    "canonical_form",
+    "status",
+    "hit_count",
+)
+_CONFIRMED_LEXICON_SQL = """
+SELECT id, domain, entry_kind, surface_form, canonical_form, status, hit_count
+FROM semantic_lexicon
+WHERE status = 'confirmed'
+ORDER BY decided_at DESC NULLS LAST, created_at DESC
+"""
+
 
 def _channel_column(channel: str) -> str:
     """Map the ingress channel to the persisted channel vocabulary (S17).
@@ -468,9 +488,24 @@ class PostgresGatewayStore:
 
         Shared domain language, so — like :meth:`load_confirmed_experience` and
         unlike :meth:`load_customer_memory` — it is keyed by nothing but
-        ``status``. Newest-decided first, capped at
+        ``status``. Capped at
         :data:`~hermes_runtime.tool_backend.LEXICON_GLOSSARY_LIMIT` (D16: a named
         constant, because S22's knob panel reads it).
+
+        **WHICH entries fill that cap is a knob (0.0.5 S26, FR-6's upgrade
+        clause).** ``newest`` — the shipped default — orders by decided-at and
+        lets Postgres apply the LIMIT. ``health`` reads every confirmed row plus
+        its effectiveness aggregate and ranks in Python, through the SAME
+        ``select_ranked_entries`` the console's score comes from, so the number an
+        admin sees and the rule that decides what reaches the prompt can never be
+        two different formulas.
+
+        Reading every confirmed row in ``health`` mode is deliberate and cheap:
+        the confirmed set is small (``lexicon_hits._CONFIRMED_SQL``, the
+        deterministic seam's own vocabulary read, already does exactly this), and
+        the alternative — an aggregate over ``injection_ledger`` per turn — is the
+        reply-path read NFR-5 forbids. ``entry_effectiveness`` is materialized for
+        that reason and joins on its primary key.
 
         ``status`` is in the projection even though the WHERE clause already
         pins it: ``hooks._render_lexicon`` re-checks the field rather than
@@ -479,30 +514,33 @@ class PostgresGatewayStore:
         a ``default_rule``'s condition at render time; ``id`` is S09's L7
         ``entry_ref``.
         """
+        from .entry_effectiveness import (
+            entry_effectiveness_for,
+            health_for_rows,
+            select_ranked_entries,
+        )
+        from .injection_ledger import LAYER_L7
+        from .tool_backend import LEXICON_SELECTION_HEALTH, lexicon_selection_strategy
+
+        ranked = lexicon_selection_strategy() == LEXICON_SELECTION_HEALTH
+        # In ranked mode the cap is applied AFTER scoring, so the SQL must not
+        # pre-cut the set: pre-cutting by date is exactly the eviction the ranking
+        # exists to replace.
+        sql = _CONFIRMED_LEXICON_SQL + ("" if ranked else "\nLIMIT %s")
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, domain, entry_kind, surface_form, canonical_form, status
-                    FROM semantic_lexicon
-                    WHERE status = 'confirmed'
-                    ORDER BY decided_at DESC NULLS LAST, created_at DESC
-                    LIMIT %s
-                    """,
-                    (LEXICON_GLOSSARY_LIMIT,),
+                cur.execute(sql, () if ranked else (LEXICON_GLOSSARY_LIMIT,))
+                rows = [
+                    dict(zip(_CONFIRMED_LEXICON_COLUMNS, row)) for row in cur.fetchall()
+                ]
+                if not ranked:
+                    return rows
+                effectiveness = entry_effectiveness_for(
+                    cur, layer=LAYER_L7, entry_refs=[row["id"] for row in rows]
                 )
-                rows = cur.fetchall()
-        return [
-            {
-                "id": entry_id,
-                "domain": domain,
-                "entry_kind": entry_kind,
-                "surface_form": surface_form,
-                "canonical_form": canonical_form,
-                "status": status,
-            }
-            for entry_id, domain, entry_kind, surface_form, canonical_form, status in rows
-        ]
+        return select_ranked_entries(
+            health_for_rows(rows, effectiveness), limit=LEXICON_GLOSSARY_LIMIT
+        )
 
     def record_injection_ledger(
         self,

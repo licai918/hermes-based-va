@@ -295,4 +295,48 @@ describe("mapLexiconEntry", () => {
     const { id: _id, ...withoutId } = rawEntry();
     expect(() => mapLexiconEntry(withoutId)).toThrow();
   });
+
+  // --- 0.0.5 S26 (FR-31): the health block --------------------------------
+
+  const health = {
+    score: 0.63,
+    scope: "External customer turns only.",
+    basis: "Turn-level attribution.",
+    usage: { hits: 4, injections: 6, saturation: 10 },
+    honored: { rate: 0.9, passed: 9, determinate: 10, undetermined: 1 },
+    misapplied: { rate: 0.125, passed: 7, determinate: 8, undetermined: 0 },
+    stale: { rate: null, passed: 0, determinate: 0, undetermined: 0 },
+    weights: { usage: 0.5, honored: 0.5, misapplied: 0.3, stale: 0.2 },
+  };
+
+  it("maps the score, every component and both caveats", () => {
+    const mapped = mapLexiconEntry(rawEntry({ entry_health: health }));
+    expect(mapped.health?.score).toBe(0.63);
+    expect(mapped.health?.honored).toEqual({
+      rate: 0.9,
+      passed: 9,
+      determinate: 10,
+      undetermined: 1,
+    });
+    // A leg with no denominator stays null across the wire. Coercing it to 0
+    // here would turn "nobody scored this" into "this never went stale".
+    expect(mapped.health?.stale.rate).toBeNull();
+    expect(mapped.health?.usage.injections).toBe(6);
+    expect(mapped.health?.scope).toBe(health.scope);
+  });
+
+  it("is null when the server sent no health at all", () => {
+    expect(mapLexiconEntry(rawEntry()).health).toBeNull();
+  });
+
+  it("refuses a score that arrived without its scope or its basis", () => {
+    // The caveats are load-bearing, not decoration: a bare number would render
+    // as "this entry's effectiveness everywhere", which it is not. Dropping the
+    // whole block is the honest outcome -- the console then says "not computed"
+    // instead of showing a number nobody can read correctly.
+    const { scope: _s, ...noScope } = health;
+    expect(mapLexiconEntry(rawEntry({ entry_health: noScope })).health).toBeNull();
+    const { basis: _b, ...noBasis } = health;
+    expect(mapLexiconEntry(rawEntry({ entry_health: noBasis })).health).toBeNull();
+  });
 });

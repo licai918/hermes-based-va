@@ -295,6 +295,34 @@ export type LexiconProvenance =
   | "conversation_confirmed"
   | "feedback_derived";
 
+// 0.0.5 S26 (FR-31): one judge leg's contribution to an entry's health, with the
+// numbers the rate came from. `rate` is null when `determinate` is 0 -- an
+// unscored leg is NOT a 0.0, which a panel would draw as "perfect".
+export interface LexiconHealthLeg {
+  rate: number | null;
+  passed: number;
+  determinate: number;
+  undetermined: number;
+}
+
+// The entry-health score and everything it was built from. The two prose fields
+// are DATA, not decoration: `scope` says the number covers external customer
+// turns only (the copilot draft path's turn id is synthetic, so its injections
+// cannot be attributed), and `basis` says the judge scores a TURN, which every
+// entry in that turn's prompt shares. A renderer that shows `score` alone would
+// present a partial number as a total one -- which is exactly the failure the
+// Memory Hub's {label, value} pairs exist to prevent.
+export interface LexiconEntryHealth {
+  score: number;
+  scope: string;
+  basis: string;
+  usage: { hits: number; injections: number; saturation: number };
+  honored: LexiconHealthLeg;
+  misapplied: LexiconHealthLeg;
+  stale: LexiconHealthLeg;
+  weights: { usage: number; honored: number; misapplied: number; stale: number };
+}
+
 export interface LexiconEntry {
   id: string;
   domain: string;
@@ -318,8 +346,14 @@ export interface LexiconEntry {
   // named admin actually approved.
   provenanceUnattributed: boolean;
   decidedAt: number | null;
-  // Materialized by a scheduled rollup (D6), never an in-turn UPDATE.
+  // Materialized by a scheduled rollup (D6), never an in-turn UPDATE. It counts
+  // DETERMINISTIC-SEAM applications only, so it is structurally zero for a
+  // `default_rule` -- which is why the health score counts ledger injections as
+  // usage too, and why the ranked glossary cannot order on this column alone.
   hitCount: number;
   createdAt: number;
   updatedAt: number | null;
+  // Null when the server did not compute one (a store with no ledger and no
+  // judge). Never faked into a zero score.
+  health: LexiconEntryHealth | null;
 }

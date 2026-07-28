@@ -429,8 +429,232 @@ def lexicon_entry_view(row: dict[str, Any]) -> dict[str, Any]:
     ``admin_manual`` with a NULL decider. The badge went dark at the exact moment
     an admin was touching the row. Deriving it here, on the way out of every
     action, is the only place that cannot be forgotten by the next one.
+
+    ``entry_health`` (0.0.5 S26) rides the same rule for the same reason: an
+    action response the console maps over a row must not blank a score the list
+    had filled in. The Postgres twin puts the joined numbers on ``row`` before
+    calling this; the mock has no ledger and no judge, so it lands the honest
+    hits-only score rather than a missing key.
     """
-    return {**row, "provenance_unattributed": lexicon_provenance_unattributed(row)}
+    return {
+        **row,
+        "provenance_unattributed": lexicon_provenance_unattributed(row),
+        "entry_health": row.get("entry_health")
+        or lexicon_entry_health(hits=row.get("hit_count") or 0),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 0.0.5 S26 (FR-31 / FR-6 upgrade clause): the entry-health score and the
+# health-ranked glossary selection. PURE -- no store, no ledger, no judge.
+#
+# It lives HERE, beside the validators and `lexicon_entry_view`, because this
+# module is already the ONE shared L7 resolver both twins import (see the
+# Postgres handler's docstring). The DB half -- the ledger join, the rollup and
+# its migration -- is `hermes_runtime.entry_effectiveness`, which imports these.
+# One formula, one selection rule, no chance of the twins disagreeing (NFR-7).
+# --------------------------------------------------------------------------- #
+
+# D16: named constants from day one, so S22's knob panel reads them instead of
+# hunting magic numbers. Per D14 these move by DEPLOY-TIME CONFIG COMMIT -- the
+# panel displays them and never mutates them; the audit trail is git history.
+HEALTH_WEIGHT_USAGE = 0.5
+HEALTH_WEIGHT_HONORED = 0.5
+HEALTH_WEIGHT_MISAPPLIED = 0.3
+HEALTH_WEIGHT_STALE = 0.2
+
+# Usage saturates: an entry that has been used ten times has proven it is used,
+# and beyond that more usage must not outrank quality. Without a ceiling the one
+# hot normalizer would dominate every ranking for ever.
+HEALTH_USAGE_SATURATION = 10
+
+# What a leg with NO determinate verdicts contributes. Neutral, not zero: an
+# entry nobody has judged must be neither credited nor punished, because scoring
+# it badly is a RATCHET -- low score, evicted from the glossary, never injected,
+# never sampled, never judged, never recovers.
+_NEUTRAL_HONORED = 0.5
+_NEUTRAL_PENALTY = 0.0
+
+# Which judge leg feeds which component. The legs are phrased so a PASS means the
+# agent behaved well, so the two penalties are the INVERSE of their leg's pass
+# rate. `no_stale_use` is calibrated but NOT in the production sampling set
+# today, so its rate is honestly `None`; re-enabling it in
+# `honored_rate.JUDGE_LEGS` is the only change needed to light this up.
+HEALTH_HONORED_LEG = "honored"
+HEALTH_MISAPPLIED_LEG = "no_misapplication"
+HEALTH_STALE_LEG = "no_stale_use"
+
+# D4.3, carried as DATA rather than prose: the copilot draft turn's `turn_ref` is
+# a synthetic id with no durable identity, so its ledger rows cannot be attributed
+# per turn and no verdict is ever joined to them. A score rendered without this
+# reads as "this entry's effectiveness everywhere", which it is not. It travels
+# INSIDE the payload (S14's rule: a count never travels without its scope) so no
+# renderer can drop it.
+EXTERNAL_PATH_SCOPE = (
+    "External customer turns only. The copilot draft path's turn id is synthetic, "
+    "so injections made while drafting are recorded but cannot be attributed to "
+    "an entry — they are in neither the numerator nor the denominator here."
+)
+
+# The second thing this number is not, carried as data for the same reason. The
+# judge scores a TURN, and a turn's prompt carries several entries at once, so an
+# entry's rate is "how the turns that carried it scored", not "how this entry
+# itself was used". It is a signal, not an indictment: it is why the retirement
+# queue proposes and an admin decides (NFR-3), and why the components ship beside
+# the score instead of only the score.
+HEALTH_BASIS = (
+    "Turn-level attribution: the judge scores a reply, and every entry that was in "
+    "that turn's prompt shares its verdict. Read it as a signal about the company "
+    "this entry keeps, not as proof about the entry alone."
+)
+
+
+def _leg_view(counts: Optional[dict[str, Any]], *, inverse: bool) -> dict[str, Any]:
+    """One leg's counts plus its rate, or a ``None`` rate when it has no denominator.
+
+    A rate with no denominator is a count wearing a percentage sign, so the
+    numerator and the denominator ship beside every rate and an unscored leg
+    reports ``None`` -- never a 0.0, which a panel would draw as "perfect".
+    """
+    passed = int((counts or {}).get("passed") or 0)
+    determinate = int((counts or {}).get("determinate") or 0)
+    undetermined = int((counts or {}).get("undetermined") or 0)
+    if determinate:
+        rate = passed / determinate
+        rate = round(1.0 - rate if inverse else rate, 4)
+    else:
+        rate = None
+    return {
+        "rate": rate,
+        "passed": passed,
+        "determinate": determinate,
+        "undetermined": undetermined,
+    }
+
+
+def lexicon_entry_health(
+    *,
+    hits: int = 0,
+    injections: int = 0,
+    leg_results: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """ONE entry-health score plus every component it was built from (FR-31).
+
+    ``score = W_usage * min(1, (hits + injections) / SATURATION)
+              + W_honored * honored_rate
+              - W_misapplied * misapplied_rate
+              - W_stale * stale_rate``
+
+    Range ``[-0.5, 1.0]``; higher is healthier. It is an ORDINAL for ranking and
+    for the retirement queue, not a percentage, and it is never shown alone --
+    the components and their denominators ride with it.
+
+    ``hits`` is ``semantic_lexicon.hit_count``, the MATERIALIZED column S05's
+    scheduled rollup maintains (D6) -- read, never recomputed here and never
+    re-derived from the ledger. ``injections`` is the ledger-derived count of
+    turns that actually carried the entry. Both are usage, and they are not
+    interchangeable: hit_count is lifetime deterministic-seam applications and is
+    structurally zero for a ``default_rule``, which the seam never applies.
+    """
+    usage = max(0, int(hits or 0)) + max(0, int(injections or 0))
+    usage_score = min(1.0, usage / HEALTH_USAGE_SATURATION)
+    legs = leg_results or {}
+    honored = _leg_view(legs.get(HEALTH_HONORED_LEG), inverse=False)
+    misapplied = _leg_view(legs.get(HEALTH_MISAPPLIED_LEG), inverse=True)
+    stale = _leg_view(legs.get(HEALTH_STALE_LEG), inverse=True)
+    score = (
+        HEALTH_WEIGHT_USAGE * usage_score
+        + HEALTH_WEIGHT_HONORED
+        * (_NEUTRAL_HONORED if honored["rate"] is None else honored["rate"])
+        - HEALTH_WEIGHT_MISAPPLIED
+        * (_NEUTRAL_PENALTY if misapplied["rate"] is None else misapplied["rate"])
+        - HEALTH_WEIGHT_STALE
+        * (_NEUTRAL_PENALTY if stale["rate"] is None else stale["rate"])
+    )
+    return {
+        "score": round(score, 4),
+        "scope": EXTERNAL_PATH_SCOPE,
+        "basis": HEALTH_BASIS,
+        "usage": {
+            "hits": int(hits or 0),
+            "injections": int(injections or 0),
+            "saturation": HEALTH_USAGE_SATURATION,
+        },
+        "honored": honored,
+        "misapplied": misapplied,
+        "stale": stale,
+        "weights": {
+            "usage": HEALTH_WEIGHT_USAGE,
+            "honored": HEALTH_WEIGHT_HONORED,
+            "misapplied": HEALTH_WEIGHT_MISAPPLIED,
+            "stale": HEALTH_WEIGHT_STALE,
+        },
+    }
+
+
+def _row_score(row: dict[str, Any]) -> float:
+    health = row.get("entry_health")
+    if isinstance(health, dict) and health.get("score") is not None:
+        return float(health["score"])
+    return float(lexicon_entry_health(hits=row.get("hit_count") or 0)["score"])
+
+
+def select_ranked_entries(
+    rows: list[dict[str, Any]], *, limit: int
+) -> list[dict[str, Any]]:
+    """The ``health``-ranked glossary window: best-first, ROUND-ROBIN by entry kind.
+
+    The FR-6 upgrade clause, and the fix for a known SILENT failure: with
+    newest-20 selection, a domain that grows past ``LEXICON_GLOSSARY_LIMIT``
+    evicts old entries by date, and a seasonal ``default_rule`` that stops
+    rendering does not announce itself -- the agent simply stops asking the
+    confirm-first question.
+
+    **Ranking on health alone would make that worse, not better.** A
+    ``default_rule`` earns NO ``hit_count`` at all: hits come from the
+    deterministic seam, which only ever applies aliases and normalizers. Out of
+    season it earns no injections either. So a straight "top 20 by score" evicts
+    exactly the entries whose whole purpose is to fire on an uncommon condition,
+    and the eviction is self-reinforcing -- not rendered, so not injected, so
+    never scores, so never comes back.
+
+    So the kinds take turns: the best ``default_rule``, the best ``alias``, the
+    best ``normalizer``, then the second best of each, until the limit. No kind
+    can be starved by another kind's volume, a kind with fewer rows than its share
+    simply spills its seats to the others, and there is no threshold to tune.
+    Rarity is not uselessness; this is that sentence as code.
+
+    ponytail: round-robin, not a weighted quota. If a domain ever seeds so many
+    seasonal rules that they crowd out vocabulary, cap the per-kind share -- the
+    render-time condition already drops the out-of-season ones from the prompt, so
+    nothing is broken today.
+    """
+    if limit <= 0:
+        return []
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for index, row in enumerate(rows):
+        # `index` is the tie-break, so the caller's own ordering (newest-decided
+        # first, from the store read) decides between two equal scores. Ranking
+        # must be deterministic or the prompt changes for no reason.
+        by_kind.setdefault(str(row.get("entry_kind") or ""), []).append(row)
+    for kind_rows in by_kind.values():
+        kind_rows.sort(key=lambda r: -_row_score(r))
+    queues = [by_kind[kind] for kind in sorted(by_kind)]
+    selected: list[dict[str, Any]] = []
+    for position in itertools.count():
+        if len(selected) >= limit:
+            break
+        drained = True
+        for queue in queues:
+            if position >= len(queue):
+                continue
+            drained = False
+            selected.append(queue[position])
+            if len(selected) >= limit:
+                break
+        if drained:
+            break
+    return selected
 
 
 def read_lexicon_proposal(

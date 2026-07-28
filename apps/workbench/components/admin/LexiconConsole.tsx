@@ -24,7 +24,13 @@ import {
   listLexiconEntries,
 } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
-import type { LexiconEntry, LexiconEntryKind, LexiconStatus } from "@/lib/gateway/types";
+import type {
+  LexiconEntry,
+  LexiconEntryHealth,
+  LexiconEntryKind,
+  LexiconHealthLeg,
+  LexiconStatus,
+} from "@/lib/gateway/types";
 
 const KINDS: LexiconEntryKind[] = ["alias", "normalizer", "default_rule"];
 const STATUS_FILTERS: (LexiconStatus | "all")[] = [
@@ -71,7 +77,59 @@ const PII_FOOTNOTE =
 
 // The number of columns the detail row has to span. One constant so a new
 // column cannot silently leave the panel misaligned.
-const COLUMN_COUNT = 12;
+const COLUMN_COUNT = 13;
+
+// 0.0.5 S26 (FR-31). The score is an ORDINAL in [-0.5, 1.0], not a percentage,
+// so it renders to two places with no % sign and never alone: `scope` and
+// `basis` come off the server payload and are shown verbatim, because they are
+// what stops "0.63" from reading as "this entry is 63% effective everywhere".
+function score(health: LexiconEntryHealth | null): string {
+  return health === null ? "—" : health.score.toFixed(2);
+}
+
+// A rate with no denominator is a count wearing a percentage sign, so every rate
+// renders WITH its denominator, and an unscored leg renders "not scored" -- never
+// 0%, which reads as a perfect or a terrible result depending on the leg.
+function rate(leg: LexiconHealthLeg): string {
+  if (leg.rate === null) {
+    return leg.undetermined > 0
+      ? `not scored (${leg.undetermined} undetermined)`
+      : "not scored";
+  }
+  return `${Math.round(leg.rate * 100)}% of ${leg.determinate}`;
+}
+
+function HealthDetail({ health }: { health: LexiconEntryHealth | null }) {
+  if (health === null) {
+    return (
+      <p style={{ margin: "0.15rem 0" }}>
+        No effectiveness has been computed for this entry yet — the scheduled
+        judge job and the injection ledger both have to have run.
+      </p>
+    );
+  }
+  return (
+    <>
+      <ul style={{ margin: "0.15rem 0", paddingLeft: "1.1rem" }}>
+        <li>
+          Usage: {health.usage.hits} deterministic application
+          {health.usage.hits === 1 ? "" : "s"} + {health.usage.injections} prompt
+          injection{health.usage.injections === 1 ? "" : "s"} (counts toward the
+          score up to {health.usage.saturation})
+        </li>
+        <li>Honored: {rate(health.honored)}</li>
+        <li>Misapplied: {rate(health.misapplied)}</li>
+        <li>Stale: {rate(health.stale)}</li>
+      </ul>
+      <p style={{ margin: 0, fontSize: "0.75rem", color: "#555" }}>
+        {health.scope}
+      </p>
+      <p style={{ margin: 0, fontSize: "0.75rem", color: "#555" }}>
+        {health.basis}
+      </p>
+    </>
+  );
+}
 
 export type LexiconConsoleViewProps = {
   entries: LexiconEntry[];
@@ -124,6 +182,8 @@ function EntryDetail({ entry }: { entry: LexiconEntry }) {
           No proposer context was captured with this entry.
         </p>
       )}
+      <div style={{ fontWeight: 600, marginTop: "0.5rem" }}>Entry health</div>
+      <HealthDetail health={entry.health} />
     </td>
   );
 }
@@ -230,6 +290,17 @@ function EntryRow({
           ) : null}
         </td>
         <td style={td}>{entry.hitCount}</td>
+        <td style={td}>
+          <span
+            title={
+              entry.health === null
+                ? "No effectiveness computed yet."
+                : `${entry.health.scope} ${entry.health.basis}`
+            }
+          >
+            {score(entry.health)}
+          </span>
+        </td>
         <td style={td}>{entry.piiRedacted ? "Scrubbed" : "None removed"}</td>
         <td style={td}>{formatTime(entry.createdAt)}</td>
         <td style={td}>
@@ -317,6 +388,7 @@ export function LexiconConsoleView({
   const [entryKind, setEntryKind] = useState<LexiconEntryKind>("alias");
   const [surfaceForm, setSurfaceForm] = useState("");
   const [canonicalForm, setCanonicalForm] = useState("");
+  const healthScope = entries.find((e) => e.health !== null)?.health?.scope ?? null;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -373,6 +445,7 @@ export function LexiconConsoleView({
                   <th style={th}>Provenance</th>
                   <th style={th}>Decider</th>
                   <th style={th}>Hits</th>
+                  <th style={th}>Health</th>
                   <th style={th}>PII scan</th>
                   <th style={th}>Proposed</th>
                   <th style={th}></th>
@@ -394,6 +467,16 @@ export function LexiconConsoleView({
             <p style={{ fontSize: "0.8rem", color: "#555", margin: 0 }}>
               {PII_FOOTNOTE}
             </p>
+            {/* The Health column's caveats, taken from the SERVER's own payload
+                rather than restated here, so the table footnote and the per-row
+                detail can never claim different scopes. A tooltip alone would
+                not do: the caveat has to be readable without hovering. */}
+            {healthScope ? (
+              <p style={{ fontSize: "0.8rem", color: "#555", margin: 0 }}>
+                Health: higher is better, on a −0.50 to 1.00 scale — usage,
+                honored, misapplied and stale in one number. {healthScope}
+              </p>
+            ) : null}
             {lexiconVersion ? (
               <p
                 style={{ fontSize: "0.75rem", color: "#666", margin: 0 }}

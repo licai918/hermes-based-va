@@ -201,11 +201,43 @@ def load_confirmed_experience(store: Optional[Any]) -> Optional[list[dict[str, A
 # it from deploy-time config later is a one-line change here and nowhere else
 # (D14 -- the knob moves by config commit, never by an in-app mutation path).
 #
-# ponytail: newest-first, fixed N. Hit-RANKED selection is S26's toggle; the
-# known ceiling is that a seasonal default_rule row older than the newest 20
-# confirmed entries falls out of the window and stops rendering. Acceptable at
-# the current seeded volume (4 rows); S26's ranking is the upgrade path.
+# The BOUND is fixed; what fills it is now a knob (S26 -- see below).
 LEXICON_GLOSSARY_LIMIT = 20
+
+# 0.0.5 S26, FR-6's upgrade clause: WHICH confirmed entries fill those 20 seats.
+#
+#   newest (DEFAULT) -- newest-decided first, S06's shipped behaviour, unchanged.
+#   health           -- ranked by S26's entry-health score, round-robin across
+#                       entry kinds so a `default_rule` (which earns no hit_count
+#                       at all) cannot be starved by a domain full of aliases.
+#
+# The default stays `newest` until the scores stabilize, exactly as the slice
+# asks: `health` reads a table that is empty until the judge job and the ledger
+# have both run, and ranking on an empty table would reorder the prompt for no
+# information. Flipping it is a DEPLOY-TIME CONFIG COMMIT (D14): there is no
+# in-app mutation path for any knob in 0.0.5, the panel displays values and never
+# changes them, and the audit trail for the flip is git history. Saying that
+# plainly is the honest version -- a UI that looks mutable and is not would be
+# worse than no UI.
+LEXICON_SELECTION_ENV = "LEXICON_SELECTION"
+LEXICON_SELECTION_NEWEST = "newest"
+LEXICON_SELECTION_HEALTH = "health"
+LEXICON_SELECTION_STRATEGIES = (LEXICON_SELECTION_NEWEST, LEXICON_SELECTION_HEALTH)
+
+
+def lexicon_selection_strategy(value: object = _UNSET) -> str:
+    """Which glossary selection strategy is live (FR-6 upgrade clause, S26).
+
+    Fail-SAFE rather than fail-closed, and the difference matters: an unknown or
+    unset value returns the shipped `newest` behaviour instead of an error or a
+    silent no-glossary, because a typo'd knob must never be able to empty the
+    prompt. Only the exact literal `health` flips it.
+    """
+    raw = os.environ.get(LEXICON_SELECTION_ENV) if value is _UNSET else value
+    text = str(raw).strip().lower() if raw is not None else ""
+    return LEXICON_SELECTION_HEALTH if text == LEXICON_SELECTION_HEALTH else (
+        LEXICON_SELECTION_NEWEST
+    )
 
 # TWO independent axes, the S25-0.0.3 two-flag precedent: the external read must
 # be disable-able WITHOUT touching the copilot path, and vice versa. Both

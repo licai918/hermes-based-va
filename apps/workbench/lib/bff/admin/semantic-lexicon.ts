@@ -21,7 +21,9 @@ import { HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
 import type {
   LexiconEntry,
+  LexiconEntryHealth,
   LexiconEntryKind,
+  LexiconHealthLeg,
   LexiconProvenance,
   LexiconStatus,
 } from "../../gateway/types";
@@ -59,6 +61,55 @@ function isoToMsOrNull(value: unknown): number | null {
 
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function leg(raw: unknown): LexiconHealthLeg {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  return {
+    // A null rate is the honest "this leg has no denominator". Coercing it to 0
+    // would draw a leg nobody scored as a leg that scored perfectly.
+    rate: typeof r.rate === "number" && Number.isFinite(r.rate) ? r.rate : null,
+    passed: num(r.passed),
+    determinate: num(r.determinate),
+    undetermined: num(r.undetermined),
+  };
+}
+
+// 0.0.5 S26 (FR-31). `scope` and `basis` are required, not optional: they are the
+// caveats that make the score readable, and a payload without them is a score
+// whose meaning was lost in transit -- so it maps to null rather than to a bare
+// number. Same stance as the Memory Hub's counted() helper, which will not let a
+// count travel without its label.
+function mapHealth(raw: unknown): LexiconEntryHealth | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.score !== "number" || !Number.isFinite(r.score)) return null;
+  if (!str(r.scope) || !str(r.basis)) return null;
+  const usage = (r.usage ?? {}) as Record<string, unknown>;
+  const weights = (r.weights ?? {}) as Record<string, unknown>;
+  return {
+    score: r.score,
+    scope: str(r.scope),
+    basis: str(r.basis),
+    usage: {
+      hits: num(usage.hits),
+      injections: num(usage.injections),
+      saturation: num(usage.saturation),
+    },
+    honored: leg(r.honored),
+    misapplied: leg(r.misapplied),
+    stale: leg(r.stale),
+    weights: {
+      usage: num(weights.usage),
+      honored: num(weights.honored),
+      misapplied: num(weights.misapplied),
+      stale: num(weights.stale),
+    },
+  };
 }
 
 export function mapLexiconEntry(raw: unknown): LexiconEntry {
@@ -128,6 +179,7 @@ export function mapLexiconEntry(raw: unknown): LexiconEntry {
     hitCount: typeof r.hit_count === "number" ? r.hit_count : 0,
     createdAt,
     updatedAt: isoToMsOrNull(r.updated_at),
+    health: mapHealth(r.entry_health),
   };
 }
 

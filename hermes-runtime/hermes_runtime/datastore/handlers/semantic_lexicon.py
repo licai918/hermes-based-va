@@ -36,6 +36,8 @@ from toee_hermes.drivers.mock.semantic_lexicon import (
     resolve_manual_add_provenance,
 )
 
+from ...entry_effectiveness import entry_effectiveness_for, health_for_rows
+from ...injection_ledger import LAYER_L7
 from ._common import insert_audit, new_id, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -326,6 +328,13 @@ def _list_lexicon_entries(
     mock twin uses: an ``admin_manual`` claim with nobody attached (possible only
     for rows written between S01 and S02, before D20 closed the hole) must not
     render indistinguishably from one a named admin actually made.
+
+    ``entry_health`` (0.0.5 S26, FR-31) is attached here from the materialized
+    ``entry_effectiveness`` aggregate plus the row's own ``hit_count`` — the
+    SAME :func:`health_for_rows` the health-ranked glossary selection uses, so the
+    score an admin decides on is the score that decides what reaches the prompt.
+    It carries its own scope and every rate's denominator, so no renderer can show
+    the number without what it means.
     """
     status, domain = read_lexicon_filters(params)
     with conn.cursor(row_factory=dict_row) as cur:
@@ -338,7 +347,17 @@ def _list_lexicon_entries(
             """,
             (status, status, domain, domain),
         )
-        rows = cur.fetchall()
+        rows = [serialize_row(row) for row in cur.fetchall()]
+    # A separate, DEFAULT-row-factory cursor: entry_effectiveness_for unpacks
+    # tuples, and reusing the dict_row cursor above would hand it dictionaries.
+    with conn.cursor() as plain:
+        health_for_rows(
+            rows,
+            entry_effectiveness_for(
+                plain, layer=LAYER_L7, entry_refs=[row["id"] for row in rows]
+            ),
+        )
+    with conn.cursor(row_factory=dict_row) as cur:
         # MAX(updated_at) over the WHOLE table -- monotonic, filter-independent,
         # and no column to migrate. Named `lexicon_version` rather than
         # `confirmed_set_version` because that is what it measures: a reject moves
@@ -347,7 +366,7 @@ def _list_lexicon_entries(
         cur.execute("SELECT max(updated_at) AS version FROM semantic_lexicon")
         version = cur.fetchone()["version"]
     return {
-        "entries": [lexicon_entry_view(serialize_row(r)) for r in rows],
+        "entries": [lexicon_entry_view(r) for r in rows],
         "lexicon_version": version.isoformat() if version else None,
     }
 

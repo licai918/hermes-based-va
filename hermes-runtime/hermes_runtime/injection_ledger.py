@@ -261,8 +261,17 @@ def run_injection_ledger_prune_job(
 
 def _prune_and_audit(conn, window_seconds: int) -> None:
     from .datastore.handlers._common import insert_audit
+    from .entry_effectiveness import refresh_entry_effectiveness
 
     deleted = prune_injection_ledger(conn, window_seconds=window_seconds)
+    # S26 (FR-31): recompute the per-entry aggregate derived from this table, in
+    # the SAME transaction and AFTER the prune -- so the effectiveness numbers are
+    # over exactly the rows that survive, never over a window that was already
+    # garbage-collected. It rides this tick rather than a job of its own because
+    # this job already owns the ledger's lifecycle, and because the judge job
+    # (the other candidate) SKIPS entirely without an API key, which would leave
+    # usage frozen on a deployment that is still serving turns.
+    entries = refresh_entry_effectiveness(conn)
     insert_audit(
         conn,
         # Unattended, exactly like a scheduled retention sweep: the only profile
@@ -275,10 +284,15 @@ def _prune_and_audit(conn, window_seconds: int) -> None:
         details={
             "deleted": deleted,
             "window_seconds": window_seconds,
+            "effectiveness_entries": entries,
             "run_at": datetime.now(timezone.utc).isoformat(),
         },
     )
     conn.commit()
     logger.info(
-        "injection_ledger prune: %s row(s) older than %ss deleted", deleted, window_seconds
+        "injection_ledger prune: %s row(s) older than %ss deleted; "
+        "entry_effectiveness recomputed over %s entries",
+        deleted,
+        window_seconds,
+        entries,
     )

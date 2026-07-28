@@ -238,8 +238,9 @@ describe("handleGetMemoryHubViaApi", () => {
       {
         label:
           "Confirmed entries in the store — NOT what a turn carries: the prompt " +
-          "glossary is a bounded newest-first window (LEXICON_GLOSSARY_LIMIT), and " +
-          "off-season default_rule rows are dropped at render",
+          "glossary is a bounded window (LEXICON_GLOSSARY_LIMIT) filled " +
+          "newest-first by default or health-ranked when LEXICON_SELECTION=health, " +
+          "and off-season default_rule rows are dropped at render",
         value: "5",
       },
       {

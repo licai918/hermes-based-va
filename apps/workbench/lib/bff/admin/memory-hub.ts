@@ -25,9 +25,11 @@
 //     the wire type is a `{label, value}` pair rather than a bare number: there
 //     is no shape in which a renderer can show "L7: 34" with the caveat lost.
 //     The standing example is L7's own glossary -- the store may hold 34
-//     confirmed entries while the prompt carries a bounded newest-first window of
+//     confirmed entries while the prompt carries a bounded window of
 //     LEXICON_GLOSSARY_LIMIT (20) of them, and L6's injection is bounded the same
-//     way. Neither confirmed count is "what the model sees", and both labels say so.
+//     way. Neither confirmed count is "what the model sees", and both labels say
+//     so. Since 0.0.5 S26 the L7 label also names WHICH 20: newest-first by
+//     default, health-ranked once LEXICON_SELECTION is flipped.
 import { ROUTES } from "@toee/shared";
 import {
   HermesApiError,
@@ -296,8 +298,9 @@ function buildMemoryHubRows(sources: Sources): MemoryHubRow[] {
         counted(
           tally(lexicon, (e) => e.status === "confirmed"),
           "Confirmed entries in the store — NOT what a turn carries: the prompt " +
-            "glossary is a bounded newest-first window (LEXICON_GLOSSARY_LIMIT), and " +
-            "off-season default_rule rows are dropped at render",
+            "glossary is a bounded window (LEXICON_GLOSSARY_LIMIT) filled " +
+            "newest-first by default or health-ranked when LEXICON_SELECTION=health, " +
+            "and off-season default_rule rows are dropped at render",
         ),
         counted(
           // Scoped twice over, and both halves are in the label: only CONFIRMED

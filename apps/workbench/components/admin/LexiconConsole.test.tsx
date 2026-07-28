@@ -22,8 +22,32 @@ function entry(overrides: Partial<LexiconEntry> = {}): LexiconEntry {
     hitCount: 0,
     createdAt: NOW,
     updatedAt: NOW,
+    health: null,
     ...overrides,
   };
+}
+
+// 0.0.5 S26 (FR-31): the shape the server actually sends, caveats included.
+const SCOPE =
+  "External customer turns only. The copilot draft path's turn id is synthetic, " +
+  "so injections made while drafting are recorded but cannot be attributed to " +
+  "an entry — they are in neither the numerator nor the denominator here.";
+const BASIS =
+  "Turn-level attribution: the judge scores a reply, and every entry that was in " +
+  "that turn's prompt shares its verdict.";
+
+function health(overrides: Record<string, unknown> = {}) {
+  return {
+    score: 0.63,
+    scope: SCOPE,
+    basis: BASIS,
+    usage: { hits: 4, injections: 6, saturation: 10 },
+    honored: { rate: 0.9, passed: 9, determinate: 10, undetermined: 1 },
+    misapplied: { rate: 0.125, passed: 7, determinate: 8, undetermined: 0 },
+    stale: { rate: null, passed: 0, determinate: 0, undetermined: 0 },
+    weights: { usage: 0.5, honored: 0.5, misapplied: 0.3, stale: 0.2 },
+    ...overrides,
+  } as LexiconEntry["health"];
 }
 
 function baseProps(entries: LexiconEntry[] = [entry()]) {
@@ -170,6 +194,50 @@ describe("LexiconConsoleView", () => {
     expect(screen.queryByText("Quoted from case 42.")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Evidence for TOEE" }));
     expect(screen.getByText("Quoted from case 42.")).toBeInTheDocument();
+  });
+
+  // --- 0.0.5 S26 (FR-31): the health score never renders without its scope -----
+
+  it("renders the health score with its scope where the number is, not only in a docstring", () => {
+    render(
+      <LexiconConsoleView {...baseProps([entry({ status: "confirmed", health: health() })])} />,
+    );
+
+    expect(screen.getByText("0.63")).toBeInTheDocument();
+    // The caveat is READABLE, not hover-only: a scope that lives in a title
+    // attribute is a scope most admins never see.
+    expect(screen.getByText(new RegExp(SCOPE.slice(0, 40)))).toBeInTheDocument();
+  });
+
+  it("shows every component with its own denominator and an unscored leg as such", () => {
+    render(
+      <LexiconConsoleView {...baseProps([entry({ status: "confirmed", health: health() })])} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Evidence for TOEE" }));
+
+    // A rate with no denominator is a count wearing a percentage sign.
+    expect(screen.getByText(/Honored: 90% of 10/)).toBeInTheDocument();
+    expect(screen.getByText(/Misapplied: 13% of 8/)).toBeInTheDocument();
+    // `no_stale_use` is not in the production sampling set, so it has NO
+    // denominator -- and must never render as 0%, which reads as "never stale".
+    expect(screen.getByText(/Stale: not scored/)).toBeInTheDocument();
+    expect(screen.queryByText(/Stale: 0%/)).toBeNull();
+    // Both halves of usage, because hit_count alone is structurally zero for a
+    // default_rule and would read as "unused".
+    expect(
+      screen.getByText(/4 deterministic applications \+ 6 prompt injections/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders an entry with no computed effectiveness honestly, never as a zero", () => {
+    render(<LexiconConsoleView {...baseProps([entry({ status: "confirmed" })])} />);
+
+    expect(screen.getByTitle("No effectiveness computed yet.")).toHaveTextContent("—");
+    expect(screen.queryByText("0.00")).toBeNull();
+    // ...and no scope footnote is claimed for a table that has no scores in it.
+    expect(screen.queryByText(new RegExp(SCOPE.slice(0, 40)))).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Evidence for TOEE" }));
+    expect(screen.getByText(/No effectiveness has been computed/)).toBeInTheDocument();
   });
 
   // --- the edited signal (review finding C) ------------------------------------
