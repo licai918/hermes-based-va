@@ -9,6 +9,10 @@ fixture.
 
 from __future__ import annotations
 
+import threading
+import time
+from contextlib import contextmanager
+
 from toee_hermes.execute import execute_tool
 from toee_hermes.tool_gate import ToolExecutionContext
 
@@ -682,6 +686,200 @@ def test_preference_updated_row_surfaces_in_get_memory_audit(datastore) -> None:
     assert row["details"]["old_value"] == "sms"
     assert row["details"]["new_value"] == "email"
     assert row["account_id"] == "acct_rep_10"
+
+
+def test_the_row_also_records_who_set_the_value_that_was_replaced(datastore) -> None:
+    # 0.0.5 S07 review, finding 2: the slot's ``actor_account_id`` is overwritten
+    # in place by the ON CONFLICT update, so without capturing it here "who set
+    # the value that was replaced?" becomes unanswerable -- in the very table
+    # whose job is answering that. ``details`` is JSONB, so the prior actor rides
+    # along at no schema cost.
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550075"}
+    _run(driver, "upsert_preference", {"key": "channel_preference", "value": "sms"},
+         identity=identity, profile="internal_copilot", user_id="acct_rep_first")
+    _run(driver, "upsert_preference", {"key": "channel_preference", "value": "email"},
+         identity=identity, profile="internal_copilot", user_id="acct_rep_second")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT account_id, details FROM workbench_audit_log "
+            "WHERE action = 'preference_updated' AND target_id = %s",
+            ("channel_preference",),
+        )
+        rows = cur.fetchall()
+    assert len(rows) == 1
+    account_id, details = rows[0]
+    # Who made THIS change, and who made the one it replaced.
+    assert account_id == "acct_rep_second"
+    assert details["old_actor_account_id"] == "acct_rep_first"
+
+
+def test_an_unattributed_prior_write_records_a_null_old_actor_not_a_missing_key(
+    datastore,
+) -> None:
+    # The unattributed AI draft-turn / customer_explicit write stays honestly
+    # NULL-attributed rather than being silently omitted -- a reader can tell
+    # "nobody was attributed" apart from "this row predates the field".
+    driver, conn, _ = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550076"}
+    _run(driver, "upsert_preference", {"key": "channel_preference", "value": "sms"},
+         identity=identity)
+    _run(driver, "upsert_preference", {"key": "channel_preference", "value": "email"},
+         identity=identity, profile="internal_copilot", user_id="acct_rep_9")
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT details FROM workbench_audit_log "
+            "WHERE action = 'preference_updated' AND target_id = %s",
+            ("channel_preference",),
+        )
+        details = cur.fetchone()[0]
+    assert "old_actor_account_id" in details
+    assert details["old_actor_account_id"] is None
+
+
+# --- concurrent overwrites: the chain must stay true (0.0.5 S07 review) -----
+# Finding 1 (Important): the prior-value SELECT and the ON CONFLICT write share
+# one transaction, but the pool sets no isolation level, so it is READ
+# COMMITTED. Without a row lock the SELECT takes none, and two writers on the
+# same (binding_key, slot) both read "sms": T1 commits "email", then T2's
+# ON CONFLICT re-reads the row underneath itself and writes "phone" -- and
+# audits old_value="sms". The trail then reads sms->email AND sms->phone: a
+# broken chain containing one row that is simply untrue. A history people
+# believe is worse than no history, so ``_upsert_preference`` takes
+# ``FOR UPDATE`` on the prior-value read.
+
+
+@contextmanager
+def _schema_connection(schema: str):
+    """A second real connection on the SAME throwaway schema as the fixture.
+
+    The ``datastore`` fixture hands out ONE connection, which cannot express
+    concurrency: two statements on it are the same transaction by definition.
+    Driving a genuine read-then-write race needs separate backends pointed at
+    the same isolated schema, which is all this does. ``lock_timeout`` turns a
+    lock that never frees into a fast, readable failure instead of a hung suite.
+    """
+    import psycopg
+    from psycopg import sql
+
+    from hermes_runtime.datastore.config import database_url
+
+    conn = psycopg.connect(database_url(), connect_timeout=5)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema)))
+            cur.execute("SET lock_timeout = '20s'")
+        conn.commit()
+        yield conn
+    finally:
+        conn.rollback()
+        conn.close()
+
+
+def _wait_until_lock_blocked(probe_conn, pids: list[int], timeout: float = 20.0) -> None:
+    """Block until every backend in ``pids`` is waiting on a lock.
+
+    This is what makes the race deterministic rather than a sleep-and-hope: the
+    test holds the row lock, and only releases it once BOTH writers have
+    provably lined up behind it. Under the bug both have already done their
+    unlocked prior-value read by then, which is exactly the interleaving that
+    produces the false row.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with probe_conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE pid = ANY(%s) AND wait_event_type = 'Lock'",
+                (pids,),
+            )
+            blocked = cur.fetchone()[0]
+        probe_conn.rollback()
+        if blocked == len(pids):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"only {blocked} of {len(pids)} writers blocked on a lock")
+
+
+def test_two_concurrent_overwrites_of_one_slot_record_a_coherent_chain(datastore) -> None:
+    driver, conn, schema = datastore
+    identity = {"channel": "sms", "channel_identity": "+14165550077"}
+    seed = _run(driver, "upsert_preference",
+                {"key": "channel_preference", "value": "sms"}, identity=identity)
+    assert seed.ok
+    binding_key = seed.data["binding_key"]
+
+    from hermes_runtime.datastore.driver import PostgresDriver
+
+    failures: list[BaseException] = []
+
+    def write(target_conn, value: str, actor: str) -> None:
+        try:
+            _run(
+                PostgresDriver(connection=target_conn), "upsert_preference",
+                {"key": "channel_preference", "value": value},
+                identity=identity, profile="internal_copilot", user_id=actor,
+            )
+        except BaseException as exc:  # pragma: no cover - reported below
+            failures.append(exc)
+
+    with _schema_connection(schema) as blocker, \
+            _schema_connection(schema) as conn_a, \
+            _schema_connection(schema) as conn_b:
+        # Hold the row so neither writer can commit until both have read.
+        with blocker.cursor() as cur:
+            cur.execute(
+                "SELECT slot_value FROM customer_memory_slot "
+                "WHERE binding_key = %s AND slot_name = %s FOR UPDATE",
+                (binding_key, "channel_preference"),
+            )
+            assert cur.fetchone()[0] == "sms"
+
+        pids = [conn_a.info.backend_pid, conn_b.info.backend_pid]
+        threads = [
+            threading.Thread(target=write, args=(conn_a, "email", "acct_rep_a")),
+            threading.Thread(target=write, args=(conn_b, "phone", "acct_rep_b")),
+        ]
+        try:
+            for t in threads:
+                t.start()
+            _wait_until_lock_blocked(conn, pids)
+        finally:
+            blocker.commit()
+            for t in threads:
+                t.join(timeout=60)
+
+    assert not failures, failures
+    assert not any(t.is_alive() for t in threads)
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT details ->> 'old_value', details ->> 'new_value' "
+            "FROM workbench_audit_log WHERE action = 'preference_updated' "
+            "AND details ->> 'binding_key' = %s",
+            (binding_key,),
+        )
+        pairs = cur.fetchall()
+        cur.execute(
+            "SELECT slot_value FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s",
+            (binding_key, "channel_preference"),
+        )
+        live_value = cur.fetchone()[0]
+
+    olds = [old for old, _ in pairs]
+    news = [new for _, new in pairs]
+    assert len(pairs) == 2, pairs
+    # Which writer wins the lock is the scheduler's call, so the assertion is on
+    # the invariant rather than a fixed order: the two rows must form a CHAIN
+    # (sms -> X, X -> Y), not a fork. Under the unlocked read both rows claim
+    # old_value "sms" and the first assertion fails.
+    assert len(set(olds)) == 2, f"two rows claim the same prior value: {pairs}"
+    assert set(olds) - {"sms"} <= set(news), f"a prior value nobody ever wrote: {pairs}"
+    # ...and the chain ends where the slot actually is now.
+    assert set(news) - set(olds) == {live_value}, f"chain does not end at {live_value}: {pairs}"
 
 
 # --- self-service-usage counter (0.0.4 S21, FR-30) --------------------------

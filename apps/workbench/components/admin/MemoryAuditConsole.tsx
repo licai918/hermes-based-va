@@ -30,11 +30,19 @@ function slotLabel(slot: string | null): string {
 // 0.0.5 S07 (FR-9): the write-history Detail column shows a readable old->new
 // pair for a preference_updated row instead of the raw JSON details blob
 // entry.detail otherwise falls back to; every other action keeps entry.detail
-// unchanged. A pure function, same as deriveProposalHistory below, so it's
-// unit-testable without going through rendering.
+// unchanged. A preference_updated row that somehow carries no pair (a partial
+// write, or a row written before this slice) falls back the same way rather
+// than rendering "undefined". A pure function, same as deriveProposalHistory
+// below, so it's unit-testable without going through rendering.
+//
+// Both sides are QUOTED (review finding 5). An empty string is a legal slot
+// value -- _require_value only rejects non-strings and >200 chars -- so an
+// unquoted pair rendered a dangling " → email" with nothing on the left, and a
+// value that itself contains the arrow ran the two sides together. JSON.stringify
+// is the one-call fix: it delimits both sides and escapes embedded quotes.
 export function historyDetail(entry: MemoryAuditEntry): string {
   if (entry.action === "preference_updated" && entry.oldValue !== undefined && entry.newValue !== undefined) {
-    return `${entry.oldValue} → ${entry.newValue}`;
+    return `${JSON.stringify(entry.oldValue)} → ${JSON.stringify(entry.newValue)}`;
   }
   return entry.detail ?? "";
 }

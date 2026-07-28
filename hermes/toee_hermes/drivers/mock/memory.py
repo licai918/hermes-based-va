@@ -57,6 +57,31 @@ MEMORY_SOURCE_VALUES: tuple[str, ...] = (
     MEMORY_SOURCE_MERGED_PROVISIONAL,
 ) = MEMORY_SOURCE_VALUES
 
+# The audit action a genuine L4 value change records (0.0.5 S07, FR-9). Named
+# here beside the predicate below because the emit site (the Postgres handler's
+# ``insert_audit``) and every later COUNT of these rows -- S22's conflict-rate
+# metric is SQL over exactly this action -- must spell it the same way.
+MEMORY_ACTION_PREFERENCE_UPDATED = "preference_updated"
+
+
+def is_differing_value_overwrite(old_value: Any, new_value: str) -> bool:
+    """The "differing-value overwrite" rule, in ONE place (0.0.5 S07, FR-9).
+
+    True only when a PRIOR value existed and the write genuinely changes it.
+    ``old_value is None`` is the slot's first-ever write: already fully
+    attributed by the slot row itself (source/actor/created_at), so a "changed
+    from nothing" audit row would be pure noise -- and S22 defines conflict rate
+    over *differing-value overwrites*, so counting every new slot as a conflict
+    would inflate it outright. An identical re-write (the common re-confirm)
+    changes nothing and is likewise not a conflict.
+
+    Named and shared rather than inlined at the emit site because S22 must
+    re-derive exactly this definition for its metric, and two independent
+    spellings of one rule are how the two silently drift apart.
+    """
+    return old_value is not None and old_value != new_value
+
+
 # ADR-0111 slots hold a short preference note (e.g. "after 2pm"), not free text;
 # PRD FR-3 caps the stored value so a write can't smuggle an essay into a slot.
 MEMORY_VALUE_MAX_LENGTH = 200

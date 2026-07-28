@@ -738,20 +738,31 @@ def test_upsert_without_evidence_stores_nothing() -> None:
 
 
 def test_upsert_overwrite_behavior_is_unconditional_regardless_of_value_change() -> None:
-    driver = _driver()
+    # S07 review, finding 3: the earlier version of this test asserted only that
+    # the four calls returned ``stored: True`` and the slot held the last value
+    # -- all of which stays byte-identical if a future twin DID skip the write
+    # on an identical value, so it could never have failed. The load-bearing
+    # assertion is on the write's SIDE EFFECTS: the Postgres twin's
+    # ON CONFLICT DO UPDATE re-writes ``evidence`` (and source/actor/updated_at)
+    # even when ``slot_value`` is unchanged, so an identical-value re-write
+    # carrying NEW evidence must land here too. A mock that short-circuited on
+    # ``old == new`` would keep the stale evidence and fail this.
+    evidence_store: dict[str, dict[str, str]] = {}
+    driver = _driver(evidence_store=evidence_store)
     ctx = _verified_ctx()
 
     first = _call(
         driver, "upsert_preference",
-        {"key": "channel_preference", "value": "sms"}, ctx,
+        {"key": "channel_preference", "value": "sms", "evidence": "text me"}, ctx,
     )
     changed = _call(
         driver, "upsert_preference",
-        {"key": "channel_preference", "value": "email"}, ctx,
+        {"key": "channel_preference", "value": "email", "evidence": "email me"}, ctx,
     )
     identical = _call(
         driver, "upsert_preference",
-        {"key": "channel_preference", "value": "email"}, ctx,
+        {"key": "channel_preference", "value": "email",
+         "evidence": "email me, i said it again"}, ctx,
     )
     assert first.ok and changed.ok and identical.ok
     assert first.data["stored"] is True
@@ -760,6 +771,12 @@ def test_upsert_overwrite_behavior_is_unconditional_regardless_of_value_change()
 
     read = _call(driver, "get_preferences", {}, ctx)
     assert read.data["preferences"]["channel_preference"] == "email"
+    # The no-value-change write still went through: its evidence replaced the
+    # previous one rather than being skipped.
+    assert (
+        evidence_store[VERIFIED_CUSTOMER_ID]["channel_preference"]
+        == "email me, i said it again"
+    )
 
 
 def test_get_memory_audit_history_stays_empty_after_a_real_value_change() -> None:

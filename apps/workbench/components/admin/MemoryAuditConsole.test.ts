@@ -102,7 +102,38 @@ describe("historyDetail", () => {
   };
 
   it("renders old -> new for a preference_updated row", () => {
-    expect(historyDetail({ ...base, oldValue: "sms", newValue: "email" })).toBe("sms → email");
+    expect(historyDetail({ ...base, oldValue: "sms", newValue: "email" })).toBe('"sms" → "email"');
+  });
+
+  // Review finding 5: an empty string is a LEGAL slot value (_require_value only
+  // rejects non-strings and >200 chars), so an unquoted pair rendered a dangling
+  // " → email" with nothing on the left -- indistinguishable from a bug in the
+  // console. Quoting makes "the previous value was empty" readable as such.
+  it("renders an empty old value as an explicit empty pair, not a dangling arrow", () => {
+    expect(historyDetail({ ...base, oldValue: "", newValue: "email" })).toBe('"" → "email"');
+    expect(historyDetail({ ...base, oldValue: "sms", newValue: "" })).toBe('"sms" → ""');
+  });
+
+  // Review finding 5: a slot value may itself contain the arrow (or a quote),
+  // which unquoted made the pair ambiguous about where old ended and new began.
+  it("keeps a value containing the arrow separator unambiguous", () => {
+    expect(historyDetail({ ...base, oldValue: "a → b", newValue: "c" })).toBe('"a → b" → "c"');
+    expect(historyDetail({ ...base, oldValue: 'say "hi"', newValue: "c" })).toBe(
+      '"say \\"hi\\"" → "c"',
+    );
+  });
+
+  // Review finding 5: the uncovered branch. The existing fallback test below
+  // uses preference_cleared, which short-circuits on the action check before
+  // ever reaching the old/new presence check -- so a preference_updated row
+  // whose details lack the pair (a pre-S07 row, or a partial write) was never
+  // exercised. It must fall back to the raw detail, not render "undefined".
+  it("falls back to entry.detail for a preference_updated row missing old/new", () => {
+    expect(historyDetail({ ...base, detail: '{"slot":"channel_preference"}' })).toBe(
+      '{"slot":"channel_preference"}',
+    );
+    expect(historyDetail({ ...base, oldValue: "sms", detail: "{}" })).toBe("{}");
+    expect(historyDetail({ ...base, newValue: "email" })).toBe("");
   });
 
   it("falls back to entry.detail for any other action", () => {

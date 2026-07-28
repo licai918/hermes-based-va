@@ -26,9 +26,11 @@ from typing import TYPE_CHECKING, Any
 from psycopg.rows import dict_row
 
 from toee_hermes.drivers.mock.memory import (
+    MEMORY_ACTION_PREFERENCE_UPDATED,
     _read_evidence,
     _require_slot,
     _require_value,
+    is_differing_value_overwrite,
     is_verified_customer_identity,
     resolve_clear_authorization,
     resolve_customer_memory_binding,
@@ -64,17 +66,29 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
     # makes for source (PRD §9).
     actor_account_id = context.user_id
     with conn.cursor() as cur:
-        # FR-9 (0.0.5 S07): the prior value, read in the SAME transaction/
-        # cursor the write below uses -- no second round trip, no
-        # read-then-write race. ``None`` when this is the slot's first-ever
-        # write (nothing to diff against yet).
+        # FR-9 (0.0.5 S07): the prior value and ITS author, read in the SAME
+        # transaction/cursor the write below uses, and LOCKED. ``FOR UPDATE``
+        # is load-bearing, not decoration: the pool sets no isolation level
+        # (datastore/pool.py), so this runs at READ COMMITTED, where an
+        # unlocked read lets two writers on the same (binding_key, slot) both
+        # see "sms" -- T1 commits "email", T2's ON CONFLICT then re-reads the
+        # row underneath itself, writes "phone", and audits old_value="sms".
+        # The trail would read sms->email AND sms->phone: a broken chain with
+        # one row that is simply untrue, in the table whose whole purpose is
+        # being believed. Locking serializes the two so the chain stays honest
+        # (test_two_concurrent_overwrites_of_one_slot_record_a_coherent_chain).
+        # Contention is one customer's one slot, so the cost is negligible.
+        # ponytail: a row that does NOT exist yet cannot be locked, so two
+        # concurrent FIRST writes still race -- but neither audits (no prior
+        # value), so the outcome is a MISSING transition, never a false one.
+        # Upgrade path if that matters: an advisory lock on the binding.
         cur.execute(
-            "SELECT slot_value FROM customer_memory_slot "
-            "WHERE binding_key = %s AND slot_name = %s",
+            "SELECT slot_value, actor_account_id FROM customer_memory_slot "
+            "WHERE binding_key = %s AND slot_name = %s FOR UPDATE",
             (binding_key, slot),
         )
         row = cur.fetchone()
-        old_value = row[0] if row else None
+        old_value, old_actor_account_id = row if row else (None, None)
         cur.execute(
             """
             INSERT INTO customer_memory_slot
@@ -95,17 +109,16 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
         )
     # FR-9: a genuine overwrite of an EXISTING value records ONE preference_
     # updated audit row carrying old->new -- value-change history becomes
-    # auditable (and later rollback-able). Idempotent noise-free (an
-    # identical re-write adds nothing) and silent on the slot's first-ever
-    # write (old_value is None -- nothing to diff, and the slot row itself
-    # already attributes that write), so a supervisor's history isn't padded
-    # with "changed from nothing" entries for every new slot.
-    if old_value is not None and old_value != value:
+    # auditable (and later rollback-able). The "differing-value overwrite"
+    # rule itself lives in the shared plugin module, not inline here: S22
+    # counts exactly these rows for its conflict-rate metric and must not
+    # re-derive a second, drifting definition of the same rule.
+    if is_differing_value_overwrite(old_value, value):
         insert_audit(
             conn,
             profile=context.profile,
             account_id=actor_account_id,
-            action="preference_updated",
+            action=MEMORY_ACTION_PREFERENCE_UPDATED,
             target_type="customer_memory_slot",
             target_id=slot,
             details={
@@ -113,6 +126,16 @@ def _upsert_preference(conn, params: dict[str, Any], context: "ToolExecutionCont
                 "binding_key": binding_key,
                 "old_value": old_value,
                 "new_value": value,
+                # Who set the value being replaced. The slot's own
+                # actor_account_id is overwritten in place by the ON CONFLICT
+                # update above, so without capturing it here the audit trail
+                # records WHAT was replaced but never WHO set it -- half of
+                # the brief's own "I see WHO changed a preference and what the
+                # OLD value was". JSONB, so no migration. NULL (never absent)
+                # for an unattributed AI draft-turn / customer_explicit prior
+                # write, so "nobody was attributed" reads differently from
+                # "this row predates the field".
+                "old_actor_account_id": old_actor_account_id,
             },
         )
     return {
@@ -255,7 +278,8 @@ def _get_memory_audit(conn, params: dict[str, Any], context: "ToolExecutionConte
     source/actor/evidence/timestamps; (2) the append-only ``workbench_audit_log``
     trail for this binding (``proposal_dismissed`` from S15, ``preference_cleared``
     from this slice, ``preference_updated`` from 0.0.5 S07 (FR-9, old_value/
-    new_value in ``details``), and any future merge-audit row that carries the
+    new_value + the replaced value's ``old_actor_account_id`` in ``details``),
+    and any future merge-audit row that carries the
     same ``binding_key`` in its ``details`` -- S16 joins accepted proposals into
     the same view later, so this deliberately does not filter any action out).
     Read-only: no write, no schema change. Never registered as an LLM-callable
