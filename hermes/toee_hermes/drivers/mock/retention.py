@@ -103,6 +103,19 @@ def create_retention_mock_handlers() -> MockHandlerRegistry:
             # constant this package must not import, so the honest never-run
             # shape carries a null window rather than a copied number.
             "ledger_prune": {"last_run_at": None, "deleted": 0, "window_seconds": None},
+            # 0.0.5 S20: likewise for the graduation / zero-hit retirement sweep.
+            # Same reasoning as the prune above -- no scheduled worker behind the
+            # mock backend, and its window is a hermes-runtime constant this
+            # package must not import, so the never-run shape carries a null
+            # window rather than a copied number.
+            "graduation_sweep": {
+                "last_run_at": None,
+                "graduation_candidates": 0,
+                "retirement_candidates": 0,
+                "emitted": 0,
+                "blocked": 0,
+                "window_seconds": None,
+            },
         }
 
     return {

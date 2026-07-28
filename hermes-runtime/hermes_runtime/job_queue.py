@@ -112,6 +112,13 @@ LEXICON_HIT_ROLLUP_JOB_TYPE = "lexicon_hit_rollup"
 # open-set idempotence), and an aggregator that fails silently is a feedback loop
 # that quietly stops closing.
 FEEDBACK_AGGREGATOR_JOB_TYPE = "feedback_aggregator"
+# S20 (0.0.5, FR-19/FR-20): the propose-only graduation + zero-hit retirement
+# sweep. Scans the confirmed L6 notes and the confirmed L7 entries and raises
+# review items -- never a memory write. Plain default retry/dead-letter: the
+# scan is a pure read and the emissions are idempotent (the store's open-set
+# index plus the sweep's own already-raised check), so a retry re-derives the
+# same answer and raises nothing twice.
+GRADUATION_SWEEP_JOB_TYPE = "graduation_sweep"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

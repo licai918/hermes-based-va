@@ -268,6 +268,82 @@ def normalizer_enabled(entries: Iterable[dict[str, Any]], domain: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Is this free-text note actually lexicon-shaped? (FR-18 / FR-19)
+# --------------------------------------------------------------------------- #
+#
+# L6 is the free-text catch-all; L7 is the structured layer. A note that says
+# "2055516 means 205/55R16" is an L7 alias wearing an L6 costume: it will never
+# be applied by the deterministic seam, never earn a hit, and never reach the
+# prompt glossary. FR-18 (S13) annotates it at PROPOSE time; FR-19 (S20) sweeps
+# the CONFIRMED rows and raises a "graduate to L7?" review item. Both must agree
+# on what "lexicon-shaped" means, so it is one function here rather than one
+# regex each.
+#
+# Advisory ONLY. Nothing here reroutes, rewrites or auto-files anything (NFR-3):
+# the output is a proposal for a human, and a false positive costs one dismissed
+# inbox item.
+
+
+@dataclass(frozen=True)
+class LexiconShape:
+    """The two halves an L6 note would become as an L7 entry."""
+
+    surface_form: str
+    canonical_form: str
+
+
+# D16: named from day one, so S22's knob panel reads them instead of hunting
+# magic numbers. Per D14 they move by deploy-time config commit.
+#
+# The bounds are what separates a MAPPING from a SENTENCE, and they are the whole
+# discriminator: every seeded surface form is one token ("TOEE", "2055516") or
+# three digit groups ("205 55 16"), while a procedure note is a clause. Without
+# them, any sentence containing "means" reads as a mapping.
+STRUCTURABLE_SURFACE_MAX_WORDS = 3
+STRUCTURABLE_CANONICAL_MAX_WORDS = 6
+
+# ponytail: two connectives, `=` and `means`, matching FR-18's own wording
+# ("looks like `A = B` / `A means B`"). Deliberately not "stands for" / "is short
+# for" / "aka" -- each one widens the false-positive surface, and the queue this
+# feeds is worked by a human who can also just re-file a note the sweep missed.
+# Add one the day a real note is observed to need it.
+_STRUCTURABLE_RE = re.compile(
+    r"^(?P<surface>\S.*?)\s*(?:=|\bmeans\b)\s*(?P<canonical>.*?\S)\.?$",
+    re.IGNORECASE,
+)
+
+
+def structurable_shape(content: Any) -> Optional[LexiconShape]:
+    """``LexiconShape`` when this note is a mapping, ``None`` when it is prose.
+
+    Non-greedy on the left, so the FIRST connective splits the note: "size =
+    205/55R16 = winter" is one mapping onto a value containing an equals sign,
+    not two mappings. Splitting on the last one would move the boundary silently.
+
+    ponytail: a regex plus two word bounds, no NLP and no model. Its known
+    ceiling is a four-word sentence built around the connective ("the customer
+    means well"), which reads as a mapping and produces one dismissible review
+    item. Tighten the surface bound, or require the surface to be a single
+    token, if that is ever observed in the real queue -- do not reach for a
+    classifier.
+    """
+    if not isinstance(content, str):
+        return None
+    match = _STRUCTURABLE_RE.match(content.strip())
+    if match is None:
+        return None
+    surface = match.group("surface").strip()
+    canonical = match.group("canonical").strip()
+    if not surface or not canonical:
+        return None
+    if len(surface.split()) > STRUCTURABLE_SURFACE_MAX_WORDS:
+        return None
+    if len(canonical.split()) > STRUCTURABLE_CANONICAL_MAX_WORDS:
+        return None
+    return LexiconShape(surface_form=surface, canonical_form=canonical)
+
+
+# --------------------------------------------------------------------------- #
 # Seeded domain #1 -- the single source of truth for migration 0024
 # --------------------------------------------------------------------------- #
 
