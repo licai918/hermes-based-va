@@ -45,6 +45,7 @@ never logged.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from eval_runner.transcript import (
@@ -560,7 +561,16 @@ def make_copilot_run_turn(
         # governed read tools, ADR-0147 decision 2). render_injection returns None
         # when everything is empty, so no binding / no slots / no learnings / no
         # confirmed vocabulary / disabled injects nothing.
-        injected = render_injection(None, memory, experience, lexicon=lexicon)
+        # ONE clock read per turn, threaded to BOTH consumers. Two independent
+        # date.today() calls -- one inside the render, one inside the ledger's
+        # re-derivation below -- can land on either side of midnight, and on
+        # Sep 30/Oct 1 (the WINTER_MONTHS edge) that renders one seasonal
+        # default and credits the OTHER: the ledger asserting an entry reached a
+        # draft that never carried it, which is the over-claim D4.3 forbids.
+        today = date.today()
+        injected = render_injection(
+            None, memory, experience, lexicon=lexicon, today=today
+        )
         user_message = (
             f"{injected}\n\n{base_user_message}" if injected else base_user_message
         )
@@ -644,7 +654,9 @@ def make_copilot_run_turn(
                     binding_key=resolved_binding[0] if resolved_binding else None,
                     memory=memory,
                     experience=experience,
-                    lexicon=glossary_entries(lexicon),
+                    # `today` is the SAME date the render above used, never a
+                    # second clock read -- see the comment at that call.
+                    lexicon=glossary_entries(lexicon, today),
                 ),
             )
 

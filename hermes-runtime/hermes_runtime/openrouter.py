@@ -21,6 +21,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Callable, Mapping, Optional
 
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
@@ -527,7 +528,16 @@ def make_openrouter_run_turn(
             if lexicon_external_injection_enabled()
             else None
         )
-        injected = render_injection(identity, memory, experience, lexicon=lexicon)
+        # ONE clock read per turn, threaded to BOTH consumers. Two independent
+        # date.today() calls -- one inside the render, one inside the ledger's
+        # re-derivation below -- can land on either side of midnight, and on
+        # Sep 30/Oct 1 (the WINTER_MONTHS edge) that renders one seasonal
+        # default and credits the OTHER: the ledger asserting an entry reached a
+        # reply that never carried it, which is the over-claim D4.3 forbids.
+        today = date.today()
+        injected = render_injection(
+            identity, memory, experience, lexicon=lexicon, today=today
+        )
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,
@@ -575,7 +585,9 @@ def make_openrouter_run_turn(
                     binding_key=resolved_binding[0] if resolved_binding else None,
                     memory=memory,
                     experience=experience,
-                    lexicon=glossary_entries(lexicon),
+                    # `today` is the SAME date the render above used, never a
+                    # second clock read -- see the comment at that call.
+                    lexicon=glossary_entries(lexicon, today),
                 ),
             )
         return result
