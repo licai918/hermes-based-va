@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 # agent loop hands a tool handler, so nothing inside a turn can claim it.
 TOOLS_DISPATCH_ROUTE = "tools_dispatch"
 
+# The scheduled feedback aggregator's own surface (0.0.5 S25, FR-32 / D3). Set
+# ONLY by ``hermes_runtime.feedback_aggregator``'s job body, which runs in the
+# background worker process -- a literal at the construction site, never a param
+# and never a runtime kwarg, so nothing inside an agent turn can claim it.
+#
+# It shares this constant's axis rather than adding a discriminator of its own,
+# because D3's amendment says so: L7 provenance already keys on ``dispatch_route``
+# (``resolve_lexicon_provenance``) and L6's ``feedback_derived`` source keys on the
+# same field (``resolve_agent_experience_source``), so the two layers cannot drift
+# on what "the job proposed this" means.
+FEEDBACK_AGGREGATOR_ROUTE = "feedback_aggregator"
+
 
 @dataclass(frozen=True)
 class ToolExecutionContext:

@@ -37,6 +37,7 @@ from hermes_runtime.background_worker import (
 )
 from hermes_runtime.job_queue import (
     AGENT_TURN_JOB_TYPE,
+    FEEDBACK_AGGREGATOR_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
     INGEST_JOB_TYPE,
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
@@ -263,13 +264,17 @@ def test_the_shipped_schedules_are_daily_retention_15min_probe_and_daily_honored
     # injection-ledger prune (0.0.5 S09, FR-11) is daily against a 180-DAY window,
     # for the same reason retention is; the L7 hit rollup (0.0.5 S05, FR-5/D6) is
     # daily because it feeds a retirement heuristic, not a live signal, and it
-    # CONSUMES the events it folds, so a day is the table's size not a backlog.
+    # CONSUMES the events it folds, so a day is the table's size not a backlog;
+    # the feedback aggregator (0.0.5 S25, FR-32) is daily because its output is a
+    # PROPOSAL a human works, so freshness is bounded by the inbox rather than the
+    # tick, and its clustering window is 30x wider than the cadence.
     assert [(s.job_type, s.interval_seconds) for s in SCHEDULES] == [
         (RETENTION_JOB_TYPE, 86400),
         (INTEGRATION_PROBE_JOB_TYPE, 900),
         (HONORED_RATE_JOB_TYPE, 86400),
         (INJECTION_LEDGER_PRUNE_JOB_TYPE, 86400),
         (LEXICON_HIT_ROLLUP_JOB_TYPE, 86400),
+        (FEEDBACK_AGGREGATOR_JOB_TYPE, 86400),
     ]
 
 

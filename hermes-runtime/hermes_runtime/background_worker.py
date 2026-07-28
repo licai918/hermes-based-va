@@ -44,6 +44,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from .job_queue import (
     DEFAULT_LEASE_SECONDS,
+    FEEDBACK_AGGREGATOR_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
     INGEST_JOB_TYPE,
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
@@ -70,6 +71,7 @@ BACKGROUND_JOB_TYPES = (
     HONORED_RATE_JOB_TYPE,
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
     LEXICON_HIT_ROLLUP_JOB_TYPE,
+    FEEDBACK_AGGREGATOR_JOB_TYPE,
 )
 
 # ponytail: 5 s, against the turn worker's 250 ms. Nothing here has a latency
@@ -143,6 +145,16 @@ INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
 # cost of a shorter interval is linear `job`-row growth, exactly as for the probe.
 LEXICON_HIT_ROLLUP_INTERVAL_SECONDS = 24 * 60 * 60
 
+# ponytail: 24 h for the feedback aggregator (0.0.5 S25, FR-32), matching every
+# other aggregate on this tick. It reads a 30-DAY clustering window, so a run more
+# often than daily re-reads almost the same rows to reach almost the same verdict;
+# and because the output is a PROPOSAL a human has to work, freshness is bounded by
+# how often anyone opens the inbox, not by the tick. The window is floor(epoch/86400),
+# so a worker down for a UTC day misses that day rather than replaying a backlog --
+# harmless here, because the clustering window is 30x wider than the cadence and the
+# next run sees the same feedback rows.
+FEEDBACK_AGGREGATOR_INTERVAL_SECONDS = 24 * 60 * 60
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule(job_type=RETENTION_JOB_TYPE, interval_seconds=RETENTION_INTERVAL_SECONDS),
     Schedule(
@@ -160,6 +172,10 @@ SCHEDULES: tuple[Schedule, ...] = (
     Schedule(
         job_type=LEXICON_HIT_ROLLUP_JOB_TYPE,
         interval_seconds=LEXICON_HIT_ROLLUP_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=FEEDBACK_AGGREGATOR_JOB_TYPE,
+        interval_seconds=FEEDBACK_AGGREGATOR_INTERVAL_SECONDS,
     ),
 )
 
@@ -255,6 +271,7 @@ def job_bodies() -> dict[str, JobBody]:
     subtree (the agent stack, the tool-dispatch stack, fastembed) and a worker
     should pay for them once at startup, not on import of this module."""
     from .copilot_turn import run_l6_review_job
+    from .feedback_aggregator import run_feedback_aggregator_job
     from .honored_rate import run_honored_rate_job
     from .injection_ledger import run_injection_ledger_prune_job
     from .integration_probe import run_integration_probe_job
@@ -279,6 +296,7 @@ def job_bodies() -> dict[str, JobBody]:
         HONORED_RATE_JOB_TYPE: run_honored_rate_job,
         INJECTION_LEDGER_PRUNE_JOB_TYPE: run_injection_ledger_prune_job,
         LEXICON_HIT_ROLLUP_JOB_TYPE: run_lexicon_hit_rollup_job,
+        FEEDBACK_AGGREGATOR_JOB_TYPE: run_feedback_aggregator_job,
     }
 
 

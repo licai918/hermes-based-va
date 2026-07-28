@@ -105,6 +105,13 @@ INJECTION_LEDGER_PRUNE_JOB_TYPE = "injection_ledger_prune"
 # default retry/dead-letter -- the fold is one atomic statement, so a retry either
 # repeats nothing (the events were already consumed) or does the whole job.
 LEXICON_HIT_ROLLUP_JOB_TYPE = "lexicon_hit_rollup"
+# S25 (0.0.5, FR-32): the propose-only feedback aggregator. Reads both quality-
+# feedback tables, clusters by reason tag, and raises PROPOSALS through the
+# governed propose actions -- never a memory write. Plain default retry/dead-
+# letter: a retry is safe by construction (the watermark plus the stores' own
+# open-set idempotence), and an aggregator that fails silently is a feedback loop
+# that quietly stops closing.
+FEEDBACK_AGGREGATOR_JOB_TYPE = "feedback_aggregator"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

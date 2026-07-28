@@ -42,9 +42,21 @@ AGENT_EXPERIENCE_STATUS_VALUES: tuple[str, ...] = ("proposed", "confirmed", "rej
 
 # Framework-derived write source (RK-1 parity with Customer Memory's
 # resolve_memory_write_source). toee_agent_experience is allowlisted on
-# internal_copilot only (S22) and the sole caller is the copilot review fork
-# (S23), so there is exactly one L6 source value today.
+# internal_copilot only (S22); 0.0.3 shipped the copilot review fork (S23) as its
+# sole caller, so there was exactly one value until 0.0.5 S25.
 AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT = "copilot_agent"
+
+# 0.0.5 S25 (FR-32, D3): the scheduled feedback aggregator's own value. It exists
+# so a feedback-derived proposal is DISTINGUISHABLE from an agent-proposed one in
+# every queue -- the one thing FR-32 is for. Like its L7 twin
+# (LEXICON_PROVENANCE_FEEDBACK_DERIVED) it is framework-derived from the job's own
+# execution context and can never be reached by a caller param.
+AGENT_EXPERIENCE_SOURCE_FEEDBACK_DERIVED = "feedback_derived"
+
+AGENT_EXPERIENCE_SOURCE_VALUES: tuple[str, ...] = (
+    AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT,
+    AGENT_EXPERIENCE_SOURCE_FEEDBACK_DERIVED,
+)
 
 # NFR-3: the store is operational-only. A "learning" is a short note/procedure,
 # not an essay -- same discipline as Customer Memory's MEMORY_VALUE_MAX_LENGTH,
@@ -131,19 +143,39 @@ def resolve_agent_experience_source(context: "ToolExecutionContext") -> str:
     ONE shared resolver for the mock and Postgres datastore handlers, same
     reasoning as Customer Memory's ``resolve_memory_write_source``: never taken
     from a model-supplied tool param. ``toee_agent_experience`` is allowlisted
-    on ``internal_copilot`` only (S22, ADR-0034/35) and the sole caller is the
-    copilot review fork (S23), so the resolved source is always
-    ``"copilot_agent"``. Any other profile is fail-closed -- defense in depth,
-    since the profile allowlist already keeps this unreachable elsewhere.
+    on ``internal_copilot`` only (S22, ADR-0034/35), so the profile alone cannot
+    separate the two writers that share that home. Any other profile is
+    fail-closed -- defense in depth, since the profile allowlist already keeps
+    this unreachable elsewhere.
+
+    **0.0.5 S25 (D3) adds the second value, on the SAME axis L7 provenance
+    already uses.** The discriminator is ``context.dispatch_route``, i.e. which
+    surface reached dispatch:
+
+    * ``FEEDBACK_AGGREGATOR_ROUTE`` -- the scheduled aggregator's own job body,
+      running in the background worker -> ``feedback_derived``;
+    * anything else -- the copilot review fork (S23), an eval run, the admin BFF
+      -> ``copilot_agent``, exactly as in 0.0.3.
+
+    **NOT a param and NOT ``user_id``**, for the reason the L7 twin spells out:
+    ``plugin/__init__.py`` reads ``user_id`` out of the framework's runtime
+    kwargs, so an attributed rep's session says WHO, never WHICH PATH. The route
+    marker is a literal set at the construction site and the agent path's context
+    provider never reads it from kwargs, so it is framework-derived rather than
+    forgeable -- pinned by
+    ``test_the_agent_path_cannot_claim_the_aggregator_route_via_a_runtime_kwarg``.
     """
     from ...plugin.profiles import INTERNAL
+    from ...tool_gate import FEEDBACK_AGGREGATOR_ROUTE
 
-    if context.profile == INTERNAL:
-        return AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT
-    raise ToolDriverError(
-        "policy_blocked",
-        f'agent_experience proposals are not permitted for profile "{context.profile}".',
-    )
+    if context.profile != INTERNAL:
+        raise ToolDriverError(
+            "policy_blocked",
+            f'agent_experience proposals are not permitted for profile "{context.profile}".',
+        )
+    if context.dispatch_route == FEEDBACK_AGGREGATOR_ROUTE:
+        return AGENT_EXPERIENCE_SOURCE_FEEDBACK_DERIVED
+    return AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT
 
 
 def _require_id(params: dict[str, Any]) -> str:
