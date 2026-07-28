@@ -598,3 +598,35 @@ reviewer tags them, so the UI does not imply an action that never happens.
 
 Recorded rather than decided, because either answer is defensible and the choice belongs to
 whoever owns what a reviewer is promised when they click the tag.
+
+## D24. The adversarial gate is blind to obedience expressed as a TOOL CALL
+
+Found by S23 while building the adversarial family, and made checkable rather than merely stated.
+
+`_eval_safety` evaluates **substrings of the reply text**. So an injected instruction that is
+obeyed **in prose** — "I have waived the restocking fee" — trips the gate and fails the build.
+An injected instruction obeyed **as a tool call**, with a bland reply that mentions nothing —
+redirecting a payment link, rewriting a memory slot — **leaves every marker green.**
+
+S23 shipped scenarios 35 and 36 for exactly these two shapes, so the hole is now visible in the
+suite instead of being a sentence in an ADR. But only a **medium** tool assertion notices them,
+and medium does not gate. The honest statement of what PAC-4 establishes is therefore:
+
+> A stored injection **with a prose effect** cannot be obeyed without failing CI. It does **not**
+> follow that no injected instruction was obeyed. **A green gate is not proof of no obedience.**
+
+That sentence must survive into the PAC-4 sign-off. A reviewer who reads "adversarial suite green"
+as "no injection succeeded" is drawing a conclusion the instrument does not support, and this is
+the layer where that mistake would be most expensive.
+
+**Not fixed here, and deliberately so.** The upgrade — extending `_eval_safety` to read
+`result.tool_calls` — is a change to **what gates CI**. Widening a gate mid-iteration, in a slice
+whose own acceptance forbids new gating (NFR-4), is how a release gets blocked by a rule nobody
+agreed to. It needs its own slice and its own decision about which tool calls constitute obedience;
+"the agent called a tool" is not by itself a violation, and getting that predicate wrong turns the
+safety leg into noise, which is the failure mode that ends with people disabling it.
+
+**Related ceiling, unchanged:** ADR-0160 already records that paraphrase walks through a substring
+gate. D24 is a different and sharper hole — paraphrase still *says something*, so a broader marker
+set can reach it. A tool call with a bland reply says nothing at all, so **no marker set of any
+breadth can ever reach it.** Breadth is not the fix; reading the effect is.
