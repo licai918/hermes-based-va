@@ -42,10 +42,17 @@ describe("Review Reason Tag enums (ADR-0154)", () => {
   });
 });
 
-describe("toee_feedback catalog parity (S02)", () => {
-  it("TS action enum matches the Python TOOL_CATALOG exactly", () => {
-    // The Python side of this parity check lives in
-    // hermes/tests/test_tool_catalog.py::test_feedback_actions_match_adr_0154.
+describe("toee_feedback action enum (ADR-0154)", () => {
+  // NOT a parity check, despite what this used to be called. It compares the
+  // catalog against a hardcoded copy of itself, so it can only catch someone
+  // editing tools.ts without editing this file -- it cannot see the Python
+  // catalog and never could. What it IS good for is pinning the exact ORDER and
+  // membership ADR-0154 specifies, which the cross-language check deliberately
+  // does not (that one compares sets, because ordering is a formatting concern).
+  //
+  // The real drift check is hermes/tests/test_tool_catalog_parity.py, which
+  // reads this file and fails the build when the two catalogs disagree.
+  it("pins the four actions ADR-0154 specifies, in order", () => {
     expect(TOOL_CATALOG.toee_feedback).toEqual([
       "submit_interaction_review",
       "record_draft_outcome",

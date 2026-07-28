@@ -12,6 +12,7 @@ describe("TOOL_CATALOG", () => {
       "match_phone",
       "match_email_sender",
       "get_email_link_status",
+      "link_identity",
     ]);
     expect(TOOL_CATALOG.toee_shopify_read).toEqual([
       "get_order",
@@ -23,6 +24,9 @@ describe("TOOL_CATALOG", () => {
       "upsert_preference",
       "clear_preference",
       "get_preferences",
+      "get_my_memory_summary",
+      "dismiss_proposal",
+      "get_memory_audit",
     ]);
   });
 
@@ -33,6 +37,7 @@ describe("TOOL_CATALOG", () => {
       "get_audit_log",
       "get_thread",
       "get_thread_by_phone",
+      "get_thread_by_email",
       "list_auto_handled",
       "get_auto_handled",
       "list_sales_outreach",
@@ -54,29 +59,24 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
   });
 
-  it("contains exactly the 18 v1 tool names", () => {
-    expect([...TOOL_NAMES].sort()).toEqual(
-      [
-        "toee_agent_experience",
-        "toee_semantic_lexicon",
-        "toee_case",
-        "toee_case_manage",
-        "toee_copilot_draft",
-        "toee_customer_memory",
-        "toee_easyroutes_read",
-        "toee_eval_review",
-        "toee_feedback",
-        "toee_identity_lookup",
-        "toee_knowledge_ops",
-        "toee_knowledge_search",
-        "toee_qbo_read",
-        "toee_shopify_read",
-        "toee_square_payment_link",
-        "toee_sms_reply",
-        "toee_workbench_admin",
-        "toee_workbench_read",
-      ].sort(),
-    );
+  // The test that used to live here compared TOOL_NAMES against a hardcoded
+  // array of 18 names. It looked like a completeness guard and was not one: it
+  // fired only when someone edited tools.ts without editing the test, and it
+  // could not see the Python catalog at all. Five tools and six actions went
+  // missing on this side across two iterations while it stayed green, because a
+  // Python-side addition was invisible to it by construction.
+  //
+  // Deleted rather than updated to 23. The real check --
+  // hermes/tests/test_tool_catalog_parity.py -- reads both catalogs and fails on
+  // any divergence in either direction, which subsumes everything this test did.
+  // Re-adding the hardcoded list would only create a second place to update and
+  // a second thing to forget.
+  it("exposes every declared tool through TOOL_NAMES and isToolName", () => {
+    expect(TOOL_NAMES).toHaveLength(Object.keys(TOOL_CATALOG).length);
+    for (const name of TOOL_NAMES) {
+      expect(isToolName(name)).toBe(true);
+      expect(TOOL_CATALOG[name].length).toBeGreaterThan(0);
+    }
   });
 
   it("exposes the toee_feedback tool shell actions (0.0.4 S02, ADR-0154)", () => {

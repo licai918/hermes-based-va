@@ -1,14 +1,29 @@
-// v1 Domain Adapter Tool catalog. One tool per integration with a fixed v1
-// `action` enum per ADR-0059 and ADR-0070. The catalog lists every valid
-// action for each tool; per-profile allowlisting and Tool Gate enforcement
-// live in the Python per-profile dispatch servers (hermes-runtime's
-// tool_dispatch_app.py / tool_dispatch_composition.py) since 0.0.4 S11
-// deleted @toee/domain-adapters (ADR-0156).
+// The Toee tool catalog: one tool per integration or governed store, each with a
+// fixed `action` enum (ADR-0059, ADR-0070). Per-profile allowlisting and Tool
+// Gate enforcement live in the Python per-profile dispatch servers
+// (hermes-runtime's tool_dispatch_app.py / tool_dispatch_composition.py), since
+// 0.0.4 S11 deleted @toee/domain-adapters (ADR-0156).
+//
+// THE RULE, so you do not have to guess: this file is an EXACT MIRROR of
+// hermes/toee_hermes/tool_catalog.py -- same tools, same actions, no subset, no
+// exceptions. `hermes/tests/test_tool_catalog_parity.py` reads this file and
+// fails the build on any divergence. Add a tool or an action to both, or to
+// neither.
+//
+// It has not always been a mirror, and the drift is why the parity test exists.
+// The header used to say "v1 Domain Adapter Tool catalog", which sounded like it
+// licensed a subset -- but post-v1 governed stores (toee_agent_experience,
+// toee_feedback, toee_semantic_lexicon) were added anyway, so the stated scope
+// stopped describing the contents and nobody could tell what belonged. Meanwhile
+// five whole tools and six actions had gone missing on this side, invisible
+// because the only test guarding the file compared it to a hardcoded copy of
+// itself. Backfilled and made exact in 0.0.5.
 export const TOOL_CATALOG = {
   toee_identity_lookup: [
     "match_phone",
     "match_email_sender",
     "get_email_link_status",
+    "link_identity",
   ],
   toee_knowledge_search: ["search_public_site", "search_operational_policy"],
   toee_shopify_read: [
@@ -19,13 +34,27 @@ export const TOOL_CATALOG = {
   ],
   toee_qbo_read: ["get_invoice", "list_customer_invoices", "get_ar_summary"],
   toee_easyroutes_read: ["get_delivery_status", "get_route_details"],
+  // 0.0.4 delivery initiative: Tier-1 fulfillment, Tier-3a customer promise and
+  // Tier-3b public prospect quote.
+  toee_delivery_promise: [
+    "get_order_delivery",
+    "get_product_promise",
+    "get_delivery_quote",
+  ],
   toee_square_payment_link: ["send_payment_link"],
   toee_sms_reply: ["send_message"],
   toee_case: ["create_case", "update_case"],
+  // L4 Customer Memory. The write pair is governed (ADR-0148: framework-derived
+  // source and actor, context-only binding); get_my_memory_summary and
+  // dismiss_proposal are the customer's own self-service reads, and
+  // get_memory_audit is the supervisor's.
   toee_customer_memory: [
     "upsert_preference",
     "clear_preference",
     "get_preferences",
+    "get_my_memory_summary",
+    "dismiss_proposal",
+    "get_memory_audit",
   ],
   toee_case_manage: [
     "claim_case",
@@ -36,13 +65,25 @@ export const TOOL_CATALOG = {
     "send_sms_message",
   ],
   toee_copilot_draft: ["draft_sms", "draft_email", "draft_internal_note"],
-  toee_workbench_read: ["get_case", "list_cases", "get_audit_log", "get_thread", "get_thread_by_phone", "list_auto_handled", "get_auto_handled", "list_sales_outreach", "get_sales_outreach"],
+  toee_workbench_read: [
+    "get_case",
+    "list_cases",
+    "get_audit_log",
+    "get_thread",
+    "get_thread_by_phone",
+    "get_thread_by_email",
+    "list_auto_handled",
+    "get_auto_handled",
+    "list_sales_outreach",
+    "get_sales_outreach",
+  ],
   toee_knowledge_ops: [
     "get_policy_slots",
     "update_policy_slot",
     "submit_for_eval",
     "rollback_published_policy",
     "get_corpus_status",
+    "enqueue_corpus_reingest",
   ],
   toee_eval_review: [
     "list_eval_runs",
@@ -83,11 +124,25 @@ export const TOOL_CATALOG = {
     "edit_lexicon_entry",
     "add_lexicon_entry",
   ],
+  // 0.0.4 operations surfaces. Agent-excluded on the Python side: reachable by
+  // the admin/supervisor dispatch profiles, never model-callable.
+  toee_metrics: ["get_aggregate_metrics"],
+  toee_retention: [
+    "trigger_retention_sweep",
+    "enqueue_retention_sweep",
+    "get_retention_status",
+  ],
+  toee_job_queue: ["list_dead_letters", "replay_job"],
+  toee_integrations: [
+    "get_integrations_status",
+    "initiate_reconnect",
+    "reprobe_now",
+  ],
   // 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- see
   // hermes/toee_hermes/tool_catalog.py for the full rationale. Fixed
-  // four-action enum; no handlers/UI yet (S03/S06/S08/S10 add those). Every
-  // action is agent-excluded on the Python side, so it is dispatch-reachable
-  // (internal_copilot + supervisor_admin) but never model-callable.
+  // four-action enum. Every action is agent-excluded on the Python side, so it
+  // is dispatch-reachable (internal_copilot + supervisor_admin) but never
+  // model-callable.
   toee_feedback: [
     "submit_interaction_review",
     "record_draft_outcome",
