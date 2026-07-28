@@ -45,6 +45,17 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     "toee_customer_memory": (
         "upsert_preference",
         "clear_preference",
+        # 0.0.5 S11 (FR-13, US7): the whole-binding erase. A governed LOOP over
+        # clear_preference's four slots across every binding the customer
+        # reaches -- the verified key AND every linked channel's provisional key,
+        # because the cross-channel merge would otherwise copy the provisional
+        # slots straight back on the customer's next verified turn (D10). Per-slot
+        # audit rows plus one summary row per binding; no new write primitive and
+        # no new table. Listed in _AGENT_EXCLUDED_ACTIONS: this is the most
+        # destructive governed action in the system, admin-only, reached only from
+        # the Memory Audit console's deterministic dispatch, and it fails closed
+        # without an attributed administrator.
+        "erase_customer_memory",
         "get_preferences",
         # 0.0.3 S21 (FR-21): verified-only customer self-service "what do you
         # remember about me" read -- slot values only, no source/actor/

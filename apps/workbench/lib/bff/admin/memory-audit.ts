@@ -35,3 +35,34 @@ export async function handleGetMemoryAuditViaApi(
     return hermesErrorToProblem(err);
   }
 }
+
+// 0.0.5 S11 (FR-13, US7): the whole-binding erase. dispatchWrite, never
+// dispatch: the action fails closed without an attributed administrator, and
+// the 4+1 audit rows are attributed to exactly the actor this asserts. The
+// confirm gate is the console's inline confirm dialog (the brief's "one-click
+// button (confirm dialog)"), not a server-side propose->confirm pair -- NFR-3
+// governs memory CONTENT written by scores and sweeps, and this writes none.
+//
+// The response is counts only. The dispatch result names every binding key the
+// erase touched -- the verified one plus each linked channel's provisional key
+// (D10) -- and those are the customer's raw identity: a Shopify id, a phone, an
+// email address. Same rule the copilot preferences handlers already follow.
+export async function handleEraseCustomerMemoryViaApi(
+  client: HermesApiClient,
+  caseId: string,
+): Promise<Response> {
+  try {
+    const data = (await client.dispatchWrite(
+      "toee_customer_memory",
+      "erase_customer_memory",
+      { case_id: caseId },
+    )) as { cleared?: unknown; bindings?: unknown[] };
+    return json({
+      erased: true,
+      clearedSlots: typeof data?.cleared === "number" ? data.cleared : 0,
+      bindingsCleared: Array.isArray(data?.bindings) ? data.bindings.length : 0,
+    });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}

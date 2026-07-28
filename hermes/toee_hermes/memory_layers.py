@@ -96,6 +96,10 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # --- L4 Customer Memory ------------------------------------------------
     ("toee_customer_memory", "upsert_preference"): "L4",
     ("toee_customer_memory", "clear_preference"): "L4",
+    # 0.0.5 S11 (FR-13): removes every slot on the binding -- and on every
+    # linked provisional binding (D10). One layer, many keys: the map's grain is
+    # the action, and every key it touches is L4.
+    ("toee_customer_memory", "erase_customer_memory"): "L4",
     ("toee_customer_memory", "get_preferences"): None,
     ("toee_customer_memory", "get_my_memory_summary"): None,
     # 0.0.3 S15: a dismissed proposal persists NO slot -- only a Workbench Audit

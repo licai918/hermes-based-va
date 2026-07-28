@@ -193,6 +193,18 @@ export function clearMemorySlot(
   );
 }
 
+// 0.0.5 S11 (FR-13, US7): erase the customer's whole memory binding. Counts
+// only come back -- the binding keys stay server-side (see the BFF handler).
+export function eraseCustomerMemory(
+  caseId: string,
+): Promise<{ erased: boolean; clearedSlots: number; bindingsCleared: number }> {
+  return sendJson<{ erased: boolean; clearedSlots: number; bindingsCleared: number }>(
+    "POST",
+    `/api/admin/memory-audit/erase?case_id=${encodeURIComponent(caseId)}`,
+    {},
+  );
+}
+
 // --- L6 Agent-experience store (0.0.3 S22, FR-23) -----------------------------
 
 export function listAgentExperience(): Promise<AgentExperienceEntry[]> {

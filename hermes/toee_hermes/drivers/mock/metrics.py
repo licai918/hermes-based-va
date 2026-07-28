@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .driver import MockHandlerRegistry
+from .memory import deletion_success_payload
 
 if TYPE_CHECKING:
     from ...tool_gate import ToolExecutionContext
@@ -123,6 +124,14 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             "l6_confirmed_entries": 0,
             # S18/FR-26: honestly unmeasured, never a fabricated 0ms.
             "latency": _latency_not_measured(),
+            # S11/FR-14: no erases on a storeless deployment, so zero erases and
+            # a `None` rate -- NOT a 100% success rate, which is what a naive
+            # zero-filled shape would render for a system that has erased
+            # nothing. Unlike the two blocks above this calls the SHARED builder
+            # rather than restating it: `deletion_success_payload` lives in this
+            # package (the L4 module), so hermes_runtime imports it too and the
+            # dependency direction never inverts.
+            "deletion_success": deletion_success_payload(),
         }
 
     return {"toee_metrics": {"get_aggregate_metrics": get_aggregate_metrics}}

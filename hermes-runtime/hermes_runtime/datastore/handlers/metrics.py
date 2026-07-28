@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Optional
 from ...honored_rate import honored_rate_metric
 from ...latency import latency_metrics
 from ._common import METRIC_L6_CONFIRMED, METRIC_SELF_SERVICE_USAGE
+from .memory import deletion_success_metric
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from toee_hermes.tool_gate import ToolExecutionContext
@@ -124,6 +125,12 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # knowledge_search can be both without either query seeing the other.
         latency = latency_metrics(cur)
 
+        # --- deletion success: the FR-14 tripwire (0.0.5 S11) -----------------
+        # Deterministic SQL over workbench_audit_log + customer_memory_slot,
+        # owned by handlers/memory.py so the query and the `memory_erased` row
+        # it anchors on live beside each other. S22 places the tile.
+        deletion_success = deletion_success_metric(cur)
+
     accepted_total = correction_count + dismissed_count
 
     return {
@@ -155,6 +162,10 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         # S18/FR-26: p50/p95 per memory layer + the total-vs-SLO tile. Shape owned
         # by hermes_runtime.latency so the mock twin renders the same tiles.
         "latency": latency,
+        # S11/FR-14: cleared-and-stayed-cleared. Shape owned by the shared L4
+        # module (toee_hermes.drivers.mock.memory.deletion_success_payload), which
+        # the mock twin calls too -- one builder, not two spellings.
+        "deletion_success": deletion_success,
     }
 
 

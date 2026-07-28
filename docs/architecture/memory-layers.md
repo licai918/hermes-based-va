@@ -105,6 +105,20 @@ ADR-0110's original substrate (Hermes Native Memory) is superseded; the layer mo
   [ADR-0151](../adr/0151-cross-channel-provisional-merge-precedence.md), which
   supersedes ADR-0112's v1 "cross-channel out of scope" non-goal; ADR-0112's
   merge trigger/behavior and the never-overwrite-verified invariant hold.
+- **Whole-binding erase** (0.0.5 S11, FR-13/US7): one governed
+  `toee_customer_memory.erase_customer_memory` action loops the existing per-slot clear over
+  the four slots, writing per-slot audit rows plus one summary row per binding. It clears the
+  verified binding **and every linked channel identity's provisional binding**, because the
+  cross-channel merge above would otherwise copy the provisional slots straight back on the
+  customer's next verified turn. Admin-only and fail-closed: no attributed administrator, no
+  erase, nothing deleted. It removes L4 **content** only — `injection_ledger` and
+  `customer_memory_merge_audit` carry the same binding key but hold provenance (which slot
+  *name* reached which turn, which keys were merged) and no slot value, and the erase's own
+  acceptance is that it leaves a *complete* audit trail. Cleared-and-stayed-cleared is watched
+  by the FR-14 deletion-success tripwire, a deterministic query over the summary rows and
+  `customer_memory_slot`; it flags both a row the erase left behind and one written afterwards,
+  inside a named 30-day window, and it proposes nothing — an alert for a human, never an
+  automatic re-delete.
 - Reads are **exact-key**, not semantic. There is no similarity search anywhere in L1–L4.
 
 ---
@@ -214,7 +228,7 @@ applied at **two seams**:
 | `<confirmed_lexicon>` prompt glossary (**soft**) | puts confirmed vocabulary in front of the model, read-only and advisory | may miss; never asserts |
 
 Only `status='confirmed'` entries are ever applied or injected — checked at the store read and
-re-checked at render. The glossary is bounded newest-20 (`LEXICON_GLOSSARY_LIMIT`), fenced,
+re-checked at render. The glossary is bounded to `LEXICON_GLOSSARY_LIMIT` (20) entries, fenced,
 fail-closed (a turn never fails on L7), and injected into the copilot draft turn
 (`LEXICON_INJECTION`) and, read-only, the external turn (`LEXICON_EXTERNAL_INJECTION`) — **two
 independent flags, both default OFF**, which is also the eval-determinism pin.
@@ -240,8 +254,27 @@ the digit-shaped `surface_form`) + the S02 human confirm gate; a bad admin-typed
 regex lives in CODE, the row is only the per-domain toggle; poisoned vocabulary blast radius →
 nothing applies until a human confirms, and only `confirmed` is ever read; a fence-closing
 value → escaped at render on every layer (D19, below); eval determinism → both flags default
-OFF and the record path structurally cannot read L7. Remaining: relevance/hit-ranked selection
-(S26) and the real-traffic bound calibration.
+OFF and the record path structurally cannot read L7. Remaining: the real-traffic bound
+calibration.
+
+**Which 20 entries fill the bound is a knob (0.0.5 S26, FR-6's upgrade clause).**
+`LEXICON_SELECTION` selects `newest` (the default — newest-decided first, unchanged) or
+`health`, which ranks by the FR-31 entry-health score. Flipping it is a deploy-time config
+commit, audited by git history like every other 0.0.5 knob (D14). It exists because
+newest-first has a **silent** failure: past 20 confirmed entries a seasonal `default_rule` is
+evicted by date and the agent simply stops asking the confirm-first question, with no error
+anywhere. Ranking on usage alone would make that worse rather than better — `hit_count` counts
+deterministic-seam applications, which are only ever aliases and normalizers, so a
+`default_rule` earns **structurally zero** hits — so the ranked strategy fills the window
+round-robin across entry kinds. Rarity by design is not uselessness.
+
+**Per-entry effectiveness (0.0.5 S26, FR-31)** joins the S09 injection ledger to per-turn judge
+verdicts (`judged_turn`) and materializes one row per entry in `entry_effectiveness`, refreshed
+on the ledger's own prune tick. Every rate ships with its denominator and an unscored leg reports
+`null`, never `0`. Two scopes travel with the score as **data**, not prose: it covers the
+**external turn only** (the copilot draft path's `turn_ref` is synthetic, so its injections are
+recorded and never attributed — D4.3), and attribution is **per turn**, so every entry in a
+prompt shares that reply's verdict.
 
 ---
 
@@ -340,6 +373,14 @@ propose→confirm gate as any other proposal.
 ---
 
 ## Change log
+
+- **2026-07-28 (0.0.5 S11)** — L4 gained the **whole-binding erase** and its deletion-success
+  tripwire (FR-13/FR-14, US7): a governed loop over the existing per-slot clear, reaching the
+  verified binding *and* every linked channel's provisional binding (D10 — an erase that
+  stopped at the verified key would be undone by the cross-channel merge on the customer's
+  next turn). See the L4 section above for which stores it touches and which it deliberately
+  does not. This is a *forgetting* mechanism, and the **forgetting table** that will hold it
+  next to retention and L6/L7 retirement is still S22's — this entry does not pretend to be it.
 
 - **2026-07-28 (0.0.5 S06)** — L7 shipped: the `<confirmed_lexicon>` glossary at both turn
   seams behind two independent default-OFF flags, `default_rule` conditions evaluated at

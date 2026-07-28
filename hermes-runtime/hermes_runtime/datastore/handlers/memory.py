@@ -26,14 +26,20 @@ from typing import TYPE_CHECKING, Any
 from psycopg.rows import dict_row
 
 from toee_hermes.drivers.mock.memory import (
+    ERASE_REAPPEARANCE_WINDOW_DAYS,
+    MEMORY_ACTION_ERASED,
     MEMORY_ACTION_PREFERENCE_UPDATED,
+    MEMORY_PREFERENCE_SLOTS,
     _read_evidence,
     _require_slot,
     _require_value,
+    deletion_success_payload,
+    erase_binding_keys,
     is_differing_value_overwrite,
     is_verified_customer_identity,
     resolve_clear_authorization,
     resolve_customer_memory_binding,
+    resolve_erase_authorization,
     resolve_memory_write_source,
     scan_memory_write,
 )
@@ -209,6 +215,209 @@ def _clear_preference(conn, params: dict[str, Any], context: "ToolExecutionConte
     return {"binding_key": binding_key, "slot": slot, "cleared": True}
 
 
+def _linked_channel_identities(cur, shopify_customer_id: str) -> list[tuple[str, str]]:
+    """Every ``(channel, channel_identity)`` the Identity Graph links to this
+    customer (0.0.5 S11, D10).
+
+    The same read ``PostgresGatewayStore.list_channel_identities_for_customer``
+    makes for the cross-channel merge, on the CALLER's cursor so it shares the
+    erase's transaction -- a link appearing mid-erase must not produce a binding
+    the erase enumerated but did not clear. Read-only on L1; the erase never
+    unlinks an identity (that is the org-wide erasure workflow, PRD §6).
+    """
+    cur.execute(
+        """
+        SELECT DISTINCT channel, channel_identity FROM identity_link
+        WHERE shopify_customer_id = %s
+        ORDER BY channel, channel_identity
+        """,
+        (shopify_customer_id,),
+    )
+    return [(row[0], row[1]) for row in cur.fetchall()]
+
+
+def _erase_customer_memory(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
+    """Erase a customer's WHOLE memory binding (0.0.5 S11, FR-13, US7, PAC-3).
+
+    A governed LOOP over the four ADR-0111 slots, not a new write primitive: the
+    same per-slot DELETE and the same ``preference_cleared`` audit row
+    :func:`_clear_preference` writes, plus ONE ``memory_erased`` summary row
+    carrying the per-slot outcomes -- so a fully populated binding produces the
+    ``4+1`` rows the acceptance names, all attributed to the administrator.
+
+    **It clears every binding the customer reaches, not just the verified one
+    (D10).** ``merge_provisional_memory`` copies provisional slots from every
+    linked channel identity onto the verified key on the next verified turn, so
+    an erase that stopped at the verified binding would be silently undone by
+    the customer's next SMS -- and FR-14's alert would then fire on the erase's
+    own aftermath instead of on a real event. The keys come from the shared
+    :func:`erase_binding_keys` (the mock twin calls the same one), fed the
+    Identity Graph links this transaction just read.
+
+    **Which stores it touches, and which it deliberately does not.**
+    ``customer_memory_slot`` is the only place L4 CONTENT lives -- ``evidence``
+    is a column on the same row, so the verbatim customer phrase goes with it.
+    ``workbench_audit_log`` is written, not cleared. ``injection_ledger`` and
+    ``customer_memory_merge_audit`` carry this binding key but hold PROVENANCE
+    (which slot NAME reached which turn; which keys were merged) and no slot
+    value at all: PAC-3 asks the erase to leave a complete audit trail, and
+    deleting the trail would be the opposite of that -- it would also break
+    S10's blast-radius join. ``identity_link`` is read, never written.
+
+    The trailing unscoped-by-slot DELETE is what makes "whole binding" literally
+    true: the per-slot loop can only remove slots this build knows about, and
+    ``customer_memory_slot`` has no CHECK constraint pinning ``slot_name`` to the
+    four. It is still scoped to ONE ``binding_key``, and its rowcount is recorded
+    rather than swallowed, so an off-enum row shows up in the summary instead of
+    surviving quietly.
+    """
+    account_id, initiator = resolve_erase_authorization(context)
+    binding_key, binding_kind = resolve_customer_memory_binding(context, params)
+    with conn.cursor() as cur:
+        linked = (
+            _linked_channel_identities(cur, binding_key)
+            if binding_kind == "verified"
+            else []
+        )
+        keys = erase_binding_keys(context, linked)
+        bindings: list[dict[str, Any]] = []
+        for key in keys:
+            cleared: list[str] = []
+            for slot in MEMORY_PREFERENCE_SLOTS:
+                cur.execute(
+                    "DELETE FROM customer_memory_slot "
+                    "WHERE binding_key = %s AND slot_name = %s",
+                    (key, slot),
+                )
+                if cur.rowcount:
+                    cleared.append(slot)
+            cur.execute(
+                "DELETE FROM customer_memory_slot WHERE binding_key = %s", (key,)
+            )
+            bindings.append(
+                {
+                    "binding_key": key,
+                    "cleared_slots": cleared,
+                    "extra_rows_removed": cur.rowcount,
+                }
+            )
+
+    for entry in bindings:
+        key = entry["binding_key"]
+        for slot in MEMORY_PREFERENCE_SLOTS:
+            insert_audit(
+                conn,
+                profile=context.profile,
+                account_id=account_id,
+                action="preference_cleared",
+                target_type="customer_memory_slot",
+                target_id=slot,
+                details={
+                    "slot": slot,
+                    "binding_key": key,
+                    "initiator": initiator,
+                    # Distinguishes a slot swept by the whole-binding erase from
+                    # a supervisor clearing that one slot on purpose, without
+                    # inventing a second audit action the Memory Audit console
+                    # and S22's counters would both have to learn.
+                    "erase": True,
+                },
+            )
+        insert_audit(
+            conn,
+            profile=context.profile,
+            account_id=account_id,
+            action=MEMORY_ACTION_ERASED,
+            target_type="customer_memory_slot",
+            target_id=key,
+            details={
+                "binding_key": key,
+                "initiator": initiator,
+                "cleared_slots": entry["cleared_slots"],
+                "extra_rows_removed": entry["extra_rows_removed"],
+                # Every key this one erase touched, on every row, so the trail
+                # reads whole from whichever binding a supervisor looks at.
+                "erased_bindings": keys,
+            },
+        )
+
+    return {
+        "binding_key": binding_key,
+        "bindings": bindings,
+        "cleared": sum(len(entry["cleared_slots"]) for entry in bindings),
+        "erased": True,
+    }
+
+
+def deletion_success_metric(cur) -> dict[str, Any]:
+    """FR-14's deletion-success tripwire: cleared-and-STAYED-cleared.
+
+    Deterministic SQL over two existing tables -- no new column, no new counter.
+    The anchor is the ``memory_erased`` summary row :func:`_erase_customer_memory`
+    writes; the observation is ``customer_memory_slot`` itself. **The store, not
+    a return value**: an erase that reported success and left rows behind is
+    exactly what this exists to catch, and only the store can say so.
+
+    Any slot row on an erased binding inside
+    :data:`ERASE_REAPPEARANCE_WINDOW_DAYS` is flagged, and the timestamp
+    comparison classifies it rather than gating it -- ``residue`` (a row the
+    erase itself failed to remove) versus ``reappeared`` (a row written
+    afterwards, the merge/proposal case FR-14 names). Gating on "written after
+    the erase" alone would have waved residue through, which is the half of the
+    requirement a return-value check also misses.
+
+    A binding erased twice collapses to ONE row (``GROUP BY``) anchored on the
+    latest of its erases, so repeat erases never inflate the denominator. The
+    ``MAX`` itself only picks which timestamp the residue/reappeared split is
+    measured against -- it is NOT what clears a raised flag; the re-erase clears
+    it by deleting the rows the flag was about
+    (``test_a_second_erase_clears_the_flag_the_first_one_raised``, which stays
+    green with ``MIN`` here, as a bait run confirmed).
+
+    Outside the window nothing is examined at all: a customer stating a
+    preference again months later is not an incident, and an alert that never
+    expires stops being read.
+    """
+    cur.execute(
+        """
+        WITH erased AS (
+            SELECT details ->> 'binding_key' AS binding_key,
+                   MAX(created_at) AS erased_at
+            FROM workbench_audit_log
+            WHERE action = %s
+              AND details ->> 'binding_key' IS NOT NULL
+              AND created_at >= now() - make_interval(days => %s)
+            GROUP BY 1
+        )
+        SELECT e.binding_key, s.slot_name, s.updated_at > e.erased_at
+        FROM erased e
+        LEFT JOIN customer_memory_slot s ON s.binding_key = e.binding_key
+        """,
+        (MEMORY_ACTION_ERASED, ERASE_REAPPEARANCE_WINDOW_DAYS),
+    )
+    rows = cur.fetchall()
+
+    erased_bindings = {binding for binding, _slot, _after in rows}
+    flagged: set[str] = set()
+    residue: set[str] = set()
+    reappeared: set[str] = set()
+    flagged_slots: dict[str, int] = {}
+    for binding, slot, after_erase in rows:
+        if slot is None:  # LEFT JOIN miss: the binding is clean
+            continue
+        flagged.add(binding)
+        (reappeared if after_erase else residue).add(binding)
+        flagged_slots[slot] = flagged_slots.get(slot, 0) + 1
+
+    return deletion_success_payload(
+        erased_bindings=len(erased_bindings),
+        flagged_bindings=len(flagged),
+        residue_bindings=len(residue),
+        reappeared_bindings=len(reappeared),
+        flagged_slots=flagged_slots,
+    )
+
+
 def _get_preferences(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     binding_key, _ = resolve_customer_memory_binding(context, params)
     with conn.cursor() as cur:
@@ -341,6 +550,7 @@ def memory_handlers() -> dict[str, dict[str, Any]]:
         "toee_customer_memory": {
             "upsert_preference": _upsert_preference,
             "clear_preference": _clear_preference,
+            "erase_customer_memory": _erase_customer_memory,
             "get_preferences": _get_preferences,
             "get_my_memory_summary": _get_my_memory_summary,
             "dismiss_proposal": _dismiss_proposal,

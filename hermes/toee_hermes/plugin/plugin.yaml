@@ -29,6 +29,7 @@ provides_tools:
   - toee_case__update_case
   - toee_customer_memory__upsert_preference
   - toee_customer_memory__clear_preference
+  - toee_customer_memory__erase_customer_memory
   - toee_customer_memory__get_preferences
   - toee_customer_memory__get_my_memory_summary
   - toee_customer_memory__dismiss_proposal

@@ -10,7 +10,7 @@
 // case_id backing that case -- the same identity-binding key every other
 // Customer Memory read/write in this codebase resolves through.
 import { useState } from "react";
-import { clearMemorySlot, getMemoryAudit } from "@/lib/api/admin-client";
+import { clearMemorySlot, eraseCustomerMemory, getMemoryAudit } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
 import type { MemoryAuditEntry, MemoryAuditView, MemoryPreferenceSlot } from "@/lib/gateway/types";
 import { SLOT_LABELS } from "@/components/copilot/CustomerPreferences";
@@ -97,6 +97,7 @@ export function MemoryAuditConsole() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmClearSlot, setConfirmClearSlot] = useState<MemoryPreferenceSlot | null>(null);
+  const [confirmErase, setConfirmErase] = useState(false);
 
   async function load(id: string) {
     if (!id.trim()) return;
@@ -125,6 +126,22 @@ export function MemoryAuditConsole() {
       // (final-review Minor). The error banner still shows the failure; the
       // supervisor re-opens the confirm to retry.
       setConfirmClearSlot(null);
+    }
+  }
+
+  // FR-13 (US7): the whole-binding erase. Same confirm-then-act shape as the
+  // per-slot clear above, and the same reload afterwards -- the point of the
+  // reload here is that the write history it re-fetches now CONTAINS the erase's
+  // own 4+1 audit rows, which is what PAC-3 asks a supervisor to be able to see.
+  async function erase() {
+    setError(null);
+    try {
+      await eraseCustomerMemory(caseId.trim());
+      await load(caseId);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to erase this customer's memory");
+    } finally {
+      setConfirmErase(false);
     }
   }
 
@@ -160,7 +177,36 @@ export function MemoryAuditConsole() {
       {view ? (
         <>
           <div>
-            <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.5rem" }}>Current slots</h2>
+            {/* The erase sits beside the heading, not in the table, and stays
+                available when the table is EMPTY on purpose: this view shows the
+                verified binding's slots, while the erase also clears every
+                linked channel's provisional binding (D10) -- which can hold
+                slots this table never renders. Gating the button on
+                view.slots.length would hide the erase in exactly the case the
+                supervisor most needs it. */}
+            <div style={{ display: "flex", alignItems: "baseline", gap: "0.75rem", margin: "0 0 0.5rem" }}>
+              <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Current slots</h2>
+              {confirmErase ? (
+                <span style={{ display: "inline-flex", gap: "0.35rem", alignItems: "baseline" }}>
+                  Erase every remembered preference for this customer, including
+                  linked channels? This cannot be undone.
+                  <button type="button" onClick={() => void erase()}>
+                    Confirm erase
+                  </button>
+                  <button type="button" onClick={() => setConfirmErase(false)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  aria-label="Erase all memory for this customer"
+                  onClick={() => setConfirmErase(true)}
+                >
+                  Erase all memory
+                </button>
+              )}
+            </div>
             {view.slots.length === 0 ? (
               <p>No preference slots are set for this customer.</p>
             ) : (

@@ -935,3 +935,170 @@ def test_get_memory_audit_history_stays_empty_after_a_real_value_change() -> Non
     assert result.ok is True
     assert result.data["audit"] == []
     assert result.data["slots"][0]["slot_value"] == "email"
+
+
+# --- 0.0.5 S11 (FR-13, US7): whole-binding erase ----------------------------
+# Every test here asserts the rows EXISTED before the erase. A deletion test
+# that only checks "absent afterwards" passes on an empty store, which is this
+# project's most common vacuous shape wearing a new hat.
+
+
+def _supervisor_ctx(
+    *,
+    user_id: str | None = "acct_supervisor_1",
+    shopify_customer_id: str = VERIFIED_CUSTOMER_ID,
+    channel: str | None = None,
+    channel_identity: str | None = None,
+) -> ToolExecutionContext:
+    # The admin/supervisor shape the Memory Audit console dispatches under:
+    # internal_copilot + an asserted actor, bound to a case's resolved identity.
+    # ``channel``/``channel_identity`` ride along exactly as the dispatch app's
+    # ``_resolve_case_identity`` supplies them, which is what lets the erase
+    # reach the caller's own pre-verification provisional key too (D10).
+    identity: dict[str, object] = {
+        "outcome": "verified_customer",
+        "shopify_customer_id": shopify_customer_id,
+    }
+    if channel is not None:
+        identity["channel"] = channel
+    if channel_identity is not None:
+        identity["channel_identity"] = channel_identity
+    return ToolExecutionContext(
+        profile="internal_copilot", identity=identity, user_id=user_id
+    )
+
+
+def _seed_all_four(driver: MockDriver, ctx: ToolExecutionContext) -> None:
+    for slot, value in (
+        ("contact_time_preference", "after 2pm"),
+        ("channel_preference", "sms"),
+        ("delivery_habit_note", "leave at back door"),
+        ("communication_style_note", "brief"),
+    ):
+        result = _call(
+            driver,
+            "upsert_preference",
+            {"key": slot, "value": value, "evidence": f"customer said: {value}"},
+            ctx,
+        )
+        assert result.ok is True
+
+
+def test_erase_removes_every_slot_that_was_actually_there() -> None:
+    evidence_store: dict[str, dict[str, str]] = {}
+    driver = _driver(evidence_store=evidence_store)
+    ctx = _supervisor_ctx()
+    _seed_all_four(driver, ctx)
+
+    # The half that makes this test non-vacuous: the four slots (and their
+    # verbatim evidence) are PRESENT before the erase runs.
+    before = _call(driver, "get_preferences", {}, ctx)
+    assert set(before.data["preferences"]) == {
+        "contact_time_preference",
+        "channel_preference",
+        "delivery_habit_note",
+        "communication_style_note",
+    }
+    assert len(evidence_store[VERIFIED_CUSTOMER_ID]) == 4
+
+    erased = _call(driver, "erase_customer_memory", {}, ctx)
+    assert erased.ok is True
+    assert erased.data["erased"] is True
+    assert erased.data["cleared"] == 4
+
+    after = _call(driver, "get_preferences", {}, ctx)
+    assert after.data["preferences"] == {}
+    # ``evidence`` is a SECOND store in the mock twin (it is a column on the
+    # same row in Postgres, so the row delete takes it there). An erase that
+    # popped only the slot map would leave the verbatim customer phrase -- the
+    # actual PII -- behind.
+    assert evidence_store.get(VERIFIED_CUSTOMER_ID, {}) == {}
+
+
+def test_erase_leaves_a_neighbouring_binding_untouched() -> None:
+    # Without this, `store.clear()` (or a DELETE with no WHERE) passes every
+    # other erase test in this file.
+    driver = _driver()
+    target = _supervisor_ctx(shopify_customer_id="gid://shopify/Customer/1001")
+    neighbour = _supervisor_ctx(shopify_customer_id="gid://shopify/Customer/2002")
+    _seed_all_four(driver, target)
+    _seed_all_four(driver, neighbour)
+
+    assert len(_call(driver, "get_preferences", {}, neighbour).data["preferences"]) == 4
+
+    assert _call(driver, "erase_customer_memory", {}, target).ok is True
+
+    survivors = _call(driver, "get_preferences", {}, neighbour).data["preferences"]
+    assert len(survivors) == 4
+    assert survivors["delivery_habit_note"] == "leave at back door"
+
+
+def test_erase_also_clears_the_callers_own_provisional_binding() -> None:
+    # D10: `merge_provisional_memory` copies provisional slots back onto the
+    # verified key on the next verified turn, so an erase that stops at the
+    # verified binding is undone by the customer's next message.
+    driver = _driver()
+    provisional_ctx = _provisional_ctx("+14165550101")
+    _call(
+        driver,
+        "upsert_preference",
+        {"key": "channel_preference", "value": "sms"},
+        provisional_ctx,
+    )
+    assert (
+        _call(driver, "get_preferences", {}, provisional_ctx).data["preferences"]
+        == {"channel_preference": "sms"}
+    )
+
+    erase_ctx = _supervisor_ctx(channel="sms", channel_identity="+14165550101")
+    _seed_all_four(driver, erase_ctx)
+    erased = _call(driver, "erase_customer_memory", {}, erase_ctx)
+    assert erased.ok is True
+    assert [b["binding_key"] for b in erased.data["bindings"]] == [
+        VERIFIED_CUSTOMER_ID,
+        "provisional:sms:+14165550101",
+    ]
+
+    assert _call(driver, "get_preferences", {}, provisional_ctx).data["preferences"] == {}
+
+
+def test_erase_without_an_attributed_actor_is_policy_blocked_and_deletes_nothing() -> None:
+    # ADR-0148 fail-closed. The second half matters as much as the first: a
+    # gate that raises AFTER the delete would satisfy `policy_blocked` alone.
+    driver = _driver()
+    seeded = _supervisor_ctx()
+    _seed_all_four(driver, seeded)
+
+    result = _call(driver, "erase_customer_memory", {}, _supervisor_ctx(user_id=None))
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert len(_call(driver, "get_preferences", {}, seeded).data["preferences"]) == 4
+
+
+def test_erase_on_the_external_profile_is_blocked_even_for_a_verified_customer() -> None:
+    # `clear_preference` lets a verified EXTERNAL customer clear their own slot
+    # (FR-21) and returns (None, "customer") -- no workbench account. The erase
+    # is admin-only, so composing that gate is not enough on its own: it must
+    # also require the attributed actor the audit rows are attributed to.
+    driver = _driver()
+    ctx = _verified_ctx()
+    _seed_all_four(driver, ctx)
+
+    result = _call(driver, "erase_customer_memory", {}, ctx)
+
+    assert result.ok is False
+    assert result.error_class == "policy_blocked"
+    assert len(_call(driver, "get_preferences", {}, ctx).data["preferences"]) == 4
+
+
+def test_erase_reports_the_slots_it_actually_cleared() -> None:
+    # The per-slot outcomes the summary audit row carries on the Postgres twin.
+    driver = _driver()
+    ctx = _supervisor_ctx()
+    _call(driver, "upsert_preference", {"key": "channel_preference", "value": "sms"}, ctx)
+
+    erased = _call(driver, "erase_customer_memory", {}, ctx)
+
+    assert erased.data["cleared"] == 1
+    assert erased.data["bindings"][0]["cleared_slots"] == ["channel_preference"]

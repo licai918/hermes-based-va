@@ -217,6 +217,48 @@ def test_get_memory_audit_is_never_registered_as_an_llm_tool_for_any_profile() -
         assert "toee_customer_memory__get_memory_audit" not in ctx.registered_names()
 
 
+# --- 0.0.5 S11: erase_customer_memory is never LLM-callable (governance) ---
+
+
+def test_erase_customer_memory_is_never_registered_as_an_llm_tool() -> None:
+    # toee_customer_memory is allowlisted for BOTH external and internal_copilot,
+    # and unexcluded actions ride the shared toolset registration onto every
+    # profile the toolset is attached to -- so the erase has to be checked on
+    # both, not just the admin one (FR-13, the get_memory_audit precedent).
+    # A model that could call this would destroy, in one tool call, the data
+    # every other governance surface in 0.0.5 exists to protect.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_customer_memory__erase_customer_memory" not in ctx.registered_names()
+
+
+def test_erase_customer_memory_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would actually try to exploit,
+    # and the one register() alone does not cover (the link_identity precedent).
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_customer_memory__erase_customer_memory" not in ctx.registered_names()
+
+
+def test_erase_customer_memory_is_listed_in_the_exclusion_set() -> None:
+    # The registration tests above prove the OUTCOME on the profiles that exist
+    # today; this proves the MECHANISM, so a future profile gaining the toolset
+    # cannot expose an action nobody excluded.
+    assert ("toee_customer_memory", "erase_customer_memory") in _AGENT_EXCLUDED_ACTIONS
+
+
+def test_clear_preference_stays_llm_callable_so_the_exclusion_is_not_blanket() -> None:
+    # Contrast, so the three assertions above cannot pass by toee_customer_memory
+    # having been excluded WHOLESALE. clear_preference is the customer's own
+    # governed self-service clear (FR-21) and must keep reaching the model's
+    # tool-calling surface; the erase is what does not.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register(ctx)
+    assert "toee_customer_memory__clear_preference" in ctx.registered_names()
+
+
 # --- 0.0.3 S22: list_agent_experience is never LLM-callable (governance) ---
 
 

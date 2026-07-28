@@ -136,6 +136,13 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
         ("toee_customer_memory", "get_memory_audit"),
+        # 0.0.5 S11 (FR-13): the whole-binding erase. Admin-only for the
+        # get_memory_audit reason and one stronger -- a model that could erase a
+        # customer's whole memory binding could destroy, in one tool call, the
+        # data every other governance surface in this iteration exists to
+        # protect. Reached only from the Memory Audit console's deterministic
+        # BFF dispatch.
+        ("toee_customer_memory", "erase_customer_memory"),
         ("toee_agent_experience", "list_agent_experience"),
         ("toee_agent_experience", "confirm_experience"),
         ("toee_agent_experience", "reject_experience"),

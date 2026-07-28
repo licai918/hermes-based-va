@@ -23,6 +23,7 @@ describe("TOOL_CATALOG", () => {
     expect(TOOL_CATALOG.toee_customer_memory).toEqual([
       "upsert_preference",
       "clear_preference",
+      "erase_customer_memory",
       "get_preferences",
       "get_my_memory_summary",
       "dismiss_proposal",

@@ -47,10 +47,13 @@ export const TOOL_CATALOG = {
   // L4 Customer Memory. The write pair is governed (ADR-0148: framework-derived
   // source and actor, context-only binding); get_my_memory_summary and
   // dismiss_proposal are the customer's own self-service reads, and
-  // get_memory_audit is the supervisor's.
+  // get_memory_audit is the supervisor's. erase_customer_memory (0.0.5 S11,
+  // FR-13) is the supervisor's whole-binding erase -- agent-excluded on the
+  // Python side, reached only from the Memory Audit console's BFF dispatch.
   toee_customer_memory: [
     "upsert_preference",
     "clear_preference",
+    "erase_customer_memory",
     "get_preferences",
     "get_my_memory_summary",
     "dismiss_proposal",
