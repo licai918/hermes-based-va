@@ -5,6 +5,7 @@
 // restricts this whole route to supervisor/admin) drives the review bar's
 // visibility (0.0.4 S04).
 import { getServerSession } from "@/lib/auth/current-session";
+import { decodeRouteParam } from "@/lib/route-param";
 import { AutoHandledDetail } from "@/components/audit/AutoHandledDetail";
 
 export default async function AutoHandledRecordPage({
@@ -14,5 +15,7 @@ export default async function AutoHandledRecordPage({
 }) {
   const { recordId } = await params;
   const session = await getServerSession();
-  return <AutoHandledDetail recordId={recordId} role={session?.role} />;
+  // Real record ids carry `:` and `+` -- see decodeRouteParam for why the raw
+  // param cannot be handed on as-is.
+  return <AutoHandledDetail recordId={decodeRouteParam(recordId)} role={session?.role} />;
 }

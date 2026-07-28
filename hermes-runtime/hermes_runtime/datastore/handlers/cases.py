@@ -203,20 +203,90 @@ def _case_row(conn, case_id: str) -> Optional[dict[str, Any]]:
     return _read_model(conn, row)
 
 
+def _escalating_thread_id(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Optional[str]:
+    """Which customer thread is this case being raised from, if any.
+
+    An explicit ``channelThreadId`` wins -- that is the parameter the mock twin
+    already accepts, and the Postgres handler used to drop it on the floor.
+    Otherwise fall back to the async SMS turn binding (ADR-0107): the gateway
+    turn runner puts the live ``sms_session_id`` on the context, which is how an
+    agent escalating mid-turn identifies its own conversation without having to
+    be told.
+
+    None is a legitimate answer -- a case raised outside any conversation (an
+    internal-copilot or sales_outreach case) has no thread.
+    """
+    explicit = read_string(params, "channel_thread_id", "channelThreadId")
+    if explicit:
+        return explicit
+    session_id = getattr(context, "sms_session_id", None)
+    if not session_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT customer_thread_id FROM sms_session WHERE id = %s",
+            (session_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def _create_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     contact_reason = read_string(params, "contact_reason", "contactReason")
     urgency = read_string(params, "urgency")
     summary = read_string(params, "summary")
     channel = read_string(params, "channel") or "sms"
-    case_id = new_id("case")
+    thread_id = _escalating_thread_id(conn, params, context)
+    if thread_id is not None and not contact_reason:
+        # Raising a case FROM a live conversation is the escalation itself -- the
+        # agent is saying it cannot finish this alone. contact_reason is not a
+        # required parameter (the tool catalog lists actions, not schemas), so a
+        # model that escalates without stating why must not leave the case
+        # looking like an untriaged gateway placeholder: `_escalation_case_open`
+        # reads exactly that, and the conversation would go on being offered for
+        # auto-handled sampling despite having been handed to a human.
+        # "unspecified" is a legitimate answer for a rep to see and correct --
+        # contact_reason is free text and the Workbench edits it inline.
+        contact_reason = "unspecified"
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO cases (id, channel, contact_reason, urgency, status, summary)
-            VALUES (%s, %s, %s, %s, 'open', %s)
-            """,
-            (case_id, channel, contact_reason, urgency, summary),
-        )
+        # An escalation raised DURING a turn must attach to the thread it came
+        # from. The gateway has already opened an untriaged placeholder for that
+        # thread (postgres_gateway_store._ensure_open_case), so triage that one
+        # rather than leaving a second, unlinked case floating beside it: a case
+        # with no customer_thread_id is invisible to every thread-scoped read --
+        # including `_escalation_case_open`, which decides whether the turns get
+        # marked auto-handled. Without this the agent could escalate and the
+        # conversation would still be offered up for auto-handled sampling.
+        case_id = None
+        if thread_id is not None:
+            cur.execute(
+                """
+                UPDATE cases SET contact_reason = %s,
+                                 urgency = COALESCE(%s, urgency),
+                                 summary = COALESCE(%s, summary),
+                                 last_activity_at = now()
+                WHERE customer_thread_id = %s
+                  AND status IN ('open', 'in_progress')
+                  AND contact_reason IS NULL
+                RETURNING id
+                """,
+                (contact_reason, urgency, summary, thread_id),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                case_id = row[0]
+        if case_id is None:
+            case_id = new_id("case")
+            cur.execute(
+                """
+                INSERT INTO cases
+                    (id, channel, customer_thread_id, contact_reason, urgency, status, summary)
+                VALUES (%s, %s, %s, %s, %s, 'open', %s)
+                """,
+                (case_id, channel, thread_id, contact_reason, urgency, summary),
+            )
     record: dict[str, Any] = {"case_id": case_id, "status": "open", "channel": channel}
     if contact_reason is not None:
         record["contact_reason"] = contact_reason
@@ -425,13 +495,22 @@ def _capture_sms_send(
 def _auto_handled_outcome(
     conn, thread_id: str
 ) -> tuple[str, bool, str]:
-    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread."""
+    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread.
+
+    ``contact_reason IS NOT NULL`` is the same triage test the writer uses
+    (postgres_gateway_store._escalation_case_open). The gateway opens an
+    untriaged placeholder case for EVERY inbound so Tier B can show the thread,
+    so without it every auto-handled record would read ``escalated_to_case`` and
+    ``auto_resolved`` would be unreachable -- the two must agree on what counts
+    as an escalation or the list contradicts the flag that put the row in it.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             SELECT tool_failure, summary FROM cases
             WHERE customer_thread_id = %s
-              AND contact_reason IS DISTINCT FROM 'sales_outreach'
+              AND contact_reason IS NOT NULL
+              AND contact_reason <> 'sales_outreach'
             ORDER BY opened_at DESC LIMIT 1
             """,
             (thread_id,),

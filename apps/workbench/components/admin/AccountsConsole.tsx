@@ -144,7 +144,13 @@ export function AccountsConsoleView({
         </table>
       )}
 
-      <form onSubmit={handleSubmit} style={{ maxWidth: "24rem" }}>
+      {/* method="post" for the same reason as LoginForm: this form carries a
+          password (one an admin is setting for ANOTHER user), and onSubmit only
+          exists once React has hydrated. Submit inside that window and a form
+          with no method natively does GET /admin/accounts?new-password=... --
+          into the URL bar, browser history, access log, and any Referer. POST
+          keeps it in the body; after hydration preventDefault still wins. */}
+      <form method="post" onSubmit={handleSubmit} style={{ maxWidth: "24rem" }}>
         <h2 style={{ fontSize: "1.0625rem", marginTop: 0 }}>Create account</h2>
 
         <div style={{ marginBottom: "0.75rem" }}>

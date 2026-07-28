@@ -46,7 +46,19 @@ export function LoginForm({ onSuccess }: { onSuccess?: () => void }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} style={{ display: "grid", gap: "0.75rem" }}>
+    // method="post" is a safety net for the hydration window, not the real
+    // submit path -- handleSubmit above preventDefault()s and posts JSON to
+    // /api/auth/login. But onSubmit only exists once React has hydrated. Submit
+    // before that (Enter from a fast typist, a slow bundle, a hydration that
+    // never completes) and the browser does the native thing; with no method a
+    // form defaults to GET, which would put the password in the URL bar, the
+    // browser history, the server access log, and any Referer sent onward.
+    // POST keeps it in the request body. Costs nothing once hydrated.
+    <form
+      method="post"
+      onSubmit={handleSubmit}
+      style={{ display: "grid", gap: "0.75rem" }}
+    >
       <div style={{ display: "grid", gap: "0.25rem" }}>
         <label htmlFor="username">Username</label>
         <input

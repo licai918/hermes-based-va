@@ -5,9 +5,18 @@ automated run already proved.
 
 **Status:** every PAC's *behaviour* has been executed against a live local stack
 (real Next.js BFF → real dispatch server → real Postgres) and asserted by
-reading the rows back out of Postgres. What remains for a human is the **browser
-DOM layer** (clicking the controls) and the **simulator-driven** variant of the
-PAC-1 subject — see [What is still owed](#what-is-still-owed).
+reading the rows back out of Postgres. The **browser DOM layer** has since been
+executed too — see [The browser pass](#the-browser-pass).
+
+**PAC-1 step 2** — the simulator-driven subject — failed on the first run for a
+real reason rather than an environmental one: nothing in the running system ever
+marked a turn `auto_handled`, so the auto-handled audit list could only contain
+fixtures. That has since been fixed; see
+[Why PAC-1 step 2 failed, and what fixed it](#why-pac-1-step-2-failed-and-what-fixed-it).
+The fix ships with tests that drive the real writers, but the **live re-run is
+still owed** — the gateway and turn worker run from a baked
+`toee-hermes-runtime:local` image, so proving it end to end again needs that
+image rebuilt.
 
 ---
 
@@ -170,16 +179,117 @@ that calls `json.dumps`, verified red-capable.
 
 ---
 
-## What is still owed
+## The browser pass
 
-1. **Browser DOM layer.** The checks above drove the real HTTP stack, not the
-   rendered controls. Clicking the review bar, the thumbs chips, and the send
-   modal still wants one human pass (the component behaviours are covered by 83
-   workbench tests, but not the assembled page).
-2. **Simulator-driven PAC-1 subject.** The automated run created its
-   auto-handled record as a database fixture rather than by driving a
-   conversation through the gateway. Step 2 of PAC-1 — a real simulated inbound
-   producing a real auto-handled interaction — is the part to reproduce by hand.
+Run against a **production build** (`next build` + `next start`) of the merged
+0.0.4 tip, driving the assembled page in a real browser. Every control below was
+operated through the page, and every result read back out of Postgres.
+
+| Check | Result |
+| --- | --- |
+| Login, session, role-scoped nav | PASS |
+| PAC-1 review bar: Fail expands the EXTERNAL tag set only | PASS |
+| PAC-1 Submit is disabled until a tag is picked; enabled after two | PASS |
+| PAC-1 submit → `POST /api/copilot/audit/review` 200, row + audit row, reviewer derived server-side | PASS |
+| Append-only: re-reviewing appended a second row, the first intact | PASS |
+| **US-7**: reopening shows the prior verdict, tags and comment, with *Edit review* | PASS |
+| PAC-2: scored subject reads *Reviewed*, sibling reads *Not reviewed* | PASS |
+| PAC-2: sales-outreach list carries the same column and was NOT cross-marked | PASS |
+| Sales-outreach Pass submits with no tag step and stores zero tags | PASS |
+| PAC-3: 👎 expands the INTERNAL set; none of the external-only tags appear | PASS |
+| PAC-3: 👍 submits immediately, no tag step, zero tags stored | PASS |
+| PAC-3: the draft stays editable and sendable throughout | PASS |
+| PAC-4: untouched send → `sent_as_is`, no ratio; rating + outcome share one `draft_correlation_id` | PASS |
+| PAC-4: edited send → `sent_edited` with a ratio | PASS |
+| PAC-4: neither send showed any extra prompt — capture is silent | PASS |
+| **PAC-4: a capture that throws SYNCHRONOUSLY never fails the send** | PASS |
+| PAC-5: rep is bounced off the review route, and the BFF answers 403 | PASS |
+| PAC-5: feedback on a case the rep does not hold → `policy_blocked` | PASS |
+
+The synchronous-capture row is the one worth keeping: `window.fetch` was patched
+to *throw* (not reject) for `/api/copilot/feedback`, which is precisely what a
+bare `.catch()` would have missed. The capture was attempted once and died; the
+customer's message still went out and landed in the thread, the modal closed
+clean, and no error surfaced to the rep. No outcome row was written — the
+capture really did fail. That is the double-send hole, shut.
+
+---
+
+## Why PAC-1 step 2 failed, and what fixed it
+
+Driving a real conversation through the simulator works end to end — the gateway
+accepts the tokened webhook, the turn worker runs the turn, and the agent answers
+on its own. But the resulting turns are written with `auto_handled = FALSE`, so
+the conversation never appears in the auto-handled audit list and there is
+nothing to score.
+
+That is not a fixture problem. **All three production inserts into
+`message_turn` hardcode `FALSE`:**
+
+- `postgres_gateway_store.py` — the inbound customer turn
+- `postgres_gateway_store.py` — the outbound agent-reply mirror
+- `datastore/handlers/cases.py` — the workbench send
+
+The column defaults to `FALSE`, there is no `UPDATE … SET auto_handled`
+anywhere in the repo, and `feat/0.0.5-land-all` is identical. `_list_auto_handled`
+requires `bool_and(auto_handled) IS TRUE`, so **no real conversation can ever
+appear in that list.** The only rows that qualify are the hand-written `TRUE`
+values in `0005_dev_bootstrap` and the PAC fixtures.
+
+The intended meaning is not in doubt: the dev seed marks the agent-only segment
+`TRUE` and the escalated segment `FALSE`, and `cases.py` reads
+`active_case_segment = not auto_handled`. The writer side was simply never
+implemented.
+
+This is **pre-existing** — the auto-handled audit list predates this module
+(ADR-0037, ADR-0085), and the quality-feedback module only added the review bar
+and the `Reviewed` column on top of it. But it decides whether the external-facing
+(对外) half of this module has any subjects at all in production, so it belongs
+to whoever owns the gateway write path, and it should be closed before the
+external mechanism is considered live.
+
+It is also exactly the defect the automated run could not have caught: that run
+*created its subject as a fixture with `auto_handled = true`*. Only driving a real
+conversation exposes it — which is why this step was left for a human pass.
+
+### The fix
+
+The flag is now written rather than hardcoded, and the signal it reads is the
+one already present in the data: **the gateway's per-inbound case is a
+placeholder and carries no `contact_reason`; a real escalation always has one.**
+So `auto_handled` is "no *triaged* case is open on this thread", which keeps the
+placeholder — and therefore keeps every conversation visible in the rep queue.
+Nothing about queue behaviour changes.
+
+Three things had to move together:
+
+1. Both gateway writers compute the flag instead of hardcoding `FALSE`. The
+   outbound writer decides it, because the escalation happens *during* the turn —
+   at inbound the agent has not run yet, so it would always read "not escalated".
+2. When the turn did escalate, the inbound that triggered it is settled to
+   `FALSE` too. Otherwise the customer's message reads auto-handled while the
+   reply escalating it does not, and `active_case_segment` hides the very turn
+   that opened the case.
+3. `create_case` now attaches to the thread it was raised from (via the
+   ADR-0107 turn binding on the context). It previously dropped the link
+   entirely — the mock twin accepted `channelThreadId` and the Postgres handler
+   ignored it — so an agent escalation was invisible to every thread-scoped
+   read. Without this, fixing only the writers would have made escalated
+   conversations show up *as auto-handled*, which is worse than the original bug.
+
+`contact_reason` is not a required parameter, so an escalation raised from a
+live turn without one is recorded as `unspecified` rather than being left
+indistinguishable from the placeholder.
+
+This reproduces the `0005_dev_bootstrap` seed exactly: `thread_ar`'s April pair
+is auto-handled, and both June turns — after `case_ar_urgent` opened with
+`contact_reason = 'order_status'` — are not.
+
+Six of the seven behaviours above are pinned by tests that drive the **real**
+writers (`test_postgres_gateway_store.py`), each verified to go red when its own
+part of the fix is reverted. Every pre-existing test in the tree seeds
+`auto_handled` by hand, which is precisely how the writer stayed unimplemented
+from the first Postgres port until a live acceptance run went looking.
 
 ---
 

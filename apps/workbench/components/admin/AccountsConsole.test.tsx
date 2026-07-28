@@ -43,6 +43,24 @@ function baseViewProps() {
 }
 
 describe("AccountsConsoleView", () => {
+  it("never lets the new-account password be submitted as a URL query", () => {
+    // Same defect class as LoginForm: a <form> with no method defaults to GET
+    // and no action defaults to the current URL, and onSubmit only exists once
+    // React has hydrated. Submit inside that window and the browser natively
+    // does GET /admin/accounts?new-username=...&new-password=... -- putting a
+    // password an admin is SETTING FOR ANOTHER USER into the URL bar, browser
+    // history, the access log, and any Referer sent onward.
+    //
+    // method="post" costs nothing after hydration (preventDefault still wins)
+    // and keeps the credential in the request body inside it.
+    const { container } = render(<AccountsConsoleView {...baseViewProps()} />);
+    const form = container.querySelector("form");
+
+    expect(form).not.toBeNull();
+    expect(form?.querySelector('input[type="password"]')).not.toBeNull();
+    expect(form?.getAttribute("method")?.toLowerCase()).toBe("post");
+  });
+
   it("renders the accounts table with role labels and never references passwordHash", () => {
     const { container } = render(<AccountsConsoleView {...baseViewProps()} />);
     expect(screen.getByText("admin")).toBeInTheDocument();
