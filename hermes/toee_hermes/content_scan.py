@@ -119,8 +119,15 @@ def context_strings(value: Any) -> list[str]:
 
     Feeds :func:`scan_injection`. Nested because a shallow pass let
     ``{"a": {"b": "</untrusted_customer_memory>"}}`` store clean; keys are
-    included because they are model-supplied too. Only VALUES are redacted (see
-    :func:`redact_pii_tree`) -- renaming a key would change the object's shape.
+    included because they are model-supplied too, and :func:`redact_pii_tree`
+    redacts them for the same reason.
+
+    **This deepening WIDENED L6's reject set** (D2 amendment, S01 re-review).
+    L6 composes both legs over every string this returns, so a nested value or a
+    digit-shaped KEY -- ``{"order_1234567890": ...}`` -- now ``policy_blocked``s a
+    ``propose_experience`` write that a shallow scan let through. Fail-safe and
+    deliberate; pinned by
+    ``tests/test_agent_experience.py::test_propose_experience_rejects_the_widened_proposer_context_set``.
     """
     if isinstance(value, str):
         return [value]
@@ -198,14 +205,32 @@ def redact_pii(
     return redacted, redacted != text, tuple(spared)
 
 
+def _free_key(key: Any, taken: dict[Any, Any]) -> Any:
+    """``key``, suffixed until it does not overwrite something already in ``taken``."""
+    if key not in taken:
+        return key
+    suffix = 2
+    while f"{key} ({suffix})" in taken:
+        suffix += 1
+    return f"{key} ({suffix})"
+
+
 def redact_pii_tree(
     value: Any, *, keep: tuple[Optional[str], ...] = ()
 ) -> tuple[Any, bool, tuple[str, ...]]:
-    """:func:`redact_pii` over every string in a nested dict/list, same returns.
+    """:func:`redact_pii` over every string in a nested dict/list, KEYS INCLUDED.
 
     ``proposer_context`` is JSONB: a shallow pass left nested values unredacted.
-    Keys are left alone -- they are scanned by :func:`context_strings` but
-    rewriting one would change the object's shape.
+    Keys are model-supplied too, so leaving them unredacted made a key the way to
+    land ``{"jane.doe@example.com": "..."}`` verbatim in the shared L7 store with
+    ``pii_redacted`` false -- an NFR-6 hole (found by the S01 re-review). A key
+    gets the same SPAN replacement a value does, so ``order_1234567890`` becomes
+    ``order_[redacted]`` and keeps what meaning it had outside the span.
+
+    Redacting a key changes the dict's shape, so two distinct keys can collide on
+    one redacted string. Dropping a value there would be a worse bug than the one
+    this closes, so a colliding key is suffixed (``[redacted] (2)``) -- ugly on
+    purpose, and only ever reached by a context that carried two PII keys.
     """
     if isinstance(value, str):
         return redact_pii(value, keep=keep)
@@ -214,7 +239,11 @@ def redact_pii_tree(
         changed = False
         spared: tuple[str, ...] = ()
         for key, item in value.items():
-            out[key], hit, kept = redact_pii_tree(item, keep=keep)
+            if isinstance(key, str):
+                key, key_hit, key_kept = redact_pii(key, keep=keep)
+                changed = changed or key_hit
+                spared += key_kept
+            out[_free_key(key, out)], hit, kept = redact_pii_tree(item, keep=keep)
             changed = changed or hit
             spared += kept
         return out, changed, spared

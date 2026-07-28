@@ -204,10 +204,50 @@ def test_redact_pii_tree_walks_nested_dicts_and_lists() -> None:
     assert value == {"a": {"b": f"mail {PII_REDACTION}"}, "c": ["x", {"d": "clean"}], "n": 7}
 
 
+def test_redact_pii_tree_redacts_keys_not_just_values() -> None:
+    # Re-review finding A: keys were scanned for INJECTION but never redacted for
+    # PII, so {"jane.doe@example.com": ...} stored verbatim in the L7 JSONB with
+    # pii_redacted still false -- a hole in NFR-6 that a docstring blessed instead
+    # of closing. A key is redacted the same way a value is: the matched SPAN is
+    # replaced, so the rest of the key keeps whatever meaning it had.
+    value, redacted, kept = redact_pii_tree(
+        {"jane.doe@example.com": "asked about 205/55R16", "order_1234567890": "ok"}
+    )
+    assert redacted is True
+    assert kept == ()
+    assert value == {
+        PII_REDACTION: "asked about 205/55R16",
+        f"order_{PII_REDACTION}": "ok",
+    }
+
+
+def test_redact_pii_tree_redacts_a_nested_key_and_honours_keep() -> None:
+    value, redacted, kept = redact_pii_tree(
+        {"exchange": {"a.b@example.com": "205 55 16", "205 55 16": "size"}},
+        keep=("205 55 16",),
+    )
+    assert redacted is True
+    assert value == {"exchange": {PII_REDACTION: "205 55 16", "205 55 16": "size"}}
+    assert sorted(kept) == ["205 55 16", "205 55 16"]
+
+
+def test_redact_pii_tree_never_drops_a_value_when_two_keys_redact_alike() -> None:
+    # Redacting a key changes the dict's shape, so two distinct keys can collide
+    # on one redacted string. Silently keeping only the last value would be a
+    # WORSE bug than the one being fixed (governance evidence vanishing without a
+    # trace), so a colliding key is suffixed rather than overwritten.
+    value, redacted, _ = redact_pii_tree(
+        {"a.b@example.com": "first", "c.d@example.com": "second", PII_REDACTION: "third"}
+    )
+    assert redacted is True
+    assert len(value) == 3
+    assert sorted(value.values()) == ["first", "second", "third"]
+
+
 def test_context_strings_reaches_every_depth_including_keys() -> None:
     # Shared by L6 and L7 as the set of strings the injection leg must see. Keys
-    # are model-supplied too, so they are scanned; only VALUES are redacted (a
-    # renamed key would change the object's shape).
+    # are model-supplied too, so they are scanned -- and, since the re-review,
+    # redacted as well (:func:`redact_pii_tree`).
     assert sorted(context_strings({"a": {"b": "deep"}, "c": ["one", 2]})) == [
         "a", "b", "c", "deep", "one",
     ]

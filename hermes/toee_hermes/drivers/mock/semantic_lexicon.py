@@ -150,7 +150,8 @@ def scan_lexicon_write(
       seeded surface form, so running it here would ``policy_blocked`` the
       headline demo of the whole iteration.
     * ``evidence`` / ``proposer_context`` -- injection hard-rejects at every
-      depth (:func:`context_strings`); PII is REDACTED IN PLACE and the entry is
+      depth (:func:`context_strings`); PII is REDACTED IN PLACE, in KEYS as well
+      as values (S01 re-review: a key was a way past NFR-6), and the entry is
       kept. The evidence is exactly what an admin needs in order to decide;
       throwing the entry away over a phone number in a quoted exchange is the
       wrong trade. The entry's own forms are exempt from redaction (see

@@ -443,6 +443,24 @@ def test_an_injection_shaped_proposer_context_KEY_is_hard_rejected() -> None:
     assert result.error_class == "policy_blocked"
 
 
+def test_pii_in_a_proposer_context_KEY_is_redacted_not_stored_verbatim() -> None:
+    # Re-review finding A: keys got the injection leg but not the redact leg, so
+    # a model-supplied key WAS the way to land a customer email verbatim in the
+    # shared L7 JSONB with pii_redacted false -- exactly what NFR-6 forbids.
+    driver = _driver()
+    result = _propose(
+        driver,
+        _internal_ctx(),
+        proposer_context={"jane.doe@example.com": "asked about 205/55R16"},
+    )
+    assert result.ok is True
+    entry = _list(driver).data["entries"][0]
+    assert "jane.doe@example.com" not in entry["proposer_context"]
+    # The value is kept -- redact, do not reject (D2) -- under a redacted key.
+    assert list(entry["proposer_context"].values()) == ["asked about 205/55R16"]
+    assert entry["pii_redacted"] is True
+
+
 def test_pii_nested_inside_proposer_context_is_redacted_in_place() -> None:
     driver = _driver()
     result = _propose(
