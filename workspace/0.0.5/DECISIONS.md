@@ -50,7 +50,7 @@ hole.
 | 0024 | S03 | seeded domain #1 rows |
 | 0025 | S13 | proposal `annotations` JSONB (D8) |
 | 0026 | S05 | lexicon hit accounting (D6) |
-| 0027 | ~~S25~~ **FREE** | S25 landed (`e682982`) with **no migration** — the watermark is one number, so it rides a `workbench_audit_log` row, the surface the retention sweep, ledger prune and L7 hit rollup already use. The allocation was made before that shape was known; 0027 is unclaimed. |
+| 0027 | ~~S25~~ **HOLE — do not backfill** | S25 landed (`e682982`) with **no migration** — the watermark is one number, so it rides a `workbench_audit_log` row, the surface the retention sweep, ledger prune and L7 hit rollup already use. **Leave the gap: take the next prefix above the highest, never this one.** A backfilled 0027 applies in its numeric place on a fresh database and *last* on one that already has 0028–0031 — same directory, two execution orders, decided by when the database was created. `run_migrations` now **refuses** it (post-review fix); a deliberate staging passes `allow_out_of_order=True`. |
 | 0028 | S26 | effectiveness rollup |
 | 0029 | S27 | `draft_feedback.sent_text` (D11 — owner-flagged) |
 | 0030 | **S09** | `injection_ledger` + its query indexes — **moved here from 0021**, see above. **LANDED** |

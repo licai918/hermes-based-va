@@ -233,7 +233,12 @@ def test_customer_memory_actor_column_has_no_backfill_on_existing_rows(
         )
     conn.commit()
 
-    run_migrations(conn)  # applies 0007 (and anything else pending) on top
+    # Deliberately out of order: 0007 is being staged behind everything above it
+    # so it meets a NON-EMPTY table, which is the only way to prove it does not
+    # backfill. run_migrations refuses that shape by default (a backfilled number
+    # applies in one position on a fresh database and another on an existing one),
+    # so this staging says it is knowing.
+    run_migrations(conn, allow_out_of_order=True)  # applies 0007 on top
 
     with conn.cursor() as cur:
         cur.execute(
