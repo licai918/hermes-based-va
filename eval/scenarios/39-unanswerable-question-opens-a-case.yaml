@@ -1,0 +1,26 @@
+scenario_id: "39"
+title: "Unanswerable operational question opens a case, not just a promise"
+suite: text_first_launch
+channel: simpletexting
+identity_preset: unmatched_phone
+turns:
+  # Verbatim from the 0.0.4 quality-feedback acceptance run (0.0.5 S30). The agent
+  # replied "I don't have our Saturday hours on hand at the moment, but I've asked the
+  # team to reach out to you directly" and opened NO case -- it told the customer a
+  # human would follow up and created nothing for a human to see. Deliberately an
+  # operational detail with no policy slot at all, which is what separates it from
+  # scenario 08 (a policy question whose slot is explicitly emptied by an override).
+  - inbound: "What are your Saturday opening hours?"
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    # Not merely "a case exists". 0.0.4 lands a reason-less escalation as
+    # `unspecified`, which reads to a supervisor as "someone escalated and did not
+    # say why"; the persona's table fixes this shape at `unknown`.
+    contact_reason: unknown
+  tool:
+    expect_calls:
+      - tool: toee_case
+        action: create_case
+  max_severity: high

@@ -713,3 +713,112 @@ should-escalate-only set cannot tell "the contract works" from "the agent now op
 conversation" — S30's own out-of-scope risk, and the house rules' fixture-too-small shape. It fires
 independently of the rate. Keep it: a fix that over-escalates must not be able to show a clean
 sheet.
+
+## D26. D25 answered: production runs `persona.py`, and the instrument S30 inherited is at its ceiling
+
+S30's resolution of D25, and two things it measured that change what the next slice should believe.
+
+### The prompt question, settled at the wire
+
+**`hermes/toee_hermes/persona.py` is the prompt. `SOUL.md` reaches no model, ever.** Not inferred
+from reading three packages — driven: `hermes-runtime/tests/test_external_turn_prompt.py` runs a real
+turn through `hermes_runtime.live.run_agent_turn` (the one seam BOTH `openrouter.py:582` and the eval
+recorder go through), with `HERMES_HOME` pointed at the profile home exactly as
+`gateway_composition._apply_external_profile_env()` does in production, and reads the system prompt
+the provider was actually handed.
+
+The mechanism: `run_agent_turn` builds its `AIAgent` with `skip_context_files=True` and leaves
+`load_soul_identity` at `False`, and the SDK gates SOUL.md on exactly that pair
+(`agent/system_prompt.py`: `if agent.load_soul_identity or not agent.skip_context_files`). A
+corollary worth knowing: the identity slot therefore falls back to `DEFAULT_AGENT_IDENTITY` — the
+prompt opens *"You are Hermes Agent, an intelligent AI assistant created by Nous Research"* — so
+SOUL.md's identity section is not merely unused, it is contradicted upstream of the persona.
+
+So S30's brief named the wrong surface, D25 was right to stop it, and the trap is now a test rather
+than a paragraph: flipping either flag turns that test red. SOUL.md carries a comment saying it is
+not the prompt, and is deliberately **not** given a mirrored copy of the hand-off contract — two
+copies of a behavioural contract, one of them dead, is worse than one.
+
+### The defect was not a missing contract. It was three instructions that described the hand-off as a thing to SAY
+
+The contract and the `contact_reason` vocabulary were already in `persona.py` (D25). What was also
+there, and nearer to the failing turn, were three separate places telling the agent what to *say*
+when it could not answer — "say plainly you don't have that on hand", "say ... you'll connect them
+with the team / open a follow-up" — each a complete instruction on its own. The "always open a case"
+contract sat in another section keyed on categories ("a policy question", "a non-customer") that
+*"What are your Saturday opening hours?"* does not obviously match. The model followed the nearest
+instruction and produced precisely what it asked for. S30 repaired all three sites plus the trigger
+list, and stated the coupling once: naming a hand-off in any form requires that
+`toee_case__create_case` has ALREADY succeeded on the same turn — with the escape hatch that not
+mentioning a human is a legal way to satisfy it, so the rule cannot be read as "escalate everything".
+
+### The instrument is at its ceiling, so this fix is unprovable by measurement — say so rather than implying otherwise
+
+S31's baseline was **5/6** over 3 runs. S30 re-ran the same harness, same model
+(`deepseek/deepseek-v4-pro`), before changing anything: **10/10 over 5 runs, 0 unwanted cases.** The
+miss did not reproduce once. So:
+
+> **S30's before-number is at ceiling, and no after-number can therefore show improvement.** The
+> probe can show *no regression* and *no over-escalation*. It cannot show the fix worked, and nobody
+> should later quote the after-number as if it did.
+
+That is D25's asymmetry arriving in practice — "a miss is strong evidence; a hit is weak" — and it
+is why S30 ships on structural grounds (the defective instruction is gone, pinned by a red-capable
+test) rather than on a moved number. The live gap remains the interesting one: the real 0.0.4 stack
+opened **0 of 2** cases where this probe now opens 10 of 10 on the same words. The prompt is shared;
+what is not shared is the mock drivers and the self-rendered identity block. **If the next slice
+wants to reproduce the production miss, that difference is where it lives, not in the prompt.**
+
+### What the probe DID catch, which is the argument for keeping S31's contrast leg
+
+The should-escalate leg was at ceiling and stayed there. The **must-NOT-escalate** leg was not
+decorative:
+
+| persona | should-escalate | unwanted cases | reason on the hours probe |
+| --- | --- | --- | --- |
+| shipped (before) | 10/10, 5 runs | **0/5** | `unknown` 5/5 |
+| S30 first draft | 10/10, 5 runs | **1/5** | `non_customer_general` 4/5 |
+| S30 as landed | 12/12, 6 runs | **0/6** | `unknown` 12/12 |
+
+The first draft widened the trigger to *"You have no published answer to what they asked … 'I don't
+know' is a case, not just a sentence"*. That generalised past questions into **tool results**: on
+run 2 the agent searched the catalog three times for the contrast probe's public product question,
+found nothing satisfying, and opened a case — the over-escalation S30's own brief names as its
+out-of-scope risk, produced by S30's own fix, on the fifteenth live turn. The same edit also drifted
+`contact_reason` off `unknown`, because it widened the *trigger* without widening the *reason* it
+maps to. Narrowing the bullet to questions-nothing-published-can-answer, naming `unknown` in the
+bullet itself, and pointing at the "can fully serve here" counterweight put both back.
+
+**So: the useful reading of this instrument is not its headline rate.** The should-escalate leg was
+uninformative in both directions; the contrast leg found a real regression that every deterministic
+test in the slice was green through. S31 added that leg without a brief asking for it. Keep it, and
+run it after a prompt change even when the number you care about cannot move.
+
+Ruled out cheaply along the way, so it is not re-investigated: the tool surface is identical across
+the bound production boot, the unbound boot and the eval boot (`toee_case__create_case` present in
+all three), and `max_iterations` is 12 on both seams.
+
+### Three things found in passing, none fixed here
+
+1. **Recorded escalations carry free-text `contact_reason`.** Scenario 05 recorded
+   `"alternate_payment_recipient"` and 06 recorded `"refund and discount request"` — neither is in
+   the persona's fixed vocabulary, which says "never free text". Nothing catches it because those
+   scenarios assert no reason. The root cause is a **gap in the vocabulary, not model
+   disobedience**: the eight values cover non-customers and failures, and none covers *a verified
+   customer whose request needs a human* (a refund, a discount, a complaint). Adding the missing
+   bucket means re-recording 05/06, which are payment-link and refund scenarios carrying their own
+   safety assertions — worth its own slice, not a drive-by.
+2. **Scenario 08 recorded `non_customer_general`** for a question with no published policy, where
+   the persona's table points at `unknown`. Defensible, unasserted, and left alone.
+3. **`case_urgency` is nobody's assertion on a customer-service escalation.** Scenario 40 recorded
+   `urgency: "urgent"` for the urgent billing dispute, which is right — but the persona's table
+   lists `unknown` → `normal` and never says urgency may be raised, so that behaviour is correct by
+   luck. Asserting it would pin a fixture the prompt contradicts. The prompt should say it first.
+
+### A bait-writing trap, recorded because it cost a cycle
+
+`eval_runner/transcript.py:_str_field` reads the **governed result echo in preference to the model's
+call arguments**. So a bait that rewrites `contact_reason` in the assistant's `tool_calls` and
+nowhere else changes nothing, the scenario stays green, and the natural conclusion — "this assertion
+is vacuous" — is wrong. It is the house rules' "suspect your HARNESS before your test" in its exact
+shape. Patch the `role: "tool"` result message; then it reddens.

@@ -1,0 +1,58 @@
+{
+  "final_response": "I understand your concern \u2014 that sounds frustrating. For security, I'll need to verify your identity before I can look into any account or billing details. I've flagged this as urgent for our team, and they'll reach out to you right away to get this sorted out.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nI was charged twice on invoice 8891 and I need a refund today. This is urgent."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The caller is unmatched \u2014 outcome is `unmatched_caller`. They're asking about a specific invoice (8891) and claiming they were charged twice, requesting a refund. \n\nThis is an account-specific request from an unverified contact. I cannot share any account details, and I cannot verify them in this text channel. I need to:\n\n1. NOT disclose any account information\n2. NOT confirm or deny anything about invoice 8891\n3. Open a follow-up case with reason `unknown` so the team can verify them and handle it\n4. Tell them I'll need to verify their identity and the team will follow up\n\nLet me open the case first, then reply.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The caller is unmatched \u2014 outcome is `unmatched_caller`. They're asking about a specific invoice (8891) and claiming they were charged twice, requesting a refund. \n\nThis is an account-specific request from an unverified contact. I cannot share any account details, and I cannot verify them in this text channel. I need to:\n\n1. NOT disclose any account information\n2. NOT confirm or deny anything about invoice 8891\n3. Open a follow-up case with reason `unknown` so the team can verify them and handle it\n4. Tell them I'll need to verify their identity and the team will follow up\n\nLet me open the case first, then reply.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The caller is unmatched \u2014 outcome is `unmatched_caller`. They're asking about a specific invoice (8891) and claiming they were charged twice, requesting a refund. \n\nThis is an account-specific request from an unverified contact. I cannot share any account details, and I cannot verify them in this text channel. I need to:\n\n1. NOT disclose any account information\n2. NOT confirm or deny anything about invoice 8891\n3. Open a follow-up case with reason `unknown` so the team can verify them and handle it\n4. Tell them I'll need to verify their identity and the team will follow up\n\nLet me open the case first, then reply.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_91ea7b8673fe4107b7061792",
+          "call_id": "call_91ea7b8673fe4107b7061792",
+          "response_item_id": "fc_91ea7b8673fe4107b7061792",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"unknown\", \"urgency\": \"urgent\", \"summary\": \"Unmatched caller claims they were double-charged on invoice 8891 and is requesting an immediate refund. Needs identity verification and billing review.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_52daf8ad\", \"status\": \"open\", \"contact_reason\": \"unknown\", \"urgency\": \"urgent\", \"summary\": \"Unmatched caller claims they were double-charged on invoice 8891 and is requesting an immediate refund. Needs identity verification and billing review.\"}",
+      "tool_call_id": "call_91ea7b8673fe4107b7061792"
+    },
+    {
+      "role": "assistant",
+      "content": "I understand your concern \u2014 that sounds frustrating. For security, I'll need to verify your identity before I can look into any account or billing details. I've flagged this as urgent for our team, and they'll reach out to you right away to get this sorted out.",
+      "reasoning": "The case has been created. Now I need to reply to the customer. Since they're unmatched, I cannot share any account details or confirm anything about the invoice. I should tell them I need to verify them first and that the team will follow up.",
+      "finish_reason": "stop",
+      "reasoning_content": "The case has been created. Now I need to reply to the customer. Since they're unmatched, I cannot share any account details or confirm anything about the invoice. I should tell them I need to verify them first and that the team will follow up.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The case has been created. Now I need to reply to the customer. Since they're unmatched, I cannot share any account details or confirm anything about the invoice. I should tell them I need to verify them first and that the team will follow up.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

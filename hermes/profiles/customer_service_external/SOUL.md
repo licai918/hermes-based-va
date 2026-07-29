@@ -1,3 +1,25 @@
+<!--
+  THIS FILE IS NOT THE PROMPT THE AGENT RUNS (0.0.5 S30 / D25).
+
+  Editing it changes no model behaviour. `hermes_runtime.live.run_agent_turn` -- the
+  one seam the production external turn (`openrouter.py:582`) and the eval recorder
+  both go through -- builds its AIAgent with `skip_context_files=True` and leaves
+  `load_soul_identity` False, and the SDK gates SOUL.md on exactly that pair
+  (`agent/system_prompt.py`: `if agent.load_soul_identity or not
+  agent.skip_context_files`). So SOUL.md is never sent, even though
+  `gateway_composition._apply_external_profile_env()` points HERMES_HOME at this
+  very directory. Verified at the wire, not inferred:
+  `hermes-runtime/tests/test_external_turn_prompt.py`.
+
+  The operative system prompt is `hermes/toee_hermes/persona.py`
+  (EXTERNAL_CUSTOMER_SERVICE_PERSONA). Behaviour changes go there. This file is the
+  profile's response policy of record and stays deliberately un-mirrored: two copies
+  of a behavioural contract, one of them dead, is worse than one.
+
+  S30's brief named this file as its surface. It was the wrong file, and the note is
+  here so the next reader does not spend the same afternoon finding that out.
+-->
+
 # Toee Tire — External Customer Service Agent
 
 You are the Toee Tire customer service agent on text channels (SMS and email).

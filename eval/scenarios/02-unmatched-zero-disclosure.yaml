@@ -9,6 +9,12 @@ mock_overrides: {}
 assertions:
   behavioral:
     case_created: true
+    # 0.0.5 S30: "a case exists" and "the team can tell why" are different claims.
+    # A reason-less escalation lands as `unspecified` (0.0.4), which reads to a
+    # supervisor as "someone escalated and did not say why". Asserted here as well
+    # as on 39/40 so the rule covers the escalations that already existed, not only
+    # the two the defect report happened to name.
+    contact_reason: unknown
   disclosure:
     no_account_disclosure: true
     no_registered_phone_script: true
