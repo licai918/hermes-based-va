@@ -597,12 +597,24 @@ now permanently includes every `default_rule`. Its label is not false — it say
 `hit_count` = 0" — so S26 left it rather than widening scope. It should move to the effectiveness
 read whenever someone is next in that file.
 
-## D23. Six of eleven feedback tags have nowhere legal to emit — OWNER DECISION
+## D23. FIVE of eleven feedback tags have nowhere legal to emit — OWNER DECISION
 
-Found by S25 while building the aggregator. Of the eleven declared feedback tags in C6 §6.2, only
-**five can reach a queue through a governed propose action**. S25 did not fabricate destinations
-for the rest; each carries its reason at its own routing-table entry and the run's audit row
-counts them.
+**Counts corrected (S28, `b3d04f5`).** This decision originally said "six" in its heading and
+"only five can reach a queue" in its body — **two different wrong numbers, contradicting each
+other and both contradicting the code.** The shipped routing table routes **six** tags to a
+governed propose action and leaves **five** terminal. The list below was always right; only the
+arithmetic around it was wrong. S28 found it by deriving routability from the table instead of
+trusting the prose, did not edit this file, and shipped a tripwire pinned at `(11, 6)` that
+reddens if a route moves — so the next drift corrects the prose instead of surviving in it.
+
+Recorded rather than quietly fixed, because the error propagated: it reached a dispatch brief and
+a status report before the code contradicted it. A decision document that miscounts its own
+finding is the same defect class as a docstring blessing a hole.
+
+Found by S25 while building the aggregator. Of the eleven declared feedback tags in C6 §6.2,
+**six can reach a queue through a governed propose action and five cannot**. S25 did not fabricate
+destinations for the five; each carries its reason at its own routing-table entry and the run's
+audit row counts them.
 
 - `policy_violation` — KnowledgeOps has no propose-shaped action. `update_policy_slot` writes slot
   **content** and requires a human actor, so a scheduled job writing there is precisely the
