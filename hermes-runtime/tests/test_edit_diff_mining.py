@@ -46,8 +46,19 @@ def _drafts(pairs):
     """``[(draft, sent), ...]`` -> the mined rewrites, one draft ref per pair."""
     out = []
     for n, (draft, sent) in enumerate(pairs):
-        out.extend(rewrites_for(draft_ref=f"corr_{n}", draft_text=draft, sent_text=sent, at=float(n)))
+        kept, _dropped = rewrites_for(
+            draft_ref=f"corr_{n}", draft_text=draft, sent_text=sent, at=float(n)
+        )
+        out.extend(kept)
     return out
+
+
+def _pii_drops(pairs):
+    """How many pairs the PII gate refused -- MEASURED, not inferred from lengths."""
+    return sum(
+        rewrites_for(draft_ref=f"corr_{n}", draft_text=d, sent_text=s, at=float(n))[1]
+        for n, (d, s) in enumerate(pairs)
+    )
 
 
 def _tripped(pairs):
@@ -246,6 +257,9 @@ def test_a_pair_that_trips_the_pii_scanner_is_dropped_entirely():
     assert carries_pii(_PHONE) is True
     assert _drafts(pairs) == []
     assert _tripped(pairs) == []
+    # Counted, not merely absent -- the run's audit row reports this number, so
+    # "dropped for PII" and "the diff found nothing" must not look alike.
+    assert _pii_drops(pairs) == len(pairs)
 
 
 def test_pii_in_the_surrounding_text_never_reaches_the_mined_pair():

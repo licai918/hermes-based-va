@@ -227,18 +227,34 @@ class Rewrite:
 
 def rewrites_for(
     *, draft_ref: str, draft_text: str, sent_text: str, at: float
-) -> list[Rewrite]:
-    """Mine one edited send, dropping any pair that carries PII.
+) -> tuple[list[Rewrite], int]:
+    """Mine one edited send: ``(rewrites kept, pairs dropped for PII)``.
 
     The drop happens HERE rather than at emit time so a PII-bearing span is never
     clustered, never logged and never counted into anything but the drop counter
     -- and so both arms inherit it, not just L7's.
+
+    The count is RETURNED rather than inferred by the caller. Inferring it
+    (mine once, filter once, subtract the lengths) was the first shape, and it
+    quietly attributes every future filter to PII -- a number in a governance
+    audit row has to mean what its name says, and only the branch that drops the
+    pair can honestly report it.
     """
-    return [
-        Rewrite(surface_form=surface, canonical_form=canonical, draft_ref=draft_ref, at=at)
-        for surface, canonical in mineable_rewrites(draft_text, sent_text)
-        if not carries_pii(surface, canonical)
-    ]
+    kept: list[Rewrite] = []
+    dropped = 0
+    for surface, canonical in mineable_rewrites(draft_text, sent_text):
+        if carries_pii(surface, canonical):
+            dropped += 1
+            continue
+        kept.append(
+            Rewrite(
+                surface_form=surface,
+                canonical_form=canonical,
+                draft_ref=draft_ref,
+                at=at,
+            )
+        )
+    return kept, dropped
 
 
 @dataclass(frozen=True)
@@ -403,15 +419,14 @@ def read_edited_sends(
     rewrites: list[Rewrite] = []
     dropped = 0
     for draft_ref, draft_text, sent_text, at in rows:
-        candidates = mineable_rewrites(draft_text, sent_text)
-        kept = rewrites_for(
+        kept, pii_hits = rewrites_for(
             draft_ref=draft_ref,
             draft_text=draft_text,
             sent_text=sent_text,
             at=float(at),
         )
-        dropped += len(candidates) - len(kept)
         rewrites.extend(kept)
+        dropped += pii_hits
     return rewrites, len(rows), dropped
 
 
