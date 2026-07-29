@@ -248,3 +248,36 @@ def test_agent_turn_route_is_internal_copilot_only(monkeypatch) -> None:
             json={"channel": "sms", "case_id": "c1"},
         )
         assert resp.status_code == 404, f"agent:turn must not be mounted on {profile}"
+
+
+def test_built_app_serves_the_lexicon_draft_route(monkeypatch) -> None:
+    # 0.0.5 S17 (FR-24): the second LLM route on the copilot server. Bearer
+    # enforced; a text-less body is a 400 shape error, never a draft.
+    _configure(monkeypatch, profile="internal_copilot")
+    client = TestClient(build_tool_dispatch_app())
+
+    assert client.post("/v1/lexicon:draft", json={"text": "TOEE"}).status_code == 401
+    assert (
+        client.post(
+            "/v1/lexicon:draft",
+            headers={"Authorization": "Bearer dev-token"},
+            json={},
+        ).status_code
+        == 400
+    )
+
+
+def test_lexicon_draft_route_is_internal_copilot_only(monkeypatch) -> None:
+    # Same containment as agent:turn, and it has to be re-proven rather than
+    # inherited: a model call on the supervisor/external home would be an LLM
+    # seam on a server whose whole point is that it has none.
+    for profile in ("supervisor_admin", "customer_service_external"):
+        _configure(monkeypatch, profile=profile)
+        client = TestClient(build_tool_dispatch_app())
+        assert client.get("/healthz").status_code == 200
+        resp = client.post(
+            "/v1/lexicon:draft",
+            headers={"Authorization": "Bearer dev-token"},
+            json={"text": "TOEE 也叫拓意"},
+        )
+        assert resp.status_code == 404, f"lexicon:draft must not be mounted on {profile}"

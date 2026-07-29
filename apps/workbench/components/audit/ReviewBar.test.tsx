@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { WORKBENCH_ROLES } from "@toee/shared";
-import { ReviewBar } from "./ReviewBar";
+import { EXTERNAL_REVIEW_REASON_TAGS, WORKBENCH_ROLES } from "@toee/shared";
+import { PREFERENCE_SHAPED_TAGS, ReviewBar, memoryCorrectionHref } from "./ReviewBar";
 
 // 0.0.4 S04: component states mirroring GovernedSendModal.test.tsx's injected-
 // callback pattern -- `submit` is passed in so the test never touches global
@@ -181,5 +181,120 @@ describe("ReviewBar", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("network down");
     // Still shows the Pass/Fail controls -- nothing was recorded as reviewed.
     expect(screen.getByText("Pass")).toBeInTheDocument();
+  });
+});
+
+// --- 0.0.5 S17 (FR-25/US12): the prefilled L4 correction --------------------
+
+describe("memoryCorrectionHref", () => {
+  const failing = {
+    subjectKind: "sales_outreach_case" as const,
+    subjectId: "case_ar_urgent",
+    reasonTags: ["tone_inappropriate" as const],
+    comment: "customer asked us to stop being so chatty",
+  };
+
+  it("carries the slot, the case, and the supervisor's comment as the value", () => {
+    const params = new URL(
+      memoryCorrectionHref(failing) as string,
+      "http://localhost",
+    ).searchParams;
+    expect(params.get("slot")).toBe("communication_style_note");
+    expect(params.get("case")).toBe("case_ar_urgent");
+    expect(params.get("value")).toBe("customer asked us to stop being so chatty");
+    expect(params.get("tag")).toBe("tone_inappropriate");
+    expect(params.get("from")).toBe("sales_outreach_case:case_ar_urgent");
+  });
+
+  // The exclusion cases the fixture rule asks for. The list is EXTERNAL_REVIEW_
+  // REASON_TAGS minus the one literal tag this feature claims — deliberately
+  // NOT `filter(t => !PREFERENCE_SHAPED_TAGS[t])`, which is what it said first
+  // and which could not fail: deriving the cases from the map under test means
+  // widening the map removes the case that would have caught the widening.
+  // Proven by baiting it (adding `tool_misuse` left it green, 6 cases silently
+  // becoming 5). Filtering by literal keeps the enum-derived coverage — a tag
+  // added later lands here automatically and must not be preference-shaped —
+  // while making the map's growth visible.
+  it.each(EXTERNAL_REVIEW_REASON_TAGS.filter((t) => t !== "tone_inappropriate"))(
+    "offers nothing for %s, which is not preference-shaped",
+    (tag) => {
+      expect(memoryCorrectionHref({ ...failing, reasonTags: [tag] })).toBeNull();
+    },
+  );
+
+  it("claims exactly one preference-shaped tag, and no more", () => {
+    // The intent, stated rather than inferred: widening what counts as
+    // "preference-shaped" is a product decision (which slot? on what evidence?),
+    // so it must be a deliberate edit here and not a quiet dictionary entry.
+    expect(PREFERENCE_SHAPED_TAGS).toEqual({
+      tone_inappropriate: "communication_style_note",
+    });
+  });
+
+  it("offers the link when a preference-shaped tag rides alongside others", () => {
+    expect(
+      memoryCorrectionHref({
+        ...failing,
+        reasonTags: ["policy_violation", "tone_inappropriate"],
+      }),
+    ).not.toBeNull();
+  });
+
+  it("omits the case for an auto-handled record, which has none", () => {
+    // Half a derivation is still useful and must not be silently dropped: the
+    // slot and value still travel, and the console asks for the case id.
+    const href = memoryCorrectionHref({
+      ...failing,
+      subjectKind: "auto_handled_record",
+      subjectId: "rec-1",
+    }) as string;
+    const params = new URL(href, "http://localhost").searchParams;
+    expect(params.get("case")).toBeNull();
+    expect(params.get("slot")).toBe("communication_style_note");
+    expect(params.get("from")).toBe("auto_handled_record:rec-1");
+  });
+
+  it("omits the value when the supervisor left no comment", () => {
+    // No guessed value: the console opens with the slot chosen and the value
+    // blank and editable, never a fabricated preference.
+    const params = new URL(
+      memoryCorrectionHref({ ...failing, comment: "   " }) as string,
+      "http://localhost",
+    ).searchParams;
+    expect(params.get("value")).toBeNull();
+  });
+
+  it("truncates a comment to what an L4 slot value can actually hold", () => {
+    const href = memoryCorrectionHref({ ...failing, comment: "x".repeat(400) }) as string;
+    expect(new URL(href, "http://localhost").searchParams.get("value")).toHaveLength(200);
+  });
+});
+
+describe("ReviewBar correction link", () => {
+  it("appears after a fail with a preference-shaped tag", async () => {
+    renderBar({ subjectKind: "sales_outreach_case", subjectId: "case_ar_urgent" });
+    fireEvent.click(screen.getByText("Fail"));
+    fireEvent.click(screen.getByText("Tone inappropriate"));
+    fireEvent.change(screen.getByLabelText("Comment"), {
+      target: { value: "too chatty" },
+    });
+    fireEvent.click(screen.getByText("Submit fail"));
+
+    const link = await screen.findByRole("link", { name: /correct this customer/i });
+    expect(link).toHaveAttribute(
+      "href",
+      expect.stringContaining("slot=communication_style_note"),
+    );
+    expect(link).toHaveAttribute("href", expect.stringContaining("case=case_ar_urgent"));
+  });
+
+  it("does not appear on a PASS, whatever the tags say", () => {
+    renderBar({ initialReview: { verdict: "pass", reasonTags: ["tone_inappropriate"] } });
+    expect(screen.queryByRole("link", { name: /correct this customer/i })).toBeNull();
+  });
+
+  it("does not appear on a fail whose cause is not preference-shaped", () => {
+    renderBar({ initialReview: { verdict: "fail", reasonTags: ["tool_misuse"] } });
+    expect(screen.queryByRole("link", { name: /correct this customer/i })).toBeNull();
   });
 });

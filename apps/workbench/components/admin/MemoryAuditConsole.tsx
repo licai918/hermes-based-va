@@ -9,10 +9,17 @@
 // copilot preferences panel lives inside an open case), so the input is the
 // case_id backing that case -- the same identity-binding key every other
 // Customer Memory read/write in this codebase resolves through.
-import { useState } from "react";
-import { clearMemorySlot, eraseCustomerMemory, getMemoryAudit } from "@/lib/api/admin-client";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import {
+  clearMemorySlot,
+  correctMemorySlot,
+  eraseCustomerMemory,
+  getMemoryAudit,
+} from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
 import type { MemoryAuditEntry, MemoryAuditView, MemoryPreferenceSlot } from "@/lib/gateway/types";
+import { PREFERENCE_SLOTS } from "@/lib/gateway/types";
 import { SLOT_LABELS } from "@/components/copilot/CustomerPreferences";
 
 const th: React.CSSProperties = { textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" };
@@ -52,9 +59,20 @@ export interface ProposalHistoryRow {
   slot: string;
   value: string;
   outcome: "accepted" | "dismissed";
+  // 0.0.5 S17: per-row, not a constant. It used to be the literal "copilot
+  // proposal" in the JSX, which was true while an `employee_confirmed` slot row
+  // could ONLY have come from accepting a copilot proposal. FR-25 gives a
+  // supervisor a way to write one directly, so the constant would now label
+  // their own correction as a copilot proposal they accepted. A dismissed row
+  // still knows its origin — it IS a proposal_dismissed audit row.
+  origin: string;
   decider: string;
   at: number;
 }
+
+const ACCEPTED_ORIGIN =
+  "copilot proposal or supervisor correction — the slot row does not say which";
+const DISMISSED_ORIGIN = "copilot proposal";
 
 // S16 (FR-17, audit finding 14): a dismissed proposal writes no preference
 // slot (S15's dismiss_proposal is audit-only), so the slot list alone can
@@ -75,6 +93,7 @@ export function deriveProposalHistory(view: MemoryAuditView): ProposalHistoryRow
       slot: s.slot,
       value: s.value,
       outcome: "accepted",
+      origin: ACCEPTED_ORIGIN,
       decider: s.actorAccountId ?? "—",
       at: s.updatedAt,
     }));
@@ -85,6 +104,7 @@ export function deriveProposalHistory(view: MemoryAuditView): ProposalHistoryRow
       slot: e.slot ?? "—",
       value: e.value ?? "—",
       outcome: "dismissed",
+      origin: DISMISSED_ORIGIN,
       decider: e.actorUsername ?? e.actorAccountId ?? "—",
       at: e.at,
     }));
@@ -168,13 +188,95 @@ export function deriveMemoryHealth(view: MemoryAuditView, now: number): MemoryHe
   ];
 }
 
+// 0.0.5 S17 (FR-25/US12): what the fail-review link carries in its query string.
+// `slot` and `value` are SUGGESTIONS the supervisor edits; `tag`/`from` are the
+// review it came from, and they are what the correction's evidence records.
+export interface CorrectionPrefill {
+  caseId: string | null;
+  slot: MemoryPreferenceSlot | null;
+  value: string;
+  tag: string | null;
+  from: string | null;
+}
+
+function isPreferenceSlot(value: string | null): value is MemoryPreferenceSlot {
+  return value !== null && (PREFERENCE_SLOTS as readonly string[]).includes(value);
+}
+
+// PREFERENCE_SLOTS is the closed four-slot list (ADR-0111), so index 0 always
+// exists — the array's element type just does not say so.
+const DEFAULT_CORRECTION_SLOT = PREFERENCE_SLOTS[0] as MemoryPreferenceSlot;
+
+// Read from the URL rather than trusted: an unknown slot is dropped to null
+// (the select falls back to its own first option) instead of being pushed at the
+// governed write, which would reject it anyway.
+export function readCorrectionPrefill(
+  params: URLSearchParams | null,
+): CorrectionPrefill | null {
+  const slot = params?.get("slot") ?? null;
+  const value = params?.get("value") ?? "";
+  const from = params?.get("from") ?? null;
+  if (!isPreferenceSlot(slot) && !value && !from) return null;
+  return {
+    caseId: params?.get("case") ?? null,
+    slot: isPreferenceSlot(slot) ? slot : null,
+    value,
+    tag: params?.get("tag") ?? null,
+    from,
+  };
+}
+
+/**
+ * The correction's own provenance line, on the `evidence` param the L4 write
+ * path has always accepted.
+ *
+ * Same idea as the lexicon prefill's `nl_prefill` record, and for the same
+ * reason: `source` is framework-derived `employee_confirmed` either way — a
+ * supervisor confirmed it — so without this the row cannot say that the words
+ * were suggested to them by a failed review, nor whether they changed them.
+ *
+ * Returns undefined for a correction the supervisor typed from scratch: no
+ * prefill, no origin claim.
+ *
+ * Deliberately composed from the tag and the subject ref, never from the review
+ * COMMENT: L4's write scan hard-rejects injection patterns in evidence (S08/D2),
+ * and the comment is free text. Its content is already in the value, where the
+ * supervisor has read it.
+ */
+export function correctionEvidence(
+  prefill: CorrectionPrefill | null,
+  submittedValue: string,
+): string | undefined {
+  if (!prefill) return undefined;
+  const origin = [prefill.tag && `tagged ${prefill.tag}`, prefill.from && `on ${prefill.from}`]
+    .filter(Boolean)
+    .join(" ");
+  const changed =
+    prefill.value.trim() === submittedValue.trim()
+      ? "the supervisor confirmed the suggested value unchanged"
+      : "the supervisor replaced the suggested value";
+  return `Prefilled from a failed review${origin ? ` ${origin}` : ""}; ${changed}.`;
+}
+
 export function MemoryAuditConsole() {
-  const [caseId, setCaseId] = useState("");
+  // useSearchParams returns null outside a router context (this component's own
+  // unit tests), the CopilotDashboard `?case=` deep-link precedent.
+  const searchParams = useSearchParams();
+  const [prefill] = useState<CorrectionPrefill | null>(() =>
+    readCorrectionPrefill(searchParams),
+  );
+  const [caseId, setCaseId] = useState(() => prefill?.caseId ?? "");
   const [view, setView] = useState<MemoryAuditView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmClearSlot, setConfirmClearSlot] = useState<MemoryPreferenceSlot | null>(null);
   const [confirmErase, setConfirmErase] = useState(false);
+  const [correctSlot, setCorrectSlot] = useState<MemoryPreferenceSlot>(
+    () => prefill?.slot ?? DEFAULT_CORRECTION_SLOT,
+  );
+  const [correctValue, setCorrectValue] = useState(() => prefill?.value ?? "");
+  const [correctBusy, setCorrectBusy] = useState(false);
+  const [correctDone, setCorrectDone] = useState<string | null>(null);
 
   async function load(id: string) {
     if (!id.trim()) return;
@@ -187,6 +289,40 @@ export function MemoryAuditConsole() {
       setError(e instanceof ApiError ? e.message : "Failed to load memory audit view");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // FR-25: a link that arrives with a case id loads it, so "one click" really is
+  // one. Without one -- an auto-handled record has no case -- the panel still
+  // opens with the slot and value suggested, and the supervisor names the case.
+  useEffect(() => {
+    if (prefill?.caseId) void load(prefill.caseId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount only: the
+    // prefill is read once from the URL and never changes.
+  }, []);
+
+  // The correction itself: the SAME governed upsert_preference the copilot
+  // panel uses, with the supervisor as actor and `employee_confirmed` derived
+  // server-side. The evidence line is the only thing this slice adds to it.
+  async function correct() {
+    const value = correctValue.trim();
+    if (!caseId.trim() || !value) return;
+    setCorrectBusy(true);
+    setError(null);
+    setCorrectDone(null);
+    try {
+      await correctMemorySlot(
+        caseId.trim(),
+        correctSlot,
+        value,
+        correctionEvidence(prefill, value),
+      );
+      setCorrectDone(`Saved ${SLOT_LABELS[correctSlot]}.`);
+      await load(caseId);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Failed to save the correction");
+    } finally {
+      setCorrectBusy(false);
     }
   }
 
@@ -251,6 +387,64 @@ export function MemoryAuditConsole() {
         </p>
       ) : null}
 
+      {/* FR-25/US12. Rendered whether or not a review sent the supervisor here:
+          the console could already clear and erase a preference but not correct
+          one, so the prefill had nowhere to land. Prefilled, it is one click
+          away from done; empty, it is the correction affordance that was
+          missing. Either way the value is in an editable field first -- a
+          suggestion the supervisor confirms, never an auto-write (NFR-3). */}
+      <section
+        aria-label="Correct a preference"
+        style={{ border: "1px solid #e2e2e2", borderRadius: "0.5rem", padding: "0.75rem" }}
+      >
+        <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.35rem" }}>
+          Correct a preference
+        </h2>
+        {prefill ? (
+          <p style={{ fontSize: "0.8rem", color: "#555", margin: "0 0 0.5rem" }}>
+            Prefilled from a failed review
+            {prefill.tag ? ` tagged ${prefill.tag}` : ""}
+            {prefill.from ? ` on ${prefill.from}` : ""}. Read it, change anything
+            that is wrong, then save — the entry records that it started as a
+            suggestion and whether you changed it.
+            {prefill.caseId ? null : " Enter the case id for this customer first."}
+          </p>
+        ) : null}
+        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+          <label htmlFor="memory-correct-slot">Slot</label>
+          <select
+            id="memory-correct-slot"
+            value={correctSlot}
+            onChange={(e) => setCorrectSlot(e.target.value as MemoryPreferenceSlot)}
+          >
+            {PREFERENCE_SLOTS.map((slot) => (
+              <option key={slot} value={slot}>
+                {SLOT_LABELS[slot]}
+              </option>
+            ))}
+          </select>
+          <label htmlFor="memory-correct-value">Value</label>
+          <input
+            id="memory-correct-value"
+            value={correctValue}
+            onChange={(e) => setCorrectValue(e.target.value)}
+            style={{ minWidth: "18rem" }}
+          />
+          <button
+            type="button"
+            disabled={correctBusy || !caseId.trim() || !correctValue.trim()}
+            onClick={() => void correct()}
+          >
+            Save correction
+          </button>
+        </div>
+        {correctDone ? (
+          <p style={{ fontSize: "0.8rem", color: "#555", margin: "0.35rem 0 0" }}>
+            {correctDone}
+          </p>
+        ) : null}
+      </section>
+
       {view ? (
         <>
           <section aria-label="Memory health" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem" }}>
@@ -314,6 +508,11 @@ export function MemoryAuditConsole() {
                     <th style={th}>Value</th>
                     <th style={th}>Source</th>
                     <th style={th}>Actor</th>
+                    {/* 0.0.5 S17: the write's own note on where the value came
+                        from. `source` says a human confirmed it; only this says
+                        whether the words were suggested to them. Stored since
+                        0.0.3 and never rendered until now. */}
+                    <th style={th}>Evidence</th>
                     <th style={th}>Updated</th>
                     <th style={th}></th>
                   </tr>
@@ -325,6 +524,7 @@ export function MemoryAuditConsole() {
                       <td style={td}>{s.value}</td>
                       <td style={td}>{s.source ?? "—"}</td>
                       <td style={td}>{s.actorAccountId ?? "AI (unattributed)"}</td>
+                      <td style={td}>{s.evidence ?? "—"}</td>
                       <td style={td}>{formatTime(s.updatedAt)}</td>
                       <td style={td}>
                         {confirmClearSlot === s.slot ? (
@@ -407,7 +607,7 @@ export function MemoryAuditConsole() {
                         <td style={td}>
                           {slotLabel(row.slot)}: {row.value}
                         </td>
-                        <td style={td}>copilot proposal</td>
+                        <td style={td}>{row.origin}</td>
                         <td style={td}>{row.outcome === "accepted" ? "Accepted" : "Dismissed"}</td>
                         <td style={td}>{row.decider}</td>
                         <td style={td}>{formatTime(row.at)}</td>

@@ -14,13 +14,17 @@
 import { useState } from "react";
 import {
   EXTERNAL_REVIEW_REASON_TAGS,
+  ROUTES,
   WORKBENCH_ROLES,
   type ExternalReviewReasonTag,
   type InteractionReviewVerdict,
   type WorkbenchRoleId,
 } from "@toee/shared";
 import { submitInteractionReview } from "@/lib/api/audit-client";
-import type { InteractionReviewSubjectKind } from "@/lib/gateway/types";
+import type {
+  InteractionReviewSubjectKind,
+  MemoryPreferenceSlot,
+} from "@/lib/gateway/types";
 import { cardStyle, failureStyle, mutedStyle } from "./shared";
 
 const TAG_LABELS: Record<ExternalReviewReasonTag, string> = {
@@ -35,6 +39,65 @@ const TAG_LABELS: Record<ExternalReviewReasonTag, string> = {
 
 function isSupervisorOrAdmin(role?: WorkbenchRoleId): boolean {
   return role === WORKBENCH_ROLES.supervisor || role === WORKBENCH_ROLES.admin;
+}
+
+// 0.0.5 S17 (FR-25/US12): which fail reasons are actually preference-shaped.
+//
+// ONE of the seven, and the narrowness is the point. `tone_inappropriate` says
+// the agent's manner was wrong for THIS customer, which is what
+// `communication_style_note` is for. The others are not preference-shaped and
+// offering a memory correction for them would be an invitation to write a
+// customer preference that says nothing about the customer:
+// `policy_violation`/`tool_misuse`/`should_have_escalated` are about the agent's
+// behaviour, `factual_error` is L5/L7 (D23 routes its halves elsewhere), `other`
+// means whatever the comment says, and `missed_information` is an L4 injection
+// MISS -- the memory was there and went unused, so correcting the slot fixes
+// nothing (D23 records that it has no legal destination yet).
+//
+// The slot is a SUGGESTION either way: the console the link opens lets the
+// supervisor pick any of the four.
+export const PREFERENCE_SHAPED_TAGS: Partial<
+  Record<ExternalReviewReasonTag, MemoryPreferenceSlot>
+> = {
+  tone_inappropriate: "communication_style_note",
+};
+
+// L4 caps a slot value at 200 chars (MEMORY_VALUE_MAX_LENGTH, enforced by both
+// Hermes twins). A comment longer than that is truncated HERE rather than sent
+// and rejected -- the supervisor edits the value before confirming anyway, and
+// a prefill that cannot be saved is worse than a short one.
+const SLOT_VALUE_MAX = 200;
+
+/**
+ * The one-click deep link from a failed review to a prefilled L4 correction.
+ *
+ * Returns null when nothing about this review is preference-shaped, which is
+ * most of them. `case` is present only when the subject IS a case: an
+ * auto-handled record has no case id to bind a customer memory read to, so the
+ * link still carries the slot and the suggested value and the console asks for
+ * the case — a form that is honest about what it is missing beats a link that
+ * silently drops half its prefill.
+ */
+export function memoryCorrectionHref(review: {
+  subjectKind: InteractionReviewSubjectKind;
+  subjectId: string;
+  reasonTags: ExternalReviewReasonTag[];
+  comment?: string | null;
+}): string | null {
+  const tag = review.reasonTags.find((t) => PREFERENCE_SHAPED_TAGS[t]);
+  if (!tag) return null;
+  const params = new URLSearchParams({
+    slot: PREFERENCE_SHAPED_TAGS[tag] as string,
+    tag,
+    from: `${review.subjectKind}:${review.subjectId}`,
+  });
+  if (review.subjectKind === "sales_outreach_case") params.set("case", review.subjectId);
+  // The supervisor's own comment is the suggested value: they wrote it, and
+  // they read it again in an editable field before it is stored. Absent, the
+  // console opens with the slot chosen and the value blank and usable.
+  const comment = review.comment?.trim();
+  if (comment) params.set("value", comment.slice(0, SLOT_VALUE_MAX));
+  return `${ROUTES.adminMemoryAudit}?${params.toString()}`;
 }
 
 export type SubmitReviewInput = {
@@ -112,6 +175,19 @@ export function ReviewBar({
   }
 
   if (myReview && !editing) {
+    // FR-25/US12: a failed review with a preference-shaped cause offers the
+    // one-click prefilled L4 correction. It is a LINK, not an action — the
+    // correction itself is a governed write the supervisor makes on the next
+    // screen, with the suggested value in front of them and editable.
+    const correctionHref =
+      myReview.verdict === "fail"
+        ? memoryCorrectionHref({
+            subjectKind,
+            subjectId,
+            reasonTags: myReview.reasonTags,
+            comment: myReview.comment,
+          })
+        : null;
     return (
       <section style={cardStyle} aria-label="Review">
         <p style={{ margin: 0 }}>
@@ -128,6 +204,16 @@ export function ReviewBar({
         <button type="button" onClick={() => setEditing(true)}>
           Edit review
         </button>
+        {correctionHref && (
+          <p style={{ margin: "0.5rem 0 0" }}>
+            <a href={correctionHref}>Correct this customer&rsquo;s preference</a>
+            <span style={mutedStyle}>
+              {" "}
+              — opens the memory audit with the slot and your comment filled in;
+              nothing is written until you confirm there.
+            </span>
+          </p>
+        )}
       </section>
     );
   }

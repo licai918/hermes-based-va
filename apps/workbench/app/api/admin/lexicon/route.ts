@@ -34,5 +34,11 @@ export const POST = withSession(async (req, { session }) => {
     canonicalForm:
       typeof body.canonicalForm === "string" ? body.canonicalForm : undefined,
     evidence: typeof body.evidence === "string" ? body.evidence : undefined,
+    // 0.0.5 S17 (FR-24): the NL prefill's record. An object or nothing —
+    // anything else is dropped here rather than travelling as a governed param.
+    proposerContext:
+      body.proposerContext && typeof body.proposerContext === "object"
+        ? (body.proposerContext as Record<string, unknown>)
+        : undefined,
   });
 });

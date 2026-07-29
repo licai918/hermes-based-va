@@ -16,6 +16,7 @@
 // That is defense-in-depth in front of the Hermes-side gate: D20 makes an
 // unattributed admin action a fail-closed policy_blocked on the server too,
 // because `admin_manual` with no decider is unfalsifiable provenance.
+import type { HermesAgentClient } from "../../gateway/hermes-agent-client";
 import type { HermesApiClient } from "../../gateway/hermes-api-client";
 import { HermesApiError } from "../../gateway/hermes-api-client";
 import { hermesErrorToProblem } from "../../gateway/hermes-error";
@@ -284,6 +285,7 @@ export async function handleAddLexiconViaApi(
     surfaceForm?: string;
     canonicalForm?: string;
     evidence?: string;
+    proposerContext?: Record<string, unknown>;
   },
 ): Promise<Response> {
   const missing = requireFields({
@@ -300,9 +302,42 @@ export async function handleAddLexiconViaApi(
     canonical_form: body.canonicalForm,
   };
   if (body.evidence) params.evidence = body.evidence;
+  // 0.0.5 S17 (FR-24): the NL prefill's own record, on the param the shared
+  // `read_lexicon_proposal` already reads and D2 already scans -- no schema
+  // change, no new governed action. Absent for a hand-typed entry, which is
+  // exactly what makes "this value started as a machine's suggestion"
+  // answerable from the row. The write's provenance stays `admin_manual` with
+  // the admin as decider (D20): a prefilled field the admin confirmed IS the
+  // admin's assertion; this records which words they did not choose.
+  if (body.proposerContext) params.proposer_context = body.proposerContext;
   try {
     const data = await client.dispatchWrite(TOOL, "add_lexicon_entry", params);
     return json({ entry: mapLexiconEntry(data) }, { status: 201 });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+// FR-24: free text -> a drafted structured entry the S02 form pre-fills with.
+//
+// It is a POST and not a GET because it spends a billed model completion; and it
+// is `dispatch`-shaped through the AGENT client rather than a governed write
+// because it writes nothing at all. The admin's confirm is the governed action,
+// and it is unchanged (NFR-3).
+//
+// A failed derivation is NOT an error here. `drafted: false` rides a 200 with a
+// reason, so the console renders "the copilot could not read that" beside a form
+// the admin can still type into -- a 502 would blank the console over a model
+// having nothing to say.
+export async function handleDraftLexiconViaApi(
+  agent: HermesAgentClient,
+  text: string,
+): Promise<Response> {
+  if (typeof text !== "string" || text.trim().length === 0) {
+    return problem(400, "text is required");
+  }
+  try {
+    return json({ draft: await agent.draftLexiconEntry(text) });
   } catch (err) {
     return hermesErrorToProblem(err);
   }

@@ -1,6 +1,8 @@
 import {
   clearMemorySlot,
   confirmExperience,
+  correctMemorySlot,
+  draftLexiconEntry,
   createAccount,
   disableAccount,
   getCorpusStatus,
@@ -359,5 +361,53 @@ describe("admin-client retention sweep (0.0.3 S28, FR-30)", () => {
       name: "ApiError",
       status: 403,
     });
+  });
+});
+
+// --- 0.0.5 S17 (FR-24/FR-25): the two prefills ------------------------------
+
+describe("admin-client prefills", () => {
+  it("draftLexiconEntry POSTs the sentence and unwraps the draft", async () => {
+    const draft = { drafted: true, fields: { surfaceForm: "拓意" }, model: "m" };
+    const fetchMock = stubFetch({ draft });
+
+    await expect(draftLexiconEntry("TOEE 也叫拓意")).resolves.toEqual(draft);
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/lexicon/draft", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "TOEE 也叫拓意" }),
+    });
+  });
+
+  it("correctMemorySlot POSTs the slot, value and evidence for a prefilled correction", async () => {
+    const fetchMock = stubFetch({ slot: "communication_style_note", value: "brief", stored: true });
+
+    await correctMemorySlot(
+      "case_ar_urgent",
+      "communication_style_note",
+      "brief",
+      "Prefilled from a failed review.",
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/admin/memory-audit/correct?case_id=case_ar_urgent",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          slot: "communication_style_note",
+          value: "brief",
+          evidence: "Prefilled from a failed review.",
+        }),
+      },
+    );
+  });
+
+  it("correctMemorySlot omits evidence for a correction typed from scratch", async () => {
+    const fetchMock = stubFetch({ slot: "channel_preference", value: "sms", stored: true });
+
+    await correctMemorySlot("case_1", "channel_preference", "sms");
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(
+      JSON.stringify({ slot: "channel_preference", value: "sms" }),
+    );
   });
 });

@@ -15,15 +15,22 @@
 //   * a status filter over the same one governed read (S01's list action,
 //     extended -- there is no second read);
 //   * an UNATTRIBUTED badge on an `admin_manual` row with no decider (D20).
+//   * a plain-language draft box (0.0.5 S17, FR-24/US11): the admin types
+//     "TOEE 也叫拓意", the copilot fills the four fields in, the admin reads them
+//     and presses Add. The Add is the SAME governed action as always -- the
+//     draft writes nothing -- and what the confirmed row carries is a record of
+//     which of its words started as a machine's suggestion.
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import {
   type AddLexiconEntryInput,
   addLexiconEntry,
   decideLexiconEntry,
+  draftLexiconEntry,
   editLexiconEntry,
   listLexiconEntries,
 } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
+import type { LexiconDraft } from "@/lib/gateway/hermes-agent-client";
 import type {
   LexiconEntry,
   LexiconEntryHealth,
@@ -43,6 +50,75 @@ const STATUS_FILTERS: (LexiconStatus | "all")[] = [
 
 // Sentinel so the add form shares the one `busyId` the row actions use.
 const ADD_BUSY_ID = "__add__";
+const DRAFT_BUSY_ID = "__draft__";
+
+// 0.0.5 S17 (FR-24). What the console remembers about a draft while the admin
+// looks at it: the sentence they typed, what the copilot suggested, and which
+// model said so. Held in component state and never sent anywhere until the
+// admin presses Add.
+export type NlPrefill = {
+  text: string;
+  fields: NonNullable<LexiconDraft["fields"]>;
+  model?: string;
+};
+
+// The four form fields, browser name -> the column name a later reader will see
+// on the row. The provenance record is written in the row's own vocabulary, not
+// the browser's, because the person reading it is looking at the row.
+const PREFILL_FIELD_COLUMNS = {
+  domain: "domain",
+  entryKind: "entry_kind",
+  surfaceForm: "surface_form",
+  canonicalForm: "canonical_form",
+} as const;
+
+/**
+ * The record that tells a prefilled-and-accepted value apart from a hand-typed
+ * one (D20's other half).
+ *
+ * D20 made `admin_manual` fail closed without an actor, because provenance that
+ * names nobody is unfalsifiable. A prefill raises the mirror-image question: the
+ * admin IS attached and the row IS their assertion — a field they read and did
+ * not change is still something they asserted — but "an administrator typed
+ * this" would no longer be the whole truth if nothing said a model went first.
+ *
+ * So the write keeps `provenance = admin_manual` and its decider, and carries
+ * this beside it on `proposer_context`, the param the shared write path already
+ * reads and D2's scan already covers. `suggested` is the copilot's own words
+ * VERBATIM, because for a field the admin rewrote that is the only place they
+ * survive; the two lists are the fast answer to "did a human choose this word".
+ *
+ * Returns `undefined` when there was no draft — a hand-typed entry carries no
+ * key at all, which is what makes the distinction readable rather than inferred.
+ */
+export function nlPrefillProvenance(
+  prefill: NlPrefill | null,
+  submitted: AddLexiconEntryInput,
+): Record<string, unknown> | undefined {
+  if (!prefill) return undefined;
+  const acceptedUnchanged: string[] = [];
+  const changedByAdmin: string[] = [];
+  const suggested: Record<string, string> = {};
+  for (const [formName, column] of Object.entries(PREFILL_FIELD_COLUMNS)) {
+    const drafted = prefill.fields[formName as keyof typeof PREFILL_FIELD_COLUMNS];
+    // A field the copilot did not suggest is in neither list: the admin typed it
+    // with nothing in front of them, which is the plain hand-typed case.
+    if (typeof drafted !== "string" || drafted.length === 0) continue;
+    suggested[column] = drafted;
+    const stored = submitted[formName as keyof AddLexiconEntryInput];
+    (drafted === stored ? acceptedUnchanged : changedByAdmin).push(column);
+  }
+  return {
+    nl_prefill: {
+      source: "copilot_draft",
+      text: prefill.text,
+      ...(prefill.model ? { model: prefill.model } : {}),
+      suggested,
+      accepted_unchanged: acceptedUnchanged,
+      changed_by_admin: changedByAdmin,
+    },
+  };
+}
 
 const th: React.CSSProperties = {
   textAlign: "left",
@@ -144,6 +220,11 @@ export type LexiconConsoleViewProps = {
   onDecide: (entry: LexiconEntry, decision: "confirm" | "reject" | "retire") => void;
   onEdit: (entry: LexiconEntry, canonicalForm: string) => void;
   onAdd: (input: AddLexiconEntryInput) => Promise<boolean> | void;
+  // FR-24. Resolves to the copilot's draft, or null when the call itself failed
+  // (the container has already put that in `draftError`). A draft that came back
+  // `drafted: false` is NOT null — it is an answer, and it carries its reason.
+  onDraft: (text: string) => Promise<LexiconDraft | null>;
+  draftError: string | null;
 };
 
 // The detail surface the Goal asks for ("CRUD + detail surface"). `evidence` and
@@ -383,20 +464,61 @@ export function LexiconConsoleView({
   onDecide,
   onEdit,
   onAdd,
+  onDraft,
+  draftError,
 }: LexiconConsoleViewProps) {
   const [domain, setDomain] = useState("");
   const [entryKind, setEntryKind] = useState<LexiconEntryKind>("alias");
   const [surfaceForm, setSurfaceForm] = useState("");
   const [canonicalForm, setCanonicalForm] = useState("");
+  const [nlText, setNlText] = useState("");
+  const [prefill, setPrefill] = useState<NlPrefill | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const healthScope = entries.find((e) => e.health !== null)?.health?.scope ?? null;
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    const ok = await onAdd({ domain, entryKind, surfaceForm, canonicalForm });
+    const input: AddLexiconEntryInput = {
+      domain,
+      entryKind,
+      surfaceForm,
+      canonicalForm,
+    };
+    const proposerContext = nlPrefillProvenance(prefill, input);
+    const ok = await onAdd(proposerContext ? { ...input, proposerContext } : input);
     if (ok) {
       setSurfaceForm("");
       setCanonicalForm("");
+      // The prefill belongs to the entry that just landed. Keeping it would
+      // attach one sentence's provenance to the NEXT entry the admin types,
+      // which is a worse lie than having no record at all.
+      setPrefill(null);
+      setNlText("");
+      setDraftNotice(null);
     }
+  }
+
+  // FR-24. Whatever comes back, the form is left usable: a draft fills the
+  // fields it could read and says so; a refusal says why and touches nothing.
+  async function handleDraft() {
+    setDraftNotice(null);
+    const draft = await onDraft(nlText);
+    if (!draft) return;
+    if (!draft.drafted || !draft.fields) {
+      setPrefill(null);
+      setDraftNotice(draft.reason ?? "The copilot could not draft an entry from that.");
+      return;
+    }
+    const fields = draft.fields;
+    if (fields.domain) setDomain(fields.domain);
+    if (fields.entryKind) setEntryKind(fields.entryKind as LexiconEntryKind);
+    if (fields.surfaceForm) setSurfaceForm(fields.surfaceForm);
+    if (fields.canonicalForm) setCanonicalForm(fields.canonicalForm);
+    setPrefill({ text: nlText, fields, model: draft.model });
+    setDraftNotice(
+      "The copilot filled these in — read them, change anything that is wrong, " +
+        "then press Add. Nothing is stored until you do.",
+    );
   }
 
   return (
@@ -502,6 +624,46 @@ export function LexiconConsoleView({
           you are the gate, so there is nothing further to approve.
         </p>
 
+        {/* FR-24/US11. Deliberately a separate control from Add: drafting is a
+            suggestion and adding is the decision, and one button doing both
+            would be the auto-submit this slice's brief puts out of scope. */}
+        <div style={{ marginBottom: "0.75rem" }}>
+          <label htmlFor="lexicon-nl" style={{ display: "block", fontWeight: 600 }}>
+            Describe it in your own words (optional)
+          </label>
+          <input
+            id="lexicon-nl"
+            value={nlText}
+            placeholder="TOEE 也叫拓意"
+            onChange={(e) => setNlText(e.target.value)}
+            style={{ width: "100%", boxSizing: "border-box" }}
+          />
+          <button
+            type="button"
+            disabled={busyId === DRAFT_BUSY_ID || nlText.trim().length === 0}
+            onClick={() => void handleDraft()}
+            style={{ marginTop: "0.35rem" }}
+          >
+            {busyId === DRAFT_BUSY_ID ? "Drafting…" : "Draft with the copilot"}
+          </button>
+          {draftNotice ? (
+            <p style={{ fontSize: "0.8rem", color: "#555", margin: "0.35rem 0 0" }}>
+              {draftNotice}
+            </p>
+          ) : null}
+          {draftError ? (
+            <p role="alert" style={{ ...alert, fontSize: "0.8rem", margin: "0.35rem 0 0" }}>
+              {draftError}
+            </p>
+          ) : null}
+          {prefill ? (
+            <p style={{ fontSize: "0.75rem", color: "#555", margin: "0.35rem 0 0" }}>
+              What you add will record that the copilot drafted it from this
+              sentence, and which fields you left exactly as it wrote them.
+            </p>
+          ) : null}
+        </div>
+
         <div style={{ marginBottom: "0.75rem" }}>
           <label htmlFor="lexicon-domain" style={{ display: "block", fontWeight: 600 }}>
             Domain
@@ -586,6 +748,7 @@ export function LexiconConsole() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   const [addError, setAddError] = useState<string | null>(null);
+  const [draftError, setDraftError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<LexiconStatus | "all">("all");
   const [lexiconVersion, setLexiconVersion] = useState<string | null>(null);
 
@@ -650,6 +813,21 @@ export function LexiconConsole() {
     }
   }
 
+  // FR-24. A failed draft never blocks the form: the error is reported beside
+  // the draft box and every field stays exactly as the admin left it.
+  async function handleDraft(text: string): Promise<LexiconDraft | null> {
+    setBusyId(DRAFT_BUSY_ID);
+    setDraftError(null);
+    try {
+      return await draftLexiconEntry(text);
+    } catch (e) {
+      setDraftError(message(e, "The copilot could not be reached — type the entry yourself"));
+      return null;
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   return (
     <LexiconConsoleView
       entries={entries}
@@ -658,6 +836,7 @@ export function LexiconConsole() {
       busyId={busyId}
       rowErrors={rowErrors}
       addError={addError}
+      draftError={draftError}
       statusFilter={statusFilter}
       lexiconVersion={lexiconVersion}
       onStatusFilter={setStatusFilter}
@@ -676,6 +855,7 @@ export function LexiconConsole() {
         )
       }
       onAdd={handleAdd}
+      onDraft={handleDraft}
     />
   );
 }

@@ -57,6 +57,26 @@ type TurnFailure = { ok: false; error?: { class?: string; message?: string } };
 type TurnBody = TurnSuccess | TurnFailure;
 
 const AGENT_TURN_PATH = "/v1/agent:turn";
+// 0.0.5 S17 (FR-24): the NL manual-add draft. A third route on the same
+// INTERNAL server behind the same bearer — a model call that reads nothing and
+// writes nothing, so it is a route rather than a governed tool action.
+const LEXICON_DRAFT_PATH = "/v1/lexicon:draft";
+
+// What the draft endpoint returns. `drafted: false` is an OUTCOME, not an
+// error: the copilot could not read a mapping out of the sentence, the console
+// says so, and the admin fills the form in. `fields` carries only the four form
+// fields the server allowlists, already in the browser's camelCase.
+export interface LexiconDraft {
+  drafted: boolean;
+  fields?: {
+    domain?: string;
+    entryKind?: string;
+    surfaceForm?: string;
+    canonicalForm?: string;
+  };
+  reason?: string;
+  model?: string;
+}
 
 export class HermesAgentClient {
   private readonly baseUrl: string;
@@ -102,16 +122,36 @@ export class HermesAgentClient {
     return typeof data.reply === "string" ? data.reply : "";
   }
 
-  // Shared transport for both turn modes: POST the bearer-authed envelope (with the
+  // Draft one lexicon entry from an administrator's own sentence (FR-24). A
+  // SUGGESTION: nothing is written here, and the confirm the admin then presses
+  // is the existing governed `add_lexicon_entry` action, unchanged.
+  async draftLexiconEntry(text: string): Promise<LexiconDraft> {
+    const data = (await this.post(LEXICON_DRAFT_PATH, { text }, "lexicon draft")) as
+      | LexiconDraft
+      | undefined;
+    return { ...data, drafted: data?.drafted === true };
+  }
+
+  // Shared transport for every mode: POST the bearer-authed envelope (with the
   // baked-in actor when configured), then unwrap the governed body — `data` on
   // success, a thrown HermesApiError on a non-2xx transport failure or an
   // `ok: false` governed failure (ADR-0020/0104).
-  private async postTurn(
+  private postTurn(payload: Record<string, unknown>): Promise<unknown> {
+    return this.post(AGENT_TURN_PATH, payload, "agent turn");
+  }
+
+  // `what` names the mode in the thrown message. It is a parameter and not the
+  // literal "agent turn" it used to be because these messages reach the admin's
+  // screen, and "agent turn failed: HTTP 404" on the lexicon console describes a
+  // turn nobody asked for.
+  private async post(
+    path: string,
     payload: Record<string, unknown>,
+    what: string,
   ): Promise<unknown> {
     if (this.actorAccountId) payload.actor_account_id = this.actorAccountId;
 
-    const res = await this.fetchImpl(`${this.baseUrl}${AGENT_TURN_PATH}`, {
+    const res = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -123,7 +163,7 @@ export class HermesAgentClient {
     if (!res.ok) {
       throw new HermesApiError(
         "transport_error",
-        `agent turn failed: HTTP ${res.status}`,
+        `${what} failed: HTTP ${res.status}`,
         res.status,
       );
     }
@@ -133,7 +173,7 @@ export class HermesAgentClient {
       const error = (body as TurnFailure)?.error;
       throw new HermesApiError(
         error?.class ?? "unexpected_error",
-        error?.message ?? "agent turn returned a governed error",
+        error?.message ?? `${what} returned a governed error`,
       );
     }
     return body.data;

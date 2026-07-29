@@ -50,6 +50,14 @@ export async function handleUpsertPreferenceViaApi(
   }
   const value = readNonEmptyString(body, "value");
   if (!value) return problem(400, "value is required");
+  // 0.0.5 S17 (FR-25): the optional `evidence` the L4 write path has always
+  // accepted (`_read_evidence`, both twins) but nothing sent. The supervisor's
+  // prefilled correction uses it to record WHERE the value came from and
+  // whether they changed it before confirming. Added on the shared handler
+  // rather than a second copy of it, so the copilot's own correct/clear panel
+  // gains the same field the day it wants it; omitted when absent, which keeps
+  // today's dispatch body byte-identical.
+  const evidence = readNonEmptyString(body, "evidence") ?? undefined;
   try {
     // dispatchWrite (not dispatch): a governed write must carry the actor
     // (ADR-0141). The dispatch param key is `key`, matching the
@@ -58,6 +66,7 @@ export async function handleUpsertPreferenceViaApi(
       case_id: caseId,
       key: slot,
       value,
+      evidence,
     });
     // Echo back the validated slot/value rather than the raw dispatch result,
     // which carries binding_key.

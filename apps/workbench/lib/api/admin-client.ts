@@ -18,6 +18,7 @@ import type {
   ReingestQueued,
 } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { LexiconDraft } from "@/lib/gateway/hermes-agent-client";
 import type { QualityGatesView } from "@/lib/bff/admin/quality-gates";
 import type { InboxItem } from "@/lib/bff/admin/review-inbox";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
@@ -182,6 +183,23 @@ export function getMemoryAudit(caseId: string): Promise<MemoryAuditView> {
   );
 }
 
+// 0.0.5 S17 (FR-25): the supervisor's L4 correction. Sibling of the clear
+// above, on the same governed action the copilot correction panel already uses.
+// `evidence` records where a prefilled value came from and whether the
+// supervisor changed it before confirming.
+export function correctMemorySlot(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+  value: string,
+  evidence?: string,
+): Promise<{ slot: string; value: string; stored: boolean }> {
+  return sendJson<{ slot: string; value: string; stored: boolean }>(
+    "POST",
+    `/api/admin/memory-audit/correct?case_id=${encodeURIComponent(caseId)}`,
+    evidence ? { slot, value, evidence } : { slot, value },
+  );
+}
+
 export function clearMemorySlot(
   caseId: string,
   slot: MemoryPreferenceSlot,
@@ -281,12 +299,25 @@ export interface AddLexiconEntryInput {
   surfaceForm: string;
   canonicalForm: string;
   evidence?: string;
+  // 0.0.5 S17 (FR-24): the NL prefill's own record — the admin's sentence, the
+  // model, and which fields were confirmed exactly as drafted. Absent on a
+  // hand-typed entry, which is the whole point: the row can say which of its
+  // words started as a suggestion.
+  proposerContext?: Record<string, unknown>;
 }
 
 export function addLexiconEntry(input: AddLexiconEntryInput): Promise<LexiconEntry> {
   return sendJson<{ entry: LexiconEntry }>("POST", "/api/admin/lexicon", input).then(
     (b) => b.entry,
   );
+}
+
+// FR-24: the copilot's draft for the add form. A SUGGESTION — no write happens
+// until the admin presses Add, which is the unchanged governed action above.
+export function draftLexiconEntry(text: string): Promise<LexiconDraft> {
+  return sendJson<{ draft: LexiconDraft }>("POST", "/api/admin/lexicon/draft", {
+    text,
+  }).then((b) => b.draft);
 }
 
 // --- Aggregate-metrics admin panel (0.0.3 S26, FR-28) -------------------------

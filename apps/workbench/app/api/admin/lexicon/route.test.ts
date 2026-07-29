@@ -22,6 +22,8 @@ import {
 import { GET, POST as POST_LEXICON } from "./route";
 import { PATCH } from "./[id]/route";
 import { POST as POST_DECISION } from "./[id]/[decision]/route";
+import { POST as POST_DRAFT } from "./draft/route";
+import { POST as POST_CORRECT } from "../memory-audit/correct/route";
 
 const SECRET = "lexicon-route-test-secret";
 
@@ -344,6 +346,189 @@ describe("POST /api/admin/lexicon", () => {
       await request("https://wb.test/api/admin/lexicon", { method: "POST" }),
     );
     expect(res.status).toBe(400);
+    expect(sent).toHaveLength(0);
+  });
+
+  // 0.0.5 S17 (FR-24): the prefill record has to survive the route, which
+  // enumerates the fields it forwards -- so a new one is dropped in silence
+  // unless it is named here too.
+  it("forwards the NL prefill record onto proposer_context", async () => {
+    const sent = stubDispatch();
+    await POST_LEXICON(
+      await request(
+        "https://wb.test/api/admin/lexicon",
+        jsonInit(
+          {
+            domain: "company",
+            entryKind: "alias",
+            surfaceForm: "拓意",
+            canonicalForm: "TOEE TIRE",
+            proposerContext: { nl_prefill: { source: "copilot_draft" } },
+          },
+          "POST",
+        ),
+      ),
+    );
+    expect(sent[0]?.params.proposer_context).toEqual({
+      nl_prefill: { source: "copilot_draft" },
+    });
+  });
+
+  it("drops a non-object proposerContext instead of dispatching it", async () => {
+    const sent = stubDispatch();
+    await POST_LEXICON(
+      await request(
+        "https://wb.test/api/admin/lexicon",
+        jsonInit(
+          {
+            domain: "company",
+            entryKind: "alias",
+            surfaceForm: "TOEE",
+            canonicalForm: "TOEE TIRE",
+            proposerContext: "admin_manual, definitely",
+          },
+          "POST",
+        ),
+      ),
+    );
+    expect(sent[0]?.params).not.toHaveProperty("proposer_context");
+  });
+});
+
+// --- 0.0.5 S17: the two prefill routes --------------------------------------
+
+describe("POST /api/admin/lexicon/draft", () => {
+  it("drafts for a supervisor over the agent route", async () => {
+    let url = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (u: string) => {
+        url = u;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            data: { drafted: true, fields: { surfaceForm: "拓意" } },
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    const res = await POST_DRAFT(
+      await request(
+        "https://wb.test/api/admin/lexicon/draft",
+        jsonInit({ text: "TOEE 也叫拓意" }, "POST"),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    // The LLM seam, not tools:dispatch -- and never a governed write.
+    expect(url).toBe("http://copilot.internal/v1/lexicon:draft");
+  });
+
+  it("400s an empty sentence before spending a completion", async () => {
+    const sent = stubDispatch();
+    const res = await POST_DRAFT(
+      await request(
+        "https://wb.test/api/admin/lexicon/draft",
+        jsonInit({ text: "   " }, "POST"),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("is closed to a rep, before the model call", async () => {
+    const sent = stubDispatch();
+    const res = await POST_DRAFT(
+      await request(
+        "https://wb.test/api/admin/lexicon/draft",
+        jsonInit({ text: "TOEE 也叫拓意" }, "POST"),
+        session({ accountId: "acc-rep", username: "rep", role: WORKBENCH_ROLES.rep }),
+      ),
+    );
+    expect(res.status).toBe(403);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("401s without a session cookie", async () => {
+    const sent = stubDispatch();
+    const res = await POST_DRAFT(
+      await request(
+        "https://wb.test/api/admin/lexicon/draft",
+        jsonInit({ text: "TOEE 也叫拓意" }, "POST"),
+        null,
+      ),
+    );
+    expect(res.status).toBe(401);
+    expect(sent).toHaveLength(0);
+  });
+});
+
+describe("POST /api/admin/memory-audit/correct", () => {
+  const url = "https://wb.test/api/admin/memory-audit/correct?case_id=case_ar_urgent";
+
+  it("lands on the EXISTING governed upsert with the supervisor as actor", async () => {
+    const sent = stubDispatch({ stored: true });
+
+    const res = await POST_CORRECT(
+      await request(
+        url,
+        jsonInit(
+          {
+            slot: "communication_style_note",
+            value: "prefers short replies",
+            evidence: "Prefilled from a failed review tagged tone_inappropriate.",
+          },
+          "POST",
+        ),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(sent[0]).toMatchObject({
+      tool: "toee_customer_memory",
+      action: "upsert_preference",
+      params: {
+        case_id: "case_ar_urgent",
+        key: "communication_style_note",
+        value: "prefers short replies",
+        evidence: "Prefilled from a failed review tagged tone_inappropriate.",
+      },
+      actor_account_id: "seed-supervisor",
+    });
+    // `source` is framework-derived (`employee_confirmed`); a prefill must not
+    // be able to assert it as a param.
+    expect(sent[0]?.params).not.toHaveProperty("source");
+  });
+
+  it("400s without a case id, before dispatching", async () => {
+    const sent = stubDispatch();
+    const res = await POST_CORRECT(
+      await request(
+        "https://wb.test/api/admin/memory-audit/correct",
+        jsonInit({ slot: "channel_preference", value: "sms" }, "POST"),
+      ),
+    );
+    expect(res.status).toBe(400);
+    expect(sent).toHaveLength(0);
+  });
+
+  it("is closed to a rep and to a caller with no session", async () => {
+    const sent = stubDispatch();
+    const body = jsonInit({ slot: "channel_preference", value: "sms" }, "POST");
+    expect(
+      (
+        await POST_CORRECT(
+          await request(
+            url,
+            body,
+            session({ accountId: "acc-rep", username: "rep", role: WORKBENCH_ROLES.rep }),
+          ),
+        )
+      ).status,
+    ).toBe(403);
+    expect((await POST_CORRECT(await request(url, body, null))).status).toBe(401);
     expect(sent).toHaveLength(0);
   });
 });

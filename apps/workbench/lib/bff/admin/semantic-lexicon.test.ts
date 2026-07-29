@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { HermesAgentClient } from "../../gateway/hermes-agent-client";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
 import {
   handleAddLexiconViaApi,
   handleDecideLexiconViaApi,
+  handleDraftLexiconViaApi,
   handleEditLexiconViaApi,
   handleListLexiconViaApi,
   mapLexiconEntry,
@@ -338,5 +340,134 @@ describe("mapLexiconEntry", () => {
     expect(mapLexiconEntry(rawEntry({ entry_health: noScope })).health).toBeNull();
     const { basis: _b, ...noBasis } = health;
     expect(mapLexiconEntry(rawEntry({ entry_health: noBasis })).health).toBeNull();
+  });
+});
+
+// --- 0.0.5 S17 (FR-24): the NL prefill --------------------------------------
+
+function agentClient(
+  fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
+): HermesAgentClient {
+  return new HermesAgentClient({
+    baseUrl: "http://copilot.internal",
+    token: "tok",
+    actorAccountId: "seed-supervisor",
+    fetchImpl,
+  });
+}
+
+describe("handleDraftLexiconViaApi", () => {
+  it("posts the admin's sentence to the draft route and returns the fields", async () => {
+    let url = "";
+    let body: Record<string, unknown> = {};
+    const agent = agentClient(async (u, init) => {
+      url = u;
+      body = JSON.parse(init.body as string) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            drafted: true,
+            fields: {
+              domain: "company",
+              entryKind: "alias",
+              surfaceForm: "拓意",
+              canonicalForm: "TOEE TIRE",
+            },
+            model: "test/model",
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const res = await handleDraftLexiconViaApi(agent, "TOEE 也叫拓意");
+    expect(res.status).toBe(200);
+    expect(url).toBe("http://copilot.internal/v1/lexicon:draft");
+    expect(body.text).toBe("TOEE 也叫拓意");
+    const payload = (await res.json()) as { draft: { fields: Record<string, string> } };
+    // Distinctive values that could only have come from the draft: the form's
+    // own defaults are empty and "alias".
+    expect(payload.draft.fields.canonicalForm).toBe("TOEE TIRE");
+    expect(payload.draft.fields.surfaceForm).toBe("拓意");
+  });
+
+  it("passes a refusal through on a 200 rather than turning it into an error", async () => {
+    // The form has to stay usable. A 502 here would blank the console because
+    // the copilot had nothing to say about a sentence.
+    const agent = agentClient(async () =>
+      new Response(
+        JSON.stringify({ ok: true, data: { drafted: false, reason: "could not read it" } }),
+        { status: 200 },
+      ),
+    );
+    const res = await handleDraftLexiconViaApi(agent, "asdfgh");
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as { draft: { drafted: boolean; reason: string } };
+    expect(payload.draft.drafted).toBe(false);
+    expect(payload.draft.reason).toBe("could not read it");
+  });
+
+  it("400s an empty sentence without spending a call", async () => {
+    let called = false;
+    const agent = agentClient(async () => {
+      called = true;
+      return new Response(JSON.stringify({ ok: true, data: {} }), { status: 200 });
+    });
+    expect((await handleDraftLexiconViaApi(agent, "   ")).status).toBe(400);
+    expect(called).toBe(false);
+  });
+
+  it("maps a transport failure onto the governed problem shape, naming the draft", async () => {
+    // The message reaches the admin's screen beside the draft box. Before this
+    // was parameterised it read "agent turn failed", describing a turn nobody
+    // asked for — seen for real when the dispatch container was serving an
+    // image without the draft route.
+    const agent = agentClient(async () => new Response("nope", { status: 503 }));
+    const res = await handleDraftLexiconViaApi(agent, "TOEE 也叫拓意");
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({
+      error: expect.stringContaining("lexicon draft"),
+    });
+  });
+});
+
+describe("handleAddLexiconViaApi prefill provenance", () => {
+  async function capture(body: Parameters<typeof handleAddLexiconViaApi>[1]) {
+    let captured: SentDispatch | null = null;
+    const client = apiClient(async (_url, init) => {
+      captured = JSON.parse(init.body as string) as SentDispatch;
+      return dispatchResponse(rawEntry());
+    });
+    await handleAddLexiconViaApi(client, body);
+    return captured as unknown as SentDispatch;
+  }
+
+  const valid = {
+    domain: "company",
+    entryKind: "alias",
+    surfaceForm: "拓意",
+    canonicalForm: "TOEE TIRE",
+  };
+
+  it("forwards the prefill record on the existing proposer_context param", async () => {
+    const sent = await capture({
+      ...valid,
+      proposerContext: {
+        nl_prefill: { source: "copilot_draft", accepted_unchanged: ["surface_form"] },
+      },
+    });
+    expect(sent.action).toBe("add_lexicon_entry");
+    expect(sent.params.proposer_context).toEqual({
+      nl_prefill: { source: "copilot_draft", accepted_unchanged: ["surface_form"] },
+    });
+  });
+
+  it("omits it entirely for a hand-typed entry", async () => {
+    // The load-bearing half: absence is how a reader tells a hand-typed row
+    // from a prefilled one. An empty object here would make every row look
+    // prefilled.
+    const sent = await capture(valid);
+    expect(sent.params).not.toHaveProperty("proposer_context");
   });
 });

@@ -58,12 +58,14 @@ function baseProps(entries: LexiconEntry[] = [entry()]) {
     busyId: null as string | null,
     rowErrors: {} as Record<string, string>,
     addError: null as string | null,
+    draftError: null as string | null,
     statusFilter: "all" as const,
     lexiconVersion: null as string | null,
     onStatusFilter: vi.fn(),
     onDecide: vi.fn(),
     onEdit: vi.fn(),
     onAdd: vi.fn(),
+    onDraft: vi.fn().mockResolvedValue(null),
   };
 }
 
@@ -316,6 +318,138 @@ describe("LexiconConsoleView", () => {
       surfaceForm: "TOEE",
       canonicalForm: "TOEE TIRE",
     });
+  });
+
+  // --- 0.0.5 S17 (FR-24/US11): the NL prefill --------------------------------
+
+  // Every value here is DISTINCTIVE: the form's own defaults are empty strings
+  // and "alias", so a test that saw these could only have got them from the
+  // draft. A fixture whose drafted values matched what an admin would type
+  // could not tell a working prefill from a hardcoded default.
+  const DRAFTED = {
+    drafted: true,
+    fields: {
+      domain: "brandnames",
+      entryKind: "normalizer" as const,
+      surfaceForm: "拓意",
+      canonicalForm: "TOEE TIRE",
+    },
+    model: "test/model",
+  };
+
+  async function draftFrom(sentence: string, draft: unknown) {
+    const onDraft = vi.fn().mockResolvedValue(draft);
+    const onAdd = vi.fn().mockResolvedValue(true);
+    render(<LexiconConsoleView {...baseProps()} onDraft={onDraft} onAdd={onAdd} />);
+    fireEvent.change(screen.getByLabelText(/your own words/i), {
+      target: { value: sentence },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /draft with the copilot/i }));
+    await waitFor(() => expect(onDraft).toHaveBeenCalledWith(sentence));
+    return { onAdd, onDraft };
+  }
+
+  it("fills the four fields from the copilot's draft", async () => {
+    await draftFrom("TOEE 也叫拓意", DRAFTED);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Surface form")).toHaveValue("拓意"),
+    );
+    expect(screen.getByLabelText("Canonical form")).toHaveValue("TOEE TIRE");
+    expect(screen.getByLabelText("Domain")).toHaveValue("brandnames");
+    expect(screen.getByLabelText("Kind")).toHaveValue("normalizer");
+  });
+
+  it("does not submit anything by itself — drafting is not adding", async () => {
+    const { onAdd } = await draftFrom("TOEE 也叫拓意", DRAFTED);
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("records which prefilled fields the admin accepted and which they changed", async () => {
+    const { onAdd } = await draftFrom("TOEE 也叫拓意", DRAFTED);
+    await waitFor(() =>
+      expect(screen.getByLabelText("Canonical form")).toHaveValue("TOEE TIRE"),
+    );
+    // The admin overrides ONE field and confirms the rest.
+    fireEvent.change(screen.getByLabelText("Canonical form"), {
+      target: { value: "TOEE TIRE CANADA" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add entry/i }));
+
+    await waitFor(() => expect(onAdd).toHaveBeenCalled());
+    const [submitted] = onAdd.mock.calls[0] ?? [];
+    expect(submitted.canonicalForm).toBe("TOEE TIRE CANADA");
+    expect(submitted.proposerContext).toEqual({
+      nl_prefill: {
+        source: "copilot_draft",
+        text: "TOEE 也叫拓意",
+        model: "test/model",
+        suggested: {
+          domain: "brandnames",
+          entry_kind: "normalizer",
+          surface_form: "拓意",
+          canonical_form: "TOEE TIRE",
+        },
+        accepted_unchanged: ["domain", "entry_kind", "surface_form"],
+        changed_by_admin: ["canonical_form"],
+      },
+    });
+  });
+
+  it("a hand-typed entry carries no prefill record at all", () => {
+    // The other half of the distinction: absence is the signal. If a hand-typed
+    // add carried an empty record, every row would look prefilled.
+    const onAdd = vi.fn();
+    render(<LexiconConsoleView {...baseProps()} onAdd={onAdd} />);
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "company" } });
+    fireEvent.change(screen.getByLabelText("Surface form"), { target: { value: "TOEE" } });
+    fireEvent.change(screen.getByLabelText("Canonical form"), {
+      target: { value: "TOEE TIRE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add entry/i }));
+    expect(onAdd.mock.calls[0]?.[0]).not.toHaveProperty("proposerContext");
+  });
+
+  it("a refused draft says why and leaves every field usable", async () => {
+    // The derivation-fails path, tested as hard as the happy one: nothing is
+    // filled, nothing is blocked, and there is no silent wrong guess.
+    await draftFrom("asdfgh qwerty", {
+      drafted: false,
+      reason: "The copilot could not read a term and its meaning out of that.",
+    });
+    expect(
+      await screen.findByText(/could not read a term and its meaning/i),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Surface form")).toHaveValue("");
+    expect(screen.getByLabelText("Canonical form")).toHaveValue("");
+    expect(screen.getByRole("button", { name: /add entry/i })).not.toBeDisabled();
+  });
+
+  it("a refused draft leaves no prefill record on the entry the admin then types", async () => {
+    const { onAdd } = await draftFrom("asdfgh qwerty", {
+      drafted: false,
+      reason: "no mapping",
+    });
+    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "company" } });
+    fireEvent.change(screen.getByLabelText("Surface form"), { target: { value: "TOEE" } });
+    fireEvent.change(screen.getByLabelText("Canonical form"), {
+      target: { value: "TOEE TIRE" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add entry/i }));
+    await waitFor(() => expect(onAdd).toHaveBeenCalled());
+    expect(onAdd.mock.calls[0]?.[0]).not.toHaveProperty("proposerContext");
+  });
+
+  it("surfaces a draft-call failure beside the box without touching the form", () => {
+    render(
+      <LexiconConsoleView {...baseProps()} draftError="The copilot could not be reached" />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("could not be reached");
+    expect(screen.getByLabelText("Surface form")).toHaveValue("");
+  });
+
+  it("will not spend a call on an empty sentence", () => {
+    render(<LexiconConsoleView {...baseProps()} />);
+    expect(screen.getByRole("button", { name: /draft with the copilot/i })).toBeDisabled();
   });
 });
 
