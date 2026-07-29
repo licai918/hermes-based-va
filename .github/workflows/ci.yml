@@ -67,6 +67,14 @@ jobs:
         run: uv run --frozen pytest -q
       # Authoritative go-live gate: replays recorded transcripts deterministically
       # (no network/LLM) and exits non-zero on any high-severity scenario failure.
+      #
+      # WHAT GREEN HERE MEANS (0.0.5 S31). This verifies the RECORDINGS, not current
+      # model behaviour -- `--harness replay` never calls a model. Behavioural drift
+      # between a transcript and the live agent is invisible to this job by
+      # construction (the determinism is the point, NFR-4), so a green badge here is
+      # never evidence that "the agent still escalates" or still does anything else.
+      # The live read is the ADVISORY escalation probe in the advisory-judge job
+      # below (`hermes_runtime.escalation_check`), which reports and never gates.
       - name: Launch Eval replay gate (text_first_launch)
         working-directory: hermes
         run: uv run --frozen python -m eval_runner --suite text_first_launch --harness replay --transcripts-dir ../eval/transcripts
@@ -238,7 +246,17 @@ jobs:
 
   # S20 (FR-28/FR-29): the ADVISORY live-model judge. Every PR runs the S27-tuned judge
   # (real OpenRouter model) over the labelled scenario set and attaches a report as a CI
-  # artifact + one upserted PR comment. It is NON-REQUIRED and CANNOT block merge:
+  # artifact + one upserted PR comment.
+  #
+  # 0.0.5 S31 adds a SECOND live measurement to this same job (no new CI surface): a
+  # small two-sided escalation probe driving the live model through the eval record seam
+  # and reporting per-probe `case_created` -- the only thing in CI that drives a live
+  # AGENT TURN rather than replaying a recording (the legs below call a model too, but
+  # to score authored fixtures, not to produce behaviour). It is advisory on the same terms as
+  # the judge below, and the runnable exits 0 on every escalation outcome AND on a probe
+  # fault.
+  #
+  # It is NON-REQUIRED and CANNOT block merge:
   #   * nothing `needs:` it and it is not in any branch-protection required-status set
   #     (the required wall stays the `eval-gate` scripted replay gate -- NFR-7);
   #   * the runnable exits 0 on judge misses AND flakes (advisory = report what happened,

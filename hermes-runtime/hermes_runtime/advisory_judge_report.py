@@ -6,6 +6,13 @@ model, :func:`eval_runner.judge.resolve_judge_model`) over the labelled scenario
 (:mod:`eval_runner.judge_report`) as a file the CI job uploads as an artifact and
 upserts into one PR comment.
 
+0.0.5 S31 adds a second, unrelated live measurement to the SAME job -- the escalation
+probe (:mod:`hermes_runtime.escalation_check`). It is hosted here rather than in a new
+CI job for one reason: this job is already non-required and already owner-key-gated, so
+an escalation check placed here cannot destabilise the required replay wall (NFR-4).
+The two measurements share nothing but the key check and the report; a fault in either
+is reported, never raised.
+
 Advisory means advisory (FR-29): a "no"/undetermined verdict is the thing this tool
 exists to surface, not a failure -- it exits 0 on judge misses and flakes alike. The
 ONLY non-zero exit is a genuine "could not run at all" infra fault. It never gates
@@ -40,6 +47,13 @@ from eval_runner.judge_measure import (
 )
 from eval_runner.judge_report import render_report, render_skipped
 
+from hermes_runtime.escalation_check import (
+    REPLAY_BOUNDARY_NOTE,
+    panel_rows as escalation_panel_rows,
+    render_markdown as render_escalation_markdown,
+    run_escalation_probes,
+)
+from hermes_runtime.eval_record import RunTurn, make_openrouter_record_run
 from hermes_runtime.gate_report_artifact import write_report
 from hermes_runtime.openrouter import openrouter_configured, resolve_openrouter_config
 from hermes_runtime.record_eval import load_env_file
@@ -49,6 +63,15 @@ _DEFAULT_ENV_FILE = _REPO_ROOT / "hermes-runtime" / ".env"
 _DEFAULT_OUT = _REPO_ROOT / "advisory-judge-report.md"
 
 _SKIP_REASON = "advisory judge skipped — OPENROUTER_API_KEY not configured"
+
+# S31: said when the escalation probe did not run at all. An honest "not measured"
+# beats an omitted section, which reads as "nothing to report".
+_ESCALATION_NOT_RUN = (
+    "### Live-model escalation check (S31 — advisory, never gates)\n\n"
+    "_Not run this time: no live turn seam was available (the judge client was "
+    "injected, so no live agent turn was driven). No escalation number is reported "
+    "rather than a fabricated one._\n\n" + REPLAY_BOUNDARY_NOTE + "\n"
+)
 
 
 def _build_live_client() -> JudgeClient:
@@ -67,7 +90,12 @@ def _emit(out: Path, markdown: str) -> None:
     sys.stdout.flush()
 
 
-def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = None) -> int:
+def main(
+    argv: Optional[list[str]] = None,
+    *,
+    client: Optional[JudgeClient] = None,
+    run_turn: Optional[RunTurn] = None,
+) -> int:
     parser = ArgumentParser(
         description="Advisory live-model judge run -> PR markdown (never gates CI)."
     )
@@ -95,6 +123,19 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
     metrics, by_leg = measure_judge_legs(in_sample, client=judge, model=model)
     held_out = measure_judge_legs(out_of_sample, client=judge, model=model)
     held_out_metrics = held_out[0]
+
+    # S31: the live escalation probe. `client is None` is the genuine live path (the
+    # graceful skip above already returned when no key is configured), so that is the
+    # only case that builds a real agent-turn seam by itself -- a test injecting a fake
+    # judge never accidentally bills a live agent loop; it injects `run_turn` too or
+    # the section honestly says "not run".
+    probe_runner = run_turn
+    if probe_runner is None and client is None:
+        probe_runner = make_openrouter_record_run()
+    outcomes = (
+        run_escalation_probes(run_turn=probe_runner) if probe_runner is not None else None
+    )
+
     _emit(
         args.out,
         render_report(
@@ -103,6 +144,12 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
             fixtures=in_sample,
             by_leg=by_leg,
             held_out=held_out,
+        )
+        + "\n"
+        + (
+            render_escalation_markdown(outcomes)
+            if outcomes is not None
+            else _ESCALATION_NOT_RUN
         ),
     )
 
@@ -177,6 +224,11 @@ def main(argv: Optional[list[str]] = None, *, client: Optional[JudgeClient] = No
                 }
                 for leg, m in sorted(by_leg.items())
             ),
+            # S31: per-probe `case_created` from the live model, on the same panel
+            # card. Rows are `passed=None` (advisory) AND ride the `judge` kind,
+            # whose reader force-nulls `passed` -- so an escalation miss can never
+            # render as a failed gate (NFR-4).
+            *(escalation_panel_rows(outcomes) if outcomes is not None else ()),
         ],
     )
     return 0
