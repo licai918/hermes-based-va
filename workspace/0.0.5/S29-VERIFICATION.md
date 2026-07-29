@@ -37,7 +37,12 @@ requirement.
 | types | `pnpm typecheck` | both projects Done |
 | eval replay gate | `python -m eval_runner --suite text_first_launch --harness replay` | 35/35, `failed_high=0` |
 | eval replay gate | `python -m eval_runner --suite email_go_live --harness replay` | 10/10, `failed_high=0` |
-| CI on the PR head | `gh pr checks 71` | **6 of 6 pass**; `mergeable_state: clean` |
+| CI on the PR head | `gh pr checks 71` + `gh api .../actions/runs/30485081636 --jq .head_sha` | **6 of 6 pass** against head `40e4d4d`; `mergeable_state: clean` |
+
+The CI row names the run id and the `head_sha` check deliberately. An earlier draft of this file
+claimed "6 of 6" from a run against the **previous** head — true when written and stale by the time
+it was read. Confirming that the run's `head_sha` equals the PR's head is what turns a green tick
+into evidence about *this* commit.
 
 ---
 
