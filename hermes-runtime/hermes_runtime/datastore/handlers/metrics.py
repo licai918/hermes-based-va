@@ -37,6 +37,7 @@ from toee_hermes.lifecycle_metrics import lifecycle_payload
 from ...honored_rate import honored_rate_metric
 from ...knobs import knob_panel
 from ...latency import _METRIC_LAYER, SLO_TOTAL_METRICS, latency_metrics, skip_metric
+from ...loop_closure import loop_closure_metrics
 from ._common import (
     METRIC_L6_CONFIRMED,
     METRIC_MEMORY_POLLUTION_REJECTED,
@@ -181,6 +182,13 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
         )
         lifecycle_audit = dict(cur.fetchall())
 
+    # --- loop closure: conversion / re-fail / entry trend (0.0.5 S28, FR-34b) --
+    # Takes the CONNECTION, not the cursor above: its three queries each open
+    # their own default-row-factory cursor, which is also what keeps them from
+    # inheriting a dict_row cursor a neighbouring read might have wanted (the
+    # trap `entry_effectiveness_for` documents).
+    loop_closure = loop_closure_metrics(conn)
+
     accepted_total = correction_count + dismissed_count
 
     return {
@@ -227,6 +235,11 @@ def _get_aggregate_metrics(conn, params: dict[str, Any], context: "ToolExecution
             binding_erasures=lifecycle_audit.get(MEMORY_ACTION_ERASED, 0),
             layer_drops=layer_drops,
         ),
+        # S28/FR-34b: did the loop CLOSE? Conversion, post-fix re-fail and the
+        # per-entry honored trend after an edit. Same shared-builder posture as
+        # the lifecycle block above -- the mock twin calls `loop_closure_payload`
+        # with no counts, so neither twin can invent a rate the other lacks.
+        **loop_closure,
         # S22/FR-34a: the READ-ONLY knob panel (D14). Postgres-side only -- see
         # `hermes_runtime.knobs` for why the mock twin reports null here rather
         # than a copy of these values.

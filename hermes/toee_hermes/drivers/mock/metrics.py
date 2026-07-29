@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ...lifecycle_metrics import lifecycle_payload
+from ...lifecycle_metrics import lifecycle_payload, loop_closure_payload
 from .driver import MockHandlerRegistry
 from .memory import deletion_success_payload
 
@@ -139,6 +139,12 @@ def create_metrics_mock_handlers() -> MockHandlerRegistry:
             # Every label and every "what is NOT in this number" caveat comes
             # from that one builder, so the two twins cannot drift.
             **lifecycle_payload(),
+            # S28/FR-34b: the loop-closure rates, from the SAME shared builder.
+            # Every denominator is 0 here, so every rate is null and each tile
+            # reads "Not yet computed" -- which is the honest answer on a
+            # deployment that has closed no loop, and is emphatically NOT the 0%
+            # re-fail rate a zero-filled shape would have rendered as perfect.
+            **loop_closure_payload(),
             # S22/FR-34a: the knob panel is `hermes_runtime`'s to build -- the
             # constants live there and this package must not import back (the
             # same reason the mock retention twin reports a null ledger-prune

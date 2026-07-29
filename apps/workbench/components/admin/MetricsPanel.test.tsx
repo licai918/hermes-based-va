@@ -44,6 +44,12 @@ function metrics(overrides: Partial<AggregateMetrics> = {}): AggregateMetrics {
       count("privacy_deflection_erasures", "Whole-binding erasures (forget-me)", 1),
       count("prompt_layer_drops_L7", "L7 dropped from a prompt (deadline)", 0),
     ],
+    loopClosure: [
+      rate("feedback_proposal_conversion", 3, 6, 0.5),
+      rate("unroutable_feedback_signals", 4, 10, 0.4),
+      rate("post_fix_refail", 1, 4, 0.25),
+      rate("entry_honored_after_edit", 1, 1, null),
+    ],
     knobs: {
       label: "Read-only. These knobs move by deploy-time config commit.",
       knobs: [
@@ -75,6 +81,22 @@ function count(
   value: number | null,
 ): AggregateMetrics["lifecycle"][number] {
   return { key, label, detail: `what ${key} counts, and what it does not`, value };
+}
+
+function rate(
+  key: string,
+  numerator: number,
+  denominator: number,
+  value: number | null,
+): AggregateMetrics["loopClosure"][number] {
+  return {
+    key,
+    label: `label for ${key}`,
+    detail: `what ${key} is over, and what its denominator excludes`,
+    numerator,
+    denominator,
+    rate: value,
+  };
 }
 
 // S18/FR-26: per-layer latency tiles + the total-vs-SLO tile.
@@ -247,6 +269,68 @@ describe("MetricsPanel per-layer latency tiles (S18, FR-26)", () => {
     // Digit-anchored so the SLO caption's own "150 ms" isn't mistaken for it.
     expect(section.textContent).not.toMatch(/(^|[^\d.])0(\.0)? ?ms/);
     expect(section.textContent).not.toMatch(/within/i);
+  });
+});
+
+describe("MetricsPanel loop-closure block (S28, FR-34b)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders each rate beside the population it is over and its caveat", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+
+    const tile = section.querySelector('[data-loop="post_fix_refail"]');
+    expect(tile).not.toBeNull();
+    expect(tile?.textContent).toContain("25%");
+    // The fraction, not just the percentage: "25%" over four fixes and "25%"
+    // over four hundred are not the same claim.
+    expect(tile?.textContent).toContain("1 / 4");
+    expect(tile?.textContent).toContain("what post_fix_refail is over");
+  });
+
+  it("renders a trend-thin rate as not-yet-computed, never as 0% or 100%", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(metrics({ loopClosure: [rate("entry_honored_after_edit", 1, 1, null)] })),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+    const tile = section.querySelector('[data-loop="entry_honored_after_edit"]');
+    expect(tile?.textContent).toContain("Not yet computed");
+    expect(tile?.textContent).not.toContain("%");
+    // ... and the evidence still shows, so "not computed" is legible as
+    // "too little to say" rather than as "nothing happened".
+    expect(tile?.textContent).toContain("1 / 1");
+  });
+
+  it("says the backend does not report the block rather than showing nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics({ loopClosure: null }))));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+    expect(section.textContent).toMatch(/not reported by this backend/i);
+    expect(section.querySelectorAll("[data-loop]")).toHaveLength(0);
+  });
+
+  it("renders an empty deployment as not-yet-computed rather than a perfect score", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(metrics({ loopClosure: [rate("post_fix_refail", 0, 0, null)] })),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+    const tile = section.querySelector('[data-loop="post_fix_refail"]');
+    // 0 re-fails over 0 fixes is not a 0% re-fail rate; it is no answer at all.
+    expect(tile?.textContent).toContain("Not yet computed");
+    expect(tile?.textContent).toContain("0 / 0");
   });
 });
 

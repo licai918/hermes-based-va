@@ -42,6 +42,7 @@ function rawMetrics(overrides: Record<string, unknown> = {}) {
     latency: rawLatency(),
     deletion_success: rawDeletionSuccess(),
     lifecycle: rawLifecycle(),
+    loop_closure: rawLoopClosure(),
     knobs: rawKnobs(),
     ...overrides,
   };
@@ -84,6 +85,38 @@ function rawLifecycle(): unknown[] {
     rawCount("prompt_layer_drops_L4", 0),
     rawCount("prompt_layer_drops_L6", 2),
     rawCount("prompt_layer_drops_L7", 9),
+  ];
+}
+
+// S28/FR-34b shape, mirroring toee_hermes.lifecycle_metrics.loop_closure_payload.
+// Every numerator, denominator and rate is a DIFFERENT number for the same reason
+// the counts above are: a mapper that read the wrong row would otherwise agree
+// with the right one by coincidence.
+function rawRate(
+  key: string,
+  numerator: number,
+  denominator: number,
+  rate: number | null,
+  over: Record<string, unknown> = {},
+) {
+  return {
+    key,
+    label: `label for ${key}`,
+    detail: `what ${key} is over, and what its denominator deliberately excludes`,
+    numerator,
+    denominator,
+    rate,
+    ...over,
+  };
+}
+
+function rawLoopClosure(): unknown[] {
+  return [
+    rawRate("feedback_proposal_conversion", 3, 6, 0.5),
+    rawRate("unroutable_feedback_signals", 4, 10, 0.4),
+    rawRate("post_fix_refail", 1, 4, 0.25),
+    // The trend-thin case: raw counts travel, the percentage does not.
+    rawRate("entry_honored_after_edit", 1, 1, null),
   ];
 }
 
@@ -413,6 +446,84 @@ describe("handleGetAggregateMetricsViaApi", () => {
   it("rejects a latency block whose tiles are malformed rather than passing it through", async () => {
     const client = apiClient(async () =>
       dispatchResponse(rawMetrics({ latency: rawLatency({ layers: ["not a tile"] }) })),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+  });
+
+  // --- S28/FR-34b: the loop-closure rates ------------------------------------
+
+  it("carries each loop-closure rate with the population it is over", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const body = (await (await handleGetAggregateMetricsViaApi(client)).json()) as {
+      loopClosure: AggregateMetrics["loopClosure"];
+    };
+    expect(body.loopClosure.map((r) => r.key)).toEqual([
+      "feedback_proposal_conversion",
+      "unroutable_feedback_signals",
+      "post_fix_refail",
+      "entry_honored_after_edit",
+    ]);
+    const conversion = body.loopClosure[0]!;
+    expect(conversion.rate).toBe(0.5);
+    // The two halves of the fraction travel WITH it: a reader must never have to
+    // take "50%" on trust when the denominator is the whole argument.
+    expect([conversion.numerator, conversion.denominator]).toEqual([3, 6]);
+    expect(conversion.detail.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a null rate null and still carries its counts (one data point is not a trend)", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const body = (await (await handleGetAggregateMetricsViaApi(client)).json()) as {
+      loopClosure: AggregateMetrics["loopClosure"];
+    };
+    const thin = body.loopClosure[3]!;
+    expect(thin.rate).toBeNull();
+    expect([thin.numerator, thin.denominator]).toEqual([1, 1]);
+  });
+
+  it("reports an older backend's missing block as absent, not as a broken page", async () => {
+    // The 502 alternative takes the WHOLE metrics panel down for the duration of
+    // a normal app-ahead-of-runtime deploy skew -- which is exactly what
+    // `malformed aggregate metrics payload: latency` did after S18. Both twins
+    // build this block from one shared builder, so absent can only mean "old
+    // backend"; a twin dropping it is caught on the Python side instead.
+    const raw = rawMetrics();
+    delete (raw as Record<string, unknown>).loop_closure;
+    const res = await handleGetAggregateMetricsViaApi(apiClient(async () => dispatchResponse(raw)));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { loopClosure: unknown; lifecycle: unknown[] };
+    expect(body.loopClosure).toBeNull();
+    // ... and the rest of the panel is untouched.
+    expect(body.lifecycle).toHaveLength(7);
+  });
+
+  it("still refuses a loop-closure block that is PRESENT and the wrong shape", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(rawMetrics({ loop_closure: "not a list" })),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+  });
+
+  it("refuses a loop-closure rate that arrives without its scope", async () => {
+    // Same stance as the lifecycle counts and S26's entry health: a percentage
+    // with no `detail` is a broken contract from our own twin, not a degraded
+    // upstream, and rendering the bare number is exactly the failure the shape
+    // exists to prevent.
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({ loop_closure: [rawRate("post_fix_refail", 1, 4, 0.25, { detail: "" })] }),
+      ),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+  });
+
+  it("refuses a loop-closure rate with no denominator field rather than inventing one", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({
+          loop_closure: [rawRate("post_fix_refail", 1, 4, 0.25, { denominator: null })],
+        }),
+      ),
     );
     expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
   });

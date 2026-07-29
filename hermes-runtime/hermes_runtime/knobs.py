@@ -70,6 +70,7 @@ def knob_panel() -> dict[str, Any]:
         PROVISIONAL_RETENTION_DAYS,
         VERIFIED_RETENTION_DAYS,
     )
+    from toee_hermes.lifecycle_metrics import MIN_OBSERVATIONS_FOR_RATE
     from toee_hermes.drivers.mock.semantic_lexicon import (
         HEALTH_USAGE_SATURATION,
         HEALTH_WEIGHT_HONORED,
@@ -84,6 +85,7 @@ def knob_panel() -> dict[str, Any]:
         SIMILAR_EDIT_DIFF_THRESHOLD,
     )
     from .injection_ledger import PRUNE_WINDOW_SECONDS, ZERO_HIT_WINDOW_SECONDS
+    from .loop_closure import POST_FIX_WATCH_WINDOW_SECONDS
     from .latency import (
         MEMORY_READ_BUDGET_ENV,
         MEMORY_READ_DEADLINE_MS,
@@ -191,6 +193,28 @@ def knob_panel() -> dict[str, Any]:
                 "hermes_runtime.feedback_aggregator",
                 "How far back signals are gathered before clustering. Signals "
                 "older than this never join a cluster.",
+            ),
+            _knob(
+                "POST_FIX_WATCH_WINDOW_SECONDS",
+                "Post-fix re-fail — watch window",
+                POST_FIX_WATCH_WINDOW_SECONDS,
+                "hermes_runtime.loop_closure",
+                "Does double duty, and that is what makes the re-fail rate "
+                "comparable across fixes: how long after a confirmed fix a "
+                "recurrence still counts against it, AND how old a fix must be "
+                "before it is judged at all. Shorten it and slow-returning "
+                "problems read as clean; lengthen it and a fresh deployment "
+                "waits longer for its first honest number.",
+            ),
+            _knob(
+                "MIN_OBSERVATIONS_FOR_RATE",
+                "Loop-closure rates — minimum denominator",
+                MIN_OBSERVATIONS_FOR_RATE,
+                "toee_hermes.lifecycle_metrics",
+                "Below this many observations a loop-closure tile shows its raw "
+                "counts and no percentage. One data point is always 0% or 100%, "
+                "and on a panel about whether the loop works those are the two "
+                "most confident wrong answers available.",
             ),
             _knob(
                 "PRE_TURN_READ_SLO_P95_MS",

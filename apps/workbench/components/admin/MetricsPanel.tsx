@@ -199,6 +199,47 @@ function LifecycleSection({
   );
 }
 
+// --- S28 (FR-34b): does the loop CLOSE? --------------------------------------
+//
+// These four ARE rates, unlike the counts above, and each one ships its own
+// fraction. Two rules the tiles enforce because the numbers are worthless
+// without them: the percentage never appears without the population it is over,
+// and a null rate renders as "Not yet computed" -- never as 0% or 100%. On this
+// deployment every one of them is null today, and that is the correct reading:
+// nothing has closed the loop yet, which is a different fact from a loop that
+// closed badly.
+
+function LoopClosureSection({ rates }: { rates: AggregateMetrics["loopClosure"] }) {
+  return (
+    <section
+      aria-label="Loop closure"
+      style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
+    >
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Loop closure</h2>
+      <p style={caption}>
+        {rates === null
+          ? "Not reported by this backend — its runtime predates these metrics. Both drivers " +
+            "ship the block once the backend is up to date; nothing here is missing data."
+          : "Score → aggregate → propose → confirm → inject → do the next scores move? Every " +
+            "rate below shows its own numerator and denominator, and shows no percentage at " +
+            "all until it has enough observations for one to mean anything."}
+      </p>
+      <div style={grid}>
+        {(rates ?? []).map((r) => (
+          <div key={r.key} data-loop={r.key} style={{ ...tile, maxWidth: "20rem" }}>
+            <p style={label}>{r.label}</p>
+            <p style={value}>{r.rate === null ? "Not yet computed" : pct(r.rate)}</p>
+            <p style={caption}>
+              {r.numerator} / {r.denominator}
+            </p>
+            <p style={caption}>{r.detail}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 // D14: READ-ONLY, and the section says so. There is deliberately no control here
 // -- a knob moves by deploy-time config commit whose audit trail is git history
 // (NFR-3), and a toggle that looked mutable and was not would be worse than no
@@ -334,6 +375,8 @@ export function MetricsPanel() {
       <LatencySection latency={metrics.latency} />
 
       <LifecycleSection lifecycle={metrics.lifecycle} deletion={metrics.deletionSuccess} />
+
+      <LoopClosureSection rates={metrics.loopClosure} />
 
       <KnobSection knobs={metrics.knobs} />
 

@@ -109,6 +109,34 @@ export interface LifecycleCount {
   value: number | null;
 }
 
+// S28/FR-34b loop-closure rates: did the control loop actually close? Unlike the
+// lifecycle COUNTS above these are fractions, so the wire shape carries the whole
+// fraction -- `numerator` and `denominator` beside the `rate`, never the
+// percentage alone. `rate` is null in two different situations that both render
+// as "not yet computed": nothing observed at all, and too little observed to say
+// (below the shared builder's minimum denominator). The counts are what tell the
+// two apart, which is why they are required rather than optional.
+//
+// The BLOCK, unlike each row inside it, is nullable -- and that is a deliberate
+// departure from how `latency` and `deletionSuccess` are mapped. Those are
+// REQUIRED so a twin cannot silently drop them, but both twins build this block
+// from ONE shared builder and a Python test asserts they agree, so a missing key
+// here cannot mean "a twin dropped it": it can only mean the backend image is
+// older than this app. Making that a hard 502 takes the whole metrics page down
+// for the duration of a normal deploy skew, which is not a hypothetical -- it is
+// what `malformed aggregate metrics payload: latency` did after S18, and what
+// this key did after S28's first draft. An absent block renders as "not reported
+// by this backend" (the `knobs` precedent); a live Postgres twin must never take
+// that branch, which is pinned on the Python side where it would actually break.
+export interface LoopClosureRate {
+  key: string;
+  label: string;
+  detail: string;
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
 // S22/FR-34a, D14: READ-ONLY. The panel displays deploy-time config and never
 // mutates it -- a knob moves by a code/config commit whose audit trail is git
 // history. `source` is the module an admin edits; `env` is the override name
@@ -145,6 +173,9 @@ export interface AggregateMetrics {
   deletionSuccess: DeletionSuccess;
   // S22/FR-34a: conflict, pollution, privacy-deflection proxy, layer drops.
   lifecycle: LifecycleCount[];
+  // S28/FR-34b: conversion, post-fix re-fail, per-entry honored trend. Null only
+  // when the backend predates the block -- see the type above.
+  loopClosure: LoopClosureRate[] | null;
   // S22/FR-34a: the read-only knob panel. Null when the backend does not report
   // one -- the mock twin cannot, because the constants are hermes_runtime's and
   // toee_hermes must not import back. Null renders as "not reported by this
@@ -272,6 +303,36 @@ function mapLifecycle(raw: unknown): LifecycleCount[] {
   return (raw as unknown[]).map(mapLifecycleCount);
 }
 
+// The counterpart of `mapLifecycleCount`, and strict for the same reason plus one
+// more: a rate whose denominator went missing is unreadable in a way a count
+// never is -- "25%" with no population behind it is the single most misleading
+// thing this panel could render. So `numerator`/`denominator` are REQUIRED
+// numbers even when `rate` is null; only the percentage may be absent.
+function mapLoopClosureRate(raw: unknown, index: number): LoopClosureRate {
+  const field = `loop_closure[${index}]`;
+  const r = requireObject(raw, field);
+  const label = requireString(r.label, `${field}.label`);
+  const detail = requireString(r.detail, `${field}.detail`);
+  if (!label || !detail) malformed(`${field} carries a rate with no scope`);
+  return {
+    key: requireString(r.key, `${field}.key`),
+    label,
+    detail,
+    numerator: requireNumber(r.numerator, `${field}.numerator`),
+    denominator: requireNumber(r.denominator, `${field}.denominator`),
+    // Null is "not computed" -- either nothing observed, or too little to say.
+    rate: optionalNumber(r.rate, `${field}.rate`),
+  };
+}
+
+function mapLoopClosure(raw: unknown): LoopClosureRate[] | null {
+  // Absent = an older backend image, not a malformed payload. Anything PRESENT
+  // is still held to the full contract: a wrong shape is a real defect.
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw)) malformed("loop_closure");
+  return (raw as unknown[]).map(mapLoopClosureRate);
+}
+
 function mapKnobs(raw: unknown): KnobPanel | null {
   if (raw === null || raw === undefined) return null;
   const p = requireObject(raw, "knobs");
@@ -345,6 +406,7 @@ export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
     // a tolerant mapper would let one silently drop it and render nothing.
     deletionSuccess: mapDeletionSuccess(r.deletion_success),
     lifecycle: mapLifecycle(r.lifecycle),
+    loopClosure: mapLoopClosure(r.loop_closure),
     // The one OPTIONAL block, and deliberately so -- see the KnobPanel type.
     knobs: mapKnobs(r.knobs),
   };

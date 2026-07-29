@@ -420,6 +420,20 @@ propose→confirm gate as any other proposal.
 
 ## Change log
 
+- **2026-07-29 (0.0.5 S28)** — the control loop became **measurable end to end**: feedback →
+  proposal conversion, post-fix re-fail, and the per-entry honored trend across an edit
+  (FR-34b, US19). Three joins over rows S09/S25/S26/S27 already write — no migration, no emit
+  seam. What the map should carry from it is where each fraction's *denominator* comes from,
+  because each one has a plausible wrong answer: conversion is over **routable** signals only
+  (D23's five unroutable tags are their own rate, not silent failures); a re-fail excludes the
+  subjects the fix was raised from, because those are the evidence the fix was made from and
+  cannot also be the test of it; and the entry trend splits each entry at its own `updated_at`
+  and reads the **ledger × judge** join, never `hit_count` — D22's correction applied one layer
+  over from S20. Every rate withholds its percentage below two observations, so this deployment
+  (no `OPENROUTER_API_KEY`, no confirmed feedback-derived fix) reads "Not yet computed"
+  everywhere rather than a perfect score. Reasoning in
+  [ADR-0164](../adr/0164-loop-closure-metrics-and-the-denominators-that-do-exist.md).
+
 - **2026-07-28 (0.0.5 S22)** — the **forgetting table** landed (the section above), closing the
   item S11 and S06 both recorded as outstanding: every layer's mechanism for losing content, who
   triggers it, and where it is counted — including the three places where the honest answer is

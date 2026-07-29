@@ -1,4 +1,5 @@
-"""FR-34a's lifecycle counts, in ONE shape both metrics twins build (0.0.5 S22).
+"""FR-34's lifecycle counts and loop-closure rates, in ONE shape both metrics
+twins build (0.0.5 S22 for FR-34a; S28 for FR-34b).
 
 Conflict, pollution, privacy-deflection and the per-layer prompt drops are all
 plain counts over rows earlier slices already write -- there is no new emit seam
@@ -28,6 +29,16 @@ The mock twin calls :func:`lifecycle_payload` with no arguments and the Postgres
 twin calls it with its SQL counts, so the two cannot render different tiles
 (NFR-7) -- the shared-BUILDER pattern ``deletion_success_payload`` established,
 rather than a restatement pinned by an equality test.
+
+**FR-34b (S28) adds RATES to the same file, and they are a different animal.**
+:func:`loop_closure_payload` answers "did the loop close?", which is a question
+about fractions: how much feedback became a proposal, how many confirmed fixes
+came back, how many edited entries kept their honored score. Each row therefore
+carries its ``numerator`` and ``denominator`` as data beside the ``rate``, so a
+reader is never asked to trust a percentage whose population they cannot see --
+and ``rate`` is withheld entirely below
+:data:`MIN_OBSERVATIONS_FOR_RATE` observations, because 0% and 100% off a single
+data point are the two most confident lies this panel could tell.
 """
 
 from __future__ import annotations
@@ -131,6 +142,171 @@ def lifecycle_payload(
                     int(drops.get(layer, 0)),
                 )
                 for layer in INJECTED_PROMPT_LAYERS
+            ),
+        ]
+    }
+
+
+# --- FR-34b (0.0.5 S28): proving the loop CLOSES ------------------------------
+
+# The smallest denominator a percentage is reported over. A rate over ONE
+# observation is 0% or 100% whichever way the truth points, so it carries no
+# information and reads as certainty -- "a trend with one data point is not a
+# trend", made mechanical rather than left to the reader's judgement. Below the
+# floor the row still ships its raw numerator and denominator, so the tile reads
+# "Not yet computed - 1 / 1" and the evidence is visible; it is the PERCENTAGE
+# that is withheld, never the counts.
+MIN_OBSERVATIONS_FOR_RATE = 2
+
+LOOP_CONVERSION = "feedback_proposal_conversion"
+LOOP_UNROUTABLE = "unroutable_feedback_signals"
+LOOP_REFAIL = "post_fix_refail"
+LOOP_ENTRY_TREND = "entry_honored_after_edit"
+
+
+def _rate_row(
+    key: str, label: str, detail: str, numerator: int, denominator: int
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "detail": detail,
+        "numerator": int(numerator),
+        "denominator": int(denominator),
+        "rate": (
+            round(numerator / denominator, 4)
+            if denominator >= MIN_OBSERVATIONS_FOR_RATE
+            else None
+        ),
+    }
+
+
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def loop_closure_payload(
+    *,
+    converted_signals: int = 0,
+    routable_signals: int = 0,
+    unroutable_signals: int = 0,
+    total_signals: int = 0,
+    refailed_fixes: int = 0,
+    matured_fixes: int = 0,
+    maturing_fixes: int = 0,
+    improved_entries: int = 0,
+    compared_entries: int = 0,
+    one_sided_entries: int = 0,
+) -> dict[str, Any]:
+    """FR-34b's three loop-closure rates, each beside the population it is over.
+
+    Called with no arguments by the mock twin and with its SQL counts by the
+    Postgres twin, exactly like :func:`lifecycle_payload` -- so neither twin can
+    render a tile the other lacks, and every caveat below has one home.
+
+    ``maturing_fixes`` and ``one_sided_entries`` are the observations each rate
+    deliberately EXCLUDES. They are interpolated into the detail rather than
+    dropped, because an exclusion nobody can see is indistinguishable from a
+    denominator that was simply small.
+    """
+    return {
+        "loop_closure": [
+            _rate_row(
+                LOOP_CONVERSION,
+                "Feedback that became a proposal (routable signals)",
+                "NUMERATOR: (reason tag x feedback row) pairs the feedback "
+                "aggregator names as the evidence behind a proposal it actually "
+                "raised, read back from its own run audit rows -- so a proposal "
+                "that never cited a signal is not counted as converting one. "
+                "DENOMINATOR: failing feedback rows x their reason tags over the "
+                "same span, restricted to the tags the Signal Routing Table sends "
+                "to a governed propose action. WINDOW: the aggregator's own "
+                "clustering window (CLUSTER_WINDOW_SECONDS on the knob panel), "
+                "because that is the only span the job ever looked at -- a wider "
+                "denominator would count feedback it was never offered. NOT in "
+                "the denominator: signals whose tag has nowhere legal to emit "
+                "(the next row) -- folding those in would score a missing product "
+                "destination as a conversion failure. IN the denominator and "
+                "unconverted on purpose: a signal below the aggregator's N "
+                "threshold (SAME_TAG_FAIL_THRESHOLD), and one a write scan "
+                "refused -- both reached nobody, which is the question this "
+                "number asks. NOT in the numerator: proposals mined from "
+                "edit-diffs (FR-33); an edited send carries no reason tag, so it "
+                "has no denominator here to belong to.",
+                converted_signals,
+                routable_signals,
+            ),
+            _rate_row(
+                LOOP_UNROUTABLE,
+                "Feedback with nowhere legal to go (D23)",
+                "Failing feedback whose reason tag terminates OUTSIDE the memory "
+                "layers, over ALL failing feedback in the same window. This is an "
+                "owner decision recorded as a number, not a defect in the "
+                "aggregator: the policy tag has no propose-shaped KnowledgeOps "
+                "action, and a scheduled job writing slot CONTENT is the "
+                "auto-write NFR-3 forbids; the information-gap tags want a "
+                "review_item kind that D9's six-value enum does not contain; the "
+                "factual tag's lexicon half needs a surface->canonical PAIR that "
+                "a tag cluster does not carry; and `other` is a free-text escape "
+                "hatch whose meaning lives in the reviewer's comment, so the tag "
+                "alone says nothing to propose. A reviewer who picks one of these "
+                "gets a counted-but-silent outcome -- this is how loud that is. A "
+                "tag with no routing-table entry at all lands here too: "
+                "routability fails closed.",
+                unroutable_signals,
+                total_signals,
+            ),
+            _rate_row(
+                LOOP_REFAIL,
+                "Confirmed fixes that came back",
+                "NUMERATOR: matured fixes that re-failed at least once -- two "
+                "recurrences against one fix count ONE, because the question is "
+                "whether that fix held, not how loudly it did not. DENOMINATOR: "
+                "MATURED fixes only. A fix is a feedback-derived L6 procedure "
+                "proposal an administrator CONFIRMED; it matures once "
+                "POST_FIX_WATCH_WINDOW_SECONDS (knob panel) has fully elapsed "
+                "since that confirmation. A re-fail is a failing feedback row "
+                "CREATED inside that same window afterwards, carrying the SAME "
+                "reason tag, on a subject the confirmed proposal was not raised "
+                "from. What makes the two sides comparable: every matured fix is "
+                "watched for exactly the same length of time, and the original "
+                "subjects are excluded because re-reviewing a pre-fix interaction "
+                "re-judges the old evidence rather than testing the fix. "
+                f"EXCLUDED: {_plural(maturing_fixes, 'confirmed fix', 'confirmed fixes')} "
+                "still inside the watch window -- counting a fix nobody has had "
+                "time to re-fail as clean is how a fresh deployment reads 0%. "
+                "Also excluded: acknowledged persona-review items, which change "
+                "nothing on their own (the persona moves by dev edit + eval "
+                "re-record), and rejected proposals, which decided no fix. "
+                "CEILING: a recurrence is dated by the feedback row's created_at, "
+                "not by when the interaction happened, so a reviewer working "
+                "through a backlog of pre-fix interactions reads as a re-fail.",
+                refailed_fixes,
+                matured_fixes,
+            ),
+            _rate_row(
+                LOOP_ENTRY_TREND,
+                "Edited L7 entries that held or improved their honored rate",
+                "NUMERATOR: edited entries whose honored rate AFTER the edit is at "
+                "least what it was before. DENOMINATOR: edited entries with "
+                "determinate honored verdicts on BOTH sides of their own edit. "
+                "\"Edited\" is the console's own rule -- updated_at later than the "
+                "decision (D7: an edit is an in-place UPDATE, so the entry id, its "
+                "usage and its ledger history all survive it). The split is per "
+                "entry, over the turns the injection ledger says carried that "
+                "entry, scored by the judge's honored leg. It reads the ledger x "
+                "verdict join and NEVER hit_count: hit_count is structurally zero "
+                "for every default_rule (D22), so a hit-based version of this "
+                "number would report a healthy seasonal rule as dead. "
+                f"EXCLUDED: {_plural(one_sided_entries, 'edited entry', 'edited entries')} "
+                "judged on only one side of the edit -- a before with no after is "
+                "not a trend, and a retire-then-write replacement is a new entry "
+                "with no before at all. External customer turns only (D4.3): a "
+                "copilot draft turn's id is synthetic, so its injections are "
+                "recorded and never attributed. How far \"before\" can reach is "
+                "bounded by the ledger's retention (PRUNE_WINDOW_SECONDS).",
+                improved_entries,
+                compared_entries,
             ),
         ]
     }
