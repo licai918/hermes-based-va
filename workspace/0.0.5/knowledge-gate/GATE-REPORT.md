@@ -93,15 +93,106 @@ synthetic one.
    passing. If the owner agrees `warranty-information` belongs in that question's gold, the
    corrected score is **14/22 = 64%** — still a fail.
 
+## The L7 synergy, measured — and the wiring that does not exist
+
+**S24's brief assumes a synergy that is not wired.** It says *"S05's lexicon seam should already
+lift digit-string queries (measure with/without to show the L7 synergy)"*. Verified in code:
+
+- `retrieve()` (`knowledge/retriever.py:151`) takes a raw `query: str`, runs FTS + cosine, fuses
+  by RRF, and **never consults the lexicon.**
+- `normalize_product_query`'s scope is `PRODUCT_QUERY_PARAM_KEYS = {"search_products": ("query",),
+  "get_product": ("sku",)}` — **product tool parameters only.** Knowledge search is not in it.
+
+**So seeding aliases into L7 changes this gate by exactly zero.** The with/without measurement
+S24 asks for cannot be run against the shipped path, because there is no path.
+
+What *can* be answered is whether the wiring would be worth building. Measured with a throwaway
+harness that applies one alias table by one rule to every question identically, appending the
+canonical term and never deleting the customer's words:
+
+| | recall@3 | |
+| --- | --- | --- |
+| raw | 13/22 | **59%** |
+| alias-expanded | 16/22 | **73%** |
+
+**+14 points, 3 questions fixed, 0 regressions.**
+
+| Fixed | Expansion | Result |
+| --- | --- | --- |
+| `do you deliver or do i have to come get them` | `+ pick up` | `shipping-options` to rank 2 |
+| `can you bill me and i pay when i pick up` | `+ payment terms` | `tire-shop-owner-program` to rank 1 |
+| `do i get a better price if i take a bigger lot` | `+ bulk order` | `bulk-order-discount` to ranks 2–3 |
+
+**Note where 73% lands: exactly the synthetic set's score.** That is the cleanest possible
+confirmation of the vocabulary finding above — give the real questions a synonym layer and the two
+sets measure the same difficulty. The synthetic 73% was never a harder bar; it was the same bar
+with the vocabulary problem pre-solved by its author.
+
+**One of the four predicted vocabulary misses did not respond.** `do you sell grenlander` still
+misses with `carry` appended, so it is not a vocabulary problem after all — the `grenlander` page
+simply carries weak signal for a "do you stock X" question. Recorded as a correction to the
+classification above rather than left implying a fix that did not happen.
+
 ## What would actually close the gap
 
-In descending value:
+The path to 80% is now arithmetic rather than hope. Two of the three steps are **measured**; the
+third is a projection and is labelled as one.
 
-1. **Author the delivery-schedule page** (CONTENT-GAPS.md item 1) — the most-asked question in the
-   entire transcript has no page at all, and it is not even in the scored set because of that.
-2. **Seed the trade synonyms into L7** — four scored misses, zero new content required.
-3. **Fix the gold labels that name pages which cannot answer** — in both sets.
-4. **Add hours to `CONTACT_INFORMATION` and a login/order-number page** — two content gaps, small.
-5. Only then look at retrieval tuning, with `residential address` as the test case.
+| Step | Effect | Running total |
+| --- | --- | --- |
+| today | — | **59%** (13/22) |
+| **wire a synonym layer into the retrieval query** | **measured +3** | **73%** (16/22) |
+| **fix the one gold label that is wrong** (`damaged tires` → `warranty-information` is a correct source; my label was too narrow) | **+1** | **77%** (17/22) |
+| add opening hours to `CONTACT_INFORMATION`, and a login / order-number page | *projected +2* | *86%* (19/22) |
+
+So **the bar is reachable, and not by touching the bar.** But note what the table says: even with
+the L7 wiring built, 73% still fails. **The synonym layer alone does not close this gate** — it is
+necessary and not sufficient, and anyone reading "+14 points" as "problem solved" would be wrong.
+
+Ordered by value per unit of work:
+
+1. **Fix the gold labels that name pages which cannot answer** — free, and it corrects the measure
+   itself. `what are your hours` → `CONTACT_INFORMATION` is wrong in the *synthetic* set too.
+2. **Add opening hours** to `CONTACT_INFORMATION` — one line of content, one scored question.
+3. **Author the delivery-schedule page** (CONTENT-GAPS.md item 1) — does not move this score,
+   because the question is not in the scored set for want of any page at all. It is nevertheless
+   the **most-asked question in the entire transcript** and the highest-value page to write.
+4. **Decide where the synonym layer lives, then wire it** — see the note below; this is a 0.0.6
+   question, not a 0.0.5 one.
+5. Only then retrieval tuning, with `do you charge extra for a residential address` as the test
+   case: *residential* is literally in the target chunk and the query still returns `PRIVACY_POLICY`
+   twice.
 
 None of that is a bar change.
+
+## Where the synonym layer belongs is already decided, and it is not here
+
+0.0.6's exploration locks two things that bear directly on "just seed these into L7":
+
+- **D1:** vocabulary mapping lives in the **PRS spec layer**, and *"this is **not** a synonym
+  table"* — it is a business vocabulary policy needing **two directions**: customer wording → facet
+  value **in**, and facet value → the wording we are *allowed to use back* **out**.
+- **D4:** strict iteration order; the L7 reconciliation is **0.0.6's S-0, after 0.0.5 merges** —
+  explicitly *"not as a mid-flight change request against a running iteration."*
+
+The retrieval synonyms measured above (`come get` → `pick up`) are a third thing again — neither
+facet values nor customer-facing output — so they do not collide with D1 on their own. But the
+decision about **which layer owns customer-vocabulary reconciliation** is 0.0.6's, it is already
+taken, and pre-seeding rows into L7 now would have to be undone. The measurement stands as the
+evidence for that decision; the rows should wait for it.
+
+## A live collision the 0.0.6 doc already flags, sitting in this branch right now
+
+0.0.6 §D1 records it and it is worth surfacing here because it is not hypothetical:
+
+> The L7 seed row `seed_lex_season_all_season` (`hermes/toee_hermes/lexicon.py`) carries
+> `canonical_form="all-season tires"` — customer-facing prose, in a **confirmed** row that the S06
+> prompt seam is built to render.
+
+The owner's own vocabulary policy forbids exactly that wording: *"加拿大冬天雪特别厚，我们不会称之为
+ALL SEASON，避免出现 misleading information."* So a confirmed L7 row is currently telling the model
+to offer Canadian customers "all-season tires" by name.
+
+It is scheduled for 0.0.6 S-0 and D4 says not to interrupt 0.0.5 for it. Recording it here so the
+0.0.5 close does not sign off a gate report while a confirmed row is shipping wording the business
+has ruled out — that is a note for **PAC-8 and PAC-9**, not a code change today.
