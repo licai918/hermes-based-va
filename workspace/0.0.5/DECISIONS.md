@@ -834,3 +834,42 @@ call arguments**. So a bait that rewrites `contact_reason` in the assistant's `t
 nowhere else changes nothing, the scenario stays green, and the natural conclusion — "this assertion
 is vacuous" — is wrong. It is the house rules' "suspect your HARNESS before your test" in its exact
 shape. Patch the `role: "tool"` result message; then it reddens.
+
+## D27. `governed_tool_names` was an OFFER, not a fence — and a docstring said otherwise since 0.0.3
+
+Found by S04 (`df9a4ad`) because **a bait refused to go red**, and it is the most consequential
+thing this iteration turned up.
+
+`run_agent_turn` **UNIONs** `governed_tool_names` into the agent's existing `valid_tool_names`
+unless `tools_exclusive=True` is passed. A capture fork boots the entire `internal_copilot` profile
+before narrowing, so the union is over everything that profile registers.
+
+**Consequence, live since S23-0.0.3: the L6 review fork could dispatch any of the 43 tools on the
+internal_copilot profile** — while its own docstring described it as restricted to a handful. A
+background job, running on a customer conversation without a human in the loop, had the profile's
+full tool surface.
+
+**How it was found is the part worth copying.** S04's first bait unrestricted the fork's
+`tool_names` and **every routing test stayed green** — because those tests pinned the *extractor*
+(what the fork does with a verdict), not the *toolset* (what the fork can reach). Rather than
+concluding the bait was badly aimed, S04 asked why the tests could not see it, added two call-site
+tests that read the `governed_tool_names` **and** `tools_exclusive` each fork actually hands the
+loop, and re-armed. The bait then reddened, printing 43 tools.
+
+A test suite can be comprehensive about behaviour and blind to capability. Nothing in the routing
+tests was wrong; they simply were not about this, and the docstring filled the gap with a claim.
+
+**Decision: both forks now pass `tools_exclusive=True`.** `run_scripted_agent` gained the
+pass-through, defaulting to `False` so no other caller's behaviour moves. This is a **behaviour
+change to shipped code**, recorded in the ADR-0152 note as well as here.
+
+**What this does NOT establish.** No evidence exists that the extra surface was ever exercised —
+the fork asks a model for language, and a model that never tried to call `toee_customer_memory` was
+never refused. The fix removes a capability, not an observed abuse. Stated so nobody reads a
+green-since-the-fix suite as proof that nothing happened before it.
+
+**Second-order, and left alone deliberately:** every other caller of `run_agent_turn` that passes
+`governed_tool_names` without `tools_exclusive` is offering rather than fencing. S04 changed only
+the two forks it owns, because widening the default is a change to every turn path and belongs in
+its own slice with its own evidence. **Whoever takes it should start from the assumption that at
+least one more docstring in that set is currently wrong.**
