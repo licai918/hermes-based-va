@@ -186,11 +186,18 @@ def run_scripted_agent(
     system_message: str | None = None,
     scripted_completions: Sequence[Mapping[str, Any]],
     governed_tool_names: Sequence[str] = (),
+    tools_exclusive: bool = False,
 ) -> dict[str, Any]:
     """Drive one real ``AIAgent`` turn against a scripted provider; capture the turn.
 
     The scripted ``OpenAI`` runs the loop with no model, network, or credentials.
     Returns ``{"final_response": str, "messages": list}`` for record/replay.
+
+    ``tools_exclusive`` threads through to :func:`run_agent_turn` (0.0.5 S04). It
+    defaults to ``False`` -- the eval/harness union -- so every existing caller is
+    unchanged; a caller that means "these tools and NOTHING else" has to say so,
+    because without it ``governed_tool_names`` is an offer list rather than a
+    fence and a restricted fork can still dispatch the whole booted profile.
     """
     return run_agent_turn(
         user_message=user_message,
@@ -201,6 +208,7 @@ def run_scripted_agent(
         max_iterations=max(1, len(scripted_completions)),
         openai_factory=_scripted_openai_factory(scripted_completions),
         governed_tool_names=governed_tool_names,
+        tools_exclusive=tools_exclusive,
     )
 
 

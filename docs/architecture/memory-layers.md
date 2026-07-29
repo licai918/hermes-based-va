@@ -11,8 +11,8 @@ so it cannot drift out of sync with them.
 > **Maintenance rule.** When an ADR lands that changes a layer, update that layer's row **in the
 > same PR**. No separate doc-maintenance ritual — the ADR is the trigger.
 
-*Last updated: 2026-07-28 (0.0.5 S06 — L7 semantic lexicon shipped; the L1–L7 routing
-decision tree and the L7 boundary rows land here).*
+*Last updated: 2026-07-29 (0.0.5 S04 — the two L7 capture forks and the routing rule between
+L6 and L7; see the change log for the full history).*
 
 ---
 
@@ -268,6 +268,46 @@ deterministic-seam applications, which are only ever aliases and normalizers, so
 `default_rule` earns **structurally zero** hits — so the ranked strategy fills the window
 round-robin across entry kinds. Rarity by design is not uselessness.
 
+**How the layer GROWS: two capture forks, and neither of them is an agent (0.0.5 S04, FR-4).**
+An entry reaches the queue three ways — an admin types it (`add_lexicon_entry`, live at once),
+the S25/S27 feedback aggregator mines it (`feedback_derived`), or a **capture fork** proposes it
+from a conversation. There are two forks and they run on different paths:
+
+| Fork | Runs after | Boots | May call | Files into |
+| --- | --- | --- | --- | --- |
+| **Capture fork** (gateway) | an EXTERNAL customer turn, on the background worker (`l7_capture`) | `internal_copilot` | `propose_lexicon_entry` — that one action, nothing else | L7 |
+| **Review fork** (copilot, S23-0.0.3) | a copilot draft turn (`l6_review`) | `internal_copilot` | `propose_experience` **or** `propose_lexicon_entry` | L6 **or** L7 **or** neither |
+
+The review fork is where the **L6-vs-L7 rule above becomes a routing decision**: a finding it can
+express as surface→canonical goes to L7, where the deterministic seam can apply it; only what it
+cannot stays L6 prose. It files a NEW finding one way or the other — it never reroutes rows that
+are already proposed. (Re-classifying an existing proposal is `reclassify_proposal`, a human
+decision; S13's write-time advisory only *annotates*.)
+
+**Three properties hold for both forks, and each is the answer to an obvious worry:**
+
+- **The customer-facing agent still writes nothing.** `customer_service_external` is allowlisted
+  for neither `toee_agent_experience` nor `toee_semantic_lexicon`, so the model talking to a
+  customer cannot propose into a shared layer. A fork is separate infrastructure on a different
+  profile, a different thread and a one-action toolset — the distinction
+  [ADR-0152's superseding note](../adr/0152-l6-agent-experience-confirmed-injection-and-eval-pin.md)
+  pins.
+- **A capture proposes; it never confirms** (NFR-3). Every DECIDE action on both layers is off
+  both forks' toolsets, so the row lands `proposed` with a null decider and an administrator is
+  the only thing that can move it.
+- **It cannot delay or fail a turn.** The turn ENQUEUES and returns; the fork's model call happens
+  on the background worker. `LEXICON_CAPTURE` gates it, default OFF, its own axis — separate from
+  the two INJECTION flags, because reading confirmed vocabulary and writing a proposal are
+  different permissions — which is also the eval-determinism pin.
+
+**This is the one L7 arrow that crosses the NFR-6 boundary, so it is worth naming precisely.**
+The captured text is customer-derived and L7 is a **shared** layer, unlike L4. What holds the
+line is not that the exchange is never read — it is read, by design, because `evidence` is what
+an administrator judges the proposal on — but that the S01 write scan **redacts PII in place**
+inside `evidence` and `proposer_context` (D2) while hard-rejecting injection at every depth, and
+that nothing is applied or injected until a human confirms. The forks' prompts carry the same
+rule they are scanned against: identifiers and refs in `proposer_context`, never contact details.
+
 **Per-entry effectiveness (0.0.5 S26, FR-31)** joins the S09 injection ledger to per-turn judge
 verdicts (`judged_turn`) and materializes one row per entry in `entry_effectiveness`, refreshed
 on the ledger's own prune tick. Every rate ships with its denominator and an unscored leg reports
@@ -419,6 +459,16 @@ propose→confirm gate as any other proposal.
 ---
 
 ## Change log
+
+- **2026-07-29 (0.0.5 S04)** — the **two capture forks** landed (see "How the layer GROWS" in the
+  L7 section): a gateway-side fork that proposes L7 entries from a confirmed customer
+  clarification, and a routing rule that lets the shipped copilot review fork file a finding into
+  L6, L7, or neither. The entry worth keeping is the invariant both forks obey, because the
+  obvious reading of ADR-0152 is that it forbids this: **the model talking to a customer never
+  writes to a shared layer; a separate, restricted, after-the-fact pass may propose into one.**
+  ADR-0152 carries the superseding note that says so and narrows its own "no PII path" sentence
+  to what it actually delivers for L7 — the exchange IS read, and the PII in it is redacted
+  rather than the entry rejected, because the exchange is the evidence an admin decides on.
 
 - **2026-07-29 (0.0.5 S28)** — the control loop became **measurable end to end**: feedback →
   proposal conversion, post-fix re-fail, and the per-entry honored trend across an edit

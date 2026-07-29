@@ -267,6 +267,30 @@ def lexicon_external_injection_enabled(value: object = _UNSET) -> bool:
     return _flag_on(LEXICON_EXTERNAL_INJECTION_ENV, value)
 
 
+# 0.0.5 S04 (FR-4): the CAPTURE axis for L7 -- whether a post-turn fork may
+# propose a lexicon entry at all. Deliberately NOT either injection flag above:
+# INJECTION reads confirmed vocabulary into a prompt, CAPTURE writes a proposal
+# into the queue, and a deployment may legitimately want one without the other
+# (the L6 precedent, where AGENT_EXPERIENCE_LEARNING is separate from its two
+# injection flags for exactly this reason).
+#
+# DEFAULT OFF, and that is the eval-determinism pin (NFR-4): the record/replay
+# path sets no flag, so the gateway turn enqueues nothing and its result stays
+# byte-identical. It is also the cost knob -- one bounded fork per captured turn.
+LEXICON_CAPTURE_ENV = "LEXICON_CAPTURE"
+
+
+def lexicon_capture_enabled(value: object = _UNSET) -> bool:
+    """Whether the L7 capture forks may propose lexicon entries (S04, FR-4).
+
+    Fail-closed by construction (mirrors :func:`agent_experience_enabled`): unset,
+    empty, or any value outside the explicit on-set returns ``False``. Gates BOTH
+    forks -- the gateway-side capture fork's enqueue and the copilot review fork's
+    lexicon leg -- because a default-OFF that covered only one of them would leave
+    the other advertising a destination the deployment had disabled."""
+    return _flag_on(LEXICON_CAPTURE_ENV, value)
+
+
 # 0.0.5 S16 (FR-23): copilot triage annotations, DEFAULT OFF on its own axis.
 # Two things ride on the default rather than on anyone's discipline. It is a
 # COST knob -- every annotated item is one billed completion, and the other half
@@ -418,6 +442,27 @@ def _agent_experience_extra_drivers() -> Optional[dict[str, Any]]:
     if not agent_experience_enabled():
         return None
     return {"toee_agent_experience": select_tool_driver("datastore")}
+
+
+def _lexicon_capture_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_semantic_lexicon`` to Postgres for a capture fork (0.0.5 S04).
+
+    The L7 twin of :func:`_agent_experience_extra_drivers`, same seam and same
+    shape, gated on its OWN axis (:func:`lexicon_capture_enabled`,
+    ``LEXICON_CAPTURE``) -- not ``memory_enabled()`` and not either L7 INJECTION
+    flag. ``False`` (default) returns ``None``, so a ``propose_lexicon_entry``
+    call stays on the shared mock driver and is discarded, and a deployment with
+    capture off never hard-depends on Postgres.
+
+    Wired ONLY into the two forks (:func:`hermes_runtime.lexicon_capture.run_l7_capture_job`
+    and ``copilot_turn._run_review_pass``), never into a turn's
+    :func:`_turn_extra_drivers` -- neither the external agent nor the copilot
+    draft agent proposes vocabulary; only a fork does. That separation is the
+    whole point of ADR-0152's superseding note.
+    """
+    if not lexicon_capture_enabled():
+        return None
+    return {"toee_semantic_lexicon": select_tool_driver("datastore")}
 
 
 def _turn_extra_drivers(*, include_memory_write: bool = True) -> Optional[dict[str, Any]]:

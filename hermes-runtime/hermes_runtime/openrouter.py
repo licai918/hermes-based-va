@@ -52,6 +52,7 @@ from hermes_runtime.tool_backend import (
     _gateway_store,
     _turn_extra_drivers,
     agent_experience_external_injection_enabled,
+    lexicon_capture_enabled,
     lexicon_external_injection_enabled,
     load_confirmed_experience,
     load_confirmed_lexicon,
@@ -456,6 +457,7 @@ def make_openrouter_run_turn(
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     tools_exclusive: bool = True,
     store: Optional[Any] = None,
+    queue: Optional[Any] = None,
 ) -> Callable[[Any, str], Mapping[str, Any]]:
     """Build the production ``run_turn``: a conversation-bound governed turn over OpenRouter.
 
@@ -471,6 +473,12 @@ def make_openrouter_run_turn(
     read (S07); when ``None`` a DSN-based :class:`PostgresGatewayStore` is built per
     turn, but only under :func:`memory_enabled` (mock/unset deployments never touch
     Postgres).
+
+    ``queue`` injects the :class:`~hermes_runtime.job_queue.PostgresJobQueue` the
+    0.0.5 S04 capture fork is enqueued on (tests); the default constructs one
+    lazily, only when ``LEXICON_CAPTURE`` is on. That flag is DEFAULT OFF, so the
+    eval record/replay path enqueues nothing and the returned turn is byte-identical
+    to the pre-S04 shape.
     """
 
     def run_turn(context: Any, inbound_body: str) -> Mapping[str, Any]:
@@ -636,6 +644,55 @@ def make_openrouter_run_turn(
         # the customers who have memory on file. Per-layer gating and the SLO
         # total live in `record_latency_samples`; it never raises.
         record_latency_samples(latency)
+        # 0.0.5 S04 (FR-4): the gateway-side L7 capture fork. The customer's reply
+        # is already produced (`result` above) and is delivered by
+        # turn_runner.make_gateway_turn_runner once this returns, so the fork must
+        # never run here -- it ENQUEUES, and the background worker runs it
+        # (lexicon_capture.run_l7_capture_job). That is the 0.0.4 S04 answer, made
+        # structural rather than promised in a comment: no model call, no fork
+        # failure and no fork latency can reach the customer.
+        #
+        # Gate: LEXICON_CAPTURE, its own axis and DEFAULT OFF, so the eval
+        # record/replay path enqueues nothing (NFR-4).
+        #
+        # Both imports are deferred, and neither is optional: `lexicon_capture`
+        # imports THIS module for the provider seam, and `job_queue` reaches
+        # `datastore.handlers`, whose integrations handler imports
+        # `openrouter_configured` from here. Hoisting either to module scope is a
+        # circular import that takes the whole runtime package's collection down.
+        #
+        # NOT gated on `injected`, unlike the ledger above: capture reads what the
+        # CUSTOMER said, which happens whether or not this turn had memory to
+        # inject -- gating it on injection would capture vocabulary only from
+        # customers who already have some.
+        if lexicon_capture_enabled():
+            try:
+                from hermes_runtime.job_queue import (
+                    L7_CAPTURE_JOB_TYPE,
+                    PostgresJobQueue,
+                )
+                from hermes_runtime.lexicon_capture import l7_capture_payload
+
+                resolved_queue = queue if queue is not None else PostgresJobQueue()
+                resolved_queue.enqueue(
+                    l7_capture_payload(context),
+                    job_type=L7_CAPTURE_JOB_TYPE,
+                    # ponytail: ONE attempt, the l6_review precedent -- the fork
+                    # WRITES a proposal and the model is non-deterministic, so a
+                    # retry could land a second, differently-worded entry for one
+                    # turn. A failure dead-letters instead, where S05 surfaces it.
+                    max_attempts=1,
+                )
+            except Exception as exc:
+                # ponytail: swallow so capture can never fail a customer turn. The
+                # conversation ref is an identifier the gateway already logs; log
+                # the exception TYPE only, never str(exc).
+                logger.warning(
+                    "Lexicon capture enqueue failed conversation=%s error_type=%s; "
+                    "the customer turn is unaffected",
+                    getattr(context, "conversation_id", None),
+                    type(exc).__name__,
+                )
         return result
 
     return run_turn

@@ -53,6 +53,7 @@ from .job_queue import (
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
+    L7_CAPTURE_JOB_TYPE,
     LEXICON_HIT_ROLLUP_JOB_TYPE,
     RETENTION_JOB_TYPE,
     Job,
@@ -68,6 +69,7 @@ logger = logging.getLogger(__name__)
 # (S01 fix #3: an empty allowlist claims nothing at all).
 BACKGROUND_JOB_TYPES = (
     L6_REVIEW_JOB_TYPE,
+    L7_CAPTURE_JOB_TYPE,
     RETENTION_JOB_TYPE,
     INGEST_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
@@ -236,15 +238,20 @@ JobBody = Callable[[Mapping[str, Any]], None]
 
 
 class L6ReviewMisconfigured(RuntimeError):
-    """An ``l6_review`` job reached a process that cannot durably run the fork.
+    """A per-turn FORK job reached a process that cannot durably run it.
+
+    Named for the first such job (``l6_review``) and kept under that name because
+    the ops docs and the compose file already reference it; 0.0.5 S04's
+    ``l7_capture`` is the second, checked by the same rule for the same reason.
 
     **Why this is a misconfiguration and not the default-OFF state.** The job's
-    own existence proves the L6 flag was ON in the process that enqueued it:
-    ``copilot_turn.run_turn``'s ``if agent_experience_enabled():`` is the only
-    thing in the repo that enqueues this type, and nothing schedules it. So a
+    own existence proves the fork's flag was ON in the process that enqueued it:
+    ``copilot_turn.run_turn``'s ``if agent_experience_enabled():`` (and
+    ``openrouter.run_turn``'s ``if lexicon_capture_enabled():``) are the only
+    things in the repo that enqueue these types, and nothing schedules them. So a
     flag that reads OFF *here* means the flag is split across the two processes
-    (dispatch/copilot has it, this worker does not) -- exactly the gap S04 opened
-    by moving the fork into a second process.
+    (dispatch/gateway has it, this worker does not) -- exactly the gap 0.0.4 S04
+    opened by moving a fork into a second process.
 
     Both halves of the check make the fork write **nothing** while the job would
     otherwise report ``succeeded``: with the flag off,
@@ -261,36 +268,67 @@ class L6ReviewMisconfigured(RuntimeError):
     """
 
 
-def _require_l6_writable() -> None:
-    """Fail closed when this process cannot durably run an ``l6_review`` job."""
-    from .openrouter import resolve_openrouter_config
-    from .tool_backend import AGENT_EXPERIENCE_ENV, agent_experience_enabled
+def _require_fork_writable(*, enabled: bool, env_var: str, job_type: str, table: str) -> None:
+    """Fail closed when this process cannot durably run a per-turn fork job.
 
-    if not agent_experience_enabled():
+    ONE body for both fork types (0.0.5 S04): the flag-split failure and the
+    no-model failure are identical in shape and in consequence, and a second copy
+    would be the place the two drift.
+    """
+    from .openrouter import resolve_openrouter_config
+
+    if not enabled:
         logger.error(
-            "An l6_review job was queued by a process with %s ON, but it is OFF on "
-            "this worker: the review fork would run against the throwaway mock "
-            "driver and persist NO agent_experience row. Failing the job; set %s "
-            "on the background worker.",
-            AGENT_EXPERIENCE_ENV,
-            AGENT_EXPERIENCE_ENV,
+            "An %s job was queued by a process with %s ON, but it is OFF on this "
+            "worker: the fork would run against the throwaway mock driver and "
+            "persist NO %s row. Failing the job; set %s on the background worker.",
+            job_type,
+            env_var,
+            table,
+            env_var,
         )
         raise L6ReviewMisconfigured(
-            f"{AGENT_EXPERIENCE_ENV} is off on this worker but an l6_review job "
+            f"{env_var} is off on this worker but an {job_type} job "
             "was enqueued; the fork would write nothing"
         )
     try:
         resolve_openrouter_config()
     except ValueError as exc:
         logger.error(
-            "An l6_review job cannot run on this worker: %s. The fork would "
-            "propose nothing and the job would report success having written "
-            "no agent_experience row. Failing it instead.",
+            "An %s job cannot run on this worker: %s. The fork would propose "
+            "nothing and the job would report success having written no %s row. "
+            "Failing it instead.",
+            job_type,
             exc,
+            table,
         )
         raise L6ReviewMisconfigured(
-            f"the l6_review fork has no review model on this worker: {exc}"
+            f"the {job_type} fork has no review model on this worker: {exc}"
         ) from exc
+
+
+def _require_l6_writable() -> None:
+    """Fail closed when this process cannot durably run an ``l6_review`` job."""
+    from .tool_backend import AGENT_EXPERIENCE_ENV, agent_experience_enabled
+
+    _require_fork_writable(
+        enabled=agent_experience_enabled(),
+        env_var=AGENT_EXPERIENCE_ENV,
+        job_type=L6_REVIEW_JOB_TYPE,
+        table="agent_experience",
+    )
+
+
+def _require_l7_writable() -> None:
+    """Fail closed when this process cannot durably run an ``l7_capture`` job."""
+    from .tool_backend import LEXICON_CAPTURE_ENV, lexicon_capture_enabled
+
+    _require_fork_writable(
+        enabled=lexicon_capture_enabled(),
+        env_var=LEXICON_CAPTURE_ENV,
+        job_type=L7_CAPTURE_JOB_TYPE,
+        table="semantic_lexicon",
+    )
 
 
 def _run_ingest(payload: Mapping[str, Any]) -> None:
@@ -324,6 +362,7 @@ def job_bodies() -> dict[str, JobBody]:
     from .honored_rate import run_honored_rate_job
     from .injection_ledger import run_injection_ledger_prune_job
     from .integration_probe import run_integration_probe_job
+    from .lexicon_capture import run_l7_capture_job
     from .lexicon_hits import run_lexicon_hit_rollup_job
     from .retention_sweep import run_retention_sweep_job
 
@@ -337,8 +376,17 @@ def job_bodies() -> dict[str, JobBody]:
         # an echo for the copilot result, and nothing reads it here.
         run_l6_review_job(payload)
 
+    def l7_capture(payload: Mapping[str, Any]) -> None:
+        # Same split, same guard (0.0.5 S04): the enqueue is gated on
+        # LEXICON_CAPTURE in the GATEWAY process, so a worker configured
+        # differently would run the fork against a throwaway mock and report
+        # success having written no semantic_lexicon row.
+        _require_l7_writable()
+        run_l7_capture_job(payload)
+
     return {
         L6_REVIEW_JOB_TYPE: l6_review,
+        L7_CAPTURE_JOB_TYPE: l7_capture,
         RETENTION_JOB_TYPE: run_retention_sweep_job,
         INGEST_JOB_TYPE: _run_ingest,
         INTEGRATION_PROBE_JOB_TYPE: run_integration_probe_job,

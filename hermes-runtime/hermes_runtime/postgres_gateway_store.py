@@ -403,6 +403,36 @@ class PostgresGatewayStore:
                 row = cur.fetchone()
         return row[0] if row else None
 
+    def load_recent_exchange(
+        self, sms_session_id: str, *, limit: int
+    ) -> list[dict[str, Any]]:
+        """The last ``limit`` turns of ONE conversation, oldest first (0.0.5 S04).
+
+        The gateway capture fork's only read. Scoped to the ``sms_session_id``
+        rather than the thread on purpose: a confirmed clarification belongs to
+        the conversation it happened in, and a session is the narrowest window
+        that still contains both halves of "do you mean X?" -> "yes". Widening it
+        to the thread would put older, unrelated conversations in front of a model
+        for no capture benefit.
+
+        Read on the WORKER, never on the turn (NFR-5). ``ORDER BY created_at DESC
+        LIMIT n`` then reversed, so the fork sees the newest window in the order it
+        was said; ``id`` breaks a same-timestamp tie deterministically.
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT author, direction, body FROM message_turn "
+                    "WHERE sms_session_id = %s "
+                    "ORDER BY created_at DESC, id DESC LIMIT %s",
+                    (sms_session_id, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            {"author": author, "direction": direction, "body": body}
+            for author, direction, body in reversed(rows)
+        ]
+
     def load_case_identity(self, case_id: str) -> Optional[dict[str, Any]]:
         """Resolve a case's customer-thread identity for turn-time memory binding (S08).
 

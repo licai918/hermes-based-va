@@ -134,6 +134,13 @@ GRADUATION_SWEEP_JOB_TYPE = "graduation_sweep"
 # carries a copilot key, so a re-run annotates only what the failed run did not,
 # and never re-buys a completion it already paid for.
 COPILOT_TRIAGE_JOB_TYPE = "copilot_triage"
+# S04 (0.0.5, FR-4): the gateway-side L7 capture fork. Enqueued by the EXTERNAL
+# turn (the only per-turn background type besides l6_review) and run here, off
+# the reply path, so a fork failure can never reach the customer. Its payload is
+# identity keys only -- the fork reads the exchange from `message_turn`, where it
+# already lives under its own retention, rather than copying customer text into
+# the `job` table.
+L7_CAPTURE_JOB_TYPE = "l7_capture"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict
@@ -154,6 +161,12 @@ REPLAY_BLOCKED_JOB_TYPES: dict[str, str] = {
         "Replay is blocked for l6_review: the review fork writes a proposal and "
         "the model is non-deterministic, so a re-run produces a second, different "
         "proposal for one copilot turn. Blocked until proposal dedupe exists."
+    ),
+    L7_CAPTURE_JOB_TYPE: (
+        "Replay is blocked for l7_capture: the capture fork writes a proposed "
+        "lexicon entry and the model is non-deterministic, so a re-run produces a "
+        "second, different proposal for one customer turn. UNIQUE(domain, "
+        "surface_form) stops an identical duplicate, not a differently-worded one."
     ),
 }
 
