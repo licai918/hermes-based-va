@@ -37,10 +37,12 @@ from toee_hermes.drivers.mock.semantic_lexicon import (
 )
 
 from toee_hermes.blast_radius import REASON_ENTRY_EDITED, REASON_ENTRY_RETIRED
+from toee_hermes.write_advisories import l7_write_advisories
 
 from ...blast_radius import record_blast_radius
 from ...entry_effectiveness import entry_effectiveness_for, health_for_rows
 from ...injection_ledger import LAYER_L7
+from ...write_advisories import annotations_for
 from ._common import insert_audit, new_id, serialize_row
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -48,8 +50,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _ENTRY_COLUMNS = (
     "id, domain, entry_kind, surface_form, canonical_form, status, provenance, "
-    "evidence, proposer_context, pii_redacted, decider_account_id, decided_at, "
-    "hit_count, created_at, updated_at"
+    "evidence, proposer_context, pii_redacted, annotations, decider_account_id, "
+    "decided_at, hit_count, created_at, updated_at"
 )
 
 
@@ -61,7 +63,8 @@ def _insert_lexicon_entry(
     status: str,
     decider: Optional[str],
     audit_action: str,
-) -> tuple[str, dict[str, Any]]:
+    annotate: bool,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
     """The shared INSERT behind ``propose_lexicon_entry`` and ``add_lexicon_entry``.
 
     Both write the same row through the same validation and the same D2 split
@@ -71,10 +74,32 @@ def _insert_lexicon_entry(
 
     ``decided_at`` comes from the same ``now()`` as ``created_at`` for an
     admin-added row: created and decided are one act there.
+
+    ``annotate`` is what separates the two on FR-18: a PROPOSAL is a thing a
+    human still has to decide, so it carries write-time advisories; an admin ADD
+    *is* the decision, and advising the decider about the row they just authored
+    would be advice with nowhere to go.
     """
     # Validation + the split write scan + the framework-derived provenance all
     # run BEFORE the INSERT, so rejected content never reaches the table.
     fields = read_lexicon_proposal(params, context)
+    # 0.0.5 S13 (FR-18, D8): computed from the SCANNED fields, under the
+    # `heuristic` key alone (S16 owns `copilot`). ADVISORY ONLY (NFR-3) -- the
+    # row is identical whether this returns advisories or `{}`, and
+    # `annotations_for` swallows its own failures rather than failing the write.
+    annotations = (
+        annotations_for(
+            conn,
+            lambda lexicon, experience: l7_write_advisories(
+                fields["surface_form"],
+                fields["canonical_form"],
+                lexicon_entries=lexicon,
+                experience_entries=experience,
+            ),
+        )
+        if annotate
+        else {}
+    )
     entry_id = new_id("lex")
     try:
         with conn.cursor() as cur:
@@ -83,8 +108,8 @@ def _insert_lexicon_entry(
                 INSERT INTO semantic_lexicon
                     (id, domain, entry_kind, surface_form, canonical_form, status,
                      provenance, evidence, proposer_context, pii_redacted,
-                     decider_account_id, decided_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                     annotations, decider_account_id, decided_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         CASE WHEN %s::text IS NULL THEN NULL ELSE now() END)
                 """,
                 (
@@ -98,6 +123,7 @@ def _insert_lexicon_entry(
                     fields["evidence"],
                     Jsonb(fields["proposer_context"] or {}),
                     fields["pii_redacted"],
+                    Jsonb(annotations),
                     decider,
                     decider,
                 ),
@@ -129,19 +155,20 @@ def _insert_lexicon_entry(
             "pii_keep_exempt": list(fields["pii_keep_exempt"]),
         },
     )
-    return entry_id, fields
+    return entry_id, fields, annotations
 
 
 def _propose_lexicon_entry(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
-    entry_id, fields = _insert_lexicon_entry(
+    entry_id, fields, annotations = _insert_lexicon_entry(
         conn,
         params,
         context,
         status="proposed",
         decider=None,
         audit_action="lexicon_entry_proposed",
+        annotate=True,
     )
     return {
         "id": entry_id,
@@ -153,6 +180,7 @@ def _propose_lexicon_entry(
         "provenance": fields["provenance"],
         "pii_redacted": fields["pii_redacted"],
         "pii_keep_exempt": fields["pii_keep_exempt"],
+        "annotations": annotations,
         "proposed": True,
     }
 
@@ -169,13 +197,16 @@ def _add_lexicon_entry(
     """
     decider = resolve_lexicon_decision_authorization(context)
     resolve_manual_add_provenance(context)
-    entry_id, fields = _insert_lexicon_entry(
+    # The third return value is the advisory blob, and an ADD deliberately has
+    # none (`annotate=False`) -- discarded here rather than plumbed as `{}`.
+    entry_id, fields, _ = _insert_lexicon_entry(
         conn,
         params,
         context,
         status="confirmed",
         decider=decider,
         audit_action="lexicon_entry_added",
+        annotate=False,
     )
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(

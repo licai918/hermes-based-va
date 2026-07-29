@@ -35,6 +35,7 @@ from ...content_scan import (
     scan_proposer_context,
 )
 from ...errors import ToolDriverError
+from ...write_advisories import l7_write_advisories
 from .driver import MockHandlerRegistry
 
 if TYPE_CHECKING:
@@ -263,13 +264,23 @@ def resolve_lexicon_provenance(context: "ToolExecutionContext") -> str:
     ``conversation_confirmed`` asserts nothing about a human.
     """
     from ...plugin.profiles import INTERNAL
-    from ...tool_gate import TOOLS_DISPATCH_ROUTE
+    from ...tool_gate import FEEDBACK_AGGREGATOR_ROUTE, TOOLS_DISPATCH_ROUTE
 
     if context.profile != INTERNAL:
         raise ToolDriverError(
             "policy_blocked",
             f'semantic_lexicon writes are not permitted for profile "{context.profile}".',
         )
+    # 0.0.5 S27 (FR-33, D3): the scheduled job's own route -> feedback_derived.
+    # D3 assigned S01 the enum value AND a resolver that could produce it; the
+    # enum landed and this branch did not, so `feedback_derived` was unreachable
+    # on L7 until the first slice actually emitted into it from a job. Same axis
+    # as L6's twin in `resolve_agent_experience_source`, deliberately -- one
+    # provenance discriminator per layer is the whole point of D3's amendment.
+    # No actor is required and none is read: this branch asserts WHICH PATH, and
+    # D20's attribution rule belongs to `admin_manual`, which claims a human.
+    if context.dispatch_route == FEEDBACK_AGGREGATOR_ROUTE:
+        return LEXICON_PROVENANCE_FEEDBACK_DERIVED
     if context.dispatch_route == TOOLS_DISPATCH_ROUTE:
         if not context.user_id:
             raise ToolDriverError("policy_blocked", UNATTRIBUTED_ADMIN_MESSAGE)
@@ -816,6 +827,11 @@ def create_semantic_lexicon_mock_handlers(
             "id": f"lex_{next(ids)}",
             **fields,
             "status": "proposed",
+            # 0.0.5 S13 (D8): empty by default, so only `propose_lexicon_entry`
+            # (which passes an override) ever lands an advisory -- an admin add
+            # IS the decision, and advising the decider about the row they just
+            # authored is advice with nowhere to go.
+            "annotations": {},
             "decider_account_id": None,
             "decided_at": None,
             "hit_count": 0,
@@ -833,9 +849,22 @@ def create_semantic_lexicon_mock_handlers(
         # Per-write governance evidence, not entry state -- kept off the stored
         # row so the mock and the (column-less) Postgres row stay in lockstep.
         pii_keep_exempt = fields.pop("pii_keep_exempt")
+        # 0.0.5 S13 (FR-18, D8): write-time advisories under the `heuristic` key
+        # alone (S16 owns `copilot`). Advisory only -- the row is identical
+        # whether this returns anything or not (NFR-3).
+        #
+        # ponytail: `experience_entries=()` because the mock's L6 and L7
+        # fragments close over SEPARATE stores; see the L6 twin's note in
+        # drivers/mock/agent_experience.py for the one line that closes it.
+        annotations = l7_write_advisories(
+            fields["surface_form"],
+            fields["canonical_form"],
+            lexicon_entries=store,
+            experience_entries=(),
+        )
         # Always "proposed": a caller-supplied status is ignored, the same way
         # provenance is. Only add_lexicon_entry lands a row already decided.
-        entry = _insert(fields)
+        entry = _insert(fields, annotations=annotations)
         return {
             **lexicon_entry_view(entry),
             "pii_keep_exempt": pii_keep_exempt,

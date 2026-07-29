@@ -26,7 +26,9 @@ from toee_hermes.drivers.mock.agent_experience import (
     scan_agent_experience_write,
 )
 from toee_hermes.errors import ToolDriverError
+from toee_hermes.write_advisories import l6_write_advisories
 
+from ...write_advisories import annotations_for
 from ._common import (
     METRIC_L6_CONFIRMED,
     insert_audit,
@@ -53,15 +55,34 @@ def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionCon
     # RK-1 parity: source is framework-derived from context.profile, never the
     # model-supplied params -- any "source" the caller passed is ignored.
     source = resolve_agent_experience_source(context)
+    # 0.0.5 S13 (FR-18, D8): write-time advisories, computed AFTER the scan so
+    # nothing rejected is ever compared. Written under the `heuristic` key alone
+    # -- S16 owns `copilot` on the same column and neither touches the other's.
+    # ADVISORY ONLY (NFR-3): the row below is byte-identical whether this returns
+    # advisories or `{}`, and `annotations_for` swallows its own failures rather
+    # than failing the propose it is describing.
+    annotations = annotations_for(
+        conn,
+        lambda lexicon, experience: l6_write_advisories(
+            content, lexicon_entries=lexicon, experience_entries=experience
+        ),
+    )
     entry_id = new_id("aexp")
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO agent_experience
-                (id, kind, status, content, source, proposer_context)
-            VALUES (%s, %s, 'proposed', %s, %s, %s)
+                (id, kind, status, content, source, proposer_context, annotations)
+            VALUES (%s, %s, 'proposed', %s, %s, %s, %s)
             """,
-            (entry_id, kind, content, source, Jsonb(proposer_context or {})),
+            (
+                entry_id,
+                kind,
+                content,
+                source,
+                Jsonb(proposer_context or {}),
+                Jsonb(annotations),
+            ),
         )
     insert_audit(
         conn,
@@ -79,6 +100,7 @@ def _propose_experience(conn, params: dict[str, Any], context: "ToolExecutionCon
         "content": content,
         "source": source,
         "pii_redacted": pii_redacted,
+        "annotations": annotations,
         "proposed": True,
     }
 
@@ -94,7 +116,7 @@ def _list_agent_experience(conn, params: dict[str, Any], context: "ToolExecution
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
-            SELECT id, kind, status, content, source, proposer_context,
+            SELECT id, kind, status, content, source, proposer_context, annotations,
                    decider_account_id, decided_at, created_at, updated_at
             FROM agent_experience
             ORDER BY created_at DESC
@@ -105,7 +127,7 @@ def _list_agent_experience(conn, params: dict[str, Any], context: "ToolExecution
 
 
 _ENTRY_COLUMNS = (
-    "id, kind, status, content, source, proposer_context, "
+    "id, kind, status, content, source, proposer_context, annotations, "
     "decider_account_id, decided_at, created_at, updated_at"
 )
 

@@ -26,6 +26,7 @@ from ...content_scan import (
     scan_proposer_context,
 )
 from ...errors import ToolDriverError
+from ...write_advisories import l6_write_advisories
 from .driver import MockHandlerRegistry
 
 if TYPE_CHECKING:
@@ -241,6 +242,21 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
         # RK-1: source is framework-derived from context.profile, never the
         # model-supplied params -- any "source" the caller passed is ignored.
         source = resolve_agent_experience_source(context)
+        # 0.0.5 S13 (FR-18, D8): write-time advisories, computed AFTER the scan
+        # so nothing rejected is ever compared, and stored under the `heuristic`
+        # key alone (S16 owns `copilot`). Advisory only -- the row below is
+        # identical whether this returns anything or not (NFR-3).
+        #
+        # ponytail: `lexicon_entries=()` because the mock's L6 and L7 fragments
+        # close over SEPARATE stores, so this handler genuinely cannot see the
+        # lexicon. The Postgres twin -- the only one with real cross-layer data
+        # -- runs both legs. Close it by handing the lexicon fragment in from
+        # `create_all_mock_handlers`, exactly as S15 hands both fragments to the
+        # review inbox; that file belongs to the serialized catalog lane (D17),
+        # which is why it was not touched here.
+        annotations = l6_write_advisories(
+            content, lexicon_entries=(), experience_entries=store
+        )
         entry = {
             "id": f"aexp_{len(store) + 1}",
             "kind": kind,
@@ -248,6 +264,7 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
             "content": content,
             "source": source,
             "proposer_context": proposer_context,
+            "annotations": annotations,
             "decider_account_id": None,
             "decided_at": None,
         }
