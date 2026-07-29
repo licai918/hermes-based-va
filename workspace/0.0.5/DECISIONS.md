@@ -657,3 +657,59 @@ safety leg into noise, which is the failure mode that ends with people disabling
 gate. D24 is a different and sharper hole — paraphrase still *says something*, so a broader marker
 set can reach it. A tool call with a bland reply says nothing at all, so **no marker set of any
 breadth can ever reach it.** Breadth is not the fix; reading the effect is.
+
+## D25. S30 may be pointed at the wrong prompt file — establish which one production runs first
+
+Found by S31 (`17e6bb1`) while building the instrument that makes S30 provable, and it is the kind
+of thing that only surfaces when someone actually runs the live model.
+
+**`toee_hermes/persona.py` — the prompt production actually uses (`openrouter.py:582`) — already
+carries an explicit "open a case with `toee_case__create_case`" contract and a `contact_reason`
+vocabulary. `SOUL.md`, the file S30's brief names, does not.**
+
+So the defect S30 exists to fix is **not** simply "the contract is missing from the prompt". The
+contract is present in the prompt production runs, and the agent still failed to open a case in 2
+of 3 live attempts. **S30 must establish which prompt the failing production turns actually ran
+before editing either file** — otherwise the obvious fix (add the contract to `SOUL.md`) changes a
+file the failing path may never read, ships green, and leaves the defect alive.
+
+### What S31 measured, so S30 inherits a baseline rather than a hunch
+
+Live, billed, against `deepseek/deepseek-v4-pro`, 12 agent turns:
+
+| persona | 3 runs | total |
+| --- | --- | --- |
+| shipped | 0.500 · 1.000 · 1.000 | **5/6** |
+| hand-off contract removed (control) | 0.000 · 0.000 · 0.000 | **0/6** |
+
+The control is the red-capability proof, **measured rather than asserted**: 0/6 with no variance
+means the instrument is sensitive to the prompt, not to noise. And the shipped side is not
+always-green either — **the failure is intermittent (2 of 3), not deterministic.** That is the
+argument for a trend line and against ever letting this gate.
+
+The miss reproduced the original defect nearly verbatim: *"I don't have our Saturday hours on hand
+right now, but I'll have the team follow up with you to confirm."* — a promised hand-off, no case,
+zero `toee_case` calls.
+
+### Why it reads the effect, and why that is the inverse of D24
+
+`case_created` derives from a **successful governed `toee_case__create_case` call**, never from
+wording. D24's hole is behaviour expressed as a tool call that the text gate cannot see; escalation
+is the mirror image — **a prose promise with no call at all**. A wording check would have scored
+this defect **backwards**: the turn that failed to open a case had the most reassuring reply of the
+three. A blocked or failed create also does not count, pinned by its own test.
+
+### The evidence is asymmetric, and S31 said so rather than letting it be assumed
+
+The probe runs the production persona but with **mock drivers and a self-rendered identity block**.
+It opened a case for the urgent-billing conversation 3/3 while the real stack opened none. So
+**a miss in this probe is strong evidence; a hit is weak.** S30 should read a green probe as "not
+reproduced here", never as "fixed".
+
+### One addition beyond the brief, and the reason for it
+
+S31 added a **must-NOT-escalate** contrast probe that no brief asked for, because a
+should-escalate-only set cannot tell "the contract works" from "the agent now opens a case on every
+conversation" — S30's own out-of-scope risk, and the house rules' fixture-too-small shape. It fires
+independently of the rate. Keep it: a fix that over-escalates must not be able to show a clean
+sheet.

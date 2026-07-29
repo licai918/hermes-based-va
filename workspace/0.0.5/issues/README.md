@@ -114,8 +114,14 @@ FR-34→S22(lifecycle)+S28(loop). **All 34 covered; no orphans.**
 
 **NFR → enforcement:**
 NFR-1 (three-layer gate) → every slice's Acceptance block; test-only carve-outs named in
-S12/S21/S23/S09 (S09's ledger has no human surface until S10 lands, so it takes the carve-out
-while shipping a migration and new runtime write sites — D15) · NFR-2 (ADR-0148 invariants) →
+S12/S21/S23/S09**/S31** (S09's ledger has no human surface until S10 lands, so it takes the carve-out
+while shipping a migration and new runtime write sites — D15). **S31 added on landing (D25):** its
+own brief claimed a carve-out this line did not grant, and S31 took the stricter reading and
+declared the browser leg unmet rather than assuming the softer one. That instinct was right and the
+carve-out is nonetheless correct — S31 ships **no human surface of its own**, emitting into the
+existing advisory PR comment and the existing `judge` gate-report artifact the QualityGatesPanel
+already reads. Same shape as S09's. Granted here explicitly so the next reader does not have to
+re-derive it from two documents that disagreed · NFR-2 (ADR-0148 invariants) →
 asserted in S01/S02/S07/S08/S11 acceptance + existing tripwires re-run branch-wide · NFR-3 (propose→confirm absolute) → S04/S13/S16/S20/
 S25/S27 all propose-only; knob changes admin-only in S22 · NFR-4 (eval determinism) →
 S06/S09/S18 eval-neutral clauses; ONLY S21's safety leg gates · NFR-5 (never stall a reply) →
