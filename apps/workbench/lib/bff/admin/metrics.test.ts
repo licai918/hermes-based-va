@@ -457,13 +457,19 @@ describe("handleGetAggregateMetricsViaApi", () => {
     const body = (await (await handleGetAggregateMetricsViaApi(client)).json()) as {
       loopClosure: AggregateMetrics["loopClosure"];
     };
-    expect(body.loopClosure.map((r) => r.key)).toEqual([
+    // `loopClosure` is nullable so a backend older than this app degrades to
+    // "not reported" instead of taking the whole page down. A POPULATED payload
+    // reporting null would be a different bug, so say that rather than casting
+    // it away with `!`.
+    const rates = body.loopClosure;
+    if (!rates) throw new Error("a populated payload must report loopClosure, got null");
+    expect(rates.map((r) => r.key)).toEqual([
       "feedback_proposal_conversion",
       "unroutable_feedback_signals",
       "post_fix_refail",
       "entry_honored_after_edit",
     ]);
-    const conversion = body.loopClosure[0]!;
+    const conversion = rates[0]!;
     expect(conversion.rate).toBe(0.5);
     // The two halves of the fraction travel WITH it: a reader must never have to
     // take "50%" on trust when the denominator is the whole argument.
@@ -476,7 +482,9 @@ describe("handleGetAggregateMetricsViaApi", () => {
     const body = (await (await handleGetAggregateMetricsViaApi(client)).json()) as {
       loopClosure: AggregateMetrics["loopClosure"];
     };
-    const thin = body.loopClosure[3]!;
+    const rates = body.loopClosure;
+    if (!rates) throw new Error("a populated payload must report loopClosure, got null");
+    const thin = rates[3]!;
     expect(thin.rate).toBeNull();
     expect([thin.numerator, thin.denominator]).toEqual([1, 1]);
   });

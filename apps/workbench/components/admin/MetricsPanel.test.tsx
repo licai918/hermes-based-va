@@ -88,7 +88,7 @@ function rate(
   numerator: number,
   denominator: number,
   value: number | null,
-): AggregateMetrics["loopClosure"][number] {
+): NonNullable<AggregateMetrics["loopClosure"]>[number] {
   return {
     key,
     label: `label for ${key}`,
