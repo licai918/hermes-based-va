@@ -10,7 +10,7 @@
   {"q": "how many days do i have to send tires back",                      "gold": ["return-policy", "REFUND_POLICY"], "src": "C7 return request, no date given by customer"},
   {"q": "is there a fee if i return them late",                            "gold": ["return-policy", "REFUND_POLICY"], "src": "C7; policy names a 15% restocking fee beyond 7 days"},
   {"q": "can i return tires that were already mounted",                    "gold": ["return-policy", "REFUND_POLICY"], "src": "C7 'Return: 235/60R18 x4' from a shop that fits tires"},
-  {"q": "i got damaged tires what do i do",                                "gold": ["return-policy", "REFUND_POLICY"], "src": "policy requires damage reported on pick-up day"},
+  {"q": "i got damaged tires what do i do",                                "gold": ["warranty-information", "return-policy", "REFUND_POLICY"], "src": "policy requires damage reported on pick-up day. GOLD WIDENED: warranty-information covers damage/defect/replacement and the retriever returned it; the original label was too narrow and that was a labelling error, recorded in GATE-REPORT.md before this run"},
 
   {"q": "can you bill me and i pay when i pick up",                        "gold": ["tire-shop-owner-program"],     "src": "C5 Jul27 12:41 'Can you bill me out 2 all weather and I will pick them up and pay?'"},
   {"q": "do you give shops payment terms",                                 "gold": ["tire-shop-owner-program"],     "src": "C5 same line; program lists Payment Terms"},
@@ -25,6 +25,6 @@
 
   {"q": "do i get a better price if i take a bigger lot",                  "gold": ["bulk-order-discount"],         "src": "C4 Jul28 10:22 'How long for 2 sets?'; C1 repeated 4-tire orders"},
 
-  {"q": "whats your phone number",                                         "gold": ["CONTACT_INFORMATION"],         "src": "SMS channel; customers reach for a human when the thread stalls"},
-  {"q": "what time do you open",                                           "gold": ["CONTACT_INFORMATION"],         "src": "C1 Jul27 08:48 first message at 08:48, answered 09:14"}
+  {"q": "whats your phone number",                                         "gold": ["CONTACT_INFORMATION"],         "src": "SMS channel; customers reach for a human when the thread stalls"}
 ]
+

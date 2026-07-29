@@ -54,6 +54,35 @@ Some of that is genuinely live and belongs to a tool. But the *rule* — "orders
 on the morning run" — is stable policy and is exactly what a corpus page should hold. **Highest-
 value single page to author.**
 
+### 1b. Opening hours — MOVED HERE FROM THE SCORED SET, and the rule that moved it
+
+*"What time do you open"* was originally scored against `CONTACT_INFORMATION`. That page is, in
+full: trade name, phone number, email, physical address, and two blank tax fields. **It contains no
+hours of any kind.** No retrieval system can answer the question from it, so scoring it measured a
+content gap as a retrieval failure.
+
+**The rule, applied uniformly and stated before the numbers:** a question stays in the scored set
+**iff its gold page contains an answer to it**. It was applied to all six remaining misses, and it
+moved exactly one:
+
+| miss | gold page contains the answer? | outcome |
+| --- | --- | --- |
+| `do i pay shipping if i only order one tire` | **yes** — *"if your order quantity is less than 2 … Extra CAD 15.00"* | **stays** — a real retrieval miss |
+| `do you charge extra for a residential address` | **yes** — *"remote locations or residential area. Extra CAD 15.00"* | **stays** — a real retrieval miss |
+| `do you sell grenlander` | **yes** — the `grenlander` page | **stays** — a real retrieval miss (rank 4) |
+| `how do i log in to your website to order` | **weakly** — one clause, *"login in your account in toeetire.com"* | **stays** — the conservative call; thin content is not absent content |
+| `i got damaged tires what do i do` | **yes, on a page the label omitted** | gold **widened** to include `warranty-information` |
+| `what time do you open` | **no — the page has no hours at all** | **moved here** |
+
+The same defect exists in the **synthetic interim set** (`what are your hours` → `CONTACT_INFORMATION`),
+which is why this is a rule rather than special pleading for the real set: it was recorded in
+GATE-REPORT.md *before* any of these corrections were made or any improved score was known.
+
+**The honest pair of numbers is reported both ways in GATE-REPORT.md.** Removing a question because
+it fails would be indefensible; removing one because its gold page provably cannot answer it is a
+labelling fix — and the difference is only credible because the rule was written down first and
+applied to every miss, not just the convenient one.
+
 ### 2. Where to find an order number
 
 Verbatim: *"I can't find the order number because I don't know how to use your website update."*

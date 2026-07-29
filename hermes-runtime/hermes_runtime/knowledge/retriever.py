@@ -168,6 +168,14 @@ def retrieve(
     """
     import contextlib
 
+    from .query_vocabulary import expand_query
+
+    # FR-30: reach the corpus's words from the customer's. Appends only -- the raw
+    # wording is frequently what the lexical leg matches. Applied HERE rather than
+    # in the gate so the turn path gets the same query the gate measures; a gate
+    # that scores a path production does not take is worse than no gate.
+    query = expand_query(query)
+
     owns_conn = conn is None
     if owns_conn:
         from .pool import get_knowledge_pool
