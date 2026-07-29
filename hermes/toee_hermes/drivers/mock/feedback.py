@@ -323,6 +323,44 @@ def _read_edit_distance_ratio(
     return None
 
 
+def _read_sent_text(params: dict[str, Any], *, outcome: str) -> Optional[str]:
+    """The text the rep ACTUALLY sent (0.0.5 S27, D11). Edited sends only.
+
+    ``draft_text`` is the draft as generated; this is the other operand S27's
+    span diff needs, and before migration 0029 it was persisted nowhere
+    queryable (``outbound_send`` has no body column and no draft-correlation id).
+
+    **Optional, not required, and that is deliberate.** The outcome capture is
+    fire-and-forget from a send the customer has already received -- a browser
+    tab loaded before this shipped must still be able to record its outcome, not
+    fail on a field it does not know about. A row with no ``sent_text`` is simply
+    invisible to mining, which is exactly D11's no-backfill position stated as
+    behaviour: mining sees sends made after this landed, and nothing earlier.
+
+    A ``sent_as_is`` row carrying one is REFUSED, not coerced -- "nothing was
+    edited" and "here is the result of the edit" cannot both be true. Same
+    discipline, and the same reason, as ``_read_edit_distance_ratio`` above.
+    """
+    sent_text = params.get("sent_text")
+    if outcome != "sent_edited":
+        if sent_text is not None:
+            raise ToolDriverError(
+                "unexpected_error",
+                "record_draft_outcome rejects sent_text when outcome is "
+                "sent_as_is.",
+            )
+        return None
+    if sent_text is None:
+        return None
+    if not isinstance(sent_text, str) or not sent_text.strip():
+        raise ToolDriverError(
+            "unexpected_error",
+            "record_draft_outcome requires sent_text to be a non-empty string "
+            "when provided.",
+        )
+    return sent_text
+
+
 # list_feedback (S10): bounded-read filters, shared with the Postgres handler
 # (imported verbatim, same "one resolver, both twins" discipline as the write
 # validators above) so the two backends can't drift on what a valid filter is.
@@ -503,6 +541,7 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
         outcome = _require_draft_outcome(params)
         draft_text = _require_draft_text(params)
         edit_distance_ratio = _read_edit_distance_ratio(params, outcome=outcome)
+        sent_text = _read_sent_text(params, outcome=outcome)
 
         entry = {
             "id": f"draft_{len(draft_ratings) + 1}",
@@ -510,6 +549,7 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
             "draft_correlation_id": draft_correlation_id,
             "draft_kind": draft_kind,
             "draft_text": draft_text,
+            "sent_text": sent_text,
             "outcome": outcome,
             "edit_distance_ratio": edit_distance_ratio,
             "verdict": None,
@@ -545,6 +585,9 @@ def create_feedback_mock_handlers() -> MockHandlerRegistry:
             "draft_correlation_id": draft_correlation_id,
             "draft_kind": draft_kind,
             "draft_text": draft_text,
+            # A rating is not a send, so there is nothing sent to record. Present
+            # and null rather than absent, so both writers produce one row shape.
+            "sent_text": None,
             "outcome": "rated_only",
             "edit_distance_ratio": None,
             "verdict": verdict,

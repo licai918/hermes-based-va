@@ -68,6 +68,7 @@ from toee_hermes.drivers.mock.feedback import (
     _read_list_limit,
     _read_rating_comment,
     _read_reason_tags,
+    _read_sent_text,
     _read_since_filter,
     _read_verdict_filter,
     _require_case_id,
@@ -194,9 +195,9 @@ def _submit_interaction_review(
 
 
 _DRAFT_RATING_COLUMNS = (
-    "id, case_id, draft_correlation_id, draft_kind, draft_text, outcome, "
-    "edit_distance_ratio, verdict, reason_tags, comment, rep_account_id, "
-    "created_at"
+    "id, case_id, draft_correlation_id, draft_kind, draft_text, sent_text, "
+    "outcome, edit_distance_ratio, verdict, reason_tags, comment, "
+    "rep_account_id, created_at"
 )
 
 
@@ -286,6 +287,10 @@ def _record_draft_outcome(
     outcome = _require_draft_outcome(params)
     draft_text = _require_draft_text(params)
     edit_distance_ratio = _read_edit_distance_ratio(params, outcome=outcome)
+    # 0.0.5 S27 (FR-33, D11): the second operand edit-diff mining diffs against.
+    # Same shared validator the mock twin runs, so the two backends cannot drift
+    # on what a legal sent_text is (NFR-7).
+    sent_text = _read_sent_text(params, outcome=outcome)
 
     # Same case-ownership gate as _submit_draft_rating (S06 brief): an outcome
     # is a governed write like any other.
@@ -297,8 +302,8 @@ def _record_draft_outcome(
             f"""
             INSERT INTO draft_feedback
                 (id, case_id, draft_correlation_id, draft_kind, draft_text,
-                 outcome, edit_distance_ratio, rep_account_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                 sent_text, outcome, edit_distance_ratio, rep_account_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING {_DRAFT_RATING_COLUMNS}
             """,
             (
@@ -307,6 +312,7 @@ def _record_draft_outcome(
                 draft_correlation_id,
                 draft_kind,
                 draft_text,
+                sent_text,
                 outcome,
                 edit_distance_ratio,
                 rep_account_id,

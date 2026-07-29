@@ -44,6 +44,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from .job_queue import (
     DEFAULT_LEASE_SECONDS,
+    EDIT_DIFF_MINING_JOB_TYPE,
     FEEDBACK_AGGREGATOR_JOB_TYPE,
     GRADUATION_SWEEP_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
@@ -73,6 +74,7 @@ BACKGROUND_JOB_TYPES = (
     INJECTION_LEDGER_PRUNE_JOB_TYPE,
     LEXICON_HIT_ROLLUP_JOB_TYPE,
     FEEDBACK_AGGREGATOR_JOB_TYPE,
+    EDIT_DIFF_MINING_JOB_TYPE,
     GRADUATION_SWEEP_JOB_TYPE,
 )
 
@@ -157,6 +159,12 @@ LEXICON_HIT_ROLLUP_INTERVAL_SECONDS = 24 * 60 * 60
 # next run sees the same feedback rows.
 FEEDBACK_AGGREGATOR_INTERVAL_SECONDS = 24 * 60 * 60
 
+# ponytail: 24 h for edit-diff mining (0.0.5 S27, FR-33) -- the aggregator's
+# other arm, on the aggregator's cadence, reading the aggregator's 30-day
+# clustering window. Everything the interval note above says applies verbatim,
+# including why a missed UTC day costs nothing.
+EDIT_DIFF_MINING_INTERVAL_SECONDS = 24 * 60 * 60
+
 # ponytail: 24 h for the graduation / zero-hit retirement sweep (0.0.5 S20,
 # FR-19/FR-20), matching every other lifecycle job on this tick. The window it
 # measures against is `injection_ledger.ZERO_HIT_WINDOW_SECONDS` (90 DAYS), so
@@ -188,6 +196,10 @@ SCHEDULES: tuple[Schedule, ...] = (
     Schedule(
         job_type=FEEDBACK_AGGREGATOR_JOB_TYPE,
         interval_seconds=FEEDBACK_AGGREGATOR_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=EDIT_DIFF_MINING_JOB_TYPE,
+        interval_seconds=EDIT_DIFF_MINING_INTERVAL_SECONDS,
     ),
     Schedule(
         job_type=GRADUATION_SWEEP_JOB_TYPE,
@@ -287,6 +299,7 @@ def job_bodies() -> dict[str, JobBody]:
     subtree (the agent stack, the tool-dispatch stack, fastembed) and a worker
     should pay for them once at startup, not on import of this module."""
     from .copilot_turn import run_l6_review_job
+    from .edit_diff_mining import run_edit_diff_mining_job
     from .feedback_aggregator import run_feedback_aggregator_job
     from .graduation_sweep import run_graduation_sweep_job
     from .honored_rate import run_honored_rate_job
@@ -314,6 +327,7 @@ def job_bodies() -> dict[str, JobBody]:
         INJECTION_LEDGER_PRUNE_JOB_TYPE: run_injection_ledger_prune_job,
         LEXICON_HIT_ROLLUP_JOB_TYPE: run_lexicon_hit_rollup_job,
         FEEDBACK_AGGREGATOR_JOB_TYPE: run_feedback_aggregator_job,
+        EDIT_DIFF_MINING_JOB_TYPE: run_edit_diff_mining_job,
         GRADUATION_SWEEP_JOB_TYPE: run_graduation_sweep_job,
     }
 

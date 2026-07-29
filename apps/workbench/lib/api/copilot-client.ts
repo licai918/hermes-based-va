@@ -222,6 +222,9 @@ export function recordDraftOutcome(input: {
   draftText: string;
   outcome: DraftOutcome;
   editDistanceRatio?: number;
+  // 0.0.5 S27 (FR-33, D11): the text the rep actually sent -- edit-diff mining's
+  // second operand. Optional, because the capture is fire-and-forget.
+  sentText?: string;
 }): Promise<unknown> {
   return sendJson("POST", `${BASE}/feedback`, {
     kind: "outcome",
@@ -233,6 +236,7 @@ export function recordDraftOutcome(input: {
     ...(input.editDistanceRatio !== undefined
       ? { edit_distance_ratio: input.editDistanceRatio }
       : {}),
+    ...(input.sentText !== undefined ? { sent_text: input.sentText } : {}),
   });
 }
 

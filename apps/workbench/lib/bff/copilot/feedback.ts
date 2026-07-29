@@ -155,6 +155,27 @@ function readEditDistanceRatio(
   return raw === undefined || raw === null ? undefined : null;
 }
 
+// 0.0.5 S27 (FR-33, D11): the text the rep ACTUALLY sent, which is the second
+// operand edit-diff mining span-diffs `draft_text` against. Same tri-state
+// convention as readEditDistanceRatio above -- null rejects the request,
+// undefined means "absent, and that is fine".
+//
+// OPTIONAL on a sent_edited outcome, deliberately: this POST is fire-and-forget
+// from a send the customer has already received, so a caller that predates the
+// column must still be able to record its outcome. Those rows are simply
+// invisible to mining, which is D11's no-backfill position stated as behaviour.
+// REJECTED on sent_as_is: "nothing was edited" and "here is the result of the
+// edit" cannot both be true.
+function readSentText(
+  body: Record<string, unknown> | null,
+  outcome: DraftOutcome,
+): string | undefined | null {
+  const raw = body?.sent_text;
+  if (raw === undefined || raw === null) return undefined;
+  if (outcome !== "sent_edited") return null;
+  return typeof raw === "string" && raw.trim().length > 0 ? raw : null;
+}
+
 async function handleDraftOutcome(
   body: Record<string, unknown> | null,
   client: HermesApiClient,
@@ -188,6 +209,16 @@ async function handleDraftOutcome(
     );
   }
 
+  const sentText = readSentText(body, outcome);
+  if (sentText === null) {
+    return problem(
+      400,
+      outcome === "sent_edited"
+        ? "sent_text must be a non-empty string when provided"
+        : "sent_as_is must not include sent_text",
+    );
+  }
+
   try {
     await client.dispatchWrite("toee_feedback", "record_draft_outcome", {
       case_id: caseId,
@@ -196,6 +227,7 @@ async function handleDraftOutcome(
       draft_text: draftText,
       outcome,
       ...(editDistanceRatio !== undefined ? { edit_distance_ratio: editDistanceRatio } : {}),
+      ...(sentText !== undefined ? { sent_text: sentText } : {}),
     });
     // ponytail: no response mapper -- the caller fires this and forgets (S09),
     // and the ratio has no consumer yet (Phase 2). Add mapDraftOutcome the day

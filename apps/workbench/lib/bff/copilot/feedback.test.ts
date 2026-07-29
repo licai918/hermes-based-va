@@ -299,6 +299,90 @@ describe("handleSubmitDraftFeedbackViaApi (kind: outcome)", () => {
     expect(dispatched).toBe(false);
   });
 
+  // 0.0.5 S27 (FR-33, D11): sent_text -- the text the rep ACTUALLY sent. It is
+  // the second operand edit-diff mining span-diffs against draft_text, and
+  // before this it was persisted nowhere queryable. Optional on purpose: the
+  // outcome POST is fire-and-forget from a send the customer already has, so a
+  // caller that does not send it must still record its outcome rather than 400.
+  it("forwards sent_text on a sent_edited outcome", async () => {
+    let sent: SentDispatch | null = null;
+    const res = await handleSubmitDraftFeedbackViaApi(
+      jsonReq({
+        kind: "outcome",
+        ...BASE_BODY,
+        outcome: "sent_edited",
+        edit_distance_ratio: 0.35,
+        sent_text: "Your all-terrain tires are ready.",
+      }),
+      writeClient({ id: "do_5" }, (s) => (sent = s)),
+    );
+
+    expect(res.status).toBe(200);
+    const dispatched = sent as SentDispatch | null;
+    expect(dispatched?.params).toEqual({
+      case_id: "c1",
+      draft_correlation_id: "corr-1",
+      draft_kind: "sms",
+      draft_text: "Your tires are ready.",
+      outcome: "sent_edited",
+      edit_distance_ratio: 0.35,
+      sent_text: "Your all-terrain tires are ready.",
+    });
+  });
+
+  it("400s a sent_as_is outcome carrying a sent_text (never dispatches)", async () => {
+    // "Nothing was edited" and "here is what the edit produced" cannot both be
+    // true -- the same reject-don't-coerce rule the ratio follows, enforced here
+    // so a malformed request 400s instead of round-tripping to a 502.
+    let dispatched = false;
+    const res = await handleSubmitDraftFeedbackViaApi(
+      jsonReq({
+        kind: "outcome",
+        ...BASE_BODY,
+        outcome: "sent_as_is",
+        sent_text: "Your all-terrain tires are ready.",
+      }),
+      writeClient({ id: "do_6" }, () => (dispatched = true)),
+    );
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("400s a non-string sent_text (never dispatches)", async () => {
+    let dispatched = false;
+    const res = await handleSubmitDraftFeedbackViaApi(
+      jsonReq({
+        kind: "outcome",
+        ...BASE_BODY,
+        outcome: "sent_edited",
+        edit_distance_ratio: 0.35,
+        sent_text: 17,
+      }),
+      writeClient({ id: "do_7" }, () => (dispatched = true)),
+    );
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("dispatches a sent_edited outcome with no sent_text at all", async () => {
+    // D11's no-backfill position, as behaviour: a caller that predates the
+    // column still records its outcome, and mining simply never sees that row.
+    let sent: SentDispatch | null = null;
+    const res = await handleSubmitDraftFeedbackViaApi(
+      jsonReq({
+        kind: "outcome",
+        ...BASE_BODY,
+        outcome: "sent_edited",
+        edit_distance_ratio: 0.35,
+      }),
+      writeClient({ id: "do_8" }, (s) => (sent = s)),
+    );
+
+    expect(res.status).toBe(200);
+    const dispatched = sent as SentDispatch | null;
+    expect(dispatched?.params).not.toHaveProperty("sent_text");
+  });
+
   it("400s a sent_as_is outcome carrying a ratio (never dispatches)", async () => {
     let dispatched = false;
     const res = await handleSubmitDraftFeedbackViaApi(

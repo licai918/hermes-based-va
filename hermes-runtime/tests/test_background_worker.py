@@ -37,6 +37,8 @@ from hermes_runtime.background_worker import (
 )
 from hermes_runtime.job_queue import (
     AGENT_TURN_JOB_TYPE,
+    COPILOT_TRIAGE_JOB_TYPE,
+    EDIT_DIFF_MINING_JOB_TYPE,
     FEEDBACK_AGGREGATOR_JOB_TYPE,
     GRADUATION_SWEEP_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
@@ -271,7 +273,13 @@ def test_the_shipped_schedules_are_daily_retention_15min_probe_and_daily_honored
     # tick, and its clustering window is 30x wider than the cadence; the
     # graduation / zero-hit retirement sweep (0.0.5 S20, FR-19/FR-20) is daily for
     # both of those reasons at once -- it measures against a 90-DAY window and its
-    # output is also a proposal a human works.
+    # output is also a proposal a human works; edit-diff mining (0.0.5 S27,
+    # FR-33) is the aggregator's other arm on the aggregator's cadence, reading
+    # the same 30-day clustering window and producing the same kind of proposal;
+    # and copilot triage (0.0.5 S16, FR-23) is daily because here the cadence is
+    # HALF the cost knob -- a run costs up to TRIAGE_BATCH_CAP billed
+    # completions, so this interval times that cap IS the documented spend, and
+    # its output is a note a human reads in the inbox.
     assert [(s.job_type, s.interval_seconds) for s in SCHEDULES] == [
         (RETENTION_JOB_TYPE, 86400),
         (INTEGRATION_PROBE_JOB_TYPE, 900),
@@ -279,7 +287,9 @@ def test_the_shipped_schedules_are_daily_retention_15min_probe_and_daily_honored
         (INJECTION_LEDGER_PRUNE_JOB_TYPE, 86400),
         (LEXICON_HIT_ROLLUP_JOB_TYPE, 86400),
         (FEEDBACK_AGGREGATOR_JOB_TYPE, 86400),
+        (EDIT_DIFF_MINING_JOB_TYPE, 86400),
         (GRADUATION_SWEEP_JOB_TYPE, 86400),
+        (COPILOT_TRIAGE_JOB_TYPE, 86400),
     ]
 
 

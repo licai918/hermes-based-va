@@ -94,6 +94,7 @@ export function GovernedSendModal({
     draftText: string;
     outcome: DraftOutcome;
     editDistanceRatio?: number;
+    sentText?: string;
   }) => Promise<unknown>;
 }) {
   const { showError } = useErrorBanner();
@@ -123,8 +124,19 @@ export function GovernedSendModal({
         draftKind,
         draftText: originalBody,
         outcome,
+        // 0.0.5 S27 (FR-33, D11): the ratio says HOW MUCH changed; edit-diff
+        // mining needs WHAT changed, so the edited body rides along. This modal
+        // is the only place both strings exist at once -- `outbound_send` stores
+        // no body by design (ADR-0105) and `draft_feedback` stored only the
+        // generated draft, so without this the mined diff has one operand.
+        // Untrimmed, so the miner diffs exactly what the customer received.
+        // Only on sent_edited: a sent_as_is row carrying one is a contradiction
+        // the BFF and both driver twins reject.
         ...(outcome === "sent_edited"
-          ? { editDistanceRatio: editDistanceRatio(trimmedOriginal, trimmedSent) }
+          ? {
+              editDistanceRatio: editDistanceRatio(trimmedOriginal, trimmedSent),
+              sentText: sentBody,
+            }
           : {}),
       }).catch((err) => {
         // eslint-disable-next-line no-console

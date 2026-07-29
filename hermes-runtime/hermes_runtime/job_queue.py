@@ -112,6 +112,14 @@ LEXICON_HIT_ROLLUP_JOB_TYPE = "lexicon_hit_rollup"
 # open-set idempotence), and an aggregator that fails silently is a feedback loop
 # that quietly stops closing.
 FEEDBACK_AGGREGATOR_JOB_TYPE = "feedback_aggregator"
+# S27 (0.0.5, FR-33): the aggregator's diff arm. Reads the `sent_edited` stream,
+# span-diffs draft against sent, and raises PROPOSALS through the governed
+# propose actions -- an L7 alias for a recurring term rewrite, an L6 procedure
+# question for a recurring clause rewrite. Same retry/dead-letter defaults and
+# the same reason as its sibling: the watermark plus the stores' own idempotence
+# make a retry safe, and a mining job that fails silently is a feedback loop that
+# quietly stops closing.
+EDIT_DIFF_MINING_JOB_TYPE = "edit_diff_mining"
 # S20 (0.0.5, FR-19/FR-20): the propose-only graduation + zero-hit retirement
 # sweep. Scans the confirmed L6 notes and the confirmed L7 entries and raises
 # review items -- never a memory write. Plain default retry/dead-letter: the

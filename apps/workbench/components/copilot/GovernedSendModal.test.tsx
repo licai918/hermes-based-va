@@ -120,6 +120,49 @@ describe("GovernedSendModal implicit outcome capture (S09)", () => {
     expect(call.editDistanceRatio).toBeLessThanOrEqual(1);
   });
 
+  // 0.0.5 S27 (FR-33, D11). The ratio says HOW MUCH changed; mining needs to
+  // know WHAT changed, so the edited body itself is captured here -- this modal
+  // is the only place both strings exist at once. `outbound_send` deliberately
+  // stores no body (ADR-0105), so without this capture the mined diff has one
+  // operand and the slice has no input at all.
+  it("captures the sent text on an edited send, so the diff has two operands", async () => {
+    const recordOutcome = vi.fn().mockResolvedValue({ recorded: true });
+    const edited = "Your all-terrain tires are ready for pickup.";
+    const { onSent } = renderModal({
+      body: edited,
+      originalBody: GENERATED,
+      draftCorrelationId: "corr-s27",
+      draftKind: "sms",
+      recordOutcome,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+
+    const call = recordOutcome.mock.calls[0]?.[0];
+    expect(call).toMatchObject({ outcome: "sent_edited", draftText: GENERATED });
+    // The text the customer actually received -- not the draft, not a summary.
+    expect(call.sentText).toBe(edited);
+  });
+
+  it("sends no sentText when the draft went out untouched", async () => {
+    // A sent_as_is row carrying one is a contradiction the BFF and both driver
+    // twins reject; the modal must not manufacture the case.
+    const recordOutcome = vi.fn().mockResolvedValue({ recorded: true });
+    const { onSent } = renderModal({
+      body: GENERATED,
+      originalBody: GENERATED,
+      draftCorrelationId: "corr-s27b",
+      draftKind: "sms",
+      recordOutcome,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /confirm/i }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+
+    expect(recordOutcome.mock.calls[0]?.[0]).not.toHaveProperty("sentText");
+  });
+
   it("treats a whitespace-only difference as sent_as_is (trim boundary)", async () => {
     const recordOutcome = vi.fn().mockResolvedValue({ recorded: true });
     const { onSent } = renderModal({
