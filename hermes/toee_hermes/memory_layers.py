@@ -213,6 +213,15 @@ LAYER_OF_ACTION: dict[tuple[str, str], Optional[str]] = {
     # the layer model (provenance about a write, never content a turn reads back,
     # the same rule that puts the review_item rows above outside it).
     ("toee_review_inbox", "get_blast_radius"): None,
+    # 0.0.5 S16 (FR-23): writes ONE advisory triage annotation beside a pending
+    # item -- `annotations->copilot`, never the item's content and never its
+    # status. NFR-3 makes that structural rather than conventional: an
+    # annotation informs a human triaging the queue and confirms, rejects,
+    # retires and decides nothing. An annotation ABOUT an L6 or L7 row is
+    # therefore no more L6/L7 content than the audit row recording a write is
+    # the write (the declaration rule above), which is the same reasoning that
+    # puts the review_item rows themselves outside the layer model.
+    ("toee_review_inbox", "annotate_inbox_item"): None,
     # --- metrics -----------------------------------------------------------
     ("toee_metrics", "get_aggregate_metrics"): None,
     # --- L4 retention ------------------------------------------------------

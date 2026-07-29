@@ -132,7 +132,10 @@ export const TOOL_CATALOG = {
   // exists because S10/S20/S25 all emit inbox items and none of them defines
   // storage. 0.0.5 S10 (FR-12) adds get_blast_radius, the admin read behind the
   // blast_radius item: which turns/cases a memory entry reached, from the S09
-  // injection ledger joined to case status. Every action is agent-excluded on
+  // injection ledger joined to case status. 0.0.5 S16 (FR-23) adds
+  // annotate_inbox_item, the on-demand half of copilot triage: re-run the
+  // advisory annotator over ONE item and store the bounded verdict in
+  // `annotations.copilot` (D8's reserved key). Every action is agent-excluded on
   // the Python side (admin BFF dispatch, or a scheduled job's own dispatch,
   // only).
   toee_review_inbox: [
@@ -141,6 +144,7 @@ export const TOOL_CATALOG = {
     "decide_review_item",
     "reclassify_proposal",
     "get_blast_radius",
+    "annotate_inbox_item",
   ],
   // 0.0.4 operations surfaces. Agent-excluded on the Python side: reachable by
   // the admin/supervisor dispatch profiles, never model-callable.

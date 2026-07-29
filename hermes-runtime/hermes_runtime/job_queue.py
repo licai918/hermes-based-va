@@ -127,6 +127,13 @@ EDIT_DIFF_MINING_JOB_TYPE = "edit_diff_mining"
 # index plus the sweep's own already-raised check), so a retry re-derives the
 # same answer and raises nothing twice.
 GRADUATION_SWEEP_JOB_TYPE = "graduation_sweep"
+# S16 (0.0.5, FR-23): the copilot triage annotator. Reads the pending queue and
+# writes ONE advisory `annotations.copilot` key per item -- never memory content
+# and never a decision (NFR-3). Plain default retry/dead-letter, and replay-safe
+# for a reason worth stating: the candidate query excludes anything that already
+# carries a copilot key, so a re-run annotates only what the failed run did not,
+# and never re-buys a completion it already paid for.
+COPILOT_TRIAGE_JOB_TYPE = "copilot_triage"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict

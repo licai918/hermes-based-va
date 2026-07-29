@@ -27,8 +27,10 @@ function baseProps(items: InboxItem[] = [item()]) {
     error: null as string | null,
     busyId: null as string | null,
     rowErrors: {} as Record<string, string>,
+    rowNotices: {} as Record<string, string>,
     reclassifyId: null as string | null,
     onDecide: vi.fn(),
+    onAnnotate: vi.fn(),
     onOpenReclassify: vi.fn(),
     onReclassify: vi.fn(),
   };
@@ -238,6 +240,94 @@ describe("ReviewInbox (container)", () => {
       method: "POST",
       body: { kind: "l6_proposal", id: "aexp_1", decision: "accept" },
     });
+    vi.unstubAllGlobals();
+  });
+
+  // --- 0.0.5 S16 (FR-23): the on-demand re-triage button -------------------
+
+  it("re-reads the queue after a re-triage, so the new note is on the row", async () => {
+    const calls: { url: string; method: string; body: unknown }[] = [];
+    let listCall = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        calls.push({
+          url,
+          method,
+          body: init?.body ? JSON.parse(init.body as string) : null,
+        });
+        if (method === "GET") {
+          listCall += 1;
+          return listCall === 1
+            ? jsonResponse({ items: [item()], count: 1 })
+            : jsonResponse({
+                items: [
+                  item({
+                    annotations: { copilot: { recommendation: "reject" } },
+                  }),
+                ],
+                count: 1,
+              });
+        }
+        return jsonResponse({
+          kind: "l6_proposal",
+          id: "aexp_1",
+          annotated: true,
+          annotation: { recommendation: "reject" },
+          reason: null,
+        });
+      }),
+    );
+
+    render(<ReviewInbox />);
+    await screen.findByRole("button", { name: "Re-triage aexp_1" });
+    fireEvent.click(screen.getByRole("button", { name: "Re-triage aexp_1" }));
+
+    // The ROW stays -- an annotation is not a decision, so unlike Accept this
+    // must not empty the queue -- and the fresh note is now rendered on it.
+    await waitFor(() =>
+      expect(screen.getByTestId("annotation-copilot")).toBeTruthy(),
+    );
+    expect(screen.getByTestId("inbox-count").textContent).toBe("1");
+    expect(calls.find((c) => c.method === "POST")).toEqual({
+      url: "/api/admin/inbox/annotate",
+      method: "POST",
+      body: { kind: "l6_proposal", id: "aexp_1" },
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("reports a disabled annotator as a notice, not as an error", async () => {
+    // FR-23 is default-OFF, so "nothing was annotated" is the SHIPPED state, not
+    // a fault. Rendering it in the error channel would send an admin hunting a
+    // failure that is a configuration -- and would hide a real one among them.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        if ((init?.method ?? "GET") === "GET") {
+          return jsonResponse({ items: [item()], count: 1 });
+        }
+        return jsonResponse({
+          kind: "l6_proposal",
+          id: "aexp_1",
+          annotated: false,
+          annotation: null,
+          reason: "copilot triage annotations are off for this deployment",
+        });
+      }),
+    );
+
+    render(<ReviewInbox />);
+    await screen.findByRole("button", { name: "Re-triage aexp_1" });
+    fireEvent.click(screen.getByRole("button", { name: "Re-triage aexp_1" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("notice-aexp_1").textContent).toContain(
+        "off for this deployment",
+      ),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
     vi.unstubAllGlobals();
   });
 });

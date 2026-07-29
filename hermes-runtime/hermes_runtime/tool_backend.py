@@ -267,6 +267,31 @@ def lexicon_external_injection_enabled(value: object = _UNSET) -> bool:
     return _flag_on(LEXICON_EXTERNAL_INJECTION_ENV, value)
 
 
+# 0.0.5 S16 (FR-23): copilot triage annotations, DEFAULT OFF on its own axis.
+# Two things ride on the default rather than on anyone's discipline. It is a
+# COST knob -- every annotated item is one billed completion, and the other half
+# of the spend is `copilot_triage.TRIAGE_BATCH_CAP` x the schedule interval in
+# `background_worker.COPILOT_TRIAGE_INTERVAL_SECONDS`. And it keeps the eval
+# record/replay path exactly where it already is: that path sets no flag and
+# runs no background worker, so with this unset there is no annotator, no model
+# call and nothing new on any turn (NFR-4). Nothing about the annotator touches
+# a turn even when it IS on -- it reads a queue and writes advisory metadata --
+# so the flag is the deployment's cost switch, not an eval-determinism patch.
+COPILOT_TRIAGE_ENV = "COPILOT_TRIAGE_ANNOTATIONS"
+
+
+def copilot_triage_enabled(value: object = _UNSET) -> bool:
+    """Whether the copilot triage annotator runs at all (0.0.5 S16, FR-23).
+
+    Fail-closed by construction (mirrors :func:`lexicon_injection_enabled`):
+    unset, empty, or any value outside the explicit on-set returns ``False``.
+    Gates BOTH halves of FR-23 -- the scheduled batch and the per-item on-demand
+    action -- because "default OFF" that only covered the schedule would leave a
+    button in the console spending money on a deployment that disabled the
+    feature."""
+    return _flag_on(COPILOT_TRIAGE_ENV, value)
+
+
 def load_confirmed_lexicon(store: Optional[Any]) -> Optional[list[dict[str, Any]]]:
     """Bounded, fail-closed read of CONFIRMED L7 entries for turn injection (S06).
 

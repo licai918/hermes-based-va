@@ -37,6 +37,7 @@ from hermes_runtime.background_worker import (
 )
 from hermes_runtime.job_queue import (
     AGENT_TURN_JOB_TYPE,
+    COPILOT_TRIAGE_JOB_TYPE,
     EDIT_DIFF_MINING_JOB_TYPE,
     FEEDBACK_AGGREGATOR_JOB_TYPE,
     GRADUATION_SWEEP_JOB_TYPE,
@@ -288,6 +289,7 @@ def test_the_shipped_schedules_are_daily_retention_15min_probe_and_daily_honored
         (FEEDBACK_AGGREGATOR_JOB_TYPE, 86400),
         (EDIT_DIFF_MINING_JOB_TYPE, 86400),
         (GRADUATION_SWEEP_JOB_TYPE, 86400),
+        (COPILOT_TRIAGE_JOB_TYPE, 86400),
     ]
 
 

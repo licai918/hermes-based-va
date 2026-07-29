@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
 import {
   INBOX_DECISION_DISPATCH,
+  handleAnnotateInboxItemViaApi,
   handleDecideInboxItemViaApi,
   handleListInboxViaApi,
   handleReclassifyInboxItemViaApi,
@@ -391,5 +392,105 @@ describe("handleReclassifyInboxItemViaApi (FR-22 Re-classify)", () => {
 
     expect(res.status).toBe(400);
     expect(dispatched).toBe(false);
+  });
+});
+
+// --- 0.0.5 S16 (FR-23): the on-demand re-triage ---------------------------
+
+describe("handleAnnotateInboxItemViaApi", () => {
+  it("dispatches the governed annotate action with the acting account", async () => {
+    const { client, sent } = fakeHermes({
+      "toee_review_inbox.annotate_inbox_item": {
+        kind: "l7_proposal",
+        id: "lex_1",
+        annotated: true,
+        annotation: { recommendation: "reject", reasoning: "already confirmed" },
+        reason: null,
+      },
+    });
+
+    const res = await handleAnnotateInboxItemViaApi(client, "l7_proposal", "lex_1");
+
+    expect(res.status).toBe(200);
+    expect(sent).toHaveLength(1);
+    const dispatch = sent[0]!;
+    expect(dispatch.tool).toBe("toee_review_inbox");
+    expect(dispatch.action).toBe("annotate_inbox_item");
+    expect(dispatch.params).toEqual({ kind: "l7_proposal", id: "lex_1" });
+    expect(dispatch.actor_account_id).toBe("seed-supervisor");
+
+    const body = (await res.json()) as { annotated: boolean; annotation: unknown };
+    expect(body.annotated).toBe(true);
+    expect(body.annotation).toEqual({
+      recommendation: "reject",
+      reasoning: "already confirmed",
+    });
+  });
+
+  it("refuses before the network call when no acting account is configured", async () => {
+    // This is what `dispatchWrite` buys over `dispatch`, and it is the ONLY
+    // thing it buys -- with an actor present the two send a byte-identical
+    // body, so the assertion above cannot tell them apart and swapping the call
+    // leaves it green. Found by the red-proof. Re-triage spends a billed
+    // completion and stores a row on a governance surface, so it belongs on the
+    // fail-closed path (ADR-0141), and this is where that is checkable.
+    let dispatched = false;
+    const client = new HermesApiClient({
+      baseUrl: "http://copilot.internal",
+      token: "tok",
+      fetchImpl: async () => {
+        dispatched = true;
+        return dispatchResponse({});
+      },
+    });
+
+    const res = await handleAnnotateInboxItemViaApi(client, "graduation", "rvw_1");
+
+    expect(res.status).toBe(403);
+    expect(dispatched).toBe(false);
+  });
+
+  it("passes a not-annotated result through as a 200 with its reason", async () => {
+    // Default-OFF is the SHIPPED state of FR-23. If this became an error the
+    // console would show a fault for a deployment that is configured exactly as
+    // intended -- and the admin would have no way to tell it from a real one.
+    const { client } = fakeHermes({
+      "toee_review_inbox.annotate_inbox_item": {
+        kind: "graduation",
+        id: "rvw_1",
+        annotated: false,
+        annotation: null,
+        reason: "copilot triage annotations are off for this deployment",
+      },
+    });
+
+    const res = await handleAnnotateInboxItemViaApi(client, "graduation", "rvw_1");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { annotated: boolean; reason: string };
+    expect(body.annotated).toBe(false);
+    expect(body.reason).toContain("off for this deployment");
+  });
+
+  it("400s an unknown kind at the BFF instead of letting it become a 502", async () => {
+    // The S02 precedent the sibling handlers pay: Hermes classifies a bad kind
+    // as `unexpected_error`, which the house error map renders to the admin as
+    // "Bad Gateway". The layer that owns the request shape owns this 400.
+    let dispatched = false;
+    const client = apiClient(async () => {
+      dispatched = true;
+      return dispatchResponse({});
+    });
+
+    const res = await handleAnnotateInboxItemViaApi(client, "l8_proposal", "x_1");
+
+    expect(res.status).toBe(400);
+    expect(dispatched).toBe(false);
+  });
+
+  it("maps a governed refusal to its problem status", async () => {
+    const { client } = fakeHermes({});
+    const res = await handleAnnotateInboxItemViaApi(client, "graduation", "rvw_1");
+    expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });

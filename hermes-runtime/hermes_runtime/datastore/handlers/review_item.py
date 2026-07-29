@@ -28,6 +28,7 @@ from toee_hermes.blast_radius import blast_radius_result, read_blast_radius_quer
 from toee_hermes.drivers.mock.review_item import (
     REVIEW_ITEM_STATUS_OPEN,
     missing_item_error,
+    read_annotation_request,
     read_reclassification,
     read_review_item_decision,
     read_review_item_emission,
@@ -271,6 +272,34 @@ def _get_blast_radius(
     )
 
 
+def _annotate_inbox_item(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Any:
+    """Re-run copilot triage over ONE inbox item (0.0.5 S16, FR-23).
+
+    The on-demand half of FR-23, behind the inbox's per-item button. Its twin is
+    the scheduled ``copilot_triage`` job, and both go through the SAME
+    :func:`~hermes_runtime.copilot_triage.annotate_one` -- there is exactly one
+    code path in the system that writes an annotation, which is what makes "the
+    annotation write is the only write" checkable rather than asserted.
+
+    Synchronous rather than an enqueue, the ``reprobe_now`` precedent (0.0.4
+    S17): an admin pressing "Re-triage" wants the note refreshed NOW rather than
+    on the next scheduled cycle, and the response carries the fresh annotation so
+    the row can re-render without a poll.
+
+    Never registered as an LLM-callable tool (``_AGENT_EXCLUDED_ACTIONS``), and
+    for a sharper reason than the sibling reads: this action is the seam that
+    puts stored queue text in front of a model, so the model on the far side of
+    it must not be able to reach back through the tool surface. D24 records why
+    the eval suite could not be the instrument here.
+    """
+    from ...copilot_triage import annotate_one
+
+    kind, item_id, _table = read_annotation_request(params)
+    return annotate_one(conn, kind=kind, item_id=item_id, context=context)
+
+
 def review_item_handlers() -> dict[str, dict[str, Any]]:
     """Registry fragment for the unified review inbox's datastore tool."""
     return {
@@ -280,6 +309,7 @@ def review_item_handlers() -> dict[str, dict[str, Any]]:
             "decide_review_item": _decide_review_item,
             "reclassify_proposal": _reclassify_proposal,
             "get_blast_radius": _get_blast_radius,
+            "annotate_inbox_item": _annotate_inbox_item,
         }
     }
 

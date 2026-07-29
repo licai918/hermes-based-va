@@ -95,6 +95,198 @@ UNATTRIBUTED_DECISION_MESSAGE = (
     "decided item with no decider is unfalsifiable governance)."
 )
 
+# --- 0.0.5 S16 (FR-23): copilot triage annotations ----------------------------
+#
+# D8's shared column has exactly two reserved top-level keys. S13 owns
+# `heuristic` (its write-time advisory), S16 owns `copilot` (this one), and
+# neither writer ever reads-modifies-writes the whole column -- each assigns its
+# own key, so the two cannot lost-update each other on the same row.
+COPILOT_ANNOTATION_KEY = "copilot"
+HEURISTIC_ANNOTATION_KEY = "heuristic"
+
+# Which store each inbox kind lives in, and the status that means "still
+# pending" there. ONE table, both twins: the Postgres handler UPDATEs `table`
+# and the mock walks its own list. Its completeness against INBOX_ITEM_KINDS is
+# a set-equality test (the LAYER_OF_ACTION shape), so a seventh kind cannot land
+# annotatable-by-nobody.
+#
+# `agent_experience` / `semantic_lexicon` are here because FR-23 says EVERY
+# pending proposal, not just the four kinds this store owns -- D8's whole reason
+# for putting the column on three tables.
+ANNOTATABLE_SOURCES: dict[str, tuple[str, str]] = {
+    "l6_proposal": ("agent_experience", "proposed"),
+    "l7_proposal": ("semantic_lexicon", "proposed"),
+    "graduation": ("review_item", REVIEW_ITEM_STATUS_OPEN),
+    "blast_radius": ("review_item", REVIEW_ITEM_STATUS_OPEN),
+    "persona_review": ("review_item", REVIEW_ITEM_STATUS_OPEN),
+    "retirement_candidate": ("review_item", REVIEW_ITEM_STATUS_OPEN),
+}
+
+# The bounded vocabulary a copilot annotation may express. NFR-3 is the whole
+# reason it is bounded: an annotation informs a human triaging the queue and
+# decides nothing, so the model is never allowed to invent a value here. An
+# unrecognised recommendation becomes `unsure` rather than the model's own word.
+ANNOTATION_RECOMMEND_APPROVE = "approve"
+ANNOTATION_RECOMMEND_REJECT = "reject"
+ANNOTATION_RECOMMEND_UNSURE = "unsure"
+ANNOTATION_RECOMMENDATIONS: tuple[str, ...] = (
+    ANNOTATION_RECOMMEND_APPROVE,
+    ANNOTATION_RECOMMEND_REJECT,
+    ANNOTATION_RECOMMEND_UNSURE,
+)
+
+# FR-23's four annotation shapes, as a closed flag set. A flag the model made up
+# is dropped, not stored -- the admin surface renders these, and a free-text flag
+# channel is a payload channel.
+ANNOTATION_FLAGS: tuple[str, ...] = (
+    "likely_duplicate",
+    "conflicts",
+    "pii_suspect",
+    "lexicon_shaped",
+)
+
+# FR-23's three reference fields: "likely-duplicate-of X", "conflicts-with Y",
+# "suggested canonical form". Free text, and therefore bounded and scanned.
+ANNOTATION_REFERENCE_FIELDS: tuple[str, ...] = (
+    "duplicate_of",
+    "conflicts_with",
+    "suggested_canonical_form",
+)
+
+# ponytail: one length for every free-text field. Long enough for the one-line
+# reasoning FR-23 asks for, short enough that a model cannot use the annotation
+# as a bulk channel onto a shared admin surface (NFR-6).
+ANNOTATION_TEXT_MAX_LENGTH = 400
+
+# The honest "nothing was annotated" reasons, shared so both twins and the batch
+# job say the same thing. An annotation that was not produced is never a blank
+# one: a rendered empty triage note reads as "the copilot had no concerns",
+# which is the one answer an admin cannot check.
+ANNOTATOR_UNAVAILABLE_MOCK = (
+    "the mock driver has no annotator: copilot triage needs a model, and this "
+    "driver is the DB-free substrate (the get_blast_radius precedent)"
+)
+ANNOTATOR_DISABLED = (
+    "copilot triage annotations are off for this deployment "
+    "(COPILOT_TRIAGE_ANNOTATIONS is unset or off -- default OFF, FR-23)"
+)
+ANNOTATOR_NO_MODEL = (
+    "copilot triage has no annotator model on this process: OPENROUTER_API_KEY "
+    "is not configured, so nothing was annotated and nothing was fabricated"
+)
+
+
+def resolve_review_item_annotator(context: "ToolExecutionContext") -> None:
+    """Gate ONE advisory annotation write (ADR-0148 framework-derived).
+
+    Asserts a profile and NOT an actor, for exactly ``resolve_review_item_
+    emitter``'s reason and one more. The scheduled triage batch has no human at
+    the keyboard, so requiring an actor would make the batch half of FR-23
+    unreachable; and an annotation is inert by construction under NFR-3 -- it
+    informs a human triaging the queue and retires, confirms, rejects and
+    decides nothing. The DECISION is still where attribution becomes mandatory,
+    and that gate (``resolve_review_item_authorization``) is unchanged.
+    """
+    from ...plugin.profiles import INTERNAL
+
+    if context.profile != INTERNAL:
+        raise ToolDriverError(
+            "policy_blocked",
+            "review_inbox triage annotations are not permitted for profile "
+            f'"{context.profile}".',
+        )
+
+
+def read_annotation_request(params: dict[str, Any]) -> tuple[str, str, str]:
+    """``(kind, item id, table)`` for one ``annotate_inbox_item`` call.
+
+    ``kind`` is checked against :data:`ANNOTATABLE_SOURCES` -- i.e. all SIX
+    inbox kinds, unlike ``read_review_item_emission``'s four. An annotation is
+    not a second source of truth for a decision the proposal tables own; it is
+    metadata beside the row, which is why it may legally land on a kind this
+    store does not itself hold.
+    """
+    kind = _require_choice(params, "kind", tuple(ANNOTATABLE_SOURCES))
+    item_id = _require_text(params, "id", REVIEW_ITEM_SUBJECT_REF_MAX_LENGTH)
+    return kind, item_id, ANNOTATABLE_SOURCES[kind][0]
+
+
+def _bounded_text(value: Any) -> str:
+    """One free-text annotation field: a string, trimmed and length-capped."""
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:ANNOTATION_TEXT_MAX_LENGTH]
+
+
+def annotation_payload(
+    verdict: dict[str, Any], *, model: str, annotated_at: str
+) -> dict[str, Any]:
+    """The bounded ``copilot`` value BOTH twins store. Framework-derived.
+
+    **This function is where NFR-3 and D24 are enforced, not in the prompt.**
+    ``verdict`` is whatever fell out of a model's reply, so nothing in it is
+    trusted to be a value: the recommendation is coerced into
+    :data:`ANNOTATION_RECOMMENDATIONS` (an unrecognised one becomes ``unsure``,
+    never the model's own word and never a default of ``approve``), flags are
+    intersected with :data:`ANNOTATION_FLAGS`, free text is capped, and every
+    other key the model invented is dropped on the floor. The result is a fixed
+    shape with a fixed key set, so a model that "replies" with an instruction,
+    a decision, or a payload produces an annotation that says ``unsure`` and
+    carries its text as text.
+
+    ``model`` and ``annotated_at`` are FRAMEWORK-derived and overwrite anything
+    of the same name in ``verdict``: provenance a model can author is not
+    provenance.
+    """
+    recommendation = verdict.get("recommendation")
+    if recommendation not in ANNOTATION_RECOMMENDATIONS:
+        recommendation = ANNOTATION_RECOMMEND_UNSURE
+    raw_flags = verdict.get("flags")
+    flags = (
+        [f for f in ANNOTATION_FLAGS if f in raw_flags]
+        if isinstance(raw_flags, (list, tuple, set))
+        else []
+    )
+    payload: dict[str, Any] = {
+        "recommendation": recommendation,
+        "reasoning": _bounded_text(verdict.get("reasoning")),
+        "flags": flags,
+        "model": model,
+        "annotated_at": annotated_at,
+        # NFR-3, said on the row itself rather than only in a docstring: this
+        # value travels to an admin surface, and the surface must not have to
+        # remember what it is allowed to mean.
+        "advisory": True,
+    }
+    for field in ANNOTATION_REFERENCE_FIELDS:
+        text = _bounded_text(verdict.get(field))
+        if text:
+            payload[field] = text
+    return payload
+
+
+def annotation_result(
+    kind: str,
+    item_id: str,
+    *,
+    annotation: Optional[dict[str, Any]] = None,
+    reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """The ONE response shape every annotate path returns, both twins.
+
+    ``annotated`` is the whole contract: False plus a ``reason`` means nothing
+    was written and says why, and there is deliberately no third state -- a
+    caller cannot mistake "the annotator was not configured" for "the copilot
+    had no concerns about this item".
+    """
+    return {
+        "kind": kind,
+        "id": item_id,
+        "annotated": annotation is not None,
+        "annotation": annotation,
+        "reason": reason,
+    }
+
 
 def missing_item_error(item_id: str) -> ToolDriverError:
     """The governed "no such row" denial, shared by both twins."""
@@ -515,6 +707,25 @@ def create_review_inbox_mock_handlers(
         )
         return reclassification_result(source_kind, target_kind, rejected, target)
 
+    def annotate_inbox_item(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        """S16 (FR-23): copilot triage annotation -- unanswerable here.
+
+        Exactly ``get_blast_radius``'s posture, for the same class of reason.
+        An annotation is a MODEL's advisory read of a queue item, and this
+        driver is the DB-free substrate: it has no annotator, no model, and no
+        network dependency to acquire one (``hermes/`` does not import
+        ``hermes_runtime``). So it validates the request through the SAME shared
+        resolvers the Postgres twin uses (NFR-7) and then says plainly that it
+        has no annotator, rather than storing a fabricated verdict that an inbox
+        would render as a real triage note -- the one answer an admin has no way
+        to check.
+        """
+        resolve_review_item_annotator(context)
+        kind, item_id, _table = read_annotation_request(params)
+        return annotation_result(kind, item_id, reason=ANNOTATOR_UNAVAILABLE_MOCK)
+
     return {
         "toee_review_inbox": {
             "propose_review_item": propose_review_item,
@@ -522,5 +733,6 @@ def create_review_inbox_mock_handlers(
             "decide_review_item": decide_review_item,
             "reclassify_proposal": reclassify_proposal,
             "get_blast_radius": get_blast_radius,
+            "annotate_inbox_item": annotate_inbox_item,
         }
     }

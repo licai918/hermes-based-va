@@ -348,6 +348,47 @@ def test_the_blast_radius_exclusion_is_not_an_empty_registration() -> None:
     assert "toee_agent_experience__propose_experience" in ctx.registered_names()
 
 
+# --- 0.0.5 S16: annotate_inbox_item is never LLM-callable (governance) -----
+
+
+def test_annotate_inbox_item_is_never_registered_as_an_llm_tool() -> None:
+    # The catalog-DERIVED loops above went red the moment this action entered
+    # the catalog -- S15 wrote them for exactly that, and S10 proved they fire.
+    # They cannot say WHICH action they checked, so this names it, and the
+    # reason is sharper than "admin-only". This action is the seam that puts
+    # STORED QUEUE TEXT in front of a model. If the model on the far side of it
+    # could call back through the tool surface, it would be annotating the
+    # pending proposals that exist to check it -- and D24 records that the
+    # adversarial eval gate reads reply TEXT, so obedience expressed as a tool
+    # call with a bland reply leaves every marker green. The exclusion is the
+    # instrument here; the eval suite could not be.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_review_inbox__annotate_inbox_item" not in ctx.registered_names()
+    assert ("toee_review_inbox", "annotate_inbox_item") in _AGENT_EXCLUDED_ACTIONS
+
+
+def test_annotate_inbox_item_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would actually try to exploit
+    # (the link_identity precedent, and S10's).
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_review_inbox__annotate_inbox_item" not in ctx.registered_names()
+
+
+def test_the_annotate_exclusion_is_not_an_empty_registration() -> None:
+    # S10's contrast, and it is load-bearing for the same reason:
+    # toee_review_inbox is excluded WHOLESALE, so there is no same-tool action
+    # to contrast against and the two assertions above would also pass over a
+    # register() that produced nothing at all.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert ctx.registered_names(), "register() produced no tools at all"
+    assert "toee_agent_experience__propose_experience" in ctx.registered_names()
+
+
 # --- 0.0.3 S26: get_aggregate_metrics is never LLM-callable (governance) ---
 
 

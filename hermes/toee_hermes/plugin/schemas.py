@@ -21,6 +21,7 @@ from typing import Any
 
 from ..blast_radius import LEDGER_LAYERS
 from ..drivers.mock.review_item import (
+    ANNOTATABLE_SOURCES,
     RECLASSIFY_ROUTES,
     REVIEW_ITEM_DECISIONS,
     REVIEW_ITEM_KINDS,
@@ -470,6 +471,34 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             },
         },
         "required": ["layer", "entry_ref"],
+    },
+    # 0.0.5 S16 (FR-23): re-run copilot triage over ONE inbox item. Two params
+    # and no annotation param, deliberately: the verdict is produced INSIDE the
+    # action by a restricted, tool-less model pass and coerced into a bounded
+    # shape (`annotation_payload`), so there is no caller-supplied text channel
+    # onto the shared admin surface -- not for a model, and not for the console.
+    ("toee_review_inbox", "annotate_inbox_item"): {
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": list(ANNOTATABLE_SOURCES),
+                # All SIX inbox kinds, not this store's four: FR-23 annotates
+                # every pending decision, and the two proposal kinds live in
+                # their own tables (D8 is why all three carry the column).
+                "description": (
+                    "Which inbox queue the item belongs to -- it decides which "
+                    "store the annotation is written beside."
+                ),
+            },
+            "id": {
+                "type": "string",
+                "description": (
+                    "The item's id in its own store (an agent_experience id, a "
+                    "semantic_lexicon id, or a review_item id)."
+                ),
+            },
+        },
+        "required": ["kind", "id"],
     },
     # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
     # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still

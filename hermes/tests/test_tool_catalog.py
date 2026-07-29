@@ -98,17 +98,21 @@ def test_review_inbox_actions_match_fr_22() -> None:
     # acknowledge/dismiss over this store's own rows; reclassify_proposal is
     # Re-classify. 0.0.5 S10 (FR-12) adds get_blast_radius, the admin read behind
     # the blast_radius item -- which turns/cases an entry reached, from S09's
-    # injection ledger. All five are admin/job-only (_AGENT_EXCLUDED_ACTIONS).
+    # injection ledger. 0.0.5 S16 (FR-23) adds annotate_inbox_item, the
+    # on-demand half of copilot triage. All six are admin/job-only
+    # (_AGENT_EXCLUDED_ACTIONS).
     assert TOOL_CATALOG["toee_review_inbox"] == (
         "propose_review_item",
         "list_review_items",
         "decide_review_item",
         "reclassify_proposal",
         "get_blast_radius",
+        "annotate_inbox_item",
     )
     assert is_tool_action("toee_review_inbox", "propose_review_item") is True
     assert is_tool_action("toee_review_inbox", "reclassify_proposal") is True
     assert is_tool_action("toee_review_inbox", "get_blast_radius") is True
+    assert is_tool_action("toee_review_inbox", "annotate_inbox_item") is True
     # There is no per-decision action pair: ONE decide action carries the
     # terminal status, because both decisions come from `open` and differ only in
     # the value they land (unlike L7's three from-status-guarded transitions).

@@ -146,6 +146,16 @@ services:
       # hermes-runtime/.env above; named here so the coupling is visible.
       # AGENT_EXPERIENCE_LEARNING: "on"
       # OPENROUTER_API_KEY: sk-or-...
+      #
+      # 0.0.5 S16 (FR-23): copilot triage annotations, DEFAULT OFF. Unlike the
+      # L6 pair above there is no cross-process coupling to get wrong -- this
+      # job is scheduled BY this worker, so the flag is read here or nowhere,
+      # and a run with it off records an audit row saying so rather than
+      # silently doing nothing. It is a COST knob: each annotated item is one
+      # billed completion, so the spend is copilot_triage.TRIAGE_BATCH_CAP (25)
+      # x background_worker.COPILOT_TRIAGE_INTERVAL_SECONDS (daily), and it
+      # needs the same OPENROUTER_API_KEY as the fork above.
+      # COPILOT_TRIAGE_ANNOTATIONS: "on"
     depends_on:
       postgres:
         condition: service_healthy

@@ -12,6 +12,7 @@
 // leaves the row actionable to retry with its error inline.
 import { useCallback, useEffect, useState } from "react";
 import {
+  annotateInboxItem,
   decideInboxItem,
   listInbox,
   reclassifyInboxItem,
@@ -71,8 +72,10 @@ export function ReviewInboxView({
   error,
   busyId,
   rowErrors,
+  rowNotices,
   reclassifyId,
   onDecide,
+  onAnnotate,
   onOpenReclassify,
   onReclassify,
 }: {
@@ -82,8 +85,13 @@ export function ReviewInboxView({
   error: string | null;
   busyId: string | null;
   rowErrors: Record<string, string>;
+  // FR-23: why a re-triage produced no note. Separate from rowErrors because a
+  // disabled annotator is not a failure -- rendering "copilot triage is off" in
+  // the error colour would send an admin looking for a fault there is not.
+  rowNotices: Record<string, string>;
   reclassifyId: string | null;
   onDecide: (item: InboxItem, decision: string) => void;
+  onAnnotate: (item: InboxItem) => void;
   onOpenReclassify: (item: InboxItem | null) => void;
   onReclassify: (item: InboxItem, draft: ReclassifyDraft) => void;
 }) {
@@ -168,6 +176,18 @@ export function ReviewInboxView({
                             {DECISION_LABELS[decision] ?? decision}
                           </button>
                         ))}
+                        {/* FR-23's on-demand half. Every kind gets it: the
+                            batch annotates each item once, so this is how a
+                            reviewer asks for a fresh read after the item or the
+                            confirmed entries around it have changed. */}
+                        <button
+                          type="button"
+                          aria-label={`Re-triage ${i.id}`}
+                          disabled={busyId === i.id}
+                          onClick={() => onAnnotate(i)}
+                        >
+                          Re-triage
+                        </button>
                         {i.reclassifiable ? (
                           <button
                             type="button"
@@ -246,6 +266,14 @@ export function ReviewInboxView({
                           {rowErrors[i.id]}
                         </span>
                       ) : null}
+                      {rowNotices[i.id] ? (
+                        <span
+                          data-testid={`notice-${i.id}`}
+                          style={{ fontSize: "0.8rem" }}
+                        >
+                          {rowNotices[i.id]}
+                        </span>
+                      ) : null}
                     </span>
                   </td>
                 </tr>
@@ -267,6 +295,7 @@ export function ReviewInbox() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  const [rowNotices, setRowNotices] = useState<Record<string, string>>({});
   const [reclassifyId, setReclassifyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -294,6 +323,42 @@ export function ReviewInbox() {
       delete next[id];
       return next;
     });
+    setRowNotices((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  }
+
+  // FR-23: re-triage ONE item. Not routed through `run` because that closes the
+  // Re-classify form and re-reads the whole queue on success -- right for a
+  // decision, which removes the row, and wrong here: an annotation leaves the
+  // item exactly where it was, so the list is reloaded (the note is on the row)
+  // but nothing else about the admin's place in the page is disturbed. A
+  // successful call that annotated NOTHING is reported as a notice, not an
+  // error: default-OFF is a configuration, not a fault.
+  async function annotate(item: InboxItem) {
+    setBusyId(item.id);
+    clearRowError(item.id);
+    try {
+      const result = await annotateInboxItem(item.kind, item.id);
+      if (result.annotated) {
+        await load();
+      } else {
+        setRowNotices((prev) => ({
+          ...prev,
+          [item.id]: result.reason ?? "No triage annotation was produced.",
+        }));
+      }
+    } catch (e) {
+      setRowErrors((prev) => ({
+        ...prev,
+        [item.id]:
+          e instanceof ApiError ? e.message : "Failed to re-triage this item",
+      }));
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function run(item: InboxItem, work: () => Promise<unknown>, label: string) {
@@ -324,10 +389,12 @@ export function ReviewInbox() {
       error={error}
       busyId={busyId}
       rowErrors={rowErrors}
+      rowNotices={rowNotices}
       reclassifyId={reclassifyId}
       onDecide={(item, decision) =>
         void run(item, () => decideInboxItem(item.kind, item.id, decision), decision)
       }
+      onAnnotate={(item) => void annotate(item)}
       onOpenReclassify={(item) => setReclassifyId(item ? item.id : null)}
       onReclassify={(item, draft) =>
         void run(

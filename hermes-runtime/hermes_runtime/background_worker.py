@@ -43,6 +43,7 @@ import time
 from typing import Any, Callable, Mapping, Optional
 
 from .job_queue import (
+    COPILOT_TRIAGE_JOB_TYPE,
     DEFAULT_LEASE_SECONDS,
     EDIT_DIFF_MINING_JOB_TYPE,
     FEEDBACK_AGGREGATOR_JOB_TYPE,
@@ -76,6 +77,7 @@ BACKGROUND_JOB_TYPES = (
     FEEDBACK_AGGREGATOR_JOB_TYPE,
     EDIT_DIFF_MINING_JOB_TYPE,
     GRADUATION_SWEEP_JOB_TYPE,
+    COPILOT_TRIAGE_JOB_TYPE,
 )
 
 # ponytail: 5 s, against the turn worker's 250 ms. Nothing here has a latency
@@ -175,6 +177,18 @@ EDIT_DIFF_MINING_INTERVAL_SECONDS = 24 * 60 * 60
 # run re-derives the same candidate set from a full scan.
 GRADUATION_SWEEP_INTERVAL_SECONDS = 24 * 60 * 60
 
+# ponytail: 24 h for the copilot triage annotator (0.0.5 S16, FR-23), matching
+# every other queue-facing job on this tick, and here the cadence is HALF the
+# cost knob rather than just a freshness choice. Each annotated item is one
+# billed completion, so a run costs up to `copilot_triage.TRIAGE_BATCH_CAP`
+# completions and this interval decides how often that is spent -- daily x 25 is
+# the documented spend FR-23 asks for. Freshness is bounded by how often anyone
+# opens the inbox, not by the tick, because the output is a note a human reads.
+# The window is floor(epoch/86400), so a worker down for a UTC day misses that
+# day rather than replaying a backlog -- harmless, because nothing accumulates:
+# the next run re-derives the same not-yet-annotated candidate set.
+COPILOT_TRIAGE_INTERVAL_SECONDS = 24 * 60 * 60
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule(job_type=RETENTION_JOB_TYPE, interval_seconds=RETENTION_INTERVAL_SECONDS),
     Schedule(
@@ -204,6 +218,10 @@ SCHEDULES: tuple[Schedule, ...] = (
     Schedule(
         job_type=GRADUATION_SWEEP_JOB_TYPE,
         interval_seconds=GRADUATION_SWEEP_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=COPILOT_TRIAGE_JOB_TYPE,
+        interval_seconds=COPILOT_TRIAGE_INTERVAL_SECONDS,
     ),
 )
 
@@ -298,6 +316,7 @@ def job_bodies() -> dict[str, JobBody]:
     """The job type -> body map. Imports are local: each body drags in a large
     subtree (the agent stack, the tool-dispatch stack, fastembed) and a worker
     should pay for them once at startup, not on import of this module."""
+    from .copilot_triage import run_copilot_triage_job
     from .copilot_turn import run_l6_review_job
     from .edit_diff_mining import run_edit_diff_mining_job
     from .feedback_aggregator import run_feedback_aggregator_job
@@ -329,6 +348,13 @@ def job_bodies() -> dict[str, JobBody]:
         FEEDBACK_AGGREGATOR_JOB_TYPE: run_feedback_aggregator_job,
         EDIT_DIFF_MINING_JOB_TYPE: run_edit_diff_mining_job,
         GRADUATION_SWEEP_JOB_TYPE: run_graduation_sweep_job,
+        # No _require_*_writable check, unlike l6_review. That guard exists
+        # because the L6 fork's enqueue is gated in ANOTHER process, so a flag
+        # split across the two would report success on a lost row. This job is
+        # SCHEDULED by this same worker, so its flag is read here or nowhere --
+        # and when it is off the run persists an audit row that says so
+        # (`skipped_reasons`), rather than silently writing nothing.
+        COPILOT_TRIAGE_JOB_TYPE: run_copilot_triage_job,
     }
 
 

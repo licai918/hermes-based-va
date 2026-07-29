@@ -168,6 +168,15 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         # get_memory_audit reason -- it reports which CUSTOMER CASES a memory
         # entry reached, i.e. a cross-customer view no live turn may reach.
         ("toee_review_inbox", "get_blast_radius"),
+        # 0.0.5 S16 (FR-23): the copilot triage annotation. Excluded for a
+        # sharper reason than "admin-only": this action is the seam that puts
+        # stored queue text in front of a model, and the model on the other side
+        # of it must never be able to reach back through the tool surface. A
+        # live turn that could call it would be an agent annotating its own
+        # pending proposals -- and D24 records that a green adversarial gate
+        # cannot see obedience expressed as a tool call, so the exclusion is the
+        # instrument, not the eval suite.
+        ("toee_review_inbox", "annotate_inbox_item"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
         ("toee_retention", "enqueue_retention_sweep"),

@@ -268,6 +268,48 @@ export async function handleDecideInboxItemViaApi(
 }
 
 /**
+ * FR-23 (0.0.5 S16): re-run copilot triage over ONE item, on demand.
+ *
+ * The scheduled batch annotates each pending item once; this is how a reviewer
+ * asks for a fresh read after the item, or the confirmed entries around it,
+ * have changed. The `reprobe_now` precedent: synchronous, so the response
+ * carries the new annotation and the row can re-render without a poll.
+ *
+ * The kind rides the body for the same reason a decision does -- an inbox id is
+ * only unique WITHIN its store, and the kind is what says which store.
+ *
+ * `annotated: false` is a SUCCESS, not an error, and the reason is passed
+ * through verbatim: triage is default-OFF (FR-23) and may have no model
+ * configured, and "the annotator is off" must reach the admin as an
+ * explanation rather than as a failed request or, worse, as a blank note.
+ */
+export async function handleAnnotateInboxItemViaApi(
+  client: HermesApiClient,
+  kind: string,
+  id: string,
+): Promise<Response> {
+  if (!(INBOX_ITEM_KINDS as readonly string[]).includes(kind)) {
+    return problem(400, `"${kind}" is not an inbox item kind`);
+  }
+  try {
+    const data = (await client.dispatchWrite(
+      "toee_review_inbox",
+      "annotate_inbox_item",
+      { kind, id },
+    )) as Record<string, unknown> | null;
+    return json({
+      kind,
+      id,
+      annotated: Boolean(data?.annotated),
+      annotation: data?.annotation ?? null,
+      reason: data?.reason ?? null,
+    });
+  } catch (err) {
+    return hermesErrorToProblem(err);
+  }
+}
+
+/**
  * FR-22's Re-classify: move a mis-filed proposal to the other layer's queue
  * instead of reject-and-retype.
  *

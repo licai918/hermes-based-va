@@ -180,6 +180,7 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "decide_review_item",
         "reclassify_proposal",
         "get_blast_radius",
+        "annotate_inbox_item",
     ),
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
     # over existing tables + the new metric_event counters (memory injection,

@@ -366,6 +366,22 @@ export function decideInboxItem(
   );
 }
 
+// FR-23 (0.0.5 S16): re-run the copilot triage annotator over ONE item.
+// `annotated: false` is a normal outcome, not a failure -- triage is default-OFF
+// and may have no model configured, and `reason` is what says which.
+export function annotateInboxItem(
+  kind: string,
+  id: string,
+): Promise<{
+  kind: string;
+  id: string;
+  annotated: boolean;
+  annotation: unknown;
+  reason: string | null;
+}> {
+  return sendJson("POST", "/api/admin/inbox/annotate", { kind, id });
+}
+
 // FR-22 Re-classify: ONE governed action rejects the source and proposes the
 // target, audited on both sides with the evidence preserved.
 export function reclassifyInboxItem(body: {
