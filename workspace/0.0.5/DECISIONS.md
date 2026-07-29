@@ -849,6 +849,50 @@ internal_copilot profile** — while its own docstring described it as restricte
 background job, running on a customer conversation without a human in the loop, had the profile's
 full tool surface.
 
+### CORRECTION (post-review): the union's other operand is the SDK BUILT-INS, and that is the part that matters
+
+The sentence above understates it, and "43 governed tools" is the wrong thing to be alarmed by. The
+union is with `agent.valid_tool_names` — **the Hermes SDK's own built-in toolset** — not with the
+governed profile. Probed on a constructed agent, that set is **25 tools**:
+
+> `browser_back` `browser_click` `browser_console` `browser_get_images` `browser_navigate`
+> `browser_press` `browser_scroll` `browser_snapshot` `browser_type` `clarify` `delegate_task`
+> **`execute_code`** `memory` **`patch`** `process` `read_file` `search_files` `session_search`
+> `skill_manage` `skill_view` `skills_list` **`terminal`** `text_to_speech` `todo` **`write_file`**
+
+So the exposure was **shell and arbitrary code execution**, on paths whose input is customer-authored
+text — the same text this iteration built injection scans, fences and untrusted-data framing to
+contain. `live.py`'s own comment said so plainly (*"must not inherit Hermes built-ins (terminal,
+read_file, …)"*) and then expressed the requirement as a default the caller had to remember.
+
+**Verified live, not inferred:** at `df9a4ad^` the L6 review fork called
+`governed_tool_names=tool_names` and the string `tools_exclusive` appeared **zero times** in
+`copilot_turn.py`. The union ran.
+
+### And S04's fix was necessary but not sufficient — the copilot draft turn had forgotten too
+
+S04 fenced the two capture forks. The review that followed found `copilot_turn.py`'s **real
+OpenRouter draft turn** (`run_agent_turn(..., governed_tool_names=booted.tool_names)`) passing no
+`tools_exclusive` either — so the employee-facing draft turn, which injects L4 customer memory, L6
+learnings, the L7 glossary and the case conversation, carried the built-ins. Meanwhile
+`openrouter.py`'s customer-facing external turn had defaulted `tools_exclusive=True` since it
+shipped. **The customer-facing path was fenced and the draft path was not.**
+
+**Decision, superseding "both forks now pass `tools_exclusive=True`": the DEFAULT is inverted.**
+`run_agent_turn` and `run_scripted_agent` now default `tools_exclusive=True`. Fencing is what
+silence means; a harness that wants the built-ins passes `tools_exclusive=False`, which is a line a
+reviewer can see. Pinned by `hermes-runtime/tests/test_tool_fence_default.py`, whose failing message
+names the four tools that leaked.
+
+**What the flip cost: nothing.** The full suite went 1452 → 1455 (the three new tests), hermes 1309,
+and both eval gates stayed at `failed_high=0`. **No caller depended on the union.** `live.py`'s
+comment claimed "Eval/scripted runs union them in for harness flexibility" — that flexibility was
+never exercised. The default was pure exposure with no benefit, which is the strongest possible
+argument that an opt-in fence was the wrong shape rather than a considered trade.
+
+This also closes the "still open" clause below: it is no longer true that other callers offer
+rather than fence. They inherit the fence, and the two that want otherwise say so.
+
 **How it was found is the part worth copying.** S04's first bait unrestricted the fork's
 `tool_names` and **every routing test stayed green** — because those tests pinned the *extractor*
 (what the fork does with a verdict), not the *toolset* (what the fork can reach). Rather than
