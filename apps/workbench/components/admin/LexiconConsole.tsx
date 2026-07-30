@@ -340,10 +340,18 @@ function EntryRow({
               {" "}
               <strong
                 style={alert}
+                // Two causes, one badge, so this sentence must be true of both:
+                // a MISSING decider (rows written before the provenance path
+                // became fail-closed) and a MIGRATION as decider (seeded rows,
+                // which ran long after that gate). Naming only the first sent a
+                // reviewer hovering a seed row hunting for legacy data that does
+                // not exist. The adjacent decider cell already shows WHICH case
+                // this row is, so there is nothing to branch on here.
                 title={
-                  "This row claims a human administrator authored it but names " +
-                  "nobody. Written before the provenance path became fail-closed; " +
-                  "treat it as unverified and re-decide it."
+                  "This row claims a human administrator authored it, but no " +
+                  "named human is attached -- the decider is either missing or a " +
+                  "migration that seeded the row. Treat it as unverified and " +
+                  "re-decide it."
                 }
               >
                 UNATTRIBUTED

@@ -917,3 +917,77 @@ green-since-the-fix suite as proof that nothing happened before it.
 the two forks it owns, because widening the default is a change to every turn path and belongs in
 its own slice with its own evidence. **Whoever takes it should start from the assumption that at
 least one more docstring in that set is currently wrong.**
+
+---
+
+## D28. Two defects that only a rendered page could show — and one I introduced fixing them
+
+Found by **opening `/admin/lexicon` and reading it**, during the S29 walkthrough. Neither had a
+failing test; **3,724 passing tests across all three suites saw neither.** Both are fixed here.
+
+### D28.1 — a CONFIRMED L7 row was telling the model to say a phrase the business forbids
+
+`seed_lex_season_all_season` carried `canonical_form="all-season tires"`. `canonical_form` is what
+`hooks._default_rule_line` renders into an imperative ASK, so it is **customer-facing wording**, and
+the owner's vocabulary policy rules that phrase out: *"加拿大冬天雪特别厚，我们不会称之为 ALL
+SEASON，避免出现 misleading information."*
+
+**Decision: fixed now, reversing a recorded deferral.** `knowledge-gate/GATE-REPORT.md` had flagged
+it as 0.0.6 S-0 per D4's "do not interrupt 0.0.5" rule. That rule still holds for the *vocabulary
+design* — but this was not design. It was one wrong string in a confirmed row, using a label
+(`passenger tires`) that 0.0.6 D1 had **already approved**. Shipping a gate report that names a
+known policy-violating phrase, when the fix is a one-line migration, trades real customer-facing
+risk for no schedule gain.
+
+**Migration `0032`, not an edit to `0024`** — `schema_migrations` skips versions it has applied, so
+editing 0024 changes what a *fresh* database gets while leaving every migrated one alone. That is
+the drift the out-of-order guard exists to stop; it would have been my own guard I was dodging.
+
+**Verified at the prompt seam, not the console.** The console showing the new value proves the
+store; it does not prove what the model receives. Rendering the block directly returns
+`ASK whether the customer wants passenger tires`.
+
+**Left open, and it is the owner's call:** the *condition token*. The same line prints
+`Seasonal default (tire, all_season): …`, so `all_season` still reaches the prompt — naming the
+calendar window, not the product, which is why it is smaller than the canonical form was. Renaming
+facet vocabulary is 0.0.6 D1's spec work. **Recorded rather than half-done.**
+
+### D28.2 — D20's flag asked "is anyone attached", when the question is "is a NAMED HUMAN attached"
+
+All four seeded rows rendered `provenance = admin_manual` beside
+`decider = seed:0024_lexicon_seed_domain_1` — visually identical to a row a person had approved.
+
+D20 established that `admin_manual` means *a human administrator typed this*, and derived
+`provenance_unattributed` for rows with a **NULL** decider. A seeded row is a **third** case:
+attributed, but to a migration. Not a D20 hole — nothing is null — yet it produces the identical
+misreading.
+
+**Decision: widen the derivation, reuse the rendering.** `lexicon_provenance_unattributed` now also
+returns true for a `seed:`-prefixed decider. **Not** changed: the rows' `provenance` value. There is
+no fourth value for "seeded", adding one is a catalog-wide change, and the seeded rows genuinely
+*are* a human decision — the code author's — arriving by migration. Making the console **say so** is
+honest; relabelling the data is a bigger claim than the evidence supports.
+
+### D28.3 — the badge was then right and its explanation was wrong. I did that.
+
+Widening the flag left the hover text naming only the old cause: *"Written before the provenance
+path became fail-closed."* **That sentence is false of a seeded row** — 0024 ran long after that
+gate landed. A reviewer hovering a seed row was sent hunting for legacy data that does not exist.
+
+The existing test counted badges and never read the text, so the false sentence was green. Fixed by
+one sentence true of both causes, pinned by a test that reads the `title` attribute.
+
+This is the same defect shape as D27 and S26 and S16 and S17: **a check was widened and what it
+reports was not.** It is worth recording that it caught me on the very fix that was cleaning up
+after the others.
+
+### The process finding, which outlasts all three
+
+The first pass of D28.2 was **78 passing tests and no change on screen.** The derivation runs
+server-side; the container held the pre-fix image. The API answered `provenanceUnattributed: false`
+for all four rows while the unit tests were green.
+
+**A test suite proves the code; only a rebuilt, re-rendered page proves the product.** Layer ② is a
+gate for this reason, not as a formality — and "screenshots are unobtainable here", the controller's
+own claim that had excused it all iteration, turned out to be an over-generalisation from a single
+tool that was never checked against Chrome. See `e2e-evidence.md` for that correction.

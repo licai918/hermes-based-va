@@ -144,6 +144,35 @@ describe("LexiconConsoleView", () => {
     expect(screen.getByText("seed-admin")).toBeInTheDocument();
   });
 
+  // The badge now fires for TWO causes -- a NULL decider (D20's original) and a
+  // `seed:` decider (a migration is not a human). Its hover text used to name
+  // only the first: "written before the provenance path became fail-closed".
+  // That sentence is FALSE of a seeded row -- 0024 ran long after the gate
+  // landed -- so a reviewer hovering a seed row was sent looking for legacy data
+  // that does not exist. The badge was right and its reason was wrong, which is
+  // the same defect shape as widening a check without widening what it reports.
+  it("explains the badge in terms true of BOTH causes, not just the null one", () => {
+    render(
+      <LexiconConsoleView
+        {...baseProps([
+          entry({
+            provenance: "admin_manual",
+            deciderAccountId: "seed:0024_lexicon_seed_domain_1",
+            provenanceUnattributed: true,
+          }),
+        ])}
+      />,
+    );
+
+    const explanation = screen.getByText("UNATTRIBUTED").getAttribute("title") ?? "";
+
+    expect(explanation).not.toMatch(/before the provenance path became fail-closed/);
+    expect(explanation).toMatch(/migration/i);
+    // The load-bearing half: it must still say WHY this matters and what to do,
+    // or the badge becomes decoration a reviewer learns to scroll past.
+    expect(explanation).toMatch(/re-decide/i);
+  });
+
   // --- the detail surface (review finding A) ----------------------------------
   // The Goal calls the console "CRUD + detail surface". `evidence` and
   // `proposerContext` were mapped and typed all the way to the client and then

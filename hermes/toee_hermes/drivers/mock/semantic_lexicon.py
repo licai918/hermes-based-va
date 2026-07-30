@@ -414,8 +414,14 @@ def read_lexicon_filters(params: dict[str, Any]) -> tuple[Optional[str], Optiona
     return status, domain
 
 
+# A decider that is a seeding migration rather than an account. Written by
+# migration 0024's seed rows as `seed:<migration name>` -- attributed, but not to a
+# person.
+SEED_DECIDER_PREFIX = "seed:"
+
+
 def lexicon_provenance_unattributed(row: dict[str, Any]) -> bool:
-    """Is this row an ``admin_manual`` claim with nobody attached? (D20 sweep.)
+    """Is this ``admin_manual`` claim missing a NAMED HUMAN? (D20, widened.)
 
     D20 closes the hole going forward, but rows written between S01 and S02 can
     already carry ``provenance='admin_manual'`` with a NULL decider. They arrive
@@ -424,11 +430,27 @@ def lexicon_provenance_unattributed(row: dict[str, Any]) -> bool:
     the console can render an unattributed claim distinctly from one a named
     admin actually made. It is derived rather than stored on purpose: the answer
     is a property of the two columns, and a stored copy could drift from them.
+
+    **Widened after the 0.0.5 sign-off walkthrough put the console on screen.** All
+    four seeded rows render as ``admin_manual`` with
+    ``decider = seed:0024_lexicon_seed_domain_1``. That is a THIRD case D20 did not
+    cover: not null, so no gate was bypassed -- but a migration is not a human
+    administrator, and a reviewer scanning the queue sees a provenance and a decider
+    side by side and concludes a person approved it. The misreading is identical to
+    the null case, so it takes the same rendering path rather than a parallel one.
+
+    So the question this answers is not "is anyone attached" but **"is a named human
+    attached"**. The seeded rows genuinely are a human decision -- the code author's
+    -- that happens to arrive by migration; making the console SAY so is the honest
+    fix, where relabelling the data would be a larger claim and would need a fourth
+    provenance value the catalog does not have.
     """
-    return (
-        row.get("provenance") == LEXICON_PROVENANCE_ADMIN_MANUAL
-        and not row.get("decider_account_id")
-    )
+    if row.get("provenance") != LEXICON_PROVENANCE_ADMIN_MANUAL:
+        return False
+    decider = row.get("decider_account_id")
+    if not decider:
+        return True
+    return str(decider).startswith(SEED_DECIDER_PREFIX)
 
 
 def lexicon_entry_view(row: dict[str, Any]) -> dict[str, Any]:

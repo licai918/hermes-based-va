@@ -3,14 +3,16 @@
   NFR-1 layer 2 (browser E2E) evidence for 0.0.5 -- re-runnable, not prose.
 
 .DESCRIPTION
-  The slice acceptance blocks ask for screenshots. They cannot be produced on this
-  machine: the Browser pane does not composite frames, so `computer{screenshot}`
-  times out for anyone, not just for one run. A screenshot would also be weak
-  evidence -- a reader can look at it but cannot re-derive it.
+  The slice acceptance blocks ask for screenshots. This header used to claim they
+  could not be produced on this machine at all. That was wrong -- it was true of
+  the in-app Browser pane (which does not composite frames) and was never checked
+  against Chrome, which screenshots fine. See workspace/0.0.5/e2e-evidence.md.
 
-  This script is the substitute and is strictly better for an audit: it drives the
-  real running workbench over HTTP, asserts the invariants the acceptance blocks
-  care about, and prints a verdict a reader can reproduce by running it again.
+  This script is not a substitute for a missing capability, then. It is the
+  PRIMARY evidence because it re-executes: a reader can look at a screenshot but
+  cannot re-derive it. It drives the real running workbench over HTTP, asserts the
+  invariants the acceptance blocks care about, and prints a verdict anyone can
+  reproduce by running it again.
 
   WHAT IT PROVES
     * every 0.0.5 admin BFF route refuses an unauthenticated caller with 401,

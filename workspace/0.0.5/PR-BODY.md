@@ -4,16 +4,20 @@ plus both carry-in slices**, 134 commits, clean fast-forward from `main @ 7fcfe0
 
 | Suite | Result |
 | --- | --- |
-| `hermes-runtime` pytest | **1452 passed** |
-| `hermes` pytest | **1309 passed, 1 skipped** |
-| `pnpm test` | **89 files / 938 tests passed** |
+| `hermes-runtime` pytest | **1466 passed** |
+| `hermes` pytest | **1319 passed, 1 skipped** |
+| `pnpm test` | **89 files / 939 tests passed** |
 | `pnpm typecheck` | both projects **Done** |
 
-Migrations 0020–0026 and 0028–0031 applied; **0027 was never claimed and is free.** The
+*Re-run 2026-07-30 after the two console-found fixes. The earlier draft of this table read 1452 /
+1309 / 938 — correct when written, stale once those landed. Suite counts are the kind of number that
+goes quietly wrong.*
+
+Migrations 0020–0026, 0028–0031 and **0032** applied; **0027 was never claimed and is free.** The
 catalog-sync lane ran S01 → S02 → S15 → S11 → S10 → S16 without a collision.
 
 Full detail: [`workspace/0.0.5/CLOSEOUT.md`](workspace/0.0.5/CLOSEOUT.md) ·
-[`DECISIONS.md`](workspace/0.0.5/DECISIONS.md) (D0–D27) ·
+[`DECISIONS.md`](workspace/0.0.5/DECISIONS.md) (D0–D28) ·
 [`knowledge-gate/GATE-REPORT.md`](workspace/0.0.5/knowledge-gate/GATE-REPORT.md)
 
 ---
@@ -91,8 +95,11 @@ test in the diff.
 The dispatch containers serve a baked image; rebuilding mid-iteration would have baked several
 agents' uncommitted code into a shared stack. Slices verified what the hot-reloading workbench UI
 could show and **declared the dispatch-served half unverified rather than implying otherwise.**
-Screenshots are unobtainable on this machine (the Browser pane does not composite frames), so
-textual evidence is the substitute throughout.
+An earlier draft of this section said screenshots were unobtainable on this machine. **That was
+wrong** — it was true of the in-app Browser pane only, and Chrome was never tried before the claim
+was written. Four gate PNGs are committed under `workspace/0.0.5/e2e-shots/`, and the console
+walkthrough was captured through Chrome. Textual evidence remains the *primary* record because it
+is re-runnable, not because pictures were impossible.
 
 **Verified live** after a controlled rebuild: the metrics page — S18's latency tiles reading **p95
 2.52 ms over 1908 samples** against the 150 ms line, independently corroborating S19's 2.30 ms
@@ -112,7 +119,7 @@ that must round-trip through `dispatch-copilot`.
 | **D23** — five of eleven feedback tags have nowhere legal to emit | Add a seventh `review_item` kind (**a D9 amendment**), or accept collection-only and **say so where the reviewer clicks the tag.** Today a reviewer tagging "missed information" gets a counted outcome that reaches nobody. |
 | Audit `details` render verbatim in the console | `optionalDetail` stringifies the whole blob, so `binding_key` — a customer's own phone/email — shows in the Detail column. Pre-existing since 0.0.3; S11 widened it. Defensible as-is (admin-gated, one customer, trail completeness is PAC-3's ask); the real defect is the blanket stringify rather than a named-field projection. |
 | One strict field blanks the whole metrics page | Happened **three times** this iteration. S28 made its own block nullable; **`latency`, `deletionSuccess` and `lifecycle` are still strict.** The failure mode is a blank admin page on any version skew. |
-| `seed_lex_season_all_season` says "all-season tires" | A **confirmed** L7 row the S06 prompt seam renders, using wording the business vocabulary policy forbids to Canadian customers. Scheduled for **0.0.6 S-0** per D4's iteration order — flagged so PAC-8/PAC-9 are not signed while it ships. |
+| ~~`seed_lex_season_all_season` says "all-season tires"~~ **FIXED in this PR** — the row now reads `passenger tires` (migration `0032`, D1's approved class label). **What is left to decide:** the *condition token* still reaches the prompt as `Seasonal default (tire, all_season): …`, naming the calendar window rather than the product. Renaming the facet vocabulary is 0.0.6 D1's spec work; say the word and it moves into 0.0.5 instead. |
 
 ## Deliberately not in this PR
 

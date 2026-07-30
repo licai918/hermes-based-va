@@ -4,13 +4,17 @@ Branch `feat/0.0.5-land-all`, **133 commits**, base `main @ 7fcfe09` (0 behind �
 
 | Suite | Result |
 | --- | --- |
-| `hermes-runtime` pytest | **1452 passed** |
-| `hermes` pytest | **1309 passed, 1 skipped** |
-| `pnpm test` | **89 files / 938 tests passed** |
+| `hermes-runtime` pytest | **1466 passed** |
+| `hermes` pytest | **1319 passed, 1 skipped** |
+| `pnpm test` | **89 files / 939 tests passed** |
 | `pnpm typecheck` | both projects **Done** |
 
-Working tree and index clean. Migrations 0020–0026, 0028–0031 applied; **0027 was never claimed and
-is free.** The catalog-sync lane ran S01 → S02 → S15 → S11 → S10 → S16 without a collision.
+*Re-run 2026-07-30 after the two console-found fixes. The earlier table read 1452 / 1309 / 938 —
+true when written, stale once those landed.*
+
+Working tree and index clean. Migrations 0020–0026, 0028–0031 and **0032** applied; **0027 was never
+claimed and is free.** The catalog-sync lane ran S01 → S02 → S15 → S11 → S10 → S16 without a
+collision.
 
 ---
 
@@ -99,8 +103,10 @@ test in the diff.
 The dispatch containers serve a baked image; rebuilding it mid-iteration would have baked several
 agents' uncommitted code into a shared stack. So slices verified what the hot-reloading workbench UI
 could show and **declared the dispatch-served half unverified rather than implying otherwise.**
-Screenshots are unobtainable on this machine — the Browser pane does not composite frames — so
-textual evidence is the substitute throughout.
+An earlier draft of this section said screenshots were unobtainable on this machine. **That was
+wrong in the general form** — true of the in-app Browser pane, never tested against Chrome before
+being written. Chrome screenshots work; four are committed under `e2e-shots/`. Textual evidence is
+the *primary* record because it re-runs, not because pictures were impossible.
 
 **Verified live** after a controlled rebuild: the metrics page (S18's latency tiles reading
 **p95 2.52 ms over 1908 samples** against the 150 ms line, corroborating S19's independent 2.30 ms),
@@ -119,7 +125,7 @@ that must round-trip through `dispatch-copilot`.
 | **D23** | Five of eleven feedback tags have nowhere legal to emit | Add a seventh `review_item` kind (a **D9 amendment**), or accept collection-only and **say so where the reviewer clicks the tag**. Today a reviewer tagging "missed information" gets a counted outcome that reaches nobody. |
 | — | Audit `details` render verbatim in the console | `optionalDetail` stringifies the whole blob, so `binding_key` (a customer's own phone/email) shows in the Detail column. Pre-existing since 0.0.3; S11 widened it. Defensible as-is (admin-gated, one customer, trail completeness is PAC-3's ask); the real defect is the blanket stringify rather than a named-field projection. |
 | — | One strict field takes the whole metrics page down | Happened **three times** this iteration. S28 made its own block nullable; **`latency`, `deletionSuccess` and `lifecycle` are still strict.** The failure mode is a blank admin page on any version skew. |
-| **0.0.6 S-0** | `seed_lex_season_all_season` carries `canonical_form="all-season tires"` | A **confirmed** L7 row the S06 prompt seam renders, using wording your own vocabulary policy forbids to Canadian customers. Scheduled for 0.0.6 S-0 per D4's iteration order — flagged here so PAC-8/PAC-9 are not signed while it ships. |
+| — | ~~`seed_lex_season_all_season` carries `canonical_form="all-season tires"`~~ **FIXED HERE** | Migration `0032` sets it to `passenger tires`, D1's approved label for the class; verified in the prompt render, not just the console. **Left for you:** the *condition token* still reaches the prompt (`Seasonal default (tire, all_season): …`) as the name of the calendar window. Renaming the facet vocabulary is 0.0.6 D1's spec work — say so and it moves into 0.0.5. |
 
 ---
 

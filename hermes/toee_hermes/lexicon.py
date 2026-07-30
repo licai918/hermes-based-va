@@ -414,10 +414,32 @@ LEXICON_SEED_ENTRIES: tuple[SeedEntry, ...] = (
         domain=DOMAIN_TIRE,
         entry_kind=ENTRY_KIND_DEFAULT_RULE,
         surface_form=f"{SEASON_CONDITION_PREFIX}{SEASON_ALL_SEASON}",
-        canonical_form="all-season tires",
+        # NOT "all-season tires". The business will not say that phrase in this
+        # market -- "加拿大冬天雪特别厚，我们不会称之为 ALL SEASON，避免出现
+        # misleading information" -- and 0.0.6's D1 records the approved outward
+        # label for the class: PASSENGER -> "passenger tires", never "all-season".
+        # `canonical_form` is what hooks._default_rule_line renders into an
+        # imperative ASK, so this field IS customer-facing wording, which is why it
+        # is the one that had to change. Found by looking at /admin/lexicon during
+        # the 0.0.5 sign-off walkthrough: a CONFIRMED row was telling the model it
+        # could offer a Canadian customer all-season tires.
+        canonical_form="passenger tires",
         evidence=(
-            "Outside the winter window a bare tire size means all-season tires. "
-            "Same confirm-first rule as the winter row: a default is a question."
+            "Outside the winter window a bare tire size means the passenger class. "
+            "Same confirm-first rule as the winter row: a default is a question. "
+            "The wording is the business's approved label for the class -- the "
+            "phrase 'all-season' is not used with customers in this market, because "
+            "where winter capability is a safety question it reads as a claim the "
+            "product does not support."
         ),
     ),
 )
+
+# The CONDITION token is rendered too, and that is 0.0.6's to settle.
+# `hooks._default_rule_line` prints `Seasonal default (tire, all_season): ASK ...`,
+# so the string `all_season` still reaches the prompt as the name of the *window*
+# this rule applies in -- not as a product label, which is why it is a smaller
+# problem than the canonical form was. Renaming the condition vocabulary means
+# deciding what the facet values are called, which is exactly 0.0.6 D1's spec-layer
+# work (customer wording IN, one approved label OUT). Recorded here rather than
+# half-fixed, so the next reader does not assume this file already handled it.

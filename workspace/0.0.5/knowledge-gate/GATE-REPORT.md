@@ -252,18 +252,36 @@ decision about **which layer owns customer-vocabulary reconciliation** is 0.0.6'
 taken, and pre-seeding rows into L7 now would have to be undone. The measurement stands as the
 evidence for that decision; the rows should wait for it.
 
-## A live collision the 0.0.6 doc already flags, sitting in this branch right now
+## A live collision the 0.0.6 doc flagged — fixed in this branch, with one part left
 
-0.0.6 §D1 records it and it is worth surfacing here because it is not hypothetical:
+0.0.6 §D1 recorded it and this report surfaced it as a note for PAC-8/PAC-9. It was then **fixed**,
+because it turned out to be cheap and the reasoning for deferring it did not survive contact with
+the console:
 
-> The L7 seed row `seed_lex_season_all_season` (`hermes/toee_hermes/lexicon.py`) carries
+> The L7 seed row `seed_lex_season_all_season` (`hermes/toee_hermes/lexicon.py`) carried
 > `canonical_form="all-season tires"` — customer-facing prose, in a **confirmed** row that the S06
 > prompt seam is built to render.
 
 The owner's own vocabulary policy forbids exactly that wording: *"加拿大冬天雪特别厚，我们不会称之为
-ALL SEASON，避免出现 misleading information."* So a confirmed L7 row is currently telling the model
-to offer Canadian customers "all-season tires" by name.
+ALL SEASON，避免出现 misleading information."* A confirmed L7 row was telling the model to offer
+Canadian customers "all-season tires" by name.
 
-It is scheduled for 0.0.6 S-0 and D4 says not to interrupt 0.0.5 for it. Recording it here so the
-0.0.5 close does not sign off a gate report while a confirmed row is shipping wording the business
-has ruled out — that is a note for **PAC-8 and PAC-9**, not a code change today.
+**Fixed:** migration `0032` sets the row to `passenger tires`, D1's own approved label for the
+PASSENGER class. A new migration rather than an edit to `0024`, because `schema_migrations` skips
+versions it has already applied — editing 0024 would change what a fresh database gets while leaving
+every migrated one alone. Verified at the **prompt seam**, not only in the console: the rendered
+block reads `ASK whether the customer wants passenger tires`.
+
+**Left, and it is the owner's call:** the *condition token*. `_default_rule_line` also prints
+`Seasonal default (tire, all_season): …`, so the string `all_season` still reaches the prompt — as
+the name of the calendar window the rule applies in, not as a product label, which is why it is a
+smaller problem than the canonical form was. Renaming the facet vocabulary means deciding what the
+values are called, which is 0.0.6 D1's spec-layer work (customer wording IN, one approved label
+OUT). Recorded rather than half-done. **If the token should be gone from the prompt too, that is a
+0.0.5 item on request.**
+
+Why the deferral was dropped: D4 says not to interrupt 0.0.5 for 0.0.6 work, and that still holds
+for the *vocabulary design*. But this row was not design — it was one wrong string in a confirmed
+row, using a label D1 had already approved. Shipping a gate report that flags a known
+policy-violating phrase, while the fix is a one-line migration, trades a real customer-facing risk
+for no schedule gain.

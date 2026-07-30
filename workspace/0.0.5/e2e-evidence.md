@@ -4,16 +4,31 @@ Captured 2026-07-29 against commit `f7ef529`, workbench served by `next dev` on
 `localhost:3000` (the `workbench-ui` launch entry — **not** `pnpm dev`, which runs
 `docker compose up --build`).
 
-## Why there are no screenshots, for anyone
+## Screenshots — an earlier claim here was wrong, and this is the correction
 
-The slice acceptance blocks ask for screenshots. `computer{action:"screenshot"}` fails on this
-machine with *"the Browser pane is not displayed, so the page is not compositing frames"* — retried
-during this run and it still fails. **That clause is unsatisfiable here, for every slice, in every
-session.** It is not a slice that skipped its homework.
+**What this section used to say:** that `computer{action:"screenshot"}` fails on this machine, and
+therefore the screenshot clause was *"unsatisfiable here, for every slice, in every session."*
 
-What replaces it is deliberately stronger for an audit: a **re-runnable script** plus a record of
-what a browser session showed. A screenshot can be looked at; a script can be executed again by
-anyone and produce the same verdict.
+**That generalisation was false.** It was true of exactly one surface — the in-app **Browser pane**,
+which returns *"the Browser pane is not displayed, so the page is not compositing frames"*. It was
+never established for **Chrome**, which was never tried before the claim was written. Chrome
+screenshots work. Four gate PNGs live in `e2e-shots/`, and 2026-07-30's console walkthrough was
+witnessed and captured through Chrome.
+
+Recorded rather than quietly patched, because the shape of the error matters more than the fact:
+**one tool failed, and the conclusion was written about every tool.** The honest sentence was "the
+Browser pane cannot screenshot" — a claim about a tool. What got written was a claim about the
+machine, which then propagated into five other documents in this directory.
+
+The re-runnable script below is still the better *primary* evidence, and that part of the original
+reasoning stands: a screenshot can be looked at; a script can be executed again by anyone and
+produce the same verdict. It is the *substitute-of-necessity* framing that was wrong — the
+screenshots were available all along.
+
+**One real limit, stated narrowly this time:** a native `title` tooltip is drawn by the browser's
+own UI layer rather than the page, so it does not appear in a CDP screenshot. Tooltip text is
+therefore evidenced by reading the `title` attribute off the live DOM, which pins the exact string
+rather than a picture of it. This is a claim about native tooltips and CDP capture — nothing wider.
 
 ---
 
@@ -76,12 +91,25 @@ than `0` — the honest-labelling property S18 and S22 both pinned.
 
 ---
 
-## What this does NOT establish, stated rather than implied
+## What the 2026-07-29 run did NOT establish, and which gaps closed on 2026-07-30
 
-* **The rep-403 leg was not exercised.** It needs a signed-in rep session and this run entered no
-  credentials. Prior slices reported it; that report is not re-claimed here as evidence.
-* **Nothing served by the dispatch containers is covered.** They run a baked image predating these
-  slices. The workbench UI hot-reloads and is what was checked.
-* **The populated review inbox is unverified.** The dev database has no review items, so the inbox
-  correctly renders its empty state and the row rendering is covered by component tests only.
-* **Screenshots do not exist and cannot be produced on this machine.**
+The four limits below were true of the 07-29 `next dev` run. Three were closed the next day by the
+owner-witnessed Chrome session against the **containers**; they are kept rather than deleted, so the
+record shows what was open and what shut it.
+
+* ~~**The rep-403 leg was not exercised.**~~ **CLOSED 07-30.** A signed-in rep session was driven by
+  the owner, and all four admin routes answered **403** — not 401, not 200. This was the specific gap
+  listed as uncovered, and it is now the leg with the strongest evidence: an authenticated request
+  that is *refused by role* proves more than an anonymous one refused by absence of a session.
+* ~~**Nothing served by the dispatch containers is covered.**~~ **CLOSED 07-30.** The 07-29 run
+  checked hot-reloaded `next dev`, which is why the note existed. The 07-30 session ran against
+  `dispatch-admin` after `docker compose up -d --build`, so what was verified is the built image.
+  This distinction turned out to be load-bearing, not pedantic: a server-derived flag passed its unit
+  tests and did **not** change on screen, because the container still held the pre-fix image. The
+  fix was only real after the rebuild.
+* **The populated review inbox is still unverified.** The dev database has no review items, so the
+  inbox correctly renders its empty state and the row rendering is covered by component tests only.
+  **Still open** — no run has exercised it.
+* ~~**Screenshots do not exist and cannot be produced on this machine.**~~ **WRONG WHEN WRITTEN**, in
+  the general form. See the correction at the top: the Browser pane cannot screenshot; Chrome can,
+  and did.

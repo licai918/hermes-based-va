@@ -19,17 +19,26 @@
 
 ## ⚠ Carried exceptions — these do NOT get closed quietly (see [../DECISIONS.md](../DECISIONS.md))
 
-- **The ② screenshot clause is unmet across the iteration, and it is an environment limitation,
-  not negligence.** The Browser pane in this development environment will not composite frames,
-  so no slice has been able to capture one. Three slices so far drove the real stack end to end
-  and substituted page text, the accessibility tree, network calls and direct Postgres checks —
-  stronger evidence than a screenshot for *behaviour*, and each one said plainly that it had no
-  image rather than claiming otherwise.
-  What only a rendered frame can verify is the **visual** layer, and the S02 review enumerated
-  it concretely: an 11-column table with an inline `<input>` inside it; whether the red-bold
-  UNATTRIBUTED badge is actually legible, given colour is its only visual channel; whether the
-  PII footnote is clipped; and hit targets — the reported ~18px click offset that produced a
-  *silent* no-op is direct evidence the visual layer is unverified.
+- **~~The ② screenshot clause is unmet across the iteration~~ — DISCHARGED 2026-07-30, and the
+  original reason was over-stated.** The narrow claim was correct: the **Browser pane** in this
+  environment will not composite frames, so no slice could capture through it. The claim that
+  followed — that screenshots were therefore impossible here — was never tested against **Chrome**,
+  which composites fine. Screenshots exist: `../e2e-shots/` plus the owner-witnessed console
+  captures. Slices are not marked down; the *controller's* generalisation is what was wrong.
+
+  **The S02 review's visual-layer questions, answered off the live page rather than argued:**
+
+  | S02 asked | measured on the running console |
+  | --- | --- |
+  | an 11-column table with an inline `<input>` | **13 columns**, intrinsic width **1992px**. Fits the 2040px viewport it was checked at; **does not fit 1440 or 1280**. Every ancestor is `overflow-x: visible`, so below ~2000px the **whole page** scrolls sideways rather than the table scrolling inside itself. Data stays reachable — this is ergonomics, not loss. **Unfixed and not in scope here; flagged.** |
+  | is the red-bold `UNATTRIBUTED` badge legible, colour being its only visual channel | contrast **9.28:1** (`#8A1C1C` on `#FFFFFF`), bold, 16px — above WCAG **AAA** (7:1). And the premise was wrong: the badge is a distinct **word** beside `admin_manual`, so colour is emphasis, not the only channel. A colour-blind reviewer still reads it. |
+  | is the PII footnote clipped | **not clipped** at the width checked (`scrollWidth == clientWidth`). Subject to the same sideways-scroll caveat below ~2000px. |
+  | hit targets — the ~18px click offset that produced a *silent* no-op | **NOT re-tested.** Stated plainly rather than folded into the row above: nothing in this session exercised click accuracy, so that finding stands where S02 left it. |
+
+  A frame also exposed **two defects no test had**: the seasonal row's forbidden wording, and four
+  migration-seeded rows badged as though a named admin had approved them. Both fixed in this PR.
+  That is the case for layer ② being a gate rather than a formality — **3,724 passing tests across
+  all three suites** did not see either one.
   **Your walkthrough is where that gets discharged, for S01 and S02 together** (S01 had no human
   surface of its own and S02 is its console). Record it as an explicit exception carried and then
   closed, not as a gate that was always green.

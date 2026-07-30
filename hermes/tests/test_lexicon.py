@@ -173,11 +173,15 @@ def test_confirm_required_cannot_be_switched_off() -> None:
         default.confirm_required = False  # type: ignore[misc]
 
 
-def test_outside_winter_the_date_derived_default_is_all_season() -> None:
+def test_outside_winter_the_date_derived_default_is_the_passenger_class() -> None:
     default = resolve_seasonal_default(_confirmed_seed_rows(), today=date(2026, 7, 27))
     assert default is not None
+    # The CONDITION is still `all_season` -- that names the window the rule applies
+    # in, and it is internal. The VALUE is the approved outward label: the business
+    # does not say "all-season" to customers in this market (0.0.6 D1), and this
+    # field is rendered into an imperative ASK.
     assert default.season == SEASON_ALL_SEASON
-    assert default.value == "all-season tires"
+    assert default.value == "passenger tires"
     assert default.confirm_required is True
 
 

@@ -48,10 +48,16 @@ into evidence about *this* commit.
 
 ## C. Layer ② browser E2E — and why it looks different from the acceptance blocks
 
-The slices ask for **screenshots**. `computer{action:"screenshot"}` fails on this machine —
-*"the Browser pane is not displayed, so the page is not compositing frames"* — retried during this
-verification and it still fails. **The clause is unsatisfiable here for every slice in every
-session**, so no slice could have met it and none should be marked down for it.
+The slices ask for **screenshots**. This verification originally reported the clause as
+*"unsatisfiable here for every slice in every session"*, on the strength of
+`computer{action:"screenshot"}` failing with *"the Browser pane is not displayed, so the page is not
+compositing frames"*.
+
+**That was over-generalised from one tool.** The Browser pane cannot composite; **Chrome can**, and
+was never tried before the conclusion was written. Screenshots exist: four gate PNGs under
+`e2e-shots/`, plus the owner-witnessed console captures. What remains true is the *narrow* part — no
+slice could have produced one through the Browser pane, so no slice should be marked down; and the
+script below is still better audit evidence because it re-executes.
 
 Substituted, and better for an audit because it can be re-executed:
 
