@@ -111,12 +111,39 @@ jobs:
     env:
       DATABASE_URL: postgresql://toee:toee@localhost:5432/toee_va
       KNOWLEDGE_DATABASE_URL: postgresql://toee:toee@localhost:5432/toee_knowledge
+      # Where fastembed puts the L5 query-embedding model. Set here (not left to the
+      # default) so the cache step below has one known path to save/restore, and so
+      # it matches what hermes-runtime/Dockerfile bakes into the image.
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed-cache
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.11"
           enable-cache: true
+      # The live-embedder tests download the model (~65MB, measured in the built
+      # image) on first use. Before 0.0.5 they never ran at all -- fastembed was
+      # undeclared and this job whitelisted their skip, which is how the retrieval
+      # path rotted behind a green badge (D29). Now that they DO run, cache the
+      # weights so the gate costs seconds instead of a fetch per run.
+      #
+      # KEY: hashed off retriever.py, because that file holds the default model name
+      # (`fastembed_query_embedder`'s `model_name`). Change the model and the key
+      # changes and the cache misses -- which is the safe direction. Keying on a
+      # literal "bge-small-en-v1.5" would keep hitting a cache built for the old
+      # weights. It also misses on unrelated edits to that file; a redundant 65MB
+      # fetch is a cheaper mistake than silently testing the wrong model.
+      #
+      # NO restore-keys, deliberately: a prefix fallback would restore a cache built
+      # for a DIFFERENT model. fastembed namespaces by model name so that would
+      # probably just re-download -- but "probably, because of how a third-party
+      # library lays out its directories" is not a property worth depending on for
+      # 65MB.
+      - name: Cache the L5 embedding model
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FASTEMBED_CACHE_PATH }}
+          key: fastembed-${{ runner.os }}-${{ hashFiles('hermes-runtime/hermes_runtime/knowledge/retriever.py') }}
       # toee_va needs the business migrations applied before the tests run (some,
       # e.g. test_knowledge_ingest.py's policy-slot read, hit the DB's default
       # schema directly rather than a throwaway one). toee_knowledge has no

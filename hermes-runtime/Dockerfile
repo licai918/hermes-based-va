@@ -53,6 +53,11 @@ RUN uv sync --frozen
 # Naming "BAAI/bge-small-en-v1.5" here instead would silently bake the wrong weights
 # the day that default changes -- the image would still build, and retrieval would
 # still miss its deadline in production only.
+# FASTEMBED_CACHE_PATH is honoured -- VERIFIED in the built image rather than taken
+# from documentation: /opt/fastembed-cache/models--qdrant--bge-small-en-v1.5-onnx-q,
+# 65MB. (It is not referenced in fastembed's `model_management` module, so grepping
+# there suggests it is ignored; the filesystem says otherwise. CI caches this same
+# path -- see .github/workflows/ci.yml.)
 ENV FASTEMBED_CACHE_PATH=/opt/fastembed-cache
 RUN uv run --frozen python -c \
     "from hermes_runtime.knowledge.retriever import get_query_embedder; get_query_embedder()('warmup')"
