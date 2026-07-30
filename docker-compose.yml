@@ -46,6 +46,36 @@ x-datastore-env: &datastore-env
   # forget it -- the same reason KNOWLEDGE_DATABASE_URL is here rather than per-service.
   KNOWLEDGE_BACKEND: retriever
   TOOL_BACKEND: datastore
+  # --- L6 / L7 turn seams -----------------------------------------------------
+  #
+  # Every one of these is fail-closed (unset = OFF), and that default is CORRECT:
+  # it is what keeps the eval record/replay path byte-identical (NFR-4), because
+  # that path sets none of them. What was wrong is that this file never set them
+  # EITHER -- so on the deployed stack L6 and L7 never reached a prompt, for two
+  # iterations, while every test covering them passed. `injection_ledger` had zero
+  # rows after six real customer turns; blast radius was therefore permanently
+  # "0 open cases"; the review inbox could never populate; and PAC-1/3/5/7 had
+  # nothing to demonstrate. Found by running the S29 owner walkthrough. See D30.
+  #
+  # Exactly the shape of D29's KNOWLEDGE_BACKEND, one layer over. Setting them
+  # here and nowhere else keeps eval determinism intact -- same fix, same reason.
+  LEXICON_EXTERNAL_INJECTION: "on"        # L7 glossary -> customer turn (FR-6/FR-7)
+  LEXICON_INJECTION: "on"                 # L7 glossary -> copilot draft (FR-6)
+  AGENT_EXPERIENCE_EXTERNAL_INJECTION: "on"  # L6 learnings -> customer turn (FR-25)
+  AGENT_EXPERIENCE_INJECTION: "on"        # L6 learnings -> copilot draft (FR-25)
+  # The CAPTURE axis, deliberately separate from injection: this is what lets a
+  # confirmed clarification become a proposed entry, which is the first half of
+  # PAC-1's "clarification -> proposal -> admin approve -> live with NO deploy".
+  # Injection without capture would render vocabulary that can never grow.
+  LEXICON_CAPTURE: "on"
+  #
+  # NOT set, and this comment IS the decision rather than an oversight:
+  # MEMORY_READ_BUDGET (S19) makes the pre-turn read budget ENFORCING -- reads get
+  # skipped once over budget. That changes what a customer receives under load,
+  # and no 0.0.5 PAC depends on it (PAC-6 asks for visible latency tiles, which do
+  # not need enforcement). Left off pending an owner call; the metrics panel
+  # already labels the affected tile "no budget (S19)" rather than implying one.
+  # MEMORY_READ_BUDGET: "on"
   # 0.0.4 S18 (FR-26): compose is NEVER prod, so every service here gets an explicit
   # non-prod label. This is what lets the scripted-eval seam ARM under its allowlist
   # guard (scripted_eval.require_scripted_eval_prod_inert) -- both the gateway and the

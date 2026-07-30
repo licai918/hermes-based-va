@@ -17,6 +17,22 @@
   covered by 0.0.4's own close. List both explicitly as inherited items in the owner-driven
   walkthrough below, so they cannot ride along unnoticed as already signed off.
 
+## PAC status after the 2026-07-30 walkthrough run (evidence, not assertion)
+
+| PAC | state | basis |
+| --- | --- | --- |
+| **PAC-1** | ⚠ **partly shown** | L7 normalizer live in a real conversation (`205 55 16` → agent said `205/55R16`). The **seasonal-default confirm-before-quoting** half is NOT shown: the size probed was out of stock, and the PAC's wording says "in winter" while the walkthrough ran in the all-season window. Needs an in-stock size, ideally re-run in the winter window. |
+| **PAC-2** | ✅ **shown** | add → edit → retire driven through the console. New row rendered `admin_manual` + a named decider and **no** UNATTRIBUTED badge (the D28.2 flag discriminates); `(edited …)` appeared on edit; retire left `retired` with no action buttons. |
+| **PAC-3** | ✅ **shown** (retire half) | Entry injected into a live turn, then retired → `blast_radius` item with `open_case_count: 1`. The **preference old→new history** and **whole-binding erase trail** halves were NOT exercised. |
+| **PAC-4** | ⚠ **partial** | Adversarial eval family green — but **D24 says green is not proof no injection was obeyed** (the gate reads reply text; obedience as a tool call is invisible). The L4 hard-reject leg was not driven by hand. |
+| **PAC-5** | ⚠ **partly shown** | Hub renders every claim honestly (5/5 + a PII-absence check); inbox now populates and renders decisions. **Re-classify, triage annotations, NL pre-fill and the fail-review one-click L4 correction were NOT exercised.** |
+| **PAC-6** | ⚠ **number in doubt** | Tiles live, 150 ms line shown — but L5 measured **p95 787.52 ms against its 800 ms budget** (98%) while the FR-7b gate reports 11.54 ms for the same code. Gate warms and loops; a turn does not. See the ⚠ in the walkthrough. |
+| **PAC-7** | ❌ **not shown** | Needs three same-tag fails → one proposal → loop-closure metrics moving. Unblocked by D30 (the ledger fills now) but never driven. |
+| **PAC-8** | 🔒 **owner** | 81% is real, and the questions AND their expected source pages were derived by the implementer from the owner's transcript. Read the 21 questions, not the percentage. |
+| **PAC-9** | ⚠ **head drift** | CI 6/6 green on `ead07c2`; commits after that are unverified until pushed. |
+
+**Nothing here is signed. This table is what a walkthrough produced, not a verdict.**
+
 ## ⚠ Carried exceptions — these do NOT get closed quietly (see [../DECISIONS.md](../DECISIONS.md))
 
 - **~~The ② screenshot clause is unmet across the iteration~~ — DISCHARGED 2026-07-30, and the

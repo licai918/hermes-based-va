@@ -50,11 +50,29 @@ cannot see is a number that lies.
 
 ## 3 · `/admin/inbox` — the queue
 
-Expect **"Nothing waiting for review"** on this database: it has no review items, so the empty
-state is correct. **Wrong** would be a spinner that never resolves, or an error.
+Expect either an empty queue or the `blast_radius` row left by the D30 walkthrough. **Wrong** would
+be a spinner that never resolves, or an error.
 
-*If you want to see a populated row,* the fastest honest way is to retire a lexicon entry in
-`/admin/lexicon` — S10's blast-radius hook emits a review item on retire.
+*To populate it yourself* — and this instruction used to be wrong, which is worth knowing before you
+follow it. It said "retire a lexicon entry; S10's blast-radius hook emits a review item on retire."
+**It omitted the condition.** `blast_radius.py` raises an item only when the retired entry actually
+touched an OPEN case:
+
+```python
+if not result["open_cases"] and not emit_when_no_open_cases:
+    return None   # "0 open cases touched by retired entry X -- review?" is noise
+```
+
+So retiring an entry nobody's conversation ever used emits **nothing**, correctly. Following the old
+instruction produced an empty inbox and looked like a broken feature. The sequence that works:
+
+1. add an entry in `/admin/lexicon` (it is `confirmed` immediately — you are the gate),
+2. send **one** message in the Simulator, so the entry is injected into a live turn,
+3. retire it.
+
+The row then carries `reason: entry_retired` with the case and turn counts — **counts, not case
+ids**, deliberately: the write scan redacts long digit runs and would mangle an id into a broken
+link. Use the subject_ref to get the live list instead.
 
 ## 4 · `/admin/lexicon` — the L7 console
 

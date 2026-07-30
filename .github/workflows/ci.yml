@@ -187,12 +187,20 @@ jobs:
       # test_integration_probe.py (0.0.4 S16) carries the live-Postgres evidence
       # for the FR-24 probe result STORAGE + the page's last_probe fill; a silent
       # skip there is a green build proving nothing about the health surface.
+      #
+      # test_memory_layer_wiring.py (0.0.5 D30) is in the pattern although it needs
+      # no Postgres: it is the ONLY check that the deployment actually turns each
+      # fail-closed layer seam on, and it guards itself with importorskip("yaml").
+      # Drop pyyaml and the whole guard would vanish while CI stayed green -- the
+      # same reasoning as test_composio_sdk_pin.py above, and the same shape as the
+      # `fastembed not installed` whitelist D29 deleted. L6 and L7 shipped
+      # unreachable for two iterations; this is what notices the next one.
       - name: Runtime + gateway tests
         working-directory: hermes-runtime
         run: |
           set -o pipefail
           uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
-          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin|integration_probe)' /tmp/pytest-runtime.log; then
+          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin|integration_probe|memory_layer_wiring)' /tmp/pytest-runtime.log; then
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1
           fi

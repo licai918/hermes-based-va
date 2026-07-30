@@ -143,8 +143,23 @@ def test_the_ci_skip_gate_no_longer_exempts_a_missing_embedder():
     unnecessary: leaving it in would re-arm the same blind spot the moment someone
     drops the dependency again.
     """
-    assert "fastembed not installed" not in _CI.read_text(encoding="utf-8"), (
-        "ci.yml still whitelists the 'fastembed not installed' skip. The live-embedder "
-        "tests are the only CI coverage of the retrieval path; exempting their skip "
-        "lets the whole path rot behind a green badge."
+    # Asserts on the MECHANISM, not the vocabulary. The first version of this test
+    # searched the whole file for the phrase "fastembed not installed" -- and then
+    # went red the moment a COMMENT explained the history, which is prose, not a
+    # whitelist. That is the mirror image of the bug this file's sibling test had
+    # (matching prose and passing for the wrong reason); the shared root is
+    # substring-matching a file instead of asserting on its structure. What must
+    # never come back is a `grep -v` filtering the skip check, so that is what is
+    # asserted -- the exemption itself, in any wording.
+    skip_check = [
+        line
+        for line in _CI.read_text(encoding="utf-8").splitlines()
+        if "^SKIPPED" in line or ("grep" in line and "pytest-runtime.log" in line)
+    ]
+
+    assert skip_check, "the NFR-7 no-silent-skip check is gone from ci.yml entirely"
+    assert not any("grep -v" in line for line in skip_check), (
+        f"ci.yml's no-silent-skip gate has an exemption again: {skip_check}. The "
+        "live-embedder tests are the only CI coverage of the retrieval path; "
+        "exempting their skip lets the whole path rot behind a green badge."
     )

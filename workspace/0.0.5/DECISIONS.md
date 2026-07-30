@@ -1087,3 +1087,77 @@ still undeclared**: it substring-matched the file, and pyproject's own comment q
 evidence *of* it. Rewritten to parse the TOML. **The defect this whole investigation is about,
 reproduced inside its own regression test, by me, one hour after writing D28.3 about the same
 thing.** It is not a lesson that stays learned; it is a check that has to be run every time.
+
+---
+
+## D30. It was not one layer. L6 and L7 were unwired too — and D29's own fix was verified against a seam the product never reached
+
+Found by running the S29 owner walkthrough end to end. `injection_ledger` had **zero rows** after
+six real customer turns. Probed inside the running turn-worker:
+
+```
+ON   L4 customer memory (TOOL_BACKEND)
+ON   L5 knowledge retrieval (KNOWLEDGE_BACKEND)   <- D29, hours earlier
+OFF  L6 injected into EXTERNAL turn
+OFF  L6 injected into COPILOT draft
+OFF  L7 lexicon injected into EXTERNAL turn
+OFF  L7 lexicon injected into COPILOT draft
+```
+
+**0.0.5's headline layer never reached a prompt.** Same mechanism as D29 exactly: the flags are
+fail-closed (correct — it is what keeps the eval replay path byte-identical, NFR-4) and
+`docker-compose.yml` never set them. The whole file mentioned them **once, commented out**.
+
+### What that silently broke, in order
+
+`injection_ledger` empty → `affected_cases` finds nothing → blast radius is permanently
+"0 open cases" → `measure_and_emit` returns `None` **by design** (its docstring: raising
+"0 open cases touched by retired entry X — review?" is *noise*) → the review inbox can never
+populate → **PAC-3, PAC-5 and PAC-7 had nothing to demonstrate**, and PAC-1's seasonal default
+could not fire because the rule was never in the prompt. Five PACs, one cause.
+
+It also explains two numbers the walkthrough had been reading as data: `hit_count` 0 everywhere and
+`health` a constant 0.25 on every row. Neither was a measurement; both were the absence of one.
+
+### The part that is mine
+
+**D28.1 said the seasonal-wording fix was "verified at the PROMPT SEAM, not the console."** That
+was true of `_render_lexicon` and *silent about whether the product calls it* — and on this stack it
+never did. **I made D29's exact error, about my own fix, in the same session, hours after writing
+D29 up.** Verifying one layer deeper than the console is not the same as verifying the layer the
+customer is on; only the ledger and the reply prove that.
+
+### The fix, and the guard that generalises it
+
+Five flags set in compose's shared `x-datastore-env` anchor (`LEXICON_EXTERNAL_INJECTION`,
+`LEXICON_INJECTION`, `AGENT_EXPERIENCE_EXTERNAL_INJECTION`, `AGENT_EXPERIENCE_INJECTION`,
+`LEXICON_CAPTURE` — capture because PAC-1's "clarification → proposal → approve" needs it; injection
+without capture renders vocabulary that can never grow). `MEMORY_READ_BUDGET` is left OFF **as a
+written decision**, not an omission: enforcement changes what a customer receives under load and no
+0.0.5 PAC depends on it.
+
+`tests/test_memory_layer_wiring.py` (13 cases) encodes the lesson, and the lesson is **not** "the
+flag was off" — it is that **nobody decided**. So the general guard demands only that every
+fail-closed seam be *named* in the deployment file, so OFF is a recorded choice a reader can argue
+with. The seam set is **derived from `_flag_on`'s call sites**, not listed: a hardcoded list would
+have covered exactly the flags already known to be broken. It found **eight**, not the four the
+walkthrough exposed.
+
+### Verified at the product, in one chain
+
+1. All six seams read ON in the running container.
+2. A customer typed `do you have 205 55 16`; the agent answered about **`205/55R16`** — the L7
+   normalizer, live in a customer conversation for the first time.
+3. `injection_ledger` **0 → 6 rows**, including `seed_lex_season_all_season`: D28.1's
+   `passenger tires` reached a real prompt, finally.
+4. The product's own `affected_cases` reports **1 case / 1 open / 2 turns** per entry.
+5. A fresh entry, injected once, then retired → the inbox shows **1 pending decision**,
+   `blast_radius`, evidence `{"reason":"entry_retired","case_count":1,"turn_count":1,"open_case_count":1}`,
+   with Acknowledge / Dismiss / Re-triage. **PAC-3 and PAC-5's inbox clause, demonstrated.**
+
+**A near-miss worth recording:** between (4) and (5) I hand-wrote a join from `injection_ledger` to
+`cases` on `case_or_binding_ref`, got zero, and nearly reported "blast radius is structurally
+impossible for L7". The product's real query resolves an external turn through
+`turn_ref → agent_turn_context → sms_session_id`; the binding key never participates. **My
+approximation was broken, not the code.** Asking the product's own function is what separated the
+two — the same move that settled D29.

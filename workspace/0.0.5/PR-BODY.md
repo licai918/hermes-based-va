@@ -22,7 +22,7 @@ Migrations 0020–0026, 0028–0031 and **0032** applied; **0027 was never claim
 catalog-sync lane ran S01 → S02 → S15 → S11 → S10 → S16 without a collision.
 
 Full detail: [`workspace/0.0.5/CLOSEOUT.md`](workspace/0.0.5/CLOSEOUT.md) ·
-[`DECISIONS.md`](workspace/0.0.5/DECISIONS.md) (D0–D29) ·
+[`DECISIONS.md`](workspace/0.0.5/DECISIONS.md) (D0–D30) ·
 [`knowledge-gate/GATE-REPORT.md`](workspace/0.0.5/knowledge-gate/GATE-REPORT.md)
 
 ---
@@ -115,6 +115,32 @@ one thread, plus the in-container probe (tool payload **15 → 3894 chars**).
 model — the bill 0.0.3's "leave fastembed undeclared" decision deferred. Those CI fetches hit the HF
 Hub unauthenticated, so a rate-limit there becomes a new way for CI to redden unrelatedly.
 **Not re-scored:** FR-30's 81% still measures the retriever seam, not the tool seam.
+
+### 5c. …and it was not one layer: L6 and L7 were unwired too (D30)
+
+Running the S29 walkthrough found `injection_ledger` **empty after six real customer turns**. Probed
+in the container: **L6 and L7 injection OFF on every path.** Same mechanism as D29 — fail-closed
+flags (correct, it is what pins eval determinism) that `docker-compose.yml` never set; the file
+mentioned them once, commented out.
+
+One cause, five PACs: empty ledger → blast radius permanently "0 open cases" → `measure_and_emit`
+returns `None` by design → the review inbox can never populate → **PAC-3/5/7 undemonstrable**, and
+PAC-1's seasonal default was never in a prompt to fire. It also explains `hit_count` 0 everywhere and
+`health` a constant 0.25 — absences of measurement being read as measurements.
+
+**Including my own D29 fix-up:** D28.1 claimed the wording change was "verified at the prompt seam,
+not the console". True of the renderer, silent about whether the product calls it — and it did not.
+
+Fixed (five flags in the shared compose anchor; `MEMORY_READ_BUDGET` left off **as a written
+decision**). `tests/test_memory_layer_wiring.py` **derives** the seam set from `_flag_on`'s call
+sites and found **eight**, not the four the walkthrough exposed; the general guard demands only that
+each be *named* in the deployment, so OFF is a recorded choice rather than an omission.
+
+Verified as one chain: six seams ON → customer typed `205 55 16`, agent answered about **205/55R16**
+(L7 normalizer live in a real conversation) → ledger **0 → 6 rows** including the seasonal rule →
+product's own `affected_cases` returns 1 case / 1 open → fresh entry injected then retired → inbox
+shows **1 pending decision**, `blast_radius`, `open_case_count: 1`, with Acknowledge/Dismiss/Re-triage.
+**PAC-3 and PAC-5's inbox clause now have evidence.**
 
 ### 6. Browser E2E is the controller's standing debt, not the slices'
 
