@@ -1,10 +1,36 @@
-# S24 gate — FINAL, 2026-07-29
+# S24 gate — FINAL, 2026-07-29 (with a 2026-07-30 correction about WHAT IT MEASURES)
 
 > **Result: 17/21 = 81% PASS (exit 0)** on the corrected set, **17/22 = 77% FAIL** if the one moved
 > question is kept. Both numbers are real and the owner should see both — the pass is by less than
 > one question. What changed, and why each change is defensible, is in the section
 > *"Closing the gap"* at the end. The original review-time analysis below is kept unedited, because
 > the rule that moved a question was written down in it **before** any improved score existed.
+
+## ⚠ READ THIS BEFORE SIGNING PAC-8: what 81% was, and was not, a claim about
+
+**This gate measures `knowledge/retriever.py::retrieve` directly. Until 2026-07-30 that was NOT the
+code path a customer's question travelled.**
+
+An agent turn reaches L5 through the `toee_knowledge_search` **tool**, which only routes to the
+retriever when `knowledge_enabled()` is true. `KNOWLEDGE_BACKEND` was never set in
+`docker-compose.yml`, so the tool served a **two-entry mock stub** and the agent told customers *"I
+don't have our return policy on hand to share here"* — for questions this report scored as HITS. Two
+further causes (fastembed undeclared in the image, model not baked) would each have produced the
+identical symptom on their own. Full account: **D29** in `../DECISIONS.md`.
+
+Found by asking the running product a customer question during the S24 layer-② walkthrough — not by
+any test. The wiring is fixed and the same question now returns the policy's real 7-day window and
+15% restocking fee (`S24-LIVE-ANSWER.md`).
+
+**Two things this correction does NOT do, and the signature should not be read as covering them:**
+
+1. **The 81% is unchanged and still measures the retriever seam.** It was never wrong about
+   retrieval quality — it was silent about whether the product used it. **FR-30 has not been
+   re-scored through the tool seam.** That is the honest follow-up.
+2. **The question set and every "expected source page" in it were derived by the implementer** from
+   the owner's raw SMS transcript. S24 asks the owner to supply both. So PAC-8 is the step that makes
+   the bar the business's rather than the implementer's — **read the 21 questions, not the
+   percentage.**
 
 ---
 

@@ -991,3 +991,99 @@ for all four rows while the unit tests were green.
 gate for this reason, not as a formality — and "screenshots are unobtainable here", the controller's
 own claim that had excused it all iteration, turned out to be an over-generalisation from a single
 tool that was never checked against Chrome. See `e2e-evidence.md` for that correction.
+
+---
+
+## D29. FR-30's gate and the product were measuring DIFFERENT SEAMS — L5 was never wired on the deployed stack
+
+The most serious thing this iteration found, and it was found by **asking the running product one
+customer question and reading the answer.**
+
+S24's layer ② asks for "grounded answers citing the right content". Asked in the simulator:
+
+> **Customer:** i need to return some tires
+> **Hermes:** Hi there! **I don't have our return policy on hand to share here** …
+
+FR-30's gate scores that same question a **HIT** on `return-policy` + `REFUND_POLICY`. Both
+statements were true, because they were about different code:
+
+| | what it exercises |
+| --- | --- |
+| the gate (`gates recall`) | `knowledge/retriever.py::retrieve` **directly**, in the HOST venv |
+| the product (an agent turn) | the `toee_knowledge_search` **TOOL**, which only reaches `retrieve` when `knowledge_enabled()` is true |
+
+**81% measured a path the deployed stack never took.**
+
+### Three causes, each independently fatal, each proven inside the running container
+
+1. **`KNOWLEDGE_BACKEND` was never set in `docker-compose.yml`** — not anywhere, from 0.0.3 to here.
+   `knowledge_enabled()` is `value == "retriever"`; unset → `_knowledge_extra_drivers()` returns
+   `None` → the tool stays on the mock's **two-entry stub** (`Contact & Store Hours`,
+   `Shipping & Delivery`) doing substring matching. Probed in the turn-worker:
+   `live driver class = MockDriver`, result `{'results': []}` — **15 characters, byte-identical to
+   what the worker log printed for every customer question.**
+   Compose *did* set `KNOWLEDGE_DATABASE_URL`, with a comment explaining why it must be set. **The
+   database was plumbed the whole time; only the valve was shut.**
+
+2. **`fastembed` was not installed in the image.** Flipping the switch alone reproduced the *exact
+   same 15 characters* — `retrieve()` raised on import, `KnowledgeDriver` caught it and returned the
+   governed miss. A switch-only fix would have looked like no change at all, with one
+   `logger.exception` as the only trace.
+
+3. **The model was not baked into the image.** With both of the above fixed, the first query still
+   missed: fastembed downloads its weights on first use (~11s measured) inside an 800ms deadline.
+   `warm_knowledge_embedder` primes the singleton at boot but can only prime what is on disk — and
+   in a network-restricted deployment the download never lands.
+
+### The two records that kept it invisible
+
+* **`pyproject.toml` said fastembed stays undeclared "on purpose"** — *"the CI skip-whitelist is
+  designed around its absence (declaring it would pull ~100MB models)"*. Sound about CI. **The same
+  missing dependency meant the runtime image could not embed a query either.** A CI-cost decision had
+  silently become a product-capability decision, and nobody wrote the second half down.
+* **`ci.yml`'s NFR-7 no-silent-skip gate whitelisted `fastembed not installed`.** The gate whose
+  entire job is to fail on skipped evidence carried a documented carve-out for the *only* CI coverage
+  of the retrieval path. Green badge, path never executed, two iterations.
+
+There is also a comment in compose claiming *"the gateway warms the fastembed model at boot"*, with a
+30s `start_period` granted for it — describing behaviour the code could not perform, since the warm
+returns at its `knowledge_enabled()` guard. **Same shape as D27's docstring.**
+
+### The fix, and what it costs
+
+`KNOWLEDGE_BACKEND: retriever` in compose's shared `x-datastore-env` anchor (so a service added
+later cannot forget it, exactly as `KNOWLEDGE_DATABASE_URL` already works); `fastembed>=0.4`
+declared; the model baked in the Dockerfile by calling **the same singleton the turn path uses**
+(deriving the model name rather than repeating the string, so a changed default cannot silently bake
+the wrong weights); the CI whitelist **deleted**.
+
+**Cost, stated rather than buried: the runtime image is now 2.13GB** (onnxruntime + tokenizers +
+huggingface-hub + weights), and CI's runtime job will now run the live-embedder tests, which pull the
+model. That is the bill the 0.0.3 decision deferred. **A residual risk worth naming:** those CI runs
+fetch from the HF Hub unauthenticated, so a rate-limit there is now a way for CI to go red for a
+reason unrelated to the change under test.
+
+### Proof, at the product
+
+Same question, same conversation thread, before and after — captured verbatim off the live page in
+[`knowledge-gate/S24-LIVE-ANSWER.md`](knowledge-gate/S24-LIVE-ANSWER.md). (Text, not a screenshot:
+`save_to_disk` produced no file I could locate, and a doc pointing at an image that does not exist is
+worse than one quoting the transcript it actually has.)
+
+> **before:** "I don't have our return policy details on hand to give you an exact answer right now."
+> **after:** "You have **7 days from delivery** to return tires, as long as they're unused, undamaged,
+> and haven't been driven on. Returns after 7 days are subject to a **15% restocking fee**. If you
+> picked up in person, any damage or issues need to be reported the same day."
+
+Every figure traces to the corpus chunk the probe returned. The tool's payload went **15 → 3894
+characters**. Eval determinism (NFR-4) unaffected: both replay gates still 35/35 and 10/10,
+`failed_high=0`.
+
+### One more time, in the regression test itself
+
+The first draft of `test_fastembed_is_a_declared_runtime_dependency` **passed while fastembed was
+still undeclared**: it substring-matched the file, and pyproject's own comment quotes
+`pytest.skip("fastembed not installed")` — so the assertion read *prose about* the dependency as
+evidence *of* it. Rewritten to parse the TOML. **The defect this whole investigation is about,
+reproduced inside its own regression test, by me, one hour after writing D28.3 about the same
+thing.** It is not a lesson that stays learned; it is a check that has to be run every time.

@@ -4,20 +4,25 @@ plus both carry-in slices**, 134 commits, clean fast-forward from `main @ 7fcfe0
 
 | Suite | Result |
 | --- | --- |
-| `hermes-runtime` pytest | **1466 passed** |
+| `hermes-runtime` pytest | **1476 passed** |
 | `hermes` pytest | **1319 passed, 1 skipped** |
 | `pnpm test` | **89 files / 939 tests passed** |
 | `pnpm typecheck` | both projects **Done** |
+| Launch Eval replay — `text_first_launch` | **35/35**, `failed_high=0` |
+| Launch Eval replay — `email_go_live` | **10/10**, `failed_high=0` |
+| FR-30 `gates recall` (21 real questions) | **17/21 = 81%**, bar 80% **PASS** |
+| FR-7b `gates latency` + deadline degrade | p95 **11.54 ms** / 800 ms **PASS** |
 
-*Re-run 2026-07-30 after the two console-found fixes. The earlier draft of this table read 1452 /
-1309 / 938 — correct when written, stale once those landed. Suite counts are the kind of number that
-goes quietly wrong.*
+*Re-run 2026-07-30 after the console-found fixes and D29's L5 wiring fix. This table read 1452 /
+1309 / 938 two drafts ago and 1466 one draft ago — correct each time it was written, stale by the
+time it was read. Suite counts are the kind of number that goes quietly wrong, which is why the eval
+and knowledge gates are now listed here too rather than described in prose elsewhere.*
 
 Migrations 0020–0026, 0028–0031 and **0032** applied; **0027 was never claimed and is free.** The
 catalog-sync lane ran S01 → S02 → S15 → S11 → S10 → S16 without a collision.
 
 Full detail: [`workspace/0.0.5/CLOSEOUT.md`](workspace/0.0.5/CLOSEOUT.md) ·
-[`DECISIONS.md`](workspace/0.0.5/DECISIONS.md) (D0–D28) ·
+[`DECISIONS.md`](workspace/0.0.5/DECISIONS.md) (D0–D29) ·
 [`knowledge-gate/GATE-REPORT.md`](workspace/0.0.5/knowledge-gate/GATE-REPORT.md)
 
 ---
@@ -89,6 +94,27 @@ unknown.**
 What the harness *did* catch: S30's first draft over-escalated on the must-NOT-escalate contrast
 probe — its own named out-of-scope risk, produced by its own fix, invisible to every deterministic
 test in the diff.
+
+### 5b. L5 knowledge retrieval was never wired on the deployed stack (D29)
+
+The iteration's most serious find, and it came from **asking the running product a customer question
+during the S24 walkthrough** — no test saw it. The agent answered *"I don't have our return policy on
+hand to share here"* to questions FR-30's gate scored as HITS, because **the gate measures
+`retrieve()` while an agent turn reaches L5 through the `toee_knowledge_search` tool** — and that tool
+was never routed to the retriever: `KNOWLEDGE_BACKEND` was absent from `docker-compose.yml`, so it
+served a two-entry mock stub. `fastembed` was also undeclared in the image and the model unbaked;
+each of those alone reproduces the identical empty result.
+
+Fixed all three, plus **deleted the CI carve-out** (`grep -v 'fastembed not installed'`) that had let
+the no-silent-skip gate stay green while the only coverage of this path never ran. Same question now
+returns the policy's real 7-day window and 15% restocking fee —
+[`S24-LIVE-ANSWER.md`](workspace/0.0.5/knowledge-gate/S24-LIVE-ANSWER.md) has it before and after in
+one thread, plus the in-container probe (tool payload **15 → 3894 chars**).
+
+**Costs, stated:** the runtime image is now **2.13GB**, and CI's runtime job will pull the embedding
+model — the bill 0.0.3's "leave fastembed undeclared" decision deferred. Those CI fetches hit the HF
+Hub unauthenticated, so a rate-limit there becomes a new way for CI to redden unrelatedly.
+**Not re-scored:** FR-30's 81% still measures the retriever seam, not the tool seam.
 
 ### 6. Browser E2E is the controller's standing debt, not the slices'
 

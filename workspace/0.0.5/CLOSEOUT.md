@@ -4,13 +4,18 @@ Branch `feat/0.0.5-land-all`, **133 commits**, base `main @ 7fcfe09` (0 behind �
 
 | Suite | Result |
 | --- | --- |
-| `hermes-runtime` pytest | **1466 passed** |
+| `hermes-runtime` pytest | **1476 passed** |
 | `hermes` pytest | **1319 passed, 1 skipped** |
 | `pnpm test` | **89 files / 939 tests passed** |
 | `pnpm typecheck` | both projects **Done** |
+| Launch Eval replay — `text_first_launch` / `email_go_live` | **35/35** / **10/10**, `failed_high=0` |
+| FR-30 `gates recall` (21 real questions) | **17/21 = 81%**, bar 80% **PASS** |
+| FR-7b `gates latency` + deadline degrade | p95 **11.54 ms** / 800 ms **PASS** |
 
-*Re-run 2026-07-30 after the two console-found fixes. The earlier table read 1452 / 1309 / 938 —
-true when written, stale once those landed.*
+*Re-run 2026-07-30 after the console-found fixes and D29's L5 wiring fix. This table read 1452 /
+1309 / 938 two drafts ago — true when written, stale once the work landed. The eval and knowledge
+gates are listed here rather than described in prose, because a number in prose is a number nobody
+re-runs.*
 
 Working tree and index clean. Migrations 0020–0026, 0028–0031 and **0032** applied; **0027 was never
 claimed and is free.** The catalog-sync lane ran S01 → S02 → S15 → S11 → S10 → S16 without a

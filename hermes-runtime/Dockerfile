@@ -38,6 +38,25 @@ WORKDIR /app/hermes-runtime
 # --frozen installs exactly the committed uv.lock (the single pinned SDK rev).
 RUN uv sync --frozen
 
+# Bake the L5 query-embedding model into the image.
+#
+# WHY THIS IS NOT OPTIONAL. fastembed downloads its ONNX weights on FIRST USE, and
+# first use is a customer's first knowledge question -- inside KnowledgeDriver's
+# 800ms deadline. Measured in the running container: the download takes ~11s, the
+# deadline fires, and the customer gets the governed miss ("I don't have our return
+# policy on hand") while the corpus sits populated in Postgres. `warm_knowledge_embedder`
+# primes the singleton at boot, but it can only prime what is already on disk --
+# and in a network-restricted deployment the download never lands at all.
+#
+# Derived, not hardcoded: this calls the SAME process-level singleton the turn path
+# uses, so it bakes whatever model `fastembed_query_embedder` currently defaults to.
+# Naming "BAAI/bge-small-en-v1.5" here instead would silently bake the wrong weights
+# the day that default changes -- the image would still build, and retrieval would
+# still miss its deadline in production only.
+ENV FASTEMBED_CACHE_PATH=/opt/fastembed-cache
+RUN uv run --frozen python -c \
+    "from hermes_runtime.knowledge.retriever import get_query_embedder; get_query_embedder()('warmup')"
+
 # Cloud Run injects $PORT (default 8080) and routes to it; bind 0.0.0.0. The factory
 # fails closed at boot when a required secret is missing (webhook/internal-job
 # secrets, SimpleTexting token, OpenRouter key) — see gateway_composition.build_gateway_app.

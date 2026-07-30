@@ -36,6 +36,15 @@ x-datastore-env: &datastore-env
   # The SEPARATE knowledge database (S-ISO). Unset it and knowledge retrieval
   # inside a container resolves the localhost default, which is not this Postgres.
   KNOWLEDGE_DATABASE_URL: postgresql://toee:toee@postgres:5432/toee_knowledge
+  # ...and the switch that makes that DSN load-bearing. Its own axis, deliberately
+  # NOT TOOL_BACKEND (knowledge_enabled reads this one), and it was MISSING here
+  # from 0.0.3 until 0.0.5's S24 walkthrough: `_knowledge_extra_drivers()` returned
+  # None, so `toee_knowledge_search` served the mock's TWO-ENTRY STUB and the agent
+  # told customers "I don't have our return policy on hand" with 167 chunks sitting
+  # in the database next to it. The DSN above was configured the whole time; only
+  # the valve was shut. Lives in this shared anchor so a service added later cannot
+  # forget it -- the same reason KNOWLEDGE_DATABASE_URL is here rather than per-service.
+  KNOWLEDGE_BACKEND: retriever
   TOOL_BACKEND: datastore
   # 0.0.4 S18 (FR-26): compose is NEVER prod, so every service here gets an explicit
   # non-prod label. This is what lets the scripted-eval seam ARM under its allowlist

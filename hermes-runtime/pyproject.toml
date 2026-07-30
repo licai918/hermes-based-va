@@ -18,12 +18,25 @@ dependencies = [
     # top-level for _cosine_ranking (RRF hybrid retrieval). It reached the local
     # venv transitively via the spike's fastembed install and was never declared
     # -> a fresh `uv sync --frozen` (CI runtime job) failed at test COLLECTION
-    # (the pytest.skip("fastembed not installed") guards are inside functions, so
-    # they never run when the module import itself dies). fastembed stays
-    # UNDECLARED on purpose: it is lazy-imported inside fastembed_query_embedder,
-    # and the CI skip-whitelist is designed around its absence (declaring it would
-    # pull ~100MB models). See 0.0.3 final whole-branch review.
+    # (the skip guards are inside functions, so they never run when the module
+    # import itself dies). See 0.0.3 final whole-branch review.
     "numpy>=2",
+    # fastembed is the query embedder for L5 hybrid retrieval. It USED TO BE
+    # deliberately undeclared -- lazy-imported inside fastembed_query_embedder, with
+    # CI's no-silent-skip whitelist built around its absence, to spare CI a ~100MB
+    # model pull. That reasoning was sound about CI and wrong about the PRODUCT: the
+    # same missing dependency meant the runtime IMAGE could not embed a query either,
+    # so `retrieve()` raised, KnowledgeDriver caught it, and every customer knowledge
+    # question got the governed miss -- silently, because the import is lazy and the
+    # failure is swallowed by design. A CI-cost decision had become a
+    # product-capability decision that nobody wrote down.
+    #
+    # Found in 0.0.5's S24 layer-2 walkthrough by asking the running product a real
+    # customer question and reading the answer. Declared now, with the CI whitelist
+    # removed in the same change: an undeclared dependency whose absence is caught
+    # and converted into an empty result is invisible to every test that does not
+    # boot the real thing.
+    "fastembed>=0.4",
 ]
 
 # ADR-0101 / ADR-0139: the official Hermes core is pinned to an exact git rev and

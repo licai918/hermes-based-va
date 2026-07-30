@@ -132,10 +132,16 @@ jobs:
       # suites (hermes-runtime/tests/test_datastore_*.py, test_knowledge_*.py,
       # test_job_queue.py) previously skipped silently with no Postgres in CI
       # (the 0.0.1 debt) -- now that a Postgres service is provisioned above,
-      # any skip left in those files fails the job, except the one documented,
-      # intentional skip: the live-embedder smoke tests guard themselves with
-      # "fastembed not installed" (fastembed is not a project dependency, so
-      # this always skips in CI -- no 100MB+ model download).
+      # any skip left in those files fails the job. NO EXEMPTIONS.
+      #
+      # There used to be one: the live-embedder smoke tests skip themselves when
+      # fastembed is absent, and this gate whitelisted that message because
+      # fastembed was deliberately undeclared. The carve-out did its job too well --
+      # it kept CI green for two iterations while the ONLY coverage of the retrieval
+      # path never executed, and the deployed image turned out to be unable to embed
+      # a query at all. 0.0.5's S24 walkthrough found it by asking the running
+      # product a customer question. fastembed is now a declared dependency, so the
+      # skip cannot occur; the whitelist is gone so it cannot come back silently.
       #
       # test_job_queue.py (0.0.4 S01), test_turn_worker.py (S02),
       # test_outbound_send.py (S03) and test_background_worker.py (S04) are in the
@@ -159,8 +165,7 @@ jobs:
         run: |
           set -o pipefail
           uv run --frozen pytest -q -rs 2>&1 | tee /tmp/pytest-runtime.log
-          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin|integration_probe)' /tmp/pytest-runtime.log \
-              | grep -v 'fastembed not installed'; then
+          if grep -E '^SKIPPED .*tests/test_(datastore_|knowledge_|job_queue|turn_worker|outbound_send|background_worker|dead_letter_view|composio_sdk_pin|integration_probe)' /tmp/pytest-runtime.log; then
             echo "::error::live-Postgres test skipped despite CI Postgres (NFR-7) -- see hermes-runtime/tests"
             exit 1
           fi

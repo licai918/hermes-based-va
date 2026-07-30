@@ -60,6 +60,27 @@ report — so if one is missing, that is a real finding and not a stale instruct
 | a **provenance** value per row, and **all four seeded rows** badged `admin_manual` **UNATTRIBUTED** in red — hover one and the note says the decider is *either missing or a migration* | a seeded `admin_manual` row that looks identical to one a named admin approved (D20 — that is unfalsifiable provenance), **or** a hover note claiming the row "predates the fail-closed path", which is false of a seeded row and was itself a defect found on this walkthrough |
 | **the seasonal row says `passenger tires`** — and an `(edited …)` marker beside its decider | **"all-season tires"** — the phrase your policy forbids to Canadian customers. It was there when this walkthrough was first written; it was fixed as a result. A *missing* edit marker would also be wrong: the fix arrived by migration, and D6/D7's trail must show the row was touched. |
 
+## 4b · Ask the product a real question — this is the step that found the worst bug
+
+Go to **Simulator** (`/copilot/simulator`), type a question a customer would actually send, Send.
+
+Suggested, because they exercise different corners of the corpus:
+
+| ask | a good answer contains |
+| --- | --- |
+| `how many days do i have to send tires back` | **7 days**, and the **15% restocking fee** past that |
+| `do you give shops payment terms` | the dealer/shop programme, not a generic brush-off |
+| `whats your phone number` | the real contact details |
+
+**What "wrong" looks like, and it is not obvious:** a *fluent, polite, completely contentless*
+reply — *"I don't have our return policy on hand, I've flagged this for our team."* That is what the
+product said before 2026-07-30, on questions the FR-30 gate scored as HITS, because the gate measured
+the retriever while the agent was being served a two-entry stub (D29). It reads like good service.
+**Nothing but asking and reading the answer catches it** — 3,724 tests did not.
+
+If you get a deflection on something the corpus obviously covers, that is a real finding, not a
+model having an off day.
+
 ## 5 · Sign out, then try any `/admin/*` URL directly
 
 You should land on the sign-in page and see **none** of the page's data. This is already proven
