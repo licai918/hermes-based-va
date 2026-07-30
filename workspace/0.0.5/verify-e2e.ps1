@@ -112,7 +112,15 @@ Test-PageDoesNotLeak "/admin/memory-hub" @(
     "entry_effectiveness"           # D22's corrected zero-use tile
 )
 Test-PageDoesNotLeak "/admin/metrics" @(
-    "Not yet measured",             # S22's honest unmeasured-layer label
+    # WAS "Not yet measured" -- S22's honest unmeasured-layer label, and it was L5's.
+    # D29 wired L5 retrieval on the deployed stack, so that tile now shows a real p95
+    # and the phrase is gone from the AUTHENTICATED page too. A leak assertion whose
+    # needle no longer exists anywhere passes for the wrong reason: it can no longer
+    # fail, and would have kept reporting PASS if the session gate were removed
+    # tomorrow. Swapped for a string the page actually renders, which is the only kind
+    # that can catch a leak. Caught by asking "can this still go red?" during the S29
+    # walkthrough -- the same question that found D28 and D29.
+    "budget 800 ms",                # S18's L5 latency tile, present since D29
     "Memory injection rate"
 )
 Test-PageDoesNotLeak "/admin/inbox" @("Review Inbox")

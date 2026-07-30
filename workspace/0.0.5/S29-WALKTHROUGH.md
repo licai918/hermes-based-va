@@ -35,10 +35,18 @@ cannot see is a number that lies.
 
 | look for | **wrong** would be |
 | --- | --- |
-| **L5 knowledge retrieval reads "Not yet measured"** | `0 ms`, or a blank tile |
+| **L5 knowledge retrieval shows a real p95 against a `budget 800 ms`** | a blank tile — **or "Not yet measured", which is what this row used to ask for.** L5 genuinely had no samples until D29 wired it; now it does. See the ⚠ below about the number itself. |
 | **the L4+L6+L7 total shows a p95 against a 150 ms line** | no budget shown, or a budget that is not 150 |
 | **lifecycle rows show counts, not percentages**, and each detail line names what it excludes | a rate with no denominator |
 | **the privacy-deflection row is labelled PROXY** | presented as *the* privacy-complaint rate |
+
+> **⚠ Look hard at the L5 number, it is the one thing on this page that worries me.**
+> Measured live on 2026-07-30: **p95 787.52 ms against the 800 ms budget** — 98% of it —
+> on 3 samples, with the knowledge found-rate at **66.7% (2/3)**. The FR-7b gate reports
+> **p95 11.54 ms** for the same code. The gate warms the embedder and runs 200 calls in a
+> hot loop; a real turn does not. **This is the same gate-versus-product gap as D29, in
+> latency instead of recall** — and blowing that deadline is exactly what produces "I
+> don't have that on hand". Small sample, not yet diagnosed; recorded, not explained away.
 
 ## 3 · `/admin/inbox` — the queue
 
