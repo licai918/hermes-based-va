@@ -21,6 +21,7 @@ import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Callable, Mapping, Optional
 
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
@@ -32,16 +33,29 @@ from toee_hermes.gateway.normalize import (
     normalize_e164,
 )
 from toee_hermes.persona import EXTERNAL_CUSTOMER_SERVICE_PERSONA
-from toee_hermes.plugin.hooks import render_injection
+from toee_hermes.plugin.hooks import glossary_entries, render_injection
 from toee_hermes.plugin.profiles import EXTERNAL
 
 from hermes_runtime.boot import boot_profile
+from hermes_runtime.injection_ledger import injected_entry_refs, record_injection
+from hermes_runtime.latency import (
+    LATENCY_L4_LOAD,
+    LATENCY_L4_MERGE,
+    LATENCY_L6_LOAD,
+    LATENCY_L7_LOAD,
+    load_reads,
+    measure,
+    record_latency_samples,
+)
 from hermes_runtime.live import run_agent_turn
 from hermes_runtime.tool_backend import (
     _gateway_store,
     _turn_extra_drivers,
     agent_experience_external_injection_enabled,
+    lexicon_capture_enabled,
+    lexicon_external_injection_enabled,
     load_confirmed_experience,
+    load_confirmed_lexicon,
     memory_enabled,
     record_memory_injection_metric,
 )
@@ -443,6 +457,7 @@ def make_openrouter_run_turn(
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     tools_exclusive: bool = True,
     store: Optional[Any] = None,
+    queue: Optional[Any] = None,
 ) -> Callable[[Any, str], Mapping[str, Any]]:
     """Build the production ``run_turn``: a conversation-bound governed turn over OpenRouter.
 
@@ -458,6 +473,12 @@ def make_openrouter_run_turn(
     read (S07); when ``None`` a DSN-based :class:`PostgresGatewayStore` is built per
     turn, but only under :func:`memory_enabled` (mock/unset deployments never touch
     Postgres).
+
+    ``queue`` injects the :class:`~hermes_runtime.job_queue.PostgresJobQueue` the
+    0.0.5 S04 capture fork is enqueued on (tests); the default constructs one
+    lazily, only when ``LEXICON_CAPTURE`` is on. That flag is DEFAULT OFF, so the
+    eval record/replay path enqueues nothing and the returned turn is byte-identical
+    to the pre-S04 shape.
     """
 
     def run_turn(context: Any, inbound_body: str) -> Mapping[str, Any]:
@@ -484,36 +505,75 @@ def make_openrouter_run_turn(
             context.from_phone,
             getattr(context, "channel", SIMPLETEXTING_SMS),
         )
+        # S18 (FR-26): per-layer read durations for this turn. Collected into a
+        # plain list here and written ONCE after the model call -- see
+        # `record_latency_samples` below. `measure` costs two perf_counter reads
+        # and an append, and nothing it records ever reaches the prompt or the
+        # result, so the instrumentation is both off the critical path and
+        # eval-neutral (NFR-4/NFR-5).
+        latency: list[tuple[str, float]] = []
         # S10/FR-4: on a verified ingress, merge the caller's pre-verification
         # provisional slots onto the verified record BEFORE the read below, so the
         # just-merged preferences are injected on this same turn (PAC-3). No-op /
         # fail-closed when not verified or memory is disabled.
-        merge_fired = _merge_provisional_memory(identity, store)
+        with measure(latency, LATENCY_L4_MERGE):
+            merge_fired = _merge_provisional_memory(identity, store)
+        # S19 (FR-27): the three INDEPENDENT pre-turn reads, each deadline-bounded
+        # and fail-open, run from one pool when the budget flag is on and inline
+        # in this exact order when it is off (the default -- see `load_reads`).
+        # The merge above is a WRITE and stays out: its ordering matters (its
+        # result must be visible to the L4 read below) and abandoning a write is
+        # not the same kind of harmless as abandoning a SELECT.
+        #
         # ponytail: boot_profile registers pre_llm_call on a local PluginManager, but
         # AIAgent invokes hooks on the global singleton (discover_plugins → register).
         # Prepend the snapshot + Customer Memory here so the model sees verified
         # identity and prior preferences (ADR-0140, S07/FR-1). The memory read is
         # gated + fail-closed in _load_turn_memory (nothing injected when disabled,
         # unbound, or the store errors).
-        memory = _load_turn_memory(identity, store)
-        _log_turn_memory(identity, memory, merge_fired)
-        # S26 (FR-28): memory-injection counter emit -- turn-safe + gated on the
-        # SAME axis as the feature (never touches DB in a mock/unset deployment,
-        # never fails the turn on any DB error). Reflects L4 Customer Memory
-        # specifically (bool(memory)), not the combined injection block.
-        record_memory_injection_metric(bool(memory))
+        #
         # S25 (FR-25): the external turn READS confirmed L6 learnings (read-only,
         # never proposing -- S23 kept propose off the external profile) behind its
         # OWN independent flag, so it can be disabled without touching the copilot
         # path. Default OFF -- the eval path sets neither flag, so nothing is
         # injected there (determinism, NFR-6). Bounded + fail-closed (NFR-5); only
         # status='confirmed' rows ever come back.
-        experience = (
-            load_confirmed_experience(store)
-            if agent_experience_external_injection_enabled()
-            else None
+        #
+        # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the EXTERNAL lexicon
+        # flag -- its own axis, independent of the copilot one and of L6's pair.
+        # Default OFF, so the eval path renders no glossary (determinism, NFR-4).
+        # The RAW read goes to the renderer (hooks.glossary_entries must see the
+        # whole set to resolve a default_rule's condition); the ledger below
+        # re-derives the selected rows so it records what the prompt carried.
+        memory, experience, lexicon = load_reads(
+            latency,
+            (
+                (LATENCY_L4_LOAD, lambda: _load_turn_memory(identity, store)),
+                (
+                    LATENCY_L6_LOAD,
+                    lambda: load_confirmed_experience(store)
+                    if agent_experience_external_injection_enabled()
+                    else None,
+                ),
+                (
+                    LATENCY_L7_LOAD,
+                    lambda: load_confirmed_lexicon(store)
+                    if lexicon_external_injection_enabled()
+                    else None,
+                ),
+            ),
         )
-        injected = render_injection(identity, memory, experience)
+        _log_turn_memory(identity, memory, merge_fired)
+        # ONE clock read per turn, threaded to BOTH consumers. Two independent
+        # date.today() calls -- one inside the render, one inside the ledger's
+        # re-derivation below -- can land on either side of midnight, and on
+        # Sep 30/Oct 1 (the WINTER_MONTHS edge) that renders one seasonal
+        # default and credits the OTHER: the ledger asserting an entry reached a
+        # reply that never carried it, which is the over-claim D4.3 forbids.
+        today = date.today()
+        injected = render_injection(
+            identity, memory, experience, lexicon=lexicon, today=today
+        )
         user_message = f"{injected}\n\n{inbound_body}" if injected else inbound_body
         booted = boot_profile(
             EXTERNAL,
@@ -525,7 +585,7 @@ def make_openrouter_run_turn(
             # axis (see _turn_extra_drivers).
             extra_drivers=_turn_extra_drivers(),
         )
-        return run_agent_turn(
+        result = run_agent_turn(
             user_message=user_message,
             system_message=system_message or EXTERNAL_CUSTOMER_SERVICE_PERSONA,
             base_url=resolved.base_url,
@@ -536,5 +596,103 @@ def make_openrouter_run_turn(
             governed_tool_names=booted.tool_names,
             tools_exclusive=tools_exclusive,
         )
+        # S09 (FR-11): record WHICH entries this turn's prompt carried. Written
+        # HERE, from the caller, never from render_injection -- that function is
+        # pure, store-less, and shared with the eval record path (D4.2).
+        #
+        # AFTER the model call, deliberately: the write is a synchronous INSERT +
+        # commit, and in front of the model it was a database round-trip on the
+        # reply path, which is the thing NFR-5 exists to prevent. Behind it, the
+        # ledger also says what it means -- a turn that raised on the way to a
+        # reply never produced one, so there is no injected-into-a-reply fact to
+        # record, and no phantom row for S10's blast radius or S26's per-entry
+        # denominator. Only when something was actually injected; each layer's
+        # row is gated on that layer's own injection flag inside record_injection
+        # (D4.1), and the call cannot raise into this turn (NFR-5).
+        if injected:
+            resolved_binding = binding_key_from_identity(identity)
+            record_injection(
+                store,
+                # The turn's durable idempotency key (ADR-0107), so a ledger row
+                # joins back to agent_turn_context / its message_turn.
+                turn_ref=getattr(context, "event_id", None),
+                case_or_binding_ref=resolved_binding[0] if resolved_binding else None,
+                entries=injected_entry_refs(
+                    binding_key=resolved_binding[0] if resolved_binding else None,
+                    memory=memory,
+                    experience=experience,
+                    # `today` is the SAME date the render above used, never a
+                    # second clock read -- see the comment at that call.
+                    lexicon=glossary_entries(lexicon, today),
+                ),
+            )
+        # S26 (FR-28): memory-injection counter emit -- turn-safe + gated on the
+        # SAME axis as the feature (never touches DB in a mock/unset deployment,
+        # never fails the turn on any DB error). Reflects L4 Customer Memory
+        # specifically (bool(memory)), not the combined injection block.
+        #
+        # Moved behind the model call by S19 (FR-27). It is a synchronous,
+        # unpooled INSERT + commit; in front of the model it was a database
+        # round-trip standing between the customer and their reply -- bounded
+        # since b989048, so never a hang, but exactly the shape NFR-5 forbids and
+        # exactly what S09's ledger and S18's own emit already sit behind.
+        record_memory_injection_metric(bool(memory))
+        # S18 (FR-26): one batched metric write for the whole turn, AFTER the
+        # model call for the same NFR-5 reason the ledger is written here.
+        # UNconditional, unlike the ledger: a read that returned nothing still
+        # took time, and dropping those turns would bias the histogram towards
+        # the customers who have memory on file. Per-layer gating and the SLO
+        # total live in `record_latency_samples`; it never raises.
+        record_latency_samples(latency)
+        # 0.0.5 S04 (FR-4): the gateway-side L7 capture fork. The customer's reply
+        # is already produced (`result` above) and is delivered by
+        # turn_runner.make_gateway_turn_runner once this returns, so the fork must
+        # never run here -- it ENQUEUES, and the background worker runs it
+        # (lexicon_capture.run_l7_capture_job). That is the 0.0.4 S04 answer, made
+        # structural rather than promised in a comment: no model call, no fork
+        # failure and no fork latency can reach the customer.
+        #
+        # Gate: LEXICON_CAPTURE, its own axis and DEFAULT OFF, so the eval
+        # record/replay path enqueues nothing (NFR-4).
+        #
+        # Both imports are deferred, and neither is optional: `lexicon_capture`
+        # imports THIS module for the provider seam, and `job_queue` reaches
+        # `datastore.handlers`, whose integrations handler imports
+        # `openrouter_configured` from here. Hoisting either to module scope is a
+        # circular import that takes the whole runtime package's collection down.
+        #
+        # NOT gated on `injected`, unlike the ledger above: capture reads what the
+        # CUSTOMER said, which happens whether or not this turn had memory to
+        # inject -- gating it on injection would capture vocabulary only from
+        # customers who already have some.
+        if lexicon_capture_enabled():
+            try:
+                from hermes_runtime.job_queue import (
+                    L7_CAPTURE_JOB_TYPE,
+                    PostgresJobQueue,
+                )
+                from hermes_runtime.lexicon_capture import l7_capture_payload
+
+                resolved_queue = queue if queue is not None else PostgresJobQueue()
+                resolved_queue.enqueue(
+                    l7_capture_payload(context),
+                    job_type=L7_CAPTURE_JOB_TYPE,
+                    # ponytail: ONE attempt, the l6_review precedent -- the fork
+                    # WRITES a proposal and the model is non-deterministic, so a
+                    # retry could land a second, differently-worded entry for one
+                    # turn. A failure dead-letters instead, where S05 surfaces it.
+                    max_attempts=1,
+                )
+            except Exception as exc:
+                # ponytail: swallow so capture can never fail a customer turn. The
+                # conversation ref is an identifier the gateway already logs; log
+                # the exception TYPE only, never str(exc).
+                logger.warning(
+                    "Lexicon capture enqueue failed conversation=%s error_type=%s; "
+                    "the customer turn is unaffected",
+                    getattr(context, "conversation_id", None),
+                    type(exc).__name__,
+                )
+        return result
 
     return run_turn

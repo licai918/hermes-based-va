@@ -26,7 +26,133 @@ function metrics(overrides: Partial<AggregateMetrics> = {}): AggregateMetrics {
     proposalOutcomes: { accepted: 0, dismissed: 0, rate: null },
     selfServiceUsage: 0,
     l6ConfirmedEntries: 0,
+    latency: latency(),
+    deletionSuccess: {
+      windowDays: 30,
+      erasedBindings: 5,
+      flaggedBindings: 2,
+      residueBindings: 1,
+      reappearedBindings: 1,
+      rate: 0.6,
+      flaggedSlots: { contact_time_preference: 2 },
+      label: "Share of erases whose bindings are still empty.",
+    },
+    lifecycle: [
+      count("conflict_overwrites", "Conflicting L4 overwrites", 7),
+      count("pollution_rejected_writes", "L4 writes rejected by the injection scan", 3),
+      count("privacy_deflection_self_service", "Customer self-service clears", 4),
+      count("privacy_deflection_erasures", "Whole-binding erasures (forget-me)", 1),
+      count("prompt_layer_drops_L7", "L7 dropped from a prompt (deadline)", 0),
+    ],
+    loopClosure: [
+      rate("feedback_proposal_conversion", 3, 6, 0.5),
+      rate("unroutable_feedback_signals", 4, 10, 0.4),
+      rate("post_fix_refail", 1, 4, 0.25),
+      rate("entry_honored_after_edit", 1, 1, null),
+    ],
+    knobs: {
+      label: "Read-only. These knobs move by deploy-time config commit.",
+      knobs: [
+        {
+          key: "LEXICON_GLOSSARY_LIMIT",
+          label: "L7 prompt glossary window",
+          value: "20",
+          source: "hermes_runtime.tool_backend",
+          env: null,
+          note: "how many confirmed entries the prompt glossary may carry",
+        },
+        {
+          key: "LEXICON_SELECTION",
+          label: "L7 glossary selection strategy (effective)",
+          value: "newest",
+          source: "hermes_runtime.tool_backend",
+          env: "LEXICON_SELECTION",
+          note: "fail-safe: an unrecognised value resolves to the shipped behaviour",
+        },
+      ],
+    },
     ...overrides,
+  };
+}
+
+function count(
+  key: string,
+  label: string,
+  value: number | null,
+): AggregateMetrics["lifecycle"][number] {
+  return { key, label, detail: `what ${key} counts, and what it does not`, value };
+}
+
+function rate(
+  key: string,
+  numerator: number,
+  denominator: number,
+  value: number | null,
+): NonNullable<AggregateMetrics["loopClosure"]>[number] {
+  return {
+    key,
+    label: `label for ${key}`,
+    detail: `what ${key} is over, and what its denominator excludes`,
+    numerator,
+    denominator,
+    rate: value,
+  };
+}
+
+// S18/FR-26: per-layer latency tiles + the total-vs-SLO tile.
+function tile(
+  metric: string,
+  over: Partial<AggregateMetrics["latency"]["total"]> = {},
+): AggregateMetrics["latency"]["total"] {
+  return {
+    metric,
+    layer: "L4",
+    label: `Label ${metric}`,
+    p50Ms: null,
+    p95Ms: null,
+    samples: 0,
+    budgetMs: null,
+    inSloTotal: true,
+    breached: null,
+    ...over,
+  };
+}
+
+function latency(
+  over: Partial<AggregateMetrics["latency"]> = {},
+): AggregateMetrics["latency"] {
+  return {
+    sloP95Ms: 150,
+    notMeasuredLabel: "Not yet measured (no latency samples on this deployment)",
+    total: tile("latency_pre_turn_total", {
+      layer: "L4+L6+L7",
+      label: "Pre-turn reads, total",
+      p50Ms: 31.5,
+      p95Ms: 128.25,
+      samples: 400,
+      budgetMs: 150,
+      inSloTotal: false,
+      breached: false,
+    }),
+    layers: [
+      tile("latency_l4_load", {
+        label: "L4 customer memory read",
+        p50Ms: 12.5,
+        p95Ms: 40,
+        samples: 400,
+      }),
+      tile("knowledge_search", {
+        layer: "L5",
+        label: "L5 knowledge retrieval",
+        p50Ms: 210,
+        p95Ms: 900,
+        samples: 25,
+        budgetMs: 800,
+        inSloTotal: false,
+        breached: true,
+      }),
+    ],
+    ...over,
   };
 }
 
@@ -83,5 +209,246 @@ describe("MetricsPanel honored-rate caption", () => {
     render(<MetricsPanel />);
     // Both the tile value and the honest sub-label read "Not yet computed".
     expect((await screen.findAllByText("Not yet computed")).length).toBeGreaterThan(0);
+  });
+});
+
+describe("MetricsPanel per-layer latency tiles (S18, FR-26)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders p50/p95 per layer and the total against the 150ms SLO line", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /read latency/i });
+
+    // The per-layer histogram: both statistics, not just one.
+    expect(section.textContent).toContain("12.5");
+    expect(section.textContent).toContain("40");
+    // The total tile carries the owner's recorded line.
+    expect(section.textContent).toContain("128.25");
+    expect(section.textContent).toMatch(/150\s*ms/);
+    expect(section.textContent).toMatch(/p95/i);
+  });
+
+  it("renders a breach visibly rather than as another number", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    // L5 is over its own 800ms budget in this fixture; the L4 tile is not
+    // budgeted at all. Exactly one tile may claim a breach.
+    const breaches = await screen.findAllByText(/over budget/i);
+    expect(breaches).toHaveLength(1);
+    expect(breaches[0]?.closest("[data-metric]")?.getAttribute("data-metric")).toBe(
+      "knowledge_search",
+    );
+  });
+
+  it("shows the honest not-measured label instead of a zero before any sample", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          metrics({
+            latency: latency({
+              total: tile("latency_pre_turn_total", {
+                label: "Pre-turn reads, total",
+                budgetMs: 150,
+              }),
+              layers: [tile("latency_l4_load", { label: "L4 customer memory read" })],
+            }),
+          }),
+        ),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /read latency/i });
+    expect(section.textContent).toMatch(/not yet measured/i);
+    // A "0 ms" tile would read as the best possible latency on a deployment
+    // that has measured nothing, and a green "within SLO" would be a lie.
+    // Digit-anchored so the SLO caption's own "150 ms" isn't mistaken for it.
+    expect(section.textContent).not.toMatch(/(^|[^\d.])0(\.0)? ?ms/);
+    expect(section.textContent).not.toMatch(/within/i);
+  });
+});
+
+describe("MetricsPanel loop-closure block (S28, FR-34b)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders each rate beside the population it is over and its caveat", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+
+    const tile = section.querySelector('[data-loop="post_fix_refail"]');
+    expect(tile).not.toBeNull();
+    expect(tile?.textContent).toContain("25%");
+    // The fraction, not just the percentage: "25%" over four fixes and "25%"
+    // over four hundred are not the same claim.
+    expect(tile?.textContent).toContain("1 / 4");
+    expect(tile?.textContent).toContain("what post_fix_refail is over");
+  });
+
+  it("renders a trend-thin rate as not-yet-computed, never as 0% or 100%", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(metrics({ loopClosure: [rate("entry_honored_after_edit", 1, 1, null)] })),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+    const tile = section.querySelector('[data-loop="entry_honored_after_edit"]');
+    expect(tile?.textContent).toContain("Not yet computed");
+    expect(tile?.textContent).not.toContain("%");
+    // ... and the evidence still shows, so "not computed" is legible as
+    // "too little to say" rather than as "nothing happened".
+    expect(tile?.textContent).toContain("1 / 1");
+  });
+
+  it("says the backend does not report the block rather than showing nothing", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics({ loopClosure: null }))));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+    expect(section.textContent).toMatch(/not reported by this backend/i);
+    expect(section.querySelectorAll("[data-loop]")).toHaveLength(0);
+  });
+
+  it("renders an empty deployment as not-yet-computed rather than a perfect score", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(metrics({ loopClosure: [rate("post_fix_refail", 0, 0, null)] })),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /loop closure/i });
+    const tile = section.querySelector('[data-loop="post_fix_refail"]');
+    // 0 re-fails over 0 fixes is not a 0% re-fail rate; it is no answer at all.
+    expect(tile?.textContent).toContain("Not yet computed");
+    expect(tile?.textContent).toContain("0 / 0");
+  });
+});
+
+describe("MetricsPanel lifecycle block (S22, FR-34a)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders every lifecycle count with the scope its detail carries", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /memory lifecycle/i });
+
+    for (const key of [
+      "conflict_overwrites",
+      "pollution_rejected_writes",
+      "privacy_deflection_self_service",
+      "privacy_deflection_erasures",
+      "prompt_layer_drops_L7",
+    ]) {
+      const tile = section.querySelector(`[data-lifecycle="${key}"]`);
+      expect(tile, key).not.toBeNull();
+      // Value AND its caveat -- a tile that dropped `detail` would render a
+      // number nobody can read correctly.
+      expect(tile?.textContent).toContain("what " + key + " counts");
+    }
+    expect(section.textContent).toContain("7");
+    expect(section.textContent).toContain("3");
+  });
+
+  it("renders a component with no source as not-recorded, never as a zero", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(metrics({ lifecycle: [count("conflict_overwrites", "Conflicts", null)] })),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /memory lifecycle/i });
+    const tile = section.querySelector('[data-lifecycle="conflict_overwrites"]');
+    expect(tile?.textContent).toMatch(/not recorded/i);
+    expect(tile?.textContent).not.toMatch(/(^|[^\d])0([^\d]|$)/);
+  });
+
+  it("renders deletion success as its components, never as a bare rate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /memory lifecycle/i });
+    const tile = section.querySelector('[data-lifecycle="deletion_success"]');
+    // Residue and re-appearance are different failures and are shown apart; the
+    // 30-day window is what the number is scoped to.
+    expect(tile?.textContent).toMatch(/residue/i);
+    expect(tile?.textContent).toMatch(/re-?appear/i);
+    expect(tile?.textContent).toContain("30");
+    expect(tile?.textContent).toContain("5");
+  });
+
+  it("reports a null deletion-success rate as not computed, never as 100%", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse(
+          metrics({
+            deletionSuccess: {
+              windowDays: 30,
+              erasedBindings: 0,
+              flaggedBindings: 0,
+              residueBindings: 0,
+              reappearedBindings: 0,
+              rate: null,
+              flaggedSlots: {},
+              label: "Share of erases whose bindings are still empty.",
+            },
+          }),
+        ),
+      ),
+    );
+
+    render(<MetricsPanel />);
+    const tile = (
+      await screen.findByRole("region", { name: /memory lifecycle/i })
+    ).querySelector('[data-lifecycle="deletion_success"]');
+    expect(tile?.textContent).toMatch(/no erases/i);
+    expect(tile?.textContent).not.toContain("100%");
+  });
+});
+
+describe("MetricsPanel knob panel (S22, D14)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("renders each knob's value, where it lives, and its env override", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /knob/i });
+    expect(section.textContent).toContain("LEXICON_GLOSSARY_LIMIT");
+    expect(section.textContent).toContain("20");
+    expect(section.textContent).toContain("hermes_runtime.tool_backend");
+    expect(section.textContent).toContain("LEXICON_SELECTION");
+  });
+
+  it("says plainly that it changes nothing, and offers no control that could (D14)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics())));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /knob/i });
+    expect(section.textContent).toMatch(/read-only/i);
+    // NFR-3: a knob moves by deploy-time config commit. A control here would be
+    // an ungoverned write surface -- so there must not be one to click.
+    expect(section.querySelectorAll("button, input, select, textarea")).toHaveLength(0);
+  });
+
+  it("says the backend reports no knobs rather than rendering an empty panel", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(metrics({ knobs: null }))));
+
+    render(<MetricsPanel />);
+    const section = await screen.findByRole("region", { name: /knob/i });
+    expect(section.textContent).toMatch(/not reported by this backend/i);
   });
 });

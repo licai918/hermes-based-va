@@ -9,9 +9,15 @@ user turn, never the system prompt, and never break the turn on provider error.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from toee_hermes.plugin.hooks import make_pre_llm_call_hook, render_injection
+from toee_hermes.plugin.hooks import (
+    glossary_entries,
+    make_pre_llm_call_hook,
+    render_injection,
+)
 from toee_hermes.plugin.profiles import (
     DEFAULT_PROFILE,
     PROFILE_TOOL_ALLOWLIST,
@@ -46,12 +52,28 @@ ADR_0035_INTERNAL = {
     "toee_customer_memory",
     # 0.0.3 S22 (FR-23): L6 Agent-experience proposals -- internal_copilot only.
     "toee_agent_experience",
+    # 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon -- internal_copilot only
+    # (S04's capture fork proposes; the admin BFF dispatches over this
+    # profile's API). list_lexicon_entries is agent-excluded.
+    "toee_semantic_lexicon",
+    # 0.0.5 S15 (FR-22): the unified review inbox + `review_item` store. Here
+    # rather than supervisor_admin because re-classify dispatches to
+    # toee_agent_experience and toee_semantic_lexicon, which are allowlisted on
+    # THIS profile only -- one governed action cannot span two profiles'
+    # toolsets. All four actions are agent-excluded.
+    "toee_review_inbox",
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over this
     # profile's API by the admin BFF (same reason get_memory_audit lives here).
     "toee_metrics",
     # 0.0.3 S28 (FR-30): Customer Memory retention sweep admin panel, reached
     # over this profile's API by the admin BFF (same precedent as toee_metrics).
     "toee_retention",
+    # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- the three
+    # write actions (submit_interaction_review, record_draft_outcome,
+    # submit_draft_rating) are dispatched from copilot/review-fork surfaces.
+    # All four actions are agent-excluded (see toee_hermes.plugin), so this
+    # allowlisting only opens the dispatch gate for the BFF, never the model.
+    "toee_feedback",
 }
 ADR_0038_SUPERVISOR = {
     "toee_knowledge_ops",
@@ -66,6 +88,9 @@ ADR_0038_SUPERVISOR = {
     # 0.0.4 S15 (FR-23): the /admin/integrations status read -- a CREDENTIAL
     # surface reached over this profile's API by the admin BFF. Agent-excluded.
     "toee_integrations",
+    # 0.0.4 S02 (ADR-0154): list_feedback -- the supervisor read over both
+    # feedback tables (S10). Agent-excluded like every action on this tool.
+    "toee_feedback",
 }
 
 
@@ -98,6 +123,16 @@ def test_profiles_union_covers_all_catalog_tools() -> None:
     for profile in PROFILES:
         union |= set(allowlisted_tools(profile))
     assert union == set(TOOL_CATALOG)
+
+
+def test_toee_feedback_resolves_for_internal_copilot_and_supervisor_admin() -> None:
+    # S02 acceptance: the tool must resolve (be dispatchable) for BOTH profiles --
+    # internal_copilot for the three write actions, supervisor_admin for
+    # list_feedback. Model exclusion is a separate guarantee, asserted in
+    # test_plugin.py against _AGENT_EXCLUDED_ACTIONS.
+    assert "toee_feedback" in allowlisted_tools("internal_copilot")
+    assert "toee_feedback" in allowlisted_tools("supervisor_admin")
+    assert "toee_feedback" not in allowlisted_tools("customer_service_external")
 
 
 def test_allowlisted_tools_rejects_unknown_profile() -> None:
@@ -228,3 +263,111 @@ def test_pre_llm_call_swallows_provider_errors() -> None:
     hook = make_pre_llm_call_hook(snapshot_provider=boom, memory_provider=boom)
     out = hook(session_id="s1", user_message="hi")
     assert out is None
+
+
+# --- glossary_entries: the SELECTION rules, driven directly (S06, FR-6/FR-7) ---
+#
+# Everything above reaches this function through a renderer, so its rules were
+# only ever asserted as formatted text. `glossary_entries` decides WHAT enters
+# the prompt -- the status re-check, the both-forms requirement for mapping
+# rows, and the `default_rule` condition evaluated against a DATE -- and
+# `_render_lexicon` only formats what it returns. These drive the selector.
+
+
+def _lex(entry_id, kind, surface, canonical, *, status="confirmed", domain="tire"):
+    """A row in the shape ``load_confirmed_lexicon`` returns."""
+    return {
+        "id": entry_id,
+        "domain": domain,
+        "entry_kind": kind,
+        "surface_form": surface,
+        "canonical_form": canonical,
+        "status": status,
+    }
+
+
+# BOTH seasonal rows confirmed and present -- the seeded situation, and the only
+# fixture in which "evaluated at render" has something it must EXCLUDE. With one
+# seasonal row, selecting and not-selecting return the same list.
+_BOTH_SEASONS = [
+    _lex("lex_alias", "alias", "TOEE", "TOEE TIRE", domain="company"),
+    _lex("lex_winter", "default_rule", "season=winter", "winter tires"),
+    _lex("lex_all_season", "default_rule", "season=all_season", "all-season tires"),
+]
+
+_JANUARY = date(2026, 1, 15)  # inside WINTER_MONTHS
+_JULY = date(2026, 7, 15)  # outside it
+
+
+@pytest.mark.parametrize(
+    ("today", "applied", "losing"),
+    [
+        (_JANUARY, "lex_winter", "lex_all_season"),
+        (_JULY, "lex_all_season", "lex_winter"),
+    ],
+)
+def test_glossary_entries_admits_only_the_season_the_date_picks(
+    today: date, applied: str, losing: str
+) -> None:
+    # Fixed dates, not date.today(): the two cases sit on either side of the
+    # WINTER_MONTHS boundary, so a selector that ignored `today` cannot satisfy
+    # both. The losing season's row is not merely unformatted -- it is not
+    # returned at all, which is what keeps the provenance ledger from crediting
+    # an entry the prompt never carried.
+    ids = [entry["id"] for entry in glossary_entries(_BOTH_SEASONS, today)]
+    assert ids == ["lex_alias", applied]
+    assert losing not in ids
+
+
+def test_a_confirmed_season_override_row_beats_the_date_derived_season() -> None:
+    # S03's admin escape hatch, resolved here. Driven in JANUARY, where the
+    # calendar's own answer is `winter` -- so `lex_all_season` can only be in the
+    # list because the override outranked current_season(today).
+    entries = [
+        *_BOTH_SEASONS,
+        _lex("lex_override", "default_rule", "season=override", "all_season"),
+    ]
+    ids = [entry["id"] for entry in glossary_entries(entries, _JANUARY)]
+
+    assert "lex_all_season" in ids
+    assert "lex_winter" not in ids
+    # The override row is CONSULTED, never SELECTED: it is configuration, not
+    # vocabulary, so `season=override` never becomes a glossary line.
+    assert "lex_override" not in ids
+
+
+def test_running_glossary_entries_over_its_own_output_loses_the_override() -> None:
+    # The documented NOT-idempotent property, pinned rather than promised: because
+    # the override row is consulted but not returned, a caller that pre-narrows
+    # the lexicon and re-runs falls back to the calendar -- and in JULY the
+    # calendar has no `season=winter` row left to apply, so the seasonal default
+    # disappears entirely. This is why both turn seams hand render_injection the
+    # RAW store read and call the selector separately for the ledger.
+    entries = [
+        *_BOTH_SEASONS,
+        _lex("lex_override", "default_rule", "season=override", "winter"),
+    ]
+    once = glossary_entries(entries, _JULY)
+    assert [entry["id"] for entry in once] == ["lex_alias", "lex_winter"]
+    assert [entry["id"] for entry in glossary_entries(once, _JULY)] == ["lex_alias"]
+
+
+def test_glossary_entries_selects_nothing_without_admissible_rows() -> None:
+    assert glossary_entries(None, _JANUARY) == []
+    assert glossary_entries([], _JANUARY) == []
+    # Non-empty, but nothing admissible: the status re-check (the store read
+    # already filters, but a row that arrived by any other route must not become
+    # prompt text) and the both-forms requirement for mapping rows. An empty
+    # selection is what makes _render_lexicon return None instead of emitting a
+    # fence with a header and no lines.
+    assert (
+        glossary_entries(
+            [
+                _lex("lex_p", "alias", "GOODYEAR", "GOODYEAR TIRE", status="proposed"),
+                _lex("lex_r", "default_rule", "season=winter", "winter tires", status="retired"),
+                _lex("lex_no_canonical", "alias", "TOEE", None),
+            ],
+            _JANUARY,
+        )
+        == []
+    )

@@ -12,6 +12,17 @@ const COPILOT: NavItem = { label: "Copilot", href: ROUTES.copilot };
 // and admin paths, and /copilot/simulator is neither.
 const SIMULATOR: NavItem = { label: "Simulator", href: ROUTES.copilotSimulator };
 const GOVERNANCE: NavItem[] = [
+  // FR-21 (0.0.5 S14): the Memory hub -- one row per layer L1-L7 with live
+  // counts. Grill-locked ABOVE the consoles, so it leads this list; the per-layer
+  // entries below are unchanged and every existing deep link still works.
+  { label: "Memory", href: ROUTES.adminMemoryHub },
+  // FR-22 (0.0.5 S15): the unified review inbox -- the daily workflow is "log in,
+  // see the badge, clear it", so it sits second, straight after the hub and above
+  // the per-layer consoles it decides on behalf of. The badge count itself is
+  // rendered by the Topbar (InboxBadge), not baked into the label: a nav item is
+  // a static route, and a count that went stale in a static list would be worse
+  // than none.
+  { label: "Inbox", href: ROUTES.adminInbox },
   { label: "Knowledge", href: ROUTES.adminKnowledge },
   { label: "Eval", href: ROUTES.adminEval },
   { label: "Accounts", href: ROUTES.adminAccounts },
@@ -20,6 +31,11 @@ const GOVERNANCE: NavItem[] = [
   { label: "Memory Audit", href: ROUTES.adminMemoryAudit },
   // FR-23 (0.0.3 S22): L6 Agent-experience minimal admin list.
   { label: "Agent Experience", href: ROUTES.adminAgentExperience },
+  // FR-3/FR-8 (0.0.5 S02): the L7 Semantic Lexicon console -- the human gate
+  // over the domain language. Supervisor+admin like its L6 sibling above:
+  // /admin/* is that group by ADR-0093, and this is a governance surface, not a
+  // credential one.
+  { label: "Lexicon", href: ROUTES.adminLexicon },
   // FR-28 (0.0.3 S26): aggregate-metrics admin panel.
   { label: "Metrics", href: ROUTES.adminMetrics },
 ];

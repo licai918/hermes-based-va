@@ -106,13 +106,77 @@ DriverSelector = Callable[[str], ToolDriver]
 # arbitrary stuck work -- including the retention and ingest jobs the exclusions
 # above exist to withhold -- and the list read exposes other customers' job
 # payloads, so neither belongs in a live turn's tool loop.
+#
+# 0.0.5 S01 (FR-1/FR-3) adds toee_semantic_lexicon.list_lexicon_entries, for the
+# same reason as list_agent_experience: an admin-only read of the whole L7 store
+# (proposed/confirmed/rejected/retired entries plus their evidence and
+# proposer_context), meant only for the admin BFF's deterministic tools:dispatch
+# call. propose_lexicon_entry is deliberately NOT here -- it is the governed
+# write S04's capture fork calls, exactly like propose_experience.
+#
+# 0.0.5 S02 (FR-3 decide side/FR-8) adds the other five L7 actions for the same
+# reason confirm_experience/reject_experience are excluded: the human gate must
+# never become a model-callable primitive. A model that could confirm its own
+# proposal -- or, worse, call add_lexicon_entry, which lands a CONFIRMED row with
+# no proposal step at all -- would make the propose->confirm gate decorative and
+# NFR-3 false. edit and retire are the same class of authority over live L7
+# content. All five are reached only from the admin BFF's deterministic
+# tools:dispatch call.
+#
+# 0.0.4 S02 (ADR-0154) adds all four toee_feedback actions. This is the load-
+# bearing governance guarantee of the manual-scoring-feedback module: the tool
+# is allowlisted (internal_copilot for the three writes, supervisor_admin for
+# list_feedback) so the deterministic tools:dispatch route can reach it, but
+# every action is agent-excluded here so it NEVER reaches a live agent's own
+# tool-calling loop -- the AI structurally cannot score itself. (A second,
+# independent reason holds regardless of this list: the copilot draft turn's
+# boot path carries no acting employee, so a feedback write attempted from it
+# fails closed on the actor check -- see ADR-0154 decision 3.)
 _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("toee_identity_lookup", "link_identity"),
         ("toee_customer_memory", "get_memory_audit"),
+        # 0.0.5 S11 (FR-13): the whole-binding erase. Admin-only for the
+        # get_memory_audit reason and one stronger -- a model that could erase a
+        # customer's whole memory binding could destroy, in one tool call, the
+        # data every other governance surface in this iteration exists to
+        # protect. Reached only from the Memory Audit console's deterministic
+        # BFF dispatch.
+        ("toee_customer_memory", "erase_customer_memory"),
         ("toee_agent_experience", "list_agent_experience"),
         ("toee_agent_experience", "confirm_experience"),
         ("toee_agent_experience", "reject_experience"),
+        ("toee_semantic_lexicon", "list_lexicon_entries"),
+        ("toee_semantic_lexicon", "confirm_lexicon_entry"),
+        ("toee_semantic_lexicon", "reject_lexicon_entry"),
+        ("toee_semantic_lexicon", "retire_lexicon_entry"),
+        ("toee_semantic_lexicon", "edit_lexicon_entry"),
+        ("toee_semantic_lexicon", "add_lexicon_entry"),
+        # 0.0.5 S15 (FR-22): the unified review inbox. All four actions are
+        # excluded. The read and the two writes are the get_memory_audit /
+        # confirm_experience precedent -- an admin surface reached only by the
+        # admin BFF's deterministic dispatch. propose_review_item is excluded for
+        # a DIFFERENT reason worth stating: it is not an admin action at all, it
+        # is the seam S10's blast-radius pass, S20's sweep and S25's aggregator
+        # emit through. A model that could raise its own review items would be
+        # writing the queue that exists to check it.
+        ("toee_review_inbox", "propose_review_item"),
+        ("toee_review_inbox", "list_review_items"),
+        ("toee_review_inbox", "decide_review_item"),
+        ("toee_review_inbox", "reclassify_proposal"),
+        # 0.0.5 S10 (FR-12): the blast-radius read. Admin-only for the
+        # get_memory_audit reason -- it reports which CUSTOMER CASES a memory
+        # entry reached, i.e. a cross-customer view no live turn may reach.
+        ("toee_review_inbox", "get_blast_radius"),
+        # 0.0.5 S16 (FR-23): the copilot triage annotation. Excluded for a
+        # sharper reason than "admin-only": this action is the seam that puts
+        # stored queue text in front of a model, and the model on the other side
+        # of it must never be able to reach back through the tool surface. A
+        # live turn that could call it would be an agent annotating its own
+        # pending proposals -- and D24 records that a green adversarial gate
+        # cannot see obedience expressed as a tool call, so the exclusion is the
+        # instrument, not the eval suite.
+        ("toee_review_inbox", "annotate_inbox_item"),
         ("toee_metrics", "get_aggregate_metrics"),
         ("toee_retention", "trigger_retention_sweep"),
         ("toee_retention", "enqueue_retention_sweep"),
@@ -130,6 +194,12 @@ _AGENT_EXCLUDED_ACTIONS: frozenset[tuple[str, str]] = frozenset(
         # governed writes, never a primitive a live agent's tool loop may reach.
         ("toee_integrations", "initiate_reconnect"),
         ("toee_integrations", "reprobe_now"),
+        # 0.0.4 S02 (ADR-0154): all four toee_feedback actions -- see the
+        # header comment above this set for the governance rationale.
+        ("toee_feedback", "submit_interaction_review"),
+        ("toee_feedback", "record_draft_outcome"),
+        ("toee_feedback", "submit_draft_rating"),
+        ("toee_feedback", "list_feedback"),
     }
 )
 

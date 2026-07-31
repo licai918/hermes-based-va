@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import type { WorkbenchCase } from "@/lib/gateway/types";
 import { SalesOutreachList } from "./SalesOutreachList";
 
@@ -18,6 +18,7 @@ function wcase(over: Partial<WorkbenchCase>): WorkbenchCase {
     smsSessionActive: false,
     openedAt: Date.now() - 3 * 60 * 60_000,
     lastActivityAt: Date.now() - 30 * 60_000,
+    reviewed: false,
     ...over,
   };
 }
@@ -66,5 +67,25 @@ describe("SalesOutreachList", () => {
     stubFetch({ cases: [] });
     render(<SalesOutreachList />);
     expect(await screen.findByText(/no sales outreach/i)).toBeInTheDocument();
+  });
+
+  it("shows the review-status badge for both reviewed and not-reviewed rows", async () => {
+    stubFetch({
+      cases: [
+        wcase({ caseId: "case-1", identitySummary: "Reviewed case", reviewed: true }),
+        wcase({ caseId: "case-2", identitySummary: "Unreviewed case", reviewed: false }),
+      ],
+    });
+    render(<SalesOutreachList />);
+
+    const reviewedRow = (
+      await screen.findByRole("link", { name: "Reviewed case" })
+    ).closest("tr") as HTMLElement;
+    expect(within(reviewedRow).getByText("Reviewed")).toBeInTheDocument();
+
+    const unreviewedRow = screen
+      .getByRole("link", { name: "Unreviewed case" })
+      .closest("tr") as HTMLElement;
+    expect(within(unreviewedRow).getByText("Not reviewed")).toBeInTheDocument();
   });
 });

@@ -1,0 +1,109 @@
+{
+  "final_response": "I don't have our Saturday hours on hand, but I've passed your question along to our team \u2014 they'll follow up with you shortly. Is there anything else I can help with in the meantime?",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: unmatched_caller\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nWhat are your Saturday opening hours?"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "The caller is an unmatched_caller \u2014 not a verified customer. They're asking about Saturday opening hours, which is a public, non-account-specific question. I should search the public site or operational policy for this information before answering.\n\nLet me search for the operating hours information.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "The caller is an unmatched_caller \u2014 not a verified customer. They're asking about Saturday opening hours, which is a public, non-account-specific question. I should search the public site or operational policy for this information before answering.\n\nLet me search for the operating hours information.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "The caller is an unmatched_caller \u2014 not a verified customer. They're asking about Saturday opening hours, which is a public, non-account-specific question. I should search the public site or operational policy for this information before answering.\n\nLet me search for the operating hours information.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_b5e884778ff147f3b4a3994d",
+          "call_id": "call_b5e884778ff147f3b4a3994d",
+          "response_item_id": "fc_b5e884778ff147f3b4a3994d",
+          "type": "function",
+          "function": {
+            "name": "toee_knowledge_search__search_public_site",
+            "arguments": "{\"query\": \"Saturday opening hours\"}"
+          }
+        },
+        {
+          "id": "call_beefa2d2f7b947178f4b7bed",
+          "call_id": "call_beefa2d2f7b947178f4b7bed",
+          "response_item_id": "fc_beefa2d2f7b947178f4b7bed",
+          "type": "function",
+          "function": {
+            "name": "toee_knowledge_search__search_operational_policy",
+            "arguments": "{\"query\": \"Saturday opening hours\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_knowledge_search__search_public_site",
+      "tool_name": "toee_knowledge_search__search_public_site",
+      "content": "{\"results\": []}",
+      "tool_call_id": "call_b5e884778ff147f3b4a3994d"
+    },
+    {
+      "role": "tool",
+      "name": "toee_knowledge_search__search_operational_policy",
+      "tool_name": "toee_knowledge_search__search_operational_policy",
+      "content": "{\"slot\": \"Saturday opening hours\", \"content\": \"\", \"found\": false}",
+      "tool_call_id": "call_beefa2d2f7b947178f4b7bed"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "Both searches came back empty \u2014 no published information about Saturday opening hours. Per my instructions, when I have no published answer to what they asked, I must open a case and tell them I don't have that on hand and the team will follow up. Let me open a case now.",
+      "finish_reason": "tool_calls",
+      "reasoning_content": "Both searches came back empty \u2014 no published information about Saturday opening hours. Per my instructions, when I have no published answer to what they asked, I must open a case and tell them I don't have that on hand and the team will follow up. Let me open a case now.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "Both searches came back empty \u2014 no published information about Saturday opening hours. Per my instructions, when I have no published answer to what they asked, I must open a case and tell them I don't have that on hand and the team will follow up. Let me open a case now.",
+          "format": "unknown",
+          "index": 0
+        }
+      ],
+      "tool_calls": [
+        {
+          "id": "call_6c0d006771b6480885b17545",
+          "call_id": "call_6c0d006771b6480885b17545",
+          "response_item_id": "fc_6c0d006771b6480885b17545",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"unknown\", \"urgency\": \"normal\", \"summary\": \"Unmatched caller asking about Saturday opening hours \u2014 no published policy or site content found to answer.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_fc426ff2\", \"status\": \"open\", \"contact_reason\": \"unknown\", \"urgency\": \"normal\", \"summary\": \"Unmatched caller asking about Saturday opening hours \\u2014 no published policy or site content found to answer.\"}",
+      "tool_call_id": "call_6c0d006771b6480885b17545"
+    },
+    {
+      "role": "assistant",
+      "content": "I don't have our Saturday hours on hand, but I've passed your question along to our team \u2014 they'll follow up with you shortly. Is there anything else I can help with in the meantime?",
+      "reasoning": "Case opened successfully. Now I'll reply to the customer \u2014 I don't have the Saturday hours on hand, and the team will follow up.",
+      "finish_reason": "stop",
+      "reasoning_content": "Case opened successfully. Now I'll reply to the customer \u2014 I don't have the Saturday hours on hand, and the team will follow up.",
+      "reasoning_details": [
+        {
+          "type": "reasoning.text",
+          "text": "Case opened successfully. Now I'll reply to the customer \u2014 I don't have the Saturday hours on hand, and the team will follow up.",
+          "format": "unknown",
+          "index": 0
+        }
+      ]
+    }
+  ]
+}

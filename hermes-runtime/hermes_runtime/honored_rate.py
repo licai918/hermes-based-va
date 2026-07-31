@@ -32,18 +32,32 @@ aggregate and its (now stale) "as of" survive.
 
 **No silent truncation (FR-31).** The eligible population is counted BEFORE the
 per-run cap; the job logs sampled-vs-skipped when the cap bites.
+
+**S21 (0.0.5, FR-28) -- more legs, same sample.** The job now runs every leg in
+:data:`JUDGE_LEGS` over the SAME sampled transcripts: the honored leg (unchanged,
+still the tile's number and still in its own columns) plus the ``no_misapplication``
+advisory leg and the adversarial safety leg. Per-leg counts persist in the
+aggregate's ``leg_results`` for 0.0.5 S22/S26 to read. Nothing here gates --
+including the safety leg: a stored score can only ever report. The safety leg's
+gating half is the deterministic marker check inside the CI replay gate
+(``eval_runner.assertions._eval_safety``), which makes no model call.
+:data:`JUDGE_LEGS` is deliberately a SUBSET of the calibrated rubric -- see the
+comment on it for which legs are held back and why.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
-from eval_runner.judge import JudgeClient, judge_reply, resolve_judge_model
+from eval_runner.judge import JudgeClient, JudgeLeg, judge_reply, resolve_judge_model
 
 from .datastore.config import database_url
 from .datastore.pool import get_database_pool
+from .entry_effectiveness import record_judged_turns
 from .openrouter import openrouter_configured
 
 logger = logging.getLogger(__name__)
@@ -56,33 +70,106 @@ logger = logging.getLogger(__name__)
 # staying "recent". Widen if a run's candidate population is routinely too small.
 DEFAULT_WINDOW_SECONDS = 7 * 24 * 60 * 60
 
-# The COST BOUND (FR-31): at most this many judge calls per run. Each sampled
-# transcript is one billed OpenRouter completion, so this caps the run's spend and
-# latency. The eligible population is counted before the cap and the gap is logged
-# (no silent truncation); raise it only if a wider sample is worth the linear cost.
+# The COST BOUND (FR-31): at most this many TRANSCRIPTS per run. Each transcript
+# costs one billed OpenRouter completion PER LEG (S21), so a run's spend is
+# `cap * len(JUDGE_LEGS)` completions -- 150 at today's values, up from 50 when
+# the honored leg ran alone. The cap stays expressed in transcripts because that
+# is what the sample means; the eligible population is counted before it and the
+# gap is logged (no silent truncation). Raise it only if a wider sample is worth
+# the linear cost, and remember the multiplier when you do.
 SAMPLE_CAP = 50
+
+# 0.0.5 S26 (FR-31): the share of the cap reserved for turns the ledger says
+# carried NO injection. The stratification concentrates the judge budget where
+# memory actually appeared; this floor is the honesty clause -- a sample made
+# only of injection turns can say nothing about how the agent behaves without
+# memory, and blinding one eye to sharpen the other is not a measurement.
+#
+# Stated plainly, because the PRD names a beneficiary that is not sampled yet:
+# the leg this floor most obviously serves is `no_unprompted_recall`, and that
+# leg is NOT in JUDGE_LEGS today (it needs the INBOUND turn, which a Transcript
+# does not carry). What the floor buys right now is that the honored and
+# no_misapplication legs are not measured exclusively on turns where memory
+# appeared; it is ready for the recall leg the day one lands.
+SAMPLE_NON_INJECTION_FLOOR = 0.2
+
+# Every leg the scheduled job scores, in report order (S21, 0.0.5 FR-28). The
+# honored leg keeps its dedicated aggregate columns; all legs (honored included)
+# also land in `leg_results` so a reader never has to special-case one of them.
+# Each name is phrased so a PASS means the agent behaved well, so a
+# misapplication RATE is `1 - passed/determinate` (see JudgeLeg).
+#
+# This is the PRODUCTION-SAMPLING set, deliberately smaller than the calibrated
+# rubric (`eval_runner.judge.JudgeLeg`, 5 legs) and than the fixture report's
+# `judge_report._LEG_ORDER`. A leg belongs here only if it can actually read
+# something off a sampled `Transcript`. Two cannot, and shipping their numbers
+# would put a flattering ~100% pass rate on a panel that means nothing:
+#
+#   - `no_unprompted_recall` needs the INBOUND turn ("did the customer raise it
+#     this turn?"). A Transcript carries only the reply and the injected memory,
+#     so the leg is unanswerable here. Excluded since S22-0.0.4.
+#   - `no_stale_use` needs the injected memory to RENDER supersession. Nothing
+#     shipped emits that today -- 0.0.5 S07 lands the value history, and
+#     surfacing it to the judge is not yet in any slice. Until it renders, this
+#     leg would spend ~50 completions a run to persist "no stale value present"
+#     as a ~100% pass rate that a later memory-health panel would draw as
+#     health. Excluded in the S21 review; re-enabling is ONE line here once the
+#     injection composer renders supersession. The rubric
+#     (`judge._LEG_CRITERIA`/`_LEG_GUIDANCE`) and its labelled fixtures stay in
+#     place and calibrated, so nothing has to be rebuilt.
+JUDGE_LEGS: tuple[JudgeLeg, ...] = (
+    "honored",
+    "no_misapplication",
+    "injection_resisted",
+)
+
+HONORED_LEG: JudgeLeg = "honored"
 
 
 @dataclass(frozen=True)
 class Transcript:
     """One judged unit: a Hermes reply plus the Customer Memory injected into its
     turn. ``injected_memory`` is ``{slot_name: slot_value}`` -- what the judge's
-    honored leg checks the reply against."""
+    honored leg checks the reply against.
+
+    ``turn_ref`` (0.0.5 S26) is the ledger's own key for this turn -- the inbound
+    ``event_id`` both live turn paths pass to
+    :func:`~hermes_runtime.injection_ledger.record_injection` -- and is what makes
+    a verdict attributable to the entries that turn actually carried. It defaults
+    to empty so a hand-built transcript still constructs; an empty ref simply
+    never reaches ``judged_turn``, because a verdict with nothing to join to is
+    not evidence about any entry.
+    """
 
     reply: str
     injected_memory: dict[str, str]
+    turn_ref: str = ""
 
 
 @dataclass(frozen=True)
 class HonoredRateAggregate:
     """One run's aggregate. ``rate`` is derived (honored / sample_size), ``None``
-    when no transcript scored determinate."""
+    when no transcript scored determinate.
+
+    ``leg_results`` (S21) is ``{leg: {"passed", "determinate", "undetermined"}}``
+    over the same sample, for every leg in :data:`JUDGE_LEGS` -- advisory data
+    for 0.0.5 S22/S26, never a gate. It defaults to empty so a caller that only
+    cares about the honored leg (and every pre-S21 row) still constructs.
+
+    ``turn_verdicts`` (0.0.5 S26) is the same sweep seen per TURN --
+    ``(turn_ref, leg, passed)``, ``passed=None`` for undetermined. It is NOT part
+    of the persisted aggregate row; it rides along because re-deriving it would
+    mean a second billed pass of the judge over the same sample, and it is what
+    the per-entry join in :mod:`hermes_runtime.entry_effectiveness` consumes.
+    """
 
     honored_count: int
     sample_size: int
     undetermined_count: int
     candidate_total: int
     window_seconds: int
+    leg_results: Mapping[str, Mapping[str, int]] = field(default_factory=dict)
+    turn_verdicts: tuple[tuple[str, str, Optional[bool]], ...] = ()
 
     @property
     def rate(self) -> Optional[float]:
@@ -103,64 +190,103 @@ def _live_label(agg: Mapping[str, Any]) -> str:
     """Provenance line for a computed aggregate: sample vs population + as-of."""
     return (
         "Advisory, judge-sampled honored leg over "
-        f"{agg['sample_size']} of {agg['candidate_total']} recent memory-injection "
-        f"turns (undetermined: {agg['undetermined_count']}); as of {agg['as_of']}."
+        f"{agg['sample_size']} of {agg['candidate_total']} recent turns where memory "
+        "was injected or available, sampled injection-first with a floor of "
+        f"non-injection turns (undetermined: {agg['undetermined_count']}); "
+        f"as of {agg['as_of']}."
     )
 
 
 def sample_transcripts(
     cur, *, window_seconds: int = DEFAULT_WINDOW_SECONDS, cap: int = SAMPLE_CAP
 ) -> tuple[list[Transcript], int]:
-    """Sample recent memory-injection transcripts on a caller-owned cursor.
+    """Sample recent transcripts on a caller-owned cursor, STRATIFIED by the ledger.
 
     Returns ``(transcripts, candidate_total)`` where ``candidate_total`` is the
     FULL eligible population in the window (before the cap) so the caller can log
     sampled-vs-skipped -- ``len(transcripts) < candidate_total`` means the cap bit.
 
-    Eligible = a Hermes outbound reply whose customer thread has Customer Memory
-    slots (i.e. memory was available to inject that turn), newest first, capped.
+    Eligible = a Hermes outbound reply that EITHER has an ``injection_ledger`` row
+    (the ledger says memory reached that prompt) OR whose customer thread has
+    Customer Memory slots (memory was available to inject). The first arm is 0.0.5
+    S26's widening: an L6/L7-only injection on a thread with no L4 slots is a real
+    memory-injection turn and was invisible to the old predicate.
+
+    **Stratified (FR-31).** Turns the ledger says carried an injection are taken
+    first, so the judge budget concentrates where memory actually appeared. A
+    floor of :data:`SAMPLE_NON_INJECTION_FLOOR` of the cap is reserved for turns
+    that carried none -- don't blind the other eye. Each stratum spills its unused
+    seats to the other, so a short stratum never shrinks the sample.
+
+    ``turn_ref`` on each transcript is the inbound ``event_id``: the SAME key both
+    live turn paths write into the ledger, reconstructed from the outbound turn id
+    (``sms_session_id || ':' || event_id || ':out'``, the rule
+    ``postgres_gateway_store.record_hermes_reply`` mints it with). That is what
+    makes a verdict joinable to the entries the turn carried, and it is also why
+    per-entry effectiveness is EXTERNAL-PATH ONLY: only the external turn has an
+    ``agent_turn_context``, so a copilot draft (whose ``turn_ref`` is a synthetic
+    id, D4.3) can never enter this sample.
 
     # ponytail: the thread->slots join reconstructs the memory binding key from the
     # thread's persisted channel/identity (`binding_key_from_identity`'s provisional
-    # form) and its verified Shopify id. message_turn does not record the injected
-    # memory per-turn, so this is the honest available signal. If the channel
-    # literal ever drifts between the write-time binding and the persisted thread
-    # channel, the upgrade path is a per-turn injected-memory record on message_turn
-    # -- not a fancier join. Owner-blocked today (no live traffic), so untested
-    # against real data, exactly like S16's live probe wire.
+    # form) and its verified Shopify id, because `message_turn` does not record the
+    # injected memory per-turn. S09's `injection_ledger` DOES record which entries
+    # reached which turn, and S26 now uses it -- for eligibility, for the strata,
+    # and for the per-entry join. It is deliberately NOT used to reconstruct the
+    # slot VALUES the honored leg reads: the ledger stores slot NAMES only (NFR-6
+    # -- no memory values in it, by design), so the values still have to come from
+    # the live slots. If the channel literal ever drifts between the write-time
+    # binding and the persisted thread channel, the upgrade path is still a
+    # per-turn injected-memory record, not a fancier join.
     """
     cur.execute(
         """
-        SELECT mt.id
+        SELECT mt.id,
+               coalesce(atc.event_id, ''),
+               (atc.event_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM injection_ledger il WHERE il.turn_ref = atc.event_id
+               )) AS carried_injection
         FROM message_turn mt
         JOIN customer_thread ct ON ct.id = mt.customer_thread_id
+        LEFT JOIN agent_turn_context atc
+               ON atc.sms_session_id || ':' || atc.event_id || ':out' = mt.id
         WHERE mt.direction = 'outbound'
           AND mt.author = 'hermes'
           AND mt.body <> ''
           AND mt.created_at >= now() - make_interval(secs => %s)
-          AND EXISTS (
-              SELECT 1 FROM customer_memory_slot cms
-              WHERE cms.binding_key
-                        = 'provisional:' || ct.channel || ':' || ct.channel_identity
-                 OR (ct.shopify_customer_id IS NOT NULL
-                     AND cms.binding_key = ct.shopify_customer_id)
+          AND (
+              EXISTS (
+                  SELECT 1 FROM injection_ledger il WHERE il.turn_ref = atc.event_id
+              )
+              OR EXISTS (
+                  SELECT 1 FROM customer_memory_slot cms
+                  WHERE cms.binding_key
+                            = 'provisional:' || ct.channel || ':' || ct.channel_identity
+                     OR (ct.shopify_customer_id IS NOT NULL
+                         AND cms.binding_key = ct.shopify_customer_id)
+              )
           )
         ORDER BY mt.created_at DESC
         """,
         (window_seconds,),
     )
-    turn_ids = [row[0] for row in cur.fetchall()]
-    candidate_total = len(turn_ids)
-    sampled_ids = turn_ids[:cap]
-    if not sampled_ids:
+    candidates = cur.fetchall()
+    candidate_total = len(candidates)
+    sampled = _stratified_sample(candidates, cap)
+    if not sampled:
         return [], candidate_total
 
+    sampled_ids = [turn_id for turn_id, _ref in sampled]
     cur.execute(
+        # LEFT JOIN, not a JOIN: a ledger-eligible turn on a thread with no L4
+        # slots has no slot row, and an inner join would silently DROP exactly the
+        # L6/L7-only turns the widened predicate just admitted -- the sample would
+        # look stratified and never contain the new stratum.
         """
         SELECT mt.id, mt.body, cms.slot_name, cms.slot_value
         FROM message_turn mt
         JOIN customer_thread ct ON ct.id = mt.customer_thread_id
-        JOIN customer_memory_slot cms
+        LEFT JOIN customer_memory_slot cms
           ON cms.binding_key = 'provisional:' || ct.channel || ':' || ct.channel_identity
           OR (ct.shopify_customer_id IS NOT NULL
               AND cms.binding_key = ct.shopify_customer_id)
@@ -172,13 +298,41 @@ def sample_transcripts(
     memory: dict[str, dict[str, str]] = {}
     for turn_id, body, slot_name, slot_value in cur.fetchall():
         replies[turn_id] = body
-        memory.setdefault(turn_id, {})[slot_name] = slot_value
+        if slot_name is not None:
+            memory.setdefault(turn_id, {})[slot_name] = slot_value
 
     # Preserve the newest-first order of the sampled ids.
     return (
-        [Transcript(replies[tid], memory[tid]) for tid in sampled_ids if tid in replies],
+        [
+            Transcript(replies[tid], memory.get(tid, {}), turn_ref)
+            for tid, turn_ref in sampled
+            if tid in replies
+        ],
         candidate_total,
     )
+
+
+def _stratified_sample(
+    candidates: Sequence[tuple[str, str, bool]], cap: int
+) -> list[tuple[str, str]]:
+    """Pick up to ``cap`` of ``(turn_id, turn_ref, carried_injection)``, ledger-first.
+
+    Injection turns fill the cap minus the reserved floor; the floor takes the
+    newest non-injection turns. Either stratum spills into the other when short,
+    so the floor never costs sample size -- it only costs PRIORITY. The result is
+    re-sorted into the caller's newest-first order.
+    """
+    if cap <= 0:
+        return []
+    order = {turn_id: index for index, (turn_id, _ref, _carried) in enumerate(candidates)}
+    injected = [(t, r) for t, r, carried in candidates if carried]
+    other = [(t, r) for t, r, carried in candidates if not carried]
+    reserved = min(len(other), math.ceil(cap * SAMPLE_NON_INJECTION_FLOOR))
+    take_injected = min(len(injected), cap - reserved)
+    take_other = min(len(other), cap - take_injected)
+    sampled = injected[:take_injected] + other[:take_other]
+    sampled.sort(key=lambda pair: order[pair[0]])
+    return sampled
 
 
 def measure_honored_rate(
@@ -189,34 +343,49 @@ def measure_honored_rate(
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
     model: Optional[str] = None,
 ) -> HonoredRateAggregate:
-    """Run the judge's HONORED leg over ``transcripts``; aggregate the verdicts.
+    """Run EVERY leg in :data:`JUDGE_LEGS` over ``transcripts``; aggregate them.
 
     An ``undetermined`` verdict (the judge could not score it) is counted but does
-    NOT enter the rate's denominator -- the rate is over the transcripts scored
-    determinately, never inflated or deflated by a verdict the judge itself
-    declined to make.
+    NOT enter that leg's denominator -- each leg's rate is over the transcripts it
+    scored determinately, never inflated or deflated by a verdict the judge itself
+    declined to make. The honored leg's counts additionally fill the aggregate's
+    dedicated columns, so the shipped tile reads exactly as it did before S21.
+
+    Named for the honored rate it has always produced; S21 widened what it scores
+    rather than adding a second near-identical sweep over the same sample.
     """
-    honored = determinate = undetermined = 0
+    counts = {
+        leg: {"passed": 0, "determinate": 0, "undetermined": 0} for leg in JUDGE_LEGS
+    }
+    # S26: the SAME verdicts, kept per turn as well as summed. One sweep, two
+    # readers -- re-deriving these would be a second billed pass over the sample.
+    per_turn: list[tuple[str, str, Optional[bool]]] = []
     for transcript in transcripts:
-        verdict = judge_reply(
-            reply=transcript.reply,
-            leg="honored",
-            injected_memory=transcript.injected_memory or None,
-            client=client,
-            model=model,
-        )
-        if verdict.passed is None:
-            undetermined += 1
-        else:
-            determinate += 1
-            if verdict.passed:
-                honored += 1
+        for leg in JUDGE_LEGS:
+            verdict = judge_reply(
+                reply=transcript.reply,
+                leg=leg,
+                injected_memory=transcript.injected_memory or None,
+                client=client,
+                model=model,
+            )
+            if transcript.turn_ref:
+                per_turn.append((transcript.turn_ref, leg, verdict.passed))
+            if verdict.passed is None:
+                counts[leg]["undetermined"] += 1
+            else:
+                counts[leg]["determinate"] += 1
+                if verdict.passed:
+                    counts[leg]["passed"] += 1
+    honored = counts[HONORED_LEG]
     return HonoredRateAggregate(
-        honored_count=honored,
-        sample_size=determinate,
-        undetermined_count=undetermined,
+        honored_count=honored["passed"],
+        sample_size=honored["determinate"],
+        undetermined_count=honored["undetermined"],
         candidate_total=candidate_total,
         window_seconds=window_seconds,
+        leg_results=counts,
+        turn_verdicts=tuple(per_turn),
     )
 
 
@@ -230,8 +399,8 @@ def record_honored_rate_aggregate(cur, agg: HonoredRateAggregate) -> None:
         """
         INSERT INTO honored_rate_aggregate
             (honored_count, sample_size, undetermined_count, candidate_total,
-             window_seconds)
-        VALUES (%s, %s, %s, %s, %s)
+             window_seconds, leg_results)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb)
         """,
         (
             agg.honored_count,
@@ -239,6 +408,9 @@ def record_honored_rate_aggregate(cur, agg: HonoredRateAggregate) -> None:
             agg.undetermined_count,
             agg.candidate_total,
             agg.window_seconds,
+            # Serialized here rather than via a driver adapter so the one INSERT
+            # behaves identically on any psycopg configuration.
+            json.dumps(dict(agg.leg_results)),
         ),
     )
 
@@ -255,7 +427,7 @@ def honored_rate_metric(cur) -> dict[str, Any]:
     cur.execute(
         """
         SELECT honored_count, sample_size, undetermined_count, candidate_total,
-               window_seconds, computed_at
+               window_seconds, computed_at, leg_results
         FROM honored_rate_aggregate
         ORDER BY computed_at DESC
         LIMIT 1
@@ -271,9 +443,21 @@ def honored_rate_metric(cur) -> dict[str, Any]:
             "undetermined_count": None,
             "window_seconds": None,
             "as_of": None,
+            # S21: advisory per-leg counts; empty is the honest "no breakdown",
+            # the same stance as a None rate. Key present in BOTH branches (and
+            # in the mock twin) so the BFF mapper never sees a missing field.
+            "leg_results": {},
             "label": NOT_COMPUTED_LABEL,
         }
-    honored_count, sample_size, undetermined_count, candidate_total, window_seconds, computed_at = row
+    (
+        honored_count,
+        sample_size,
+        undetermined_count,
+        candidate_total,
+        window_seconds,
+        computed_at,
+        leg_results,
+    ) = row
     agg = {
         "live": True,
         "rate": round(honored_count / sample_size, 4) if sample_size else None,
@@ -282,6 +466,7 @@ def honored_rate_metric(cur) -> dict[str, Any]:
         "undetermined_count": undetermined_count,
         "window_seconds": window_seconds,
         "as_of": computed_at.isoformat(),
+        "leg_results": leg_results if isinstance(leg_results, dict) else {},
     }
     agg["label"] = _live_label(agg)
     return agg
@@ -374,14 +559,25 @@ def _sample_judge_persist(conn, judge, model, window_seconds, cap) -> None:
     )
     with conn.cursor() as cur:
         record_honored_rate_aggregate(cur, agg)
+        # S26 (FR-31): the same sweep, kept per turn, so the per-entry join has
+        # something to join to. Same cursor, same transaction as the aggregate --
+        # a run that persisted a rate but lost its verdicts would leave the two
+        # surfaces describing different samples.
+        record_judged_turns(cur, agg.turn_verdicts)
     conn.commit()
     logger.info(
         "honored_rate computed: honored=%s/%s (undetermined=%s) over %s of %s "
-        "candidates; rate=%s",
+        "candidates; rate=%s; legs=%s",
         agg.honored_count,
         agg.sample_size,
         agg.undetermined_count,
         len(transcripts),
         candidate_total,
         agg.rate,
+        # Advisory per-leg breakdown (S21) in the same line, so a run's legs are
+        # legible from the worker log without querying the aggregate.
+        {
+            leg: f"{c['passed']}/{c['determinate']} (u={c['undetermined']})"
+            for leg, c in agg.leg_results.items()
+        },
     )

@@ -3,12 +3,35 @@
 // ADR-0085/0086 audit views). These are the workbench's WIRE shapes: hermes-map.ts
 // validates each snake_case datastore row onto them (0.0.4 S09 deleted the
 // in-memory store they were originally written for; the shapes did not change).
-import { MEMORY_PREFERENCE_SLOTS, type MemoryPreferenceSlot } from "@toee/shared";
+import {
+  MEMORY_PREFERENCE_SLOTS,
+  type DraftOutcome,
+  type DraftRatingVerdict,
+  type ExternalReviewReasonTag,
+  type InteractionReviewVerdict,
+  type InternalReviewReasonTag,
+  type MemoryPreferenceSlot,
+} from "@toee/shared";
 
 // Re-exported so the rest of the BFF/gateway layer imports the slot union from
 // "./types" alongside everything else, without drifting from the @toee/shared
 // contract's own slot names (ADR-0111, S07/FR-6).
 export type { MemoryPreferenceSlot };
+
+// Re-exported so 0.0.4 S04 review code imports the EXTERNAL Review Reason Tag
+// vocabulary + verdict from "./types" alongside everything else, without
+// drifting from the @toee/shared feedback.ts contract (ADR-0154).
+export type { ExternalReviewReasonTag, InteractionReviewVerdict };
+
+// Re-exported so 0.0.4 S07 draft-rating code imports the INTERNAL Review Reason
+// Tag vocabulary + verdict from "./types" alongside everything else, same
+// discipline as the EXTERNAL pair above (ADR-0154).
+export type { InternalReviewReasonTag, DraftRatingVerdict };
+
+// Re-exported so 0.0.4 S09's implicit outcome-capture code (feedback.ts's
+// record_draft_outcome branch) imports it from "./types" alongside everything
+// else, same discipline as DraftRatingVerdict above (ADR-0154).
+export type { DraftOutcome };
 
 export type CaseChannel = "sms" | "email" | "voice";
 
@@ -35,6 +58,18 @@ export interface WorkbenchCase {
   smsSessionActive: boolean;
   openedAt: number;
   lastActivityAt: number;
+  // Sampling coverage (0.0.4 S05, FR-6): ANY interaction_review row exists for
+  // this case, by any reviewer -- "has this been sampled", not "did I review
+  // it". Only `list_sales_outreach` populates this (a single batched join, not
+  // per-row); optional because the general case queue read (`list_cases`)
+  // never sets it -- absent reads as not-reviewed, same as `false`.
+  reviewed?: boolean;
+  // US-7/FR-5 (gap fix): the CURRENT ACCOUNT's own latest review of this
+  // subject, if any -- what ReviewBar renders on load so reopening a record
+  // shows the reviewer's own prior verdict. Only `get_sales_outreach`
+  // populates this; absent/null reads as "I haven't reviewed this", distinct
+  // from `reviewed` above (which is "has anyone").
+  myReview?: InteractionReview | null;
 }
 
 export type ThreadAuthor = "customer" | "hermes" | "workbench";
@@ -102,6 +137,55 @@ export interface AutoHandledRecord {
   toolFailure: boolean;
   timeline: ThreadMessage[];
   toolCalls: ToolCallEvidence[];
+  // Sampling coverage (0.0.4 S05, FR-6): ANY interaction_review row exists for
+  // this record, by any reviewer -- see WorkbenchCase.reviewed for the same
+  // semantics. Only `list_auto_handled` populates this; `get_auto_handled`
+  // (detail) never sets it -- absent reads as not-reviewed, same as `false`.
+  reviewed?: boolean;
+  // US-7/FR-5 (gap fix): see WorkbenchCase.myReview for the same semantics.
+  // Only `get_auto_handled` populates this.
+  myReview?: InteractionReview | null;
+}
+
+// The EXTERNAL mechanism's subject: one Auto-Handled Interaction record or one
+// sales_outreach Follow-up Case (ADR-0154, 0.0.4 S04). Mirrors
+// INTERACTION_REVIEW_SUBJECT_KINDS in the Python plugin schemas.
+export type InteractionReviewSubjectKind =
+  | "auto_handled_record"
+  | "sales_outreach_case";
+
+// A supervisor/admin's pass/fail judgment (toee_feedback.submit_interaction_review,
+// ADR-0154, 0.0.4 S03/S04). Append-only on the datastore: a re-review is a new row,
+// never an update -- the BFF/UI treat the latest one per subject as "the" review.
+export interface InteractionReview {
+  reviewId: string;
+  subjectKind: InteractionReviewSubjectKind;
+  subjectId: string;
+  verdict: InteractionReviewVerdict;
+  reasonTags: ExternalReviewReasonTag[];
+  comment: string | null;
+  reviewerAccountId: string;
+  createdAt: number;
+}
+
+// Which copilot draft surface generated a draft (toee_feedback.submit_draft_rating
+// / record_draft_outcome, ADR-0154, 0.0.4 S06/S07). Mirrors the draft_kind enum in
+// the Python plugin schemas (hermes/toee_hermes/plugin/schemas.py).
+export type DraftKind = "sms" | "email" | "note";
+
+// A rep's thumbs up/down on one copilot draft (toee_feedback.submit_draft_rating,
+// 0.0.4 S06/S07). Append-only, same as InteractionReview -- a re-rating is a new
+// row, not an overwrite.
+export interface DraftRating {
+  ratingId: string;
+  caseId: string;
+  draftCorrelationId: string;
+  draftKind: DraftKind;
+  verdict: DraftRatingVerdict;
+  reasonTags: InternalReviewReasonTag[];
+  comment: string | null;
+  repAccountId: string;
+  createdAt: number;
 }
 
 // Assignee filter modes for the queue (ADR-0079). Reps default to
@@ -166,11 +250,21 @@ export interface MemoryAuditEntry {
   // ``details.slot`` above -- so the proposal-history section can show what
   // was proposed, not just that something was dismissed.
   value?: string;
+  // 0.0.5 S07 (FR-9): the old->new pair for a preference_updated row, lifted
+  // from ``details.old_value``/``details.new_value`` the same way ``value``
+  // is lifted above -- so the write-history section can render what changed,
+  // not just that a change happened.
+  oldValue?: string;
+  newValue?: string;
 }
 
 export interface MemoryAuditView {
   slots: MemorySlotAttribution[];
   history: MemoryAuditEntry[];
+  // 0.0.5 S22 (FR-34a): when this binding's memory last reached a prompt, from
+  // S09's injection ledger. `null` is "never" -- and also what the mock backend
+  // reports, since there is no ledger behind it. Never a fabricated timestamp.
+  lastInjectionAt: number | null;
 }
 
 // L6 Agent-experience store (0.0.3 S22, FR-23/NFR-3): "what the agent learns
@@ -192,4 +286,78 @@ export interface AgentExperienceEntry {
   deciderAccountId: string | null;
   decidedAt: number | null;
   createdAt: number;
+}
+
+// L7 Semantic Lexicon (0.0.5 S01/S02, FR-1/FR-3/FR-8): the governed store of the
+// domain language the business speaks -- "TOEE" means "TOEE TIRE"; "2055516" and
+// "205 55 16" are the same tire size. The seventh and last memory layer, distinct
+// from L4 (per-customer PII), L5 (authored corpus) and L6 above.
+export type LexiconEntryKind = "alias" | "normalizer" | "default_rule";
+export type LexiconStatus = "proposed" | "confirmed" | "rejected" | "retired";
+export type LexiconProvenance =
+  | "admin_manual"
+  | "conversation_confirmed"
+  | "feedback_derived";
+
+// 0.0.5 S26 (FR-31): one judge leg's contribution to an entry's health, with the
+// numbers the rate came from. `rate` is null when `determinate` is 0 -- an
+// unscored leg is NOT a 0.0, which a panel would draw as "perfect".
+export interface LexiconHealthLeg {
+  rate: number | null;
+  passed: number;
+  determinate: number;
+  undetermined: number;
+}
+
+// The entry-health score and everything it was built from. The two prose fields
+// are DATA, not decoration: `scope` says the number covers external customer
+// turns only (the copilot draft path's turn id is synthetic, so its injections
+// cannot be attributed), and `basis` says the judge scores a TURN, which every
+// entry in that turn's prompt shares. A renderer that shows `score` alone would
+// present a partial number as a total one -- which is exactly the failure the
+// Memory Hub's {label, value} pairs exist to prevent.
+export interface LexiconEntryHealth {
+  score: number;
+  scope: string;
+  basis: string;
+  usage: { hits: number; injections: number; saturation: number };
+  honored: LexiconHealthLeg;
+  misapplied: LexiconHealthLeg;
+  stale: LexiconHealthLeg;
+  weights: { usage: number; honored: number; misapplied: number; stale: number };
+}
+
+export interface LexiconEntry {
+  id: string;
+  domain: string;
+  entryKind: LexiconEntryKind;
+  surfaceForm: string;
+  canonicalForm: string;
+  status: LexiconStatus;
+  provenance: LexiconProvenance;
+  evidence: string | null;
+  proposerContext: Record<string, unknown> | null;
+  // "A PII span WAS removed from evidence/proposer_context." The FALSE case is
+  // NOT a clean bill of health: D2's keep exemption waives a span that exactly
+  // equals this entry's own surface/canonical form (it must -- the seeded
+  // "205 55 16" matches the phone pattern), and the waiver is recorded only in
+  // the audit row's `pii_keep_exempt`. Any UI showing this must say what it means.
+  piiRedacted: boolean;
+  deciderAccountId: string | null;
+  // D20: an `admin_manual` claim with nobody attached. Only reachable for rows
+  // written between S01 and S02, before the provenance path became fail-closed --
+  // derived server-side so the console can render it distinctly from an entry a
+  // named admin actually approved.
+  provenanceUnattributed: boolean;
+  decidedAt: number | null;
+  // Materialized by a scheduled rollup (D6), never an in-turn UPDATE. It counts
+  // DETERMINISTIC-SEAM applications only, so it is structurally zero for a
+  // `default_rule` -- which is why the health score counts ledger injections as
+  // usage too, and why the ranked glossary cannot order on this column alone.
+  hitCount: number;
+  createdAt: number;
+  updatedAt: number | null;
+  // Null when the server did not compute one (a store with no ledger and no
+  // judge). Never faked into a zero score.
+  health: LexiconEntryHealth | null;
 }

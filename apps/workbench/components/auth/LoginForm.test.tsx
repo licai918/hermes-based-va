@@ -14,6 +14,26 @@ function fillAndSubmit(username: string, password: string) {
 describe("LoginForm", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("never lets credentials be submitted as a URL query (form must be POST)", () => {
+    // A <form> with no method defaults to GET and no action defaults to the
+    // current URL. React's onSubmit calls preventDefault, but it is only
+    // attached AFTER hydration -- submit inside that window (a fast typist
+    // pressing Enter, a slow bundle, a failed hydration) and the browser does
+    // the native thing: GET /login?username=...&password=...
+    //
+    // That puts the password in the URL bar, browser history, the server access
+    // log, and any Referer sent onward. Observed for real while driving this
+    // page with a browser whose hydration had not completed.
+    //
+    // method="post" costs nothing after hydration (preventDefault still wins)
+    // and removes the leak entirely in that window: credentials go in the body.
+    const { container } = render(<LoginForm />);
+    const form = container.querySelector("form");
+
+    expect(form).not.toBeNull();
+    expect(form?.getAttribute("method")?.toLowerCase()).toBe("post");
+  });
+
   it("posts credentials and calls onSuccess on 200", async () => {
     const fetchMock = vi
       .fn()

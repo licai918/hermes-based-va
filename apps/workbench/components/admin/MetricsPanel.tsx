@@ -16,7 +16,7 @@
 import { useEffect, useState } from "react";
 import { getAggregateMetrics } from "@/lib/api/admin-client";
 import { ApiError } from "@/lib/api/http";
-import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { AggregateMetrics, LatencyTile } from "@/lib/bff/admin/metrics";
 
 const tile: React.CSSProperties = {
   border: "1px solid #e2e2e2",
@@ -57,6 +57,243 @@ function Tile({ title, main, sub }: { title: string; main: string; sub?: string 
       <p style={value}>{main}</p>
       {sub ? <p style={caption}>{sub}</p> : null}
     </div>
+  );
+}
+
+// --- S18 (FR-26): per-layer read latency + the total-vs-SLO tile -------------
+// Measurement only. This slice ships NO deadline (S19 owns enforcement), so a
+// tile with no budget shows its percentiles and passes no judgement, and a tile
+// with no samples says so rather than showing a 0ms that would read as the best
+// possible latency. A breach is rendered as words + colour, not as one more
+// number the reader has to compare by eye.
+
+function ms(v: number | null): string {
+  return v === null ? "—" : `${Math.round(v * 100) / 100} ms`;
+}
+
+function LatencyTileView({ tile: t, notMeasured }: { tile: LatencyTile; notMeasured: string }) {
+  const measured = t.samples > 0;
+  const breached = t.breached === true;
+  return (
+    <div
+      data-metric={t.metric}
+      style={{
+        ...tile,
+        borderColor: breached ? "#8a1c1c" : "#e2e2e2",
+        borderWidth: breached ? 2 : 1,
+      }}
+    >
+      <p style={label}>
+        {t.layer} · {t.label}
+      </p>
+      <p style={{ ...value, color: breached ? "#8a1c1c" : undefined }}>
+        {measured ? `p95 ${ms(t.p95Ms)}` : "Not yet measured"}
+      </p>
+      <p style={caption}>
+        {measured
+          ? `p50 ${ms(t.p50Ms)} · ${t.samples} samples${
+              t.budgetMs === null ? " · no budget (S19)" : ` · budget ${ms(t.budgetMs)}`
+            }`
+          : notMeasured}
+      </p>
+      {breached ? (
+        <p style={{ ...caption, color: "#8a1c1c", fontWeight: 600 }}>
+          Over budget — p95 {ms(t.p95Ms)} exceeds {ms(t.budgetMs)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function LatencySection({ latency }: { latency: AggregateMetrics["latency"] }) {
+  return (
+    <section aria-label="Per-layer memory read latency" style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Per-layer memory read latency</h2>
+      <p style={caption}>
+        SLO: pre-turn reads (L4 + L6 + L7) at or under {ms(latency.sloP95Ms)} p95. L5 knowledge
+        retrieval is measured against its own retrieval deadline and excluded from that total; the
+        provisional merge is a write and is excluded too.
+      </p>
+      <div style={grid}>
+        <LatencyTileView tile={latency.total} notMeasured={latency.notMeasuredLabel} />
+        {latency.layers.map((t) => (
+          <LatencyTileView key={t.metric} tile={t} notMeasured={latency.notMeasuredLabel} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// --- S22 (FR-34a): the memory-lifecycle block + the read-only knob panel -----
+//
+// Counts, not rates, and that is deliberate: nothing records how many L4 writes
+// were ATTEMPTED, so a conflict or pollution "rate" would have an invented
+// denominator -- a percentage that reads as accuracy and is not. Each tile shows
+// its number beside the `detail` the BFF refused to let travel without it.
+
+function LifecycleTile({
+  id,
+  title,
+  main,
+  detail,
+}: {
+  id: string;
+  title: string;
+  main: string;
+  detail: string;
+}) {
+  return (
+    <div data-lifecycle={id} style={{ ...tile, maxWidth: "20rem" }}>
+      <p style={label}>{title}</p>
+      <p style={value}>{main}</p>
+      <p style={caption}>{detail}</p>
+    </div>
+  );
+}
+
+function LifecycleSection({
+  lifecycle,
+  deletion,
+}: {
+  lifecycle: AggregateMetrics["lifecycle"];
+  deletion: AggregateMetrics["deletionSuccess"];
+}) {
+  return (
+    <section
+      aria-label="Memory lifecycle"
+      style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
+    >
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Memory lifecycle</h2>
+      <div style={grid}>
+        {lifecycle.map((c) => (
+          <LifecycleTile
+            key={c.key}
+            id={c.key}
+            title={c.label}
+            // `null` is "nothing feeds this yet", which is not the same fact as
+            // zero and must not be rendered as one.
+            main={c.value === null ? "Not recorded" : String(c.value)}
+            detail={c.detail}
+          />
+        ))}
+        {/* S11's FR-14 tile, placed here (S22 owns the placement). Components,
+            not just the rate: residue (a row the erase left) and re-appearance
+            (a row written afterwards) are different failures, and a rate over
+            zero erases is "not computed", never a perfect score. */}
+        <LifecycleTile
+          id="deletion_success"
+          title="Erases that stayed erased"
+          main={
+            deletion.rate === null
+              ? "No erases yet"
+              : `${pct(deletion.rate)} of ${deletion.erasedBindings}`
+          }
+          detail={
+            `${deletion.flaggedBindings} flagged — ${deletion.residueBindings} residue, ` +
+            `${deletion.reappearedBindings} re-appeared · watched for ${deletion.windowDays} days · ` +
+            deletion.label
+          }
+        />
+      </div>
+    </section>
+  );
+}
+
+// --- S28 (FR-34b): does the loop CLOSE? --------------------------------------
+//
+// These four ARE rates, unlike the counts above, and each one ships its own
+// fraction. Two rules the tiles enforce because the numbers are worthless
+// without them: the percentage never appears without the population it is over,
+// and a null rate renders as "Not yet computed" -- never as 0% or 100%. On this
+// deployment every one of them is null today, and that is the correct reading:
+// nothing has closed the loop yet, which is a different fact from a loop that
+// closed badly.
+
+function LoopClosureSection({ rates }: { rates: AggregateMetrics["loopClosure"] }) {
+  return (
+    <section
+      aria-label="Loop closure"
+      style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
+    >
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Loop closure</h2>
+      <p style={caption}>
+        {rates === null
+          ? "Not reported by this backend — its runtime predates these metrics. Both drivers " +
+            "ship the block once the backend is up to date; nothing here is missing data."
+          : "Score → aggregate → propose → confirm → inject → do the next scores move? Every " +
+            "rate below shows its own numerator and denominator, and shows no percentage at " +
+            "all until it has enough observations for one to mean anything."}
+      </p>
+      <div style={grid}>
+        {(rates ?? []).map((r) => (
+          <div key={r.key} data-loop={r.key} style={{ ...tile, maxWidth: "20rem" }}>
+            <p style={label}>{r.label}</p>
+            <p style={value}>{r.rate === null ? "Not yet computed" : pct(r.rate)}</p>
+            <p style={caption}>
+              {r.numerator} / {r.denominator}
+            </p>
+            <p style={caption}>{r.detail}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// D14: READ-ONLY, and the section says so. There is deliberately no control here
+// -- a knob moves by deploy-time config commit whose audit trail is git history
+// (NFR-3), and a toggle that looked mutable and was not would be worse than no
+// panel at all.
+function KnobSection({ knobs }: { knobs: AggregateMetrics["knobs"] }) {
+  return (
+    <section
+      aria-label="Knob panel"
+      style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}
+    >
+      <h2 style={{ fontSize: "1.125rem", margin: 0 }}>Knobs (read-only)</h2>
+      <p style={caption}>
+        {knobs
+          ? knobs.label
+          : "Read-only. Knob values are not reported by this backend — the mock driver " +
+            "does not run them. On a Postgres deployment this panel lists every one."}
+      </p>
+      {knobs ? (
+        <table style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" }}>
+                Knob
+              </th>
+              <th style={{ textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" }}>
+                Value
+              </th>
+              <th style={{ textAlign: "left", padding: "0.25rem 1rem 0.25rem 0", borderBottom: "1px solid #ccc" }}>
+                Changed by editing
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {knobs.knobs.map((knob) => (
+              <tr key={knob.key} data-knob={knob.key}>
+                <td style={{ padding: "0.35rem 1rem 0.35rem 0", verticalAlign: "top" }}>
+                  <div style={{ fontWeight: 600 }}>{knob.label}</div>
+                  <div style={caption}>{knob.note}</div>
+                </td>
+                <td style={{ padding: "0.35rem 1rem 0.35rem 0", verticalAlign: "top", fontWeight: 600 }}>
+                  {knob.value}
+                </td>
+                <td style={{ padding: "0.35rem 1rem 0.35rem 0", verticalAlign: "top" }}>
+                  <code>
+                    {knob.source}.{knob.key}
+                  </code>
+                  {knob.env ? <div style={caption}>env override: {knob.env}</div> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
+    </section>
   );
 }
 
@@ -134,6 +371,14 @@ export function MetricsPanel() {
           sub="agent-experience confirm events"
         />
       </div>
+
+      <LatencySection latency={metrics.latency} />
+
+      <LifecycleSection lifecycle={metrics.lifecycle} deletion={metrics.deletionSuccess} />
+
+      <LoopClosureSection rates={metrics.loopClosure} />
+
+      <KnobSection knobs={metrics.knobs} />
 
       <div>
         <h2 style={{ fontSize: "1.125rem", margin: "0 0 0.5rem" }}>Slots-populated distribution</h2>

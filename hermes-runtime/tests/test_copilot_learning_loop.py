@@ -163,30 +163,33 @@ def test_review_pass_emits_a_well_formed_operational_proposal_under_the_scripted
     # Acceptance (a): the review fork calls the governed tool and its
     # framework-derived RESULT (status='proposed') is what is surfaced -- never
     # the model's free text.
-    proposals = run_l6_review_job(
+    routed = run_l6_review_job(
         _payload("case_lp"),
         review_scripted_completions=[_OPERATIONAL_PROPOSE, _REVIEW_DONE],
     )
 
-    assert proposals == [
-        {
-            "kind": "procedure",
-            "content": "For EasyRoutes delivery gaps, check get_delivery_status "
-            "with the bare order_number before escalating.",
-            "status": "proposed",
-        }
-    ]
+    # 0.0.5 S04 gave the fork a second destination (L7), so the return says WHERE
+    # it routed. An operational learning goes to L6 and nowhere else.
+    assert routed == {
+        "experience": [
+            {
+                "kind": "procedure",
+                "content": "For EasyRoutes delivery gaps, check get_delivery_status "
+                "with the bare order_number before escalating.",
+                "status": "proposed",
+            }
+        ],
+        "lexicon": [],
+    }
 
 
 def test_review_pass_that_calls_no_tool_proposes_nothing() -> None:
-    # A reflection that decides there is no durable learning writes nothing.
-    assert (
-        run_l6_review_job(
-            _payload("case_x"),
-            review_scripted_completions=[{"content": "Nothing worth recording."}],
-        )
-        == []
-    )
+    # A reflection that decides there is no durable learning writes nothing --
+    # to EITHER layer (0.0.5 S04: routing nowhere is a legal outcome).
+    assert run_l6_review_job(
+        _payload("case_x"),
+        review_scripted_completions=[{"content": "Nothing worth recording."}],
+    ) == {"experience": [], "lexicon": []}
 
 
 def test_review_pass_pii_bearing_proposal_yields_no_proposal() -> None:
@@ -194,7 +197,7 @@ def test_review_pass_pii_bearing_proposal_yields_no_proposal() -> None:
     # (here an email address), the S22 write-side scan rejects the governed call
     # -> the call fails -> nothing is surfaced. The prompt is the 1st line; this
     # proves the 2nd line holds deterministically.
-    proposals = run_l6_review_job(
+    routed = run_l6_review_job(
         _payload("case_pii"),
         review_scripted_completions=[
             {
@@ -212,7 +215,7 @@ def test_review_pass_pii_bearing_proposal_yields_no_proposal() -> None:
         ],
     )
 
-    assert proposals == []
+    assert routed == {"experience": [], "lexicon": []}
 
 
 def test_review_prompt_explicitly_forbids_person_specific_data() -> None:
@@ -244,13 +247,13 @@ def test_review_pass_persists_a_proposed_row_to_the_datastore(datastore, monkeyp
 
     monkeypatch.setattr(tool_backend_mod, "select_tool_driver", lambda *_a, **_k: driver)
 
-    proposals = run_l6_review_job(
+    routed = run_l6_review_job(
         _payload("case_persist", draft="A grounded draft for the rep."),
         review_scripted_completions=[_OPERATIONAL_PROPOSE, _REVIEW_DONE],
     )
 
     # Surfaced framework-derived...
-    assert proposals and proposals[0]["status"] == "proposed"
+    assert routed["experience"] and routed["experience"][0]["status"] == "proposed"
     # ...and actually persisted as a proposed row with the framework-derived source.
     with conn.cursor() as cur:
         cur.execute(

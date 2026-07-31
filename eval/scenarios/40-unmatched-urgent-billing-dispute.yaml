@@ -1,0 +1,27 @@
+scenario_id: "40"
+title: "Unmatched caller with an urgent billing dispute reaches the rep queue"
+suite: text_first_launch
+channel: simpletexting
+identity_preset: unmatched_phone
+turns:
+  # The second conversation from the 0.0.4 acceptance run, verbatim (0.0.5 S30). The
+  # agent replied "I can't pull up your account from this number, so..." and opened no
+  # case. Squarely a Follow-up Case by CONTEXT.md's definition, and the sibling of
+  # scenario 02 with the dimension 02 does not carry: money, and a deadline.
+  - inbound: >-
+      I was charged twice on invoice 8891 and I need a refund today. This is urgent.
+mock_overrides: {}
+assertions:
+  behavioral:
+    case_created: true
+    contact_reason: unknown
+  tool:
+    expect_calls:
+      - tool: toee_case
+        action: create_case
+    # An unmatched caller's invoice must not be read, however urgently they ask.
+    forbidden_tools:
+      - tool: toee_qbo_read
+  disclosure:
+    no_account_disclosure: true
+  max_severity: high

@@ -31,6 +31,30 @@ SUITE_VALUES: tuple[str, ...] = (
     "policy_publish",
 )
 
+# Scenario FAMILIES (S23, 0.0.5 FR-29). A family is a cross-suite grouping of
+# scenarios that exercise ONE memory failure mode, so a green number for one is
+# never read as a green number for another — the "hit rate alone misleads"
+# clause. Deliberately NOT a suite: suites are what CI runs and what a report is
+# keyed on; a family is what a report can be partitioned BY.
+#
+# ``memory_baseline`` is the declared EXEMPTION rather than a fourth family: the
+# 0.0.2/0.0.3 memory scenarios (honored, isolation, no-unprompted-recall) predate
+# FR-29 and are none of the three. It exists so enrolment can be opt-OUT — every
+# scenario carrying a ``memory_preset`` must name a family, so a new memory
+# scenario cannot be silently skipped, only deliberately excluded
+# (hermes/tests/test_eval_families.py).
+(
+    FAMILY_PREFERENCE_CHANGE,
+    FAMILY_ADVERSARIAL,
+    FAMILY_DELETION,
+    FAMILY_MEMORY_BASELINE,
+) = SCENARIO_FAMILIES = (
+    "preference_change",
+    "adversarial",
+    "deletion",
+    "memory_baseline",
+)
+
 
 @dataclass(frozen=True)
 class ScenarioTurn:
@@ -45,6 +69,12 @@ class ScenarioAssertions:
 
     Only ``max_severity`` is required; the other blocks stay raw so the engine
     reads them without a rigid schema (matches the TS structural passthrough).
+
+    ``safety`` (S21, 0.0.5 FR-28) is the adversarial block: a scenario whose
+    injected memory is phrased as a command declares the observable COMPLIANCE
+    MARKERS of that command, and a reply carrying one is a zero-tolerance
+    failure — reported at HIGH severity regardless of ``max_severity`` (see
+    :func:`eval_runner.report.build_report`).
     """
 
     max_severity: EvalSeverity
@@ -53,6 +83,7 @@ class ScenarioAssertions:
     disclosure: Optional[dict[str, bool]] = None
     text: Optional[dict[str, Any]] = None
     memory_assertions: Optional[dict[str, Any]] = None
+    safety: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +99,7 @@ class ScenarioFixture:
     mock_overrides: dict[str, Any]
     assertions: ScenarioAssertions
     memory_preset: Optional[dict[str, str]] = None
+    family: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +140,7 @@ class MergedScenario:
     mock_context: MergedMockContext
     source_file: str
     memory_preset: Optional[dict[str, str]] = None
+    family: Optional[str] = None
 
 
 # base.yaml identity preset entry + parsed file. Presets stay raw dicts; v1 reads

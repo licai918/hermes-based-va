@@ -1,0 +1,57 @@
+# S05 — Deterministic seam: per-handler param normalization + catalog verification
+
+- **Milestone:** 0.0.5 — complete the memory architecture
+- **Track:** T1 L7 Semantic Lexicon
+- **Size:** M
+- **Depends on:** S01, S03
+- **Delivers:** FR-5
+- **Surface:** shared helper called by product-read handlers (mock + real twins)
+
+## ⚠ Pre-flight corrections — BINDING (see [../DECISIONS.md](../DECISIONS.md))
+
+- **D6** — the "hit accounting" clause below must NOT be an in-turn UPDATE of `hit_count`. A
+  per-turn UPDATE over a small hot set of confirmed entries is textbook row-lock contention,
+  and NFR-5 forbids adding anything to the reply path that can stall it. Emit an append-only hit
+  event instead; `hit_count` on the lexicon row becomes a materialized column maintained by a
+  scheduled rollup (the shipped `honored_rate_aggregate` pattern), never written from this
+  helper. S20 and S26 read the materialized column, not this write path.
+- **D1** — the hit-event migration is allocated prefix **0026**. Re-verify by listing the
+  migrations directory before writing yours.
+
+## Goal
+
+FR-5 (grill-locked hook point): a shared PER-HANDLER helper — NOT dispatch middleware —
+normalizes `search_products`/`get_product` params through confirmed aliases + enabled
+normalizers before the query; parsed sizes are verified against the live catalog before the
+agent asserts them. US2's hard half.
+
+## Approach
+
+- `normalize_product_query(params, domain_hints)` pure-ish helper: confirmed-alias exact map +
+  enabled normalizers (S03), consulted from a process-level cache invalidated by S02's version
+  bump (the S10-embedder singleton pattern).
+- Explicit call sites: the two product-read actions in BOTH driver twins; enumerate at
+  implementation and keep the list in the slice report.
+- Catalog verification: a parsed size that matches no live product downgrades to the raw query
+  + a clarify posture (never assert an unverified canonical).
+- Fail-open: cache/DB trouble → raw params pass through unchanged (memory never stalls a
+  reply, NFR-5).
+- **Hit accounting (gap-audit fix):** each deterministic application increments the entry's
+  `hit_count` / emits a per-entry hit event — turn-safe fire-and-forget, eval-neutral (the
+  metric_event discipline). Glossary-injection usage is NOT counted here — that is derivable
+  from the S09 ledger; S20/S26 consume both.
+
+## Acceptance — three-layer gate (NFR-1)
+
+- **① Technical:** unit — all three 2055516 notations normalize to one canonical query; alias
+  map applies; disabled normalizer = pass-through; **only `confirmed` entries apply —
+  proposed/rejected/retired are NEVER applied (PAC-2's deterministic half)**; cache honors
+  version bump; failure pass-through proven; a hit increments exactly once per application.
+  Live-PG + mock twin parity.
+- **② E2E (browser):** simulator: the three notations each retrieve the same product;
+  screenshots.
+- **③ Product (PAC):** PAC-1's retrieval leg.
+
+## Out of scope
+
+- Prompt-side glossary — **S06**. New tool actions (none — helper only).

@@ -104,12 +104,13 @@ _AGENT_EXPERIENCE_ON_VALUES = frozenset({"1", "on", "true", "enabled", "yes"})
 
 
 def _flag_on(env_var: str, value: object = _UNSET) -> bool:
-    """Shared fail-closed reader for the L6 on/off flags (S25 dedup, review nit).
+    """Shared fail-closed reader for the L6 and L7 on/off flags (S25 dedup).
 
     ``value`` defaults to ``os.environ[env_var]``; True only when it is a string
     in the explicit on-set. One implementation so the three agent-experience
-    flags below can't drift on parsing. (``memory_enabled``/``simulated_mode_
-    enabled`` use different discriminators and stay separate.)
+    flags below and 0.0.5 S06's two lexicon-injection flags can't drift on
+    parsing. (``memory_enabled``/``simulated_mode_enabled`` use different
+    discriminators and stay separate.)
     """
     if value is _UNSET:
         value = os.environ.get(env_var)
@@ -185,6 +186,162 @@ def load_confirmed_experience(store: Optional[Any]) -> Optional[list[dict[str, A
         logger.warning(
             "Agent-experience injection read failed error_type=%s; "
             "turn continues with no confirmed learnings injected",
+            type(exc).__name__,
+        )
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# L7 semantic lexicon: the glossary bound + the two injection flags (0.0.5 S06)
+# --------------------------------------------------------------------------- #
+
+# D16: a NAMED constant from day one, not a literal buried in the selection
+# query. S22's knob panel renders "glossary N" by importing this name; a bare
+# `20` inside postgres_gateway_store would make that a magic-number hunt. Reading
+# it from deploy-time config later is a one-line change here and nowhere else
+# (D14 -- the knob moves by config commit, never by an in-app mutation path).
+#
+# The BOUND is fixed; what fills it is now a knob (S26 -- see below).
+LEXICON_GLOSSARY_LIMIT = 20
+
+# 0.0.5 S26, FR-6's upgrade clause: WHICH confirmed entries fill those 20 seats.
+#
+#   newest (DEFAULT) -- newest-decided first, S06's shipped behaviour, unchanged.
+#   health           -- ranked by S26's entry-health score, round-robin across
+#                       entry kinds so a `default_rule` (which earns no hit_count
+#                       at all) cannot be starved by a domain full of aliases.
+#
+# The default stays `newest` until the scores stabilize, exactly as the slice
+# asks: `health` reads a table that is empty until the judge job and the ledger
+# have both run, and ranking on an empty table would reorder the prompt for no
+# information. Flipping it is a DEPLOY-TIME CONFIG COMMIT (D14): there is no
+# in-app mutation path for any knob in 0.0.5, the panel displays values and never
+# changes them, and the audit trail for the flip is git history. Saying that
+# plainly is the honest version -- a UI that looks mutable and is not would be
+# worse than no UI.
+LEXICON_SELECTION_ENV = "LEXICON_SELECTION"
+LEXICON_SELECTION_NEWEST = "newest"
+LEXICON_SELECTION_HEALTH = "health"
+LEXICON_SELECTION_STRATEGIES = (LEXICON_SELECTION_NEWEST, LEXICON_SELECTION_HEALTH)
+
+
+def lexicon_selection_strategy(value: object = _UNSET) -> str:
+    """Which glossary selection strategy is live (FR-6 upgrade clause, S26).
+
+    Fail-SAFE rather than fail-closed, and the difference matters: an unknown or
+    unset value returns the shipped `newest` behaviour instead of an error or a
+    silent no-glossary, because a typo'd knob must never be able to empty the
+    prompt. Only the exact literal `health` flips it.
+    """
+    raw = os.environ.get(LEXICON_SELECTION_ENV) if value is _UNSET else value
+    text = str(raw).strip().lower() if raw is not None else ""
+    return LEXICON_SELECTION_HEALTH if text == LEXICON_SELECTION_HEALTH else (
+        LEXICON_SELECTION_NEWEST
+    )
+
+# TWO independent axes, the S25-0.0.3 two-flag precedent: the external read must
+# be disable-able WITHOUT touching the copilot path, and vice versa. Both
+# fail-closed / DEFAULT OFF, so the eval record/replay path -- which sets
+# neither -- never reads or renders a lexicon entry and the injected prompt stays
+# byte-identical (the eval-determinism pin, NFR-4).
+LEXICON_INJECTION_ENV = "LEXICON_INJECTION"  # copilot draft turn
+LEXICON_EXTERNAL_INJECTION_ENV = "LEXICON_EXTERNAL_INJECTION"  # external turn
+
+
+def lexicon_injection_enabled(value: object = _UNSET) -> bool:
+    """Whether the COPILOT draft turn injects the confirmed L7 glossary (S06, FR-6).
+
+    Fail-closed by construction (mirrors :func:`agent_experience_injection_enabled`):
+    unset, empty, or any value outside the on-set returns ``False``. Its OWN axis,
+    default off -- so the copilot eval replay gate stays deterministic."""
+    return _flag_on(LEXICON_INJECTION_ENV, value)
+
+
+def lexicon_external_injection_enabled(value: object = _UNSET) -> bool:
+    """Whether the EXTERNAL turn injects the confirmed L7 glossary (S06, FR-6).
+
+    Fully independent of :func:`lexicon_injection_enabled` (the copilot axis) so
+    the external read is disable-able without touching the copilot path.
+    Fail-closed / default off; the glossary is read-only on both paths -- neither
+    turn proposes lexicon entries."""
+    return _flag_on(LEXICON_EXTERNAL_INJECTION_ENV, value)
+
+
+# 0.0.5 S04 (FR-4): the CAPTURE axis for L7 -- whether a post-turn fork may
+# propose a lexicon entry at all. Deliberately NOT either injection flag above:
+# INJECTION reads confirmed vocabulary into a prompt, CAPTURE writes a proposal
+# into the queue, and a deployment may legitimately want one without the other
+# (the L6 precedent, where AGENT_EXPERIENCE_LEARNING is separate from its two
+# injection flags for exactly this reason).
+#
+# DEFAULT OFF, and that is the eval-determinism pin (NFR-4): the record/replay
+# path sets no flag, so the gateway turn enqueues nothing and its result stays
+# byte-identical. It is also the cost knob -- one bounded fork per captured turn.
+LEXICON_CAPTURE_ENV = "LEXICON_CAPTURE"
+
+
+def lexicon_capture_enabled(value: object = _UNSET) -> bool:
+    """Whether the L7 capture forks may propose lexicon entries (S04, FR-4).
+
+    Fail-closed by construction (mirrors :func:`agent_experience_enabled`): unset,
+    empty, or any value outside the explicit on-set returns ``False``. Gates BOTH
+    forks -- the gateway-side capture fork's enqueue and the copilot review fork's
+    lexicon leg -- because a default-OFF that covered only one of them would leave
+    the other advertising a destination the deployment had disabled."""
+    return _flag_on(LEXICON_CAPTURE_ENV, value)
+
+
+# 0.0.5 S16 (FR-23): copilot triage annotations, DEFAULT OFF on its own axis.
+# Two things ride on the default rather than on anyone's discipline. It is a
+# COST knob -- every annotated item is one billed completion, and the other half
+# of the spend is `copilot_triage.TRIAGE_BATCH_CAP` x the schedule interval in
+# `background_worker.COPILOT_TRIAGE_INTERVAL_SECONDS`. And it keeps the eval
+# record/replay path exactly where it already is: that path sets no flag and
+# runs no background worker, so with this unset there is no annotator, no model
+# call and nothing new on any turn (NFR-4). Nothing about the annotator touches
+# a turn even when it IS on -- it reads a queue and writes advisory metadata --
+# so the flag is the deployment's cost switch, not an eval-determinism patch.
+COPILOT_TRIAGE_ENV = "COPILOT_TRIAGE_ANNOTATIONS"
+
+
+def copilot_triage_enabled(value: object = _UNSET) -> bool:
+    """Whether the copilot triage annotator runs at all (0.0.5 S16, FR-23).
+
+    Fail-closed by construction (mirrors :func:`lexicon_injection_enabled`):
+    unset, empty, or any value outside the explicit on-set returns ``False``.
+    Gates BOTH halves of FR-23 -- the scheduled batch and the per-item on-demand
+    action -- because "default OFF" that only covered the schedule would leave a
+    button in the console spending money on a deployment that disabled the
+    feature."""
+    return _flag_on(COPILOT_TRIAGE_ENV, value)
+
+
+def load_confirmed_lexicon(store: Optional[Any]) -> Optional[list[dict[str, Any]]]:
+    """Bounded, fail-closed read of CONFIRMED L7 entries for turn injection (S06).
+
+    The L7 mirror of :func:`load_confirmed_experience`, deliberately identical in
+    posture: shared by both turn seams, each caller gates on its OWN injection
+    flag before calling, operational rather than customer-scoped (domain language
+    is shared, so there is no binding key), and fail-closed -- a store without the
+    method (a mock/scenario store) or ANY read error degrades to ``None`` and
+    never raises, because L7 injection is never a hard dependency of a turn
+    (NFR-5). Only ``status='confirmed'`` rows are ever returned (the store method
+    filters, and ``hooks._render_lexicon`` re-checks); ``proposed``/``rejected``/
+    ``retired`` never reach any turn.
+    """
+    resolved_store = store if store is not None else _gateway_store()
+    reader = getattr(resolved_store, "load_confirmed_lexicon", None)
+    if reader is None:
+        return None
+    try:
+        return reader()
+    except Exception as exc:
+        # ponytail: swallow to None so a DB hiccup degrades to "no glossary
+        # injected", never a failed turn (NFR-5). Exception TYPE only -- never
+        # str(exc), which could echo back store-supplied content.
+        logger.warning(
+            "Lexicon glossary injection read failed error_type=%s; "
+            "turn continues with no confirmed lexicon injected",
             type(exc).__name__,
         )
         return None
@@ -285,6 +442,27 @@ def _agent_experience_extra_drivers() -> Optional[dict[str, Any]]:
     if not agent_experience_enabled():
         return None
     return {"toee_agent_experience": select_tool_driver("datastore")}
+
+
+def _lexicon_capture_extra_drivers() -> Optional[dict[str, Any]]:
+    """Route ``toee_semantic_lexicon`` to Postgres for a capture fork (0.0.5 S04).
+
+    The L7 twin of :func:`_agent_experience_extra_drivers`, same seam and same
+    shape, gated on its OWN axis (:func:`lexicon_capture_enabled`,
+    ``LEXICON_CAPTURE``) -- not ``memory_enabled()`` and not either L7 INJECTION
+    flag. ``False`` (default) returns ``None``, so a ``propose_lexicon_entry``
+    call stays on the shared mock driver and is discarded, and a deployment with
+    capture off never hard-depends on Postgres.
+
+    Wired ONLY into the two forks (:func:`hermes_runtime.lexicon_capture.run_l7_capture_job`
+    and ``copilot_turn._run_review_pass``), never into a turn's
+    :func:`_turn_extra_drivers` -- neither the external agent nor the copilot
+    draft agent proposes vocabulary; only a fork does. That separation is the
+    whole point of ADR-0152's superseding note.
+    """
+    if not lexicon_capture_enabled():
+        return None
+    return {"toee_semantic_lexicon": select_tool_driver("datastore")}
 
 
 def _turn_extra_drivers(*, include_memory_write: bool = True) -> Optional[dict[str, Any]]:

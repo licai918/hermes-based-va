@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { HermesApiClient } from "../../gateway/hermes-api-client";
-import { handleGetMemoryAuditViaApi } from "./memory-audit";
+import {
+  handleEraseCustomerMemoryViaApi,
+  handleGetMemoryAuditViaApi,
+} from "./memory-audit";
 
 function apiClient(
   fetchImpl: (url: string, init: RequestInit) => Promise<Response>,
@@ -222,6 +225,117 @@ describe("handleGetMemoryAuditViaApi", () => {
         async () =>
           new Response(
             JSON.stringify({ ok: false, error: { class: "policy_blocked", message: "no" } }),
+            { status: 200 },
+          ),
+      ),
+      "case_1",
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
+// --- 0.0.5 S11 (FR-13, US7): the whole-binding erase --------------------------
+
+describe("handleEraseCustomerMemoryViaApi", () => {
+  it("dispatches erase_customer_memory with case_id, attributed to the actor", async () => {
+    let captured: SentDispatch | null = null;
+    let sentActor: string | undefined;
+    const client = apiClient(async (_url, init) => {
+      const body = JSON.parse(init.body as string) as SentDispatch & {
+        actor_account_id?: string;
+      };
+      captured = body;
+      sentActor = body.actor_account_id;
+      return dispatchResponse({
+        binding_key: "cust_900",
+        bindings: [
+          { binding_key: "cust_900", cleared_slots: ["channel_preference"], extra_rows_removed: 0 },
+          { binding_key: "provisional:sms:+14165550101", cleared_slots: [], extra_rows_removed: 0 },
+        ],
+        cleared: 1,
+        erased: true,
+      });
+    });
+
+    const res = await handleEraseCustomerMemoryViaApi(client, "case_1");
+
+    expect(res.status).toBe(200);
+    const sent = captured as SentDispatch | null;
+    expect(sent?.tool).toBe("toee_customer_memory");
+    expect(sent?.action).toBe("erase_customer_memory");
+    expect(sent?.params).toEqual({ case_id: "case_1" });
+    expect(sentActor).toBe("seed-supervisor");
+  });
+
+  it("refuses an actorless client before the network call, not after", async () => {
+    // The assertion above does NOT prove dispatchWrite: `dispatch` attaches
+    // actor_account_id too whenever the client has one, so swapping the two is
+    // invisible to it (found by breaking the handler and watching it stay
+    // green). THIS is what dispatchWrite buys -- a governed write with no
+    // acting account is refused before it can reach the server (ADR-0141), so
+    // the most destructive action in the system cannot be issued unattributed
+    // even if the dispatch server's own fail-closed gate were ever weakened.
+    let calls = 0;
+    const actorless = new HermesApiClient({
+      baseUrl: "http://copilot.internal",
+      token: "tok",
+      fetchImpl: async () => {
+        calls += 1;
+        return dispatchResponse({ cleared: 4, bindings: [], erased: true });
+      },
+    });
+
+    const res = await handleEraseCustomerMemoryViaApi(actorless, "case_1");
+
+    expect(res.status).toBe(403);
+    expect(calls).toBe(0);
+  });
+
+  it("returns counts and never the binding keys the dispatch named", async () => {
+    // Every key the erase touched is the customer's raw identity -- the Shopify
+    // id AND, since D10, each linked channel's phone/email. None may reach the
+    // browser (the copilot preferences handlers' standing rule).
+    const client = apiClient(async () =>
+      dispatchResponse({
+        binding_key: "cust_900",
+        bindings: [
+          { binding_key: "cust_900", cleared_slots: ["a", "b"], extra_rows_removed: 0 },
+          {
+            binding_key: "provisional:sms:+14165550101",
+            cleared_slots: ["c"],
+            extra_rows_removed: 0,
+          },
+        ],
+        cleared: 3,
+        erased: true,
+      }),
+    );
+
+    const res = await handleEraseCustomerMemoryViaApi(client, "case_1");
+    const body = (await res.json()) as {
+      erased: boolean;
+      clearedSlots: number;
+      bindingsCleared: number;
+    };
+
+    expect(body).toEqual({ erased: true, clearedSlots: 3, bindingsCleared: 2 });
+    const raw = JSON.stringify(body);
+    expect(raw).not.toContain("cust_900");
+    expect(raw).not.toContain("+14165550101");
+  });
+
+  it("maps the fail-closed refusal to 403 rather than reporting success", async () => {
+    // The action is policy_blocked without an attributed administrator. A
+    // handler that swallowed that into a 200 would tell the supervisor the
+    // customer's memory was erased when nothing was deleted.
+    const res = await handleEraseCustomerMemoryViaApi(
+      apiClient(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: false,
+              error: { class: "policy_blocked", message: "no actor" },
+            }),
             { status: 200 },
           ),
       ),

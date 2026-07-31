@@ -35,6 +35,7 @@ from toee_hermes.drivers.mock.shopify import (
 )
 
 from .types import (
+    SCENARIO_FAMILIES,
     SUITE_VALUES,
     BaseMocks,
     MergedMockContext,
@@ -113,9 +114,35 @@ def _validate_turns(raw: Any, label: str) -> list[ScenarioTurn]:
     return turns
 
 
+# Every assertion block `_validate_assertions` knows how to read. An unknown key
+# is an ERROR, not a shrug: a typo'd `saftey:` used to be silently dropped, which
+# on an adversarial scenario silently disables the one leg allowed to GATE
+# (S21 review). Add the key here in the same commit that teaches the parser to
+# read it.
+_KNOWN_ASSERTION_BLOCKS = frozenset(
+    {
+        "max_severity",
+        "behavioral",
+        "tool",
+        "disclosure",
+        "text",
+        "memory_assertions",
+        "safety",
+    }
+)
+
+
 def _validate_assertions(raw: Any, label: str) -> ScenarioAssertions:
     if not _is_object(raw):
         _fail(label, '"assertions" must be an object.')
+    unknown = sorted(set(raw) - _KNOWN_ASSERTION_BLOCKS)
+    if unknown:
+        _fail(
+            label,
+            f"unknown assertion block(s) {unknown}; known blocks are "
+            f"{sorted(_KNOWN_ASSERTION_BLOCKS)}. A misspelled block is silently "
+            "unenforced -- fix the spelling or teach the parser the new block.",
+        )
     severity = raw.get("max_severity")
     if severity not in ("high", "medium"):
         _fail(label, '"assertions.max_severity" must be "high" or "medium".')
@@ -126,6 +153,7 @@ def _validate_assertions(raw: Any, label: str) -> ScenarioAssertions:
         disclosure=raw.get("disclosure"),
         text=raw.get("text"),
         memory_assertions=raw.get("memory_assertions"),
+        safety=raw.get("safety"),
     )
 
 
@@ -162,6 +190,21 @@ def parse_scenario_content(content: str, label: str) -> ScenarioFixture:
     if memory_preset is not None and not _is_object(memory_preset):
         _fail(label, '"memory_preset" must be an object when present.')
 
+    # S23 (FR-29). Validated against a CLOSED vocabulary for the same reason
+    # `_validate_assertions` rejects an unknown block: a misspelled `family:
+    # advarsarial` would drop the scenario out of every rule its family enforces
+    # while still looking enrolled. Absent is legal here (most scenarios inject
+    # no memory and belong to no family); which scenarios MUST declare one is a
+    # scan in hermes/tests/test_eval_families.py, not a loader rule, so the
+    # requirement can be stated over the shipped suites rather than per file.
+    family = raw.get("family")
+    if family is not None and family not in SCENARIO_FAMILIES:
+        _fail(
+            label,
+            f'unknown "family" {family!r}; known families are '
+            f"{sorted(SCENARIO_FAMILIES)}.",
+        )
+
     mock_overrides = raw.get("mock_overrides") or {}
     if not _is_object(mock_overrides):
         _fail(label, '"mock_overrides" must be an object.')
@@ -176,6 +219,7 @@ def parse_scenario_content(content: str, label: str) -> ScenarioFixture:
         mock_overrides=mock_overrides,
         assertions=_validate_assertions(raw.get("assertions"), label),
         memory_preset=memory_preset,
+        family=family,
     )
 
 
@@ -450,6 +494,7 @@ def resolve_scenario(
         mock_context=mock_context,
         source_file=source_file,
         memory_preset=fixture.memory_preset,
+        family=fixture.family,
     )
 
 

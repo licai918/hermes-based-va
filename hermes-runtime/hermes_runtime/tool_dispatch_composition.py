@@ -116,6 +116,15 @@ def build_tool_dispatch_app() -> FastAPI:
 
     warm_knowledge_embedder()
 
+    # 0.0.5 S05 (FR-5): point the two product-read seams at the governed L7 store,
+    # so a confirmed lexicon entry actually applies to a tool parameter. ONE install
+    # per process serves BOTH driver twins (mock handlers + ComposioDriver), which
+    # is how NFR-7 lockstep is structural here rather than remembered. No-op unless
+    # TOOL_BACKEND=datastore.
+    from hermes_runtime.lexicon_hits import install_postgres_lexicon_vocabulary
+
+    install_postgres_lexicon_vocabulary()
+
     # TOOL_BACKEND=mock (default) or datastore (ADR-0140) selects the driver once,
     # shared by both routes so the agent:turn audit (option i, #47) lands in the same
     # store the dispatch reads/writes use. The gate layers the dev-only-action deny
@@ -139,4 +148,16 @@ def build_tool_dispatch_app() -> FastAPI:
     # server-side (#47, option i); mock-mode is a no-op sink.
     if profile == INTERNAL:
         add_agent_turn_route(app, api_token=api_token, driver=driver)
+        # 0.0.5 S17 (FR-24): the NL manual-add draft. Mounted on the SAME
+        # INTERNAL-only condition as agent:turn and for the same reason -- it is
+        # a model call, and the deterministic dispatch app stays LLM-free
+        # everywhere. It takes no driver: a prefill reads nothing and writes
+        # nothing, which is why it is a route rather than a governed action.
+        #
+        # Function-local, like the two imports above: it pulls in the
+        # OpenRouter/judge stack, which the SUPERVISOR and EXTERNAL homes never
+        # boot and should not pay to import.
+        from hermes_runtime.lexicon_draft import add_lexicon_draft_route
+
+        add_lexicon_draft_route(app, api_token=api_token)
     return app

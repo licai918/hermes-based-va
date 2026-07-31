@@ -75,6 +75,39 @@ def test_renders_full_report_with_an_injected_judge(tmp_path: Path, capsys) -> N
     assert "precision" in art["rows"][0]["result"]
 
 
+def test_panel_rows_label_their_split_and_carry_the_effective_held_out_n(
+    tmp_path: Path,
+) -> None:
+    # S21 re-review: the per-leg panel rows were measured on the IN-SAMPLE split
+    # and named as if they were the leg's accuracy full stop, and the held-out
+    # row reported 10 fixtures when only the legs with rubric guidance are held
+    # out from anything. A number is allowed on the panel with its caveat, or
+    # not at all.
+    from eval_runner.judge_measure import held_out_effective_n_note
+
+    main(
+        [
+            "--out",
+            str(tmp_path / "report.md"),
+            "--env-file",
+            str(tmp_path / "absent.env"),
+        ],
+        client=_AlwaysYesJudge(),
+    )
+
+    reports = list(Path(os.environ["GATE_REPORTS_DIR"]).glob("judge-*.json"))
+    rows = json.loads(reports[-1].read_text(encoding="utf-8"))["rows"]
+
+    leg_rows = [r for r in rows if r["name"].startswith("Judge leg:")]
+    assert leg_rows
+    for row in leg_rows:
+        assert "in-sample" in row["name"], row["name"]
+        assert "undetermined" in row["result"]
+
+    held_out_row = next(r for r in rows if "held-out" in r["name"])
+    assert held_out_effective_n_note() in held_out_row["note"]
+
+
 def test_exit_zero_even_when_the_judge_is_useless(tmp_path: Path) -> None:
     class _GarbageJudge:
         def complete(self, prompt: str, *, model: str) -> str:
@@ -89,6 +122,132 @@ def test_exit_zero_even_when_the_judge_is_useless(tmp_path: Path) -> None:
     # Advisory: undetermined verdicts are surfaced, never a non-zero exit (FR-29).
     assert exit_code == 0
     assert "undetermined" in out.read_text(encoding="utf-8")
+
+
+def _case_turn(**_kwargs):
+    """A scripted turn that opens a governed case (S31's escalation EFFECT)."""
+    args = {"contact_reason": "unknown", "urgency": "normal", "summary": "s"}
+    return {
+        "final_response": "Thanks — noted.",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "type": "function",
+                        "function": {
+                            "name": "toee_case__create_case",
+                            "arguments": json.dumps(args),
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": "toee_case__create_case",
+                "content": json.dumps({"case_id": "case_1", **args}),
+            },
+        ],
+    }
+
+
+def _no_case_turn(**_kwargs):
+    return {
+        "final_response": "I've asked the team to reach out to you directly.",
+        "messages": [],
+    }
+
+
+def test_the_escalation_section_is_honestly_absent_without_a_live_seam(
+    tmp_path: Path,
+) -> None:
+    # An injected judge client with no injected turn seam must NOT quietly bill a
+    # live agent loop, and must not omit the section either -- it says "not measured".
+    out = tmp_path / "report.md"
+    exit_code = main(
+        ["--out", str(out), "--env-file", str(tmp_path / "absent.env")],
+        client=_AlwaysYesJudge(),
+    )
+
+    assert exit_code == 0
+    body = out.read_text(encoding="utf-8")
+    assert "Live-model escalation check" in body
+    assert "Not run this time" in body
+    rows = json.loads(
+        sorted(Path(os.environ["GATE_REPORTS_DIR"]).glob("judge-*.json"))[-1].read_text(
+            encoding="utf-8"
+        )
+    )["rows"]
+    assert not [r for r in rows if r["name"].startswith("Escalation")]
+
+
+def test_every_escalation_miss_stays_advisory_and_exits_zero(tmp_path: Path) -> None:
+    # The whole probe set fails (nothing escalates) -> the job STILL exits 0 and every
+    # emitted row is advisory. This is the proof the leg cannot gate (NFR-4).
+    from hermes_runtime.escalation_check import ESCALATION_PROBES
+
+    out = tmp_path / "report.md"
+    exit_code = main(
+        ["--out", str(out), "--env-file", str(tmp_path / "absent.env")],
+        client=_AlwaysYesJudge(),
+        run_turn=_no_case_turn,
+    )
+
+    assert exit_code == 0
+    body = out.read_text(encoding="utf-8")
+    assert "Live-model escalation check" in body
+    for probe in ESCALATION_PROBES:
+        assert probe.name in body
+
+    art = json.loads(
+        sorted(Path(os.environ["GATE_REPORTS_DIR"]).glob("judge-*.json"))[-1].read_text(
+            encoding="utf-8"
+        )
+    )
+    # The `judge` kind is what the panel reader force-nulls `passed` on -- riding it
+    # is belt and braces on top of the rows already being advisory.
+    assert art["kind"] == "judge"
+    escalation_rows = [r for r in art["rows"] if r["name"].startswith("Escalation")]
+    assert len(escalation_rows) == 1 + len(ESCALATION_PROBES)
+    assert all(r["passed"] is None for r in escalation_rows)
+
+
+def test_a_probe_fault_never_fails_the_advisory_job(tmp_path: Path) -> None:
+    def boom(**_kwargs):
+        raise RuntimeError("provider on fire")
+
+    out = tmp_path / "report.md"
+    exit_code = main(
+        ["--out", str(out), "--env-file", str(tmp_path / "absent.env")],
+        client=_AlwaysYesJudge(),
+        run_turn=boom,
+    )
+
+    assert exit_code == 0
+    assert "provider on fire" in out.read_text(encoding="utf-8")
+
+
+def test_a_clean_escalation_sheet_renders_the_rate(tmp_path: Path) -> None:
+    out = tmp_path / "report.md"
+    main(
+        ["--out", str(out), "--env-file", str(tmp_path / "absent.env")],
+        client=_AlwaysYesJudge(),
+        run_turn=_case_turn,
+    )
+
+    art = json.loads(
+        sorted(Path(os.environ["GATE_REPORTS_DIR"]).glob("judge-*.json"))[-1].read_text(
+            encoding="utf-8"
+        )
+    )
+    rate_row = next(r for r in art["rows"] if "should-escalate rate" in r["name"])
+    # Every probe opened a case: the should-escalate rate is perfect AND the
+    # over-escalation guard fires on the same run.
+    assert "2/2 = 1.000" in rate_row["result"]
+    assert "unwanted cases 1 of 1" in rate_row["result"]
 
 
 def test_unwritable_report_dir_never_fails_the_advisory_judge(tmp_path: Path, monkeypatch) -> None:

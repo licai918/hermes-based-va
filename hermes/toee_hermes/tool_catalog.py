@@ -45,6 +45,17 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
     "toee_customer_memory": (
         "upsert_preference",
         "clear_preference",
+        # 0.0.5 S11 (FR-13, US7): the whole-binding erase. A governed LOOP over
+        # clear_preference's four slots across every binding the customer
+        # reaches -- the verified key AND every linked channel's provisional key,
+        # because the cross-channel merge would otherwise copy the provisional
+        # slots straight back on the customer's next verified turn (D10). Per-slot
+        # audit rows plus one summary row per binding; no new write primitive and
+        # no new table. Listed in _AGENT_EXCLUDED_ACTIONS: this is the most
+        # destructive governed action in the system, admin-only, reached only from
+        # the Memory Audit console's deterministic dispatch, and it fails closed
+        # without an attributed administrator.
+        "erase_customer_memory",
         "get_preferences",
         # 0.0.3 S21 (FR-21): verified-only customer self-service "what do you
         # remember about me" read -- slot values only, no source/actor/
@@ -115,6 +126,62 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "confirm_experience",
         "reject_experience",
     ),
+    # 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon -- the governed, admin-curated
+    # store of DOMAIN LANGUAGE ("TOEE" -> "TOEE TIRE"; "2055516"/"205 55 16" ->
+    # "205/55R16"), the seventh memory layer. propose_lexicon_entry is the
+    # governed write and always persists status='proposed': LLM-callable on
+    # internal_copilot only, because S04's capture fork is the agent that
+    # proposes -- exactly the propose_experience precedent above.
+    # list_lexicon_entries is admin-only (_AGENT_EXCLUDED_ACTIONS, the
+    # list_agent_experience precedent); nothing APPLIES an entry until S03/S05/S06.
+    # 0.0.5 S02 (FR-3 decide side / FR-8): the human gate --
+    # confirm/reject/retire flip status, edit_lexicon_entry is D7's IN-PLACE
+    # update of the mapping (stable id, hit_count continues), and
+    # add_lexicon_entry is the admin's own entry, landing `confirmed` +
+    # `admin_manual` because the admin IS the gate. All five are admin-only
+    # (_AGENT_EXCLUDED_ACTIONS): a model that could confirm or author its own
+    # lexicon entry would make the propose->confirm gate decorative, which is
+    # the confirm_experience precedent above.
+    "toee_semantic_lexicon": (
+        "propose_lexicon_entry",
+        "list_lexicon_entries",
+        "confirm_lexicon_entry",
+        "reject_lexicon_entry",
+        "retire_lexicon_entry",
+        "edit_lexicon_entry",
+        "add_lexicon_entry",
+    ),
+    # 0.0.5 S15 (FR-22): the unified review inbox and its `review_item` store --
+    # ONE queue holding every pending memory decision. The store exists because
+    # L6/L7 proposals have tables of their own but S10's blast-radius reviews,
+    # S20's graduation/retirement candidates and S25's persona_review routing do
+    # not, and none of those slices defines storage (gap audit).
+    # propose_review_item is the EMISSION seam those three call: propose-only,
+    # profile-gated, no actor required (a scheduled sweep has no human), and
+    # idempotent on the still-open set so an hourly job cannot manufacture a
+    # queue. decide_review_item acknowledges/dismisses ONE of this store's rows.
+    # reclassify_proposal is FR-22's Re-classify: reject-in-source +
+    # propose-in-target in ONE governed action, dispatching to the layers' OWN
+    # existing governed actions rather than adding a decision primitive.
+    # ALL FOUR are agent-excluded (_AGENT_EXCLUDED_ACTIONS): an emission is what
+    # a sweep does, not what a model does, and a model that could dismiss its own
+    # review item would make the whole queue decorative -- the
+    # confirm_experience precedent.
+    # 0.0.5 S10 (FR-12) adds get_blast_radius: the admin READ behind the
+    # blast_radius item -- "which turns/cases did this entry reach", answered
+    # from S09's injection_ledger and joined to case status. It sits on this
+    # tool rather than on the layer tools because the answer is layer-generic
+    # (one query serves L4 slots, L6 notes and L7 entries) and because the
+    # review item it justifies lives in this store. Agent-excluded like the
+    # other four.
+    "toee_review_inbox": (
+        "propose_review_item",
+        "list_review_items",
+        "decide_review_item",
+        "reclassify_proposal",
+        "get_blast_radius",
+        "annotate_inbox_item",
+    ),
     # 0.0.3 S26 (FR-28): aggregate-metrics admin panel. One read-only action
     # over existing tables + the new metric_event counters (memory injection,
     # knowledge found/miss). Admin-only (listed in _AGENT_EXCLUDED_ACTIONS, the
@@ -165,6 +232,19 @@ TOOL_CATALOG: dict[str, tuple[str, ...]] = {
         "get_integrations_status",
         "initiate_reconnect",
         "reprobe_now",
+    ),
+    # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell -- the shared
+    # spine both capture mechanisms (external Interaction Review, internal Draft
+    # Feedback) extend. Fixed four-action enum; no handlers yet (S03/S06/S08/S10
+    # add those). All four actions are in _AGENT_EXCLUDED_ACTIONS -- dispatch-
+    # reachable (allowlisted on internal_copilot for the three writes and on
+    # supervisor_admin for list_feedback) but never model-callable, so the AI
+    # cannot score itself (see toee_hermes.plugin._AGENT_EXCLUDED_ACTIONS).
+    "toee_feedback": (
+        "submit_interaction_review",
+        "record_draft_outcome",
+        "submit_draft_rating",
+        "list_feedback",
     ),
 }
 

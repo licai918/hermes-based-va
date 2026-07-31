@@ -29,6 +29,7 @@ provides_tools:
   - toee_case__update_case
   - toee_customer_memory__upsert_preference
   - toee_customer_memory__clear_preference
+  - toee_customer_memory__erase_customer_memory
   - toee_customer_memory__get_preferences
   - toee_customer_memory__get_my_memory_summary
   - toee_customer_memory__dismiss_proposal
@@ -71,6 +72,19 @@ provides_tools:
   - toee_agent_experience__list_agent_experience
   - toee_agent_experience__confirm_experience
   - toee_agent_experience__reject_experience
+  - toee_semantic_lexicon__propose_lexicon_entry
+  - toee_semantic_lexicon__list_lexicon_entries
+  - toee_semantic_lexicon__confirm_lexicon_entry
+  - toee_semantic_lexicon__reject_lexicon_entry
+  - toee_semantic_lexicon__retire_lexicon_entry
+  - toee_semantic_lexicon__edit_lexicon_entry
+  - toee_semantic_lexicon__add_lexicon_entry
+  - toee_review_inbox__propose_review_item
+  - toee_review_inbox__list_review_items
+  - toee_review_inbox__decide_review_item
+  - toee_review_inbox__reclassify_proposal
+  - toee_review_inbox__get_blast_radius
+  - toee_review_inbox__annotate_inbox_item
   - toee_metrics__get_aggregate_metrics
   - toee_retention__trigger_retention_sweep
   - toee_retention__enqueue_retention_sweep
@@ -80,5 +94,9 @@ provides_tools:
   - toee_integrations__get_integrations_status
   - toee_integrations__initiate_reconnect
   - toee_integrations__reprobe_now
+  - toee_feedback__submit_interaction_review
+  - toee_feedback__record_draft_outcome
+  - toee_feedback__submit_draft_rating
+  - toee_feedback__list_feedback
 provides_hooks:
   - pre_llm_call

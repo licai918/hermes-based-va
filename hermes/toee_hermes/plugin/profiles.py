@@ -59,6 +59,20 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # from the internal_copilot review fork (S23) -- never external,
             # never supervisor (ADR-0140 boundary).
             "toee_agent_experience",
+            # 0.0.5 S01 (FR-1/FR-3): L7 Semantic Lexicon. Proposals originate
+            # from the internal_copilot capture fork (S04) and the admin BFF's
+            # dispatch over this profile's API (S02) -- never external, never
+            # supervisor. Same precedent as toee_agent_experience above.
+            "toee_semantic_lexicon",
+            # 0.0.5 S15 (FR-22): the unified review inbox + `review_item` store.
+            # Here rather than on supervisor_admin because re-classify dispatches
+            # to toee_agent_experience and toee_semantic_lexicon, which are
+            # allowlisted on THIS profile only -- one governed action cannot span
+            # two profiles' toolsets. The admin BFF reaches it over this
+            # profile's API exactly as it does for L6/L7; all four actions are in
+            # _AGENT_EXCLUDED_ACTIONS, so this opens the dispatch gate and
+            # nothing on the model's tool-calling surface.
+            "toee_review_inbox",
             # 0.0.3 S26 (FR-28): aggregate-metrics admin panel, reached over
             # this profile's API by the admin BFF -- same reason
             # toee_customer_memory.get_memory_audit lives here (ADR-0140).
@@ -67,6 +81,13 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # reached over this profile's API by the admin BFF -- same
             # precedent as toee_metrics/get_memory_audit above.
             "toee_retention",
+            # 0.0.4 S02 (ADR-0154): the manual scoring feedback tool shell.
+            # The three write actions (submit_interaction_review,
+            # record_draft_outcome, submit_draft_rating) are dispatched from
+            # copilot/review-fork surfaces. All four actions are in
+            # _AGENT_EXCLUDED_ACTIONS, so this only opens the dispatch gate --
+            # never the model's tool-calling surface.
+            "toee_feedback",
         }
     ),
     # ADR-0038 Supervisor Admin Profile (governance only).
@@ -93,6 +114,10 @@ PROFILE_TOOL_ALLOWLIST: dict[str, frozenset[str]] = {
             # dispatches it over this profile's API, mirroring toee_job_queue; the
             # single action is agent-excluded, so nothing reaches a model tool loop.
             "toee_integrations",
+            # 0.0.4 S02 (ADR-0154): list_feedback -- the supervisor read over
+            # both feedback tables (S10). Reached over this profile's API by
+            # the admin BFF; agent-excluded like every action on this tool.
+            "toee_feedback",
         }
     ),
 }

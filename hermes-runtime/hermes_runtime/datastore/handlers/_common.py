@@ -47,6 +47,12 @@ def serialize_row(row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 METRIC_SELF_SERVICE_USAGE = "self_service_usage"
 METRIC_L6_CONFIRMED = "l6_confirmed_entries"
 
+# 0.0.5 S08 (FR-10): one row per L4 write REJECTED by the write-side injection
+# scan -- the numerator of S22's pollution rate. Unlike the two counters above
+# this one counts an action that did NOT happen, so it cannot ride the handler's
+# transaction; see ``_upsert_preference`` for how it is committed.
+METRIC_MEMORY_POLLUTION_REJECTED = "memory_pollution_rejected"
+
 
 def insert_metric_event(conn, *, metric: str, flag: bool = True) -> str:
     """Append one ``metric_event`` counter row in the caller's transaction.
@@ -59,6 +65,13 @@ def insert_metric_event(conn, *, metric: str, flag: bool = True) -> str:
     (unpooled) connection (S29/FR-31 discipline). Callers MUST emit only on the
     real, once-only state transition (an actual delete/confirm, not a no-op
     replay) so a redelivered durable job can't double-count.
+
+    ONE caller deliberately breaks the "commits with the action" half:
+    ``_upsert_preference``'s S08 pollution counter records a write that was
+    REJECTED, so riding the doomed transaction would erase exactly the event it
+    exists to count. It commits the row itself before re-raising, which it can
+    only do because its scan runs before any other statement in the unit of work.
+    A future caller wanting the same trick must check that is true of it too.
     """
     event_id = new_id("metric")
     with conn.cursor() as cur:

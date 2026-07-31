@@ -75,12 +75,32 @@ def _run_profile_probe(profile: str) -> dict:
     # Start clean so the probe's own per-profile home is the only selector.
     for key in ("HERMES_HOME", "TOEE_HERMES_PROFILE", "HERMES_ENABLE_PROJECT_PLUGINS"):
         env.pop(key, None)
+    # Pin the encoding at BOTH ends rather than letting each guess from the
+    # machine's locale. `text=True` alone decodes with
+    # locale.getpreferredencoding(), which on a Chinese Windows install is GBK --
+    # so a single non-ASCII byte in the child's output (a curly quote in a
+    # deprecation warning is enough) raises UnicodeDecodeError inside
+    # subprocess._readerthread. That surfaced here as a
+    # PytestUnhandledThreadExceptionWarning attributed to whichever unrelated
+    # test happened to be running when the thread died, which is why it was
+    # hunted in the wrong files. This call asserts on result.stdout below, so it
+    # is not merely cosmetic: on a locale where the decode fails, the assertion
+    # loses its input.
+    #
+    # PYTHONIOENCODING makes the child ENCODE as UTF-8; encoding= makes us DECODE
+    # as UTF-8. Setting only one of the two swaps a decode error for mojibake.
+    # errors="replace" keeps a stray byte from a native library out of the reader
+    # thread entirely -- the PROBE_JSON line is pure ASCII, so a replacement
+    # character elsewhere cannot corrupt what this test parses.
+    env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [sys.executable, "-c", _PROBE, profile],
         cwd=str(_RUNTIME_ROOT),
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     assert result.returncode == 0, f"probe failed:\nSTDOUT{result.stdout}\nSTDERR{result.stderr}"
     line = next(

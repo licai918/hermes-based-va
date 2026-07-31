@@ -22,6 +22,7 @@ import threading
 
 from psycopg_pool import ConnectionPool
 
+from ..datastore.config import CONNECT_TIMEOUT_TURN_SECONDS
 from .config import knowledge_database_url
 
 POOL_MIN_SIZE_ENV = "KNOWLEDGE_DATABASE_POOL_MIN_SIZE"
@@ -55,10 +56,21 @@ def get_knowledge_pool() -> ConnectionPool:
     global _pool_singleton
     with _pool_lock:
         if _pool_singleton is None:
+            # The retriever runs this pool IN-TURN (L5 read), so the turn budget
+            # applies here exactly as it does to the business pool. Missed by
+            # b989048, whose completeness test walked a hardcoded list of six
+            # modules and never looked at this one -- the second pool in the
+            # package. The list is now derived; that is what surfaced this.
+            #
+            # Note the relationship to the retrieval deadline: 2s is LONGER than
+            # knowledge.driver.DEFAULT_DEADLINE_MS. That is deliberate. The
+            # deadline is the retrieval budget; this is the backstop that keeps a
+            # blackholing host from hanging past any budget at all.
             _pool_singleton = ConnectionPool(
                 knowledge_database_url(),
                 min_size=_int_env(POOL_MIN_SIZE_ENV, DEFAULT_POOL_MIN_SIZE),
                 max_size=_int_env(POOL_MAX_SIZE_ENV, DEFAULT_POOL_MAX_SIZE),
+                kwargs={"connect_timeout": CONNECT_TIMEOUT_TURN_SECONDS},
                 open=True,
             )
         return _pool_singleton

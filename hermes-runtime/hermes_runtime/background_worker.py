@@ -43,11 +43,18 @@ import time
 from typing import Any, Callable, Mapping, Optional
 
 from .job_queue import (
+    COPILOT_TRIAGE_JOB_TYPE,
     DEFAULT_LEASE_SECONDS,
+    EDIT_DIFF_MINING_JOB_TYPE,
+    FEEDBACK_AGGREGATOR_JOB_TYPE,
+    GRADUATION_SWEEP_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
     INGEST_JOB_TYPE,
+    INJECTION_LEDGER_PRUNE_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     L6_REVIEW_JOB_TYPE,
+    L7_CAPTURE_JOB_TYPE,
+    LEXICON_HIT_ROLLUP_JOB_TYPE,
     RETENTION_JOB_TYPE,
     Job,
     LeaseLost,
@@ -62,10 +69,17 @@ logger = logging.getLogger(__name__)
 # (S01 fix #3: an empty allowlist claims nothing at all).
 BACKGROUND_JOB_TYPES = (
     L6_REVIEW_JOB_TYPE,
+    L7_CAPTURE_JOB_TYPE,
     RETENTION_JOB_TYPE,
     INGEST_JOB_TYPE,
     INTEGRATION_PROBE_JOB_TYPE,
     HONORED_RATE_JOB_TYPE,
+    INJECTION_LEDGER_PRUNE_JOB_TYPE,
+    LEXICON_HIT_ROLLUP_JOB_TYPE,
+    FEEDBACK_AGGREGATOR_JOB_TYPE,
+    EDIT_DIFF_MINING_JOB_TYPE,
+    GRADUATION_SWEEP_JOB_TYPE,
+    COPILOT_TRIAGE_JOB_TYPE,
 )
 
 # ponytail: 5 s, against the turn worker's 250 ms. Nothing here has a latency
@@ -123,6 +137,60 @@ INTEGRATION_PROBE_INTERVAL_SECONDS = 15 * 60
 # worth the linear judge cost.
 HONORED_RATE_INTERVAL_SECONDS = 24 * 60 * 60
 
+# ponytail: 24 h for the injection-ledger prune (0.0.5 S09, FR-11), matching
+# retention -- and for the same reason: the window it enforces is
+# `injection_ledger.PRUNE_WINDOW_SECONDS` (180 DAYS), so anything under a day
+# buys nothing but write load. The window is floor(epoch/86400), so a worker down
+# for a UTC day misses that day rather than replaying a backlog; the DELETE is
+# idempotent, so a missed day just deletes slightly more on the next run.
+INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS = 24 * 60 * 60
+
+# ponytail: 24 h for the L7 hit rollup (0.0.5 S05, FR-5), matching every other
+# aggregate on this tick. `hit_count` is read by a retirement heuristic and an
+# effectiveness score, neither of which is a real-time signal -- and the events it
+# folds are CONSUMED, so a day's worth is the table's whole size rather than a
+# backlog. Shorten it only if `lexicon_hit_event` ever grows enough to notice; the
+# cost of a shorter interval is linear `job`-row growth, exactly as for the probe.
+LEXICON_HIT_ROLLUP_INTERVAL_SECONDS = 24 * 60 * 60
+
+# ponytail: 24 h for the feedback aggregator (0.0.5 S25, FR-32), matching every
+# other aggregate on this tick. It reads a 30-DAY clustering window, so a run more
+# often than daily re-reads almost the same rows to reach almost the same verdict;
+# and because the output is a PROPOSAL a human has to work, freshness is bounded by
+# how often anyone opens the inbox, not by the tick. The window is floor(epoch/86400),
+# so a worker down for a UTC day misses that day rather than replaying a backlog --
+# harmless here, because the clustering window is 30x wider than the cadence and the
+# next run sees the same feedback rows.
+FEEDBACK_AGGREGATOR_INTERVAL_SECONDS = 24 * 60 * 60
+
+# ponytail: 24 h for edit-diff mining (0.0.5 S27, FR-33) -- the aggregator's
+# other arm, on the aggregator's cadence, reading the aggregator's 30-day
+# clustering window. Everything the interval note above says applies verbatim,
+# including why a missed UTC day costs nothing.
+EDIT_DIFF_MINING_INTERVAL_SECONDS = 24 * 60 * 60
+
+# ponytail: 24 h for the graduation / zero-hit retirement sweep (0.0.5 S20,
+# FR-19/FR-20), matching every other lifecycle job on this tick. The window it
+# measures against is `injection_ledger.ZERO_HIT_WINDOW_SECONDS` (90 DAYS), so
+# anything under a day changes nothing it can see; and like the aggregator its
+# output is a PROPOSAL a human works, so freshness is bounded by how often
+# anyone opens the inbox. The window is floor(epoch/86400), so a worker down for
+# a UTC day misses that day -- harmless, because nothing accumulates: the next
+# run re-derives the same candidate set from a full scan.
+GRADUATION_SWEEP_INTERVAL_SECONDS = 24 * 60 * 60
+
+# ponytail: 24 h for the copilot triage annotator (0.0.5 S16, FR-23), matching
+# every other queue-facing job on this tick, and here the cadence is HALF the
+# cost knob rather than just a freshness choice. Each annotated item is one
+# billed completion, so a run costs up to `copilot_triage.TRIAGE_BATCH_CAP`
+# completions and this interval decides how often that is spent -- daily x 25 is
+# the documented spend FR-23 asks for. Freshness is bounded by how often anyone
+# opens the inbox, not by the tick, because the output is a note a human reads.
+# The window is floor(epoch/86400), so a worker down for a UTC day misses that
+# day rather than replaying a backlog -- harmless, because nothing accumulates:
+# the next run re-derives the same not-yet-annotated candidate set.
+COPILOT_TRIAGE_INTERVAL_SECONDS = 24 * 60 * 60
+
 SCHEDULES: tuple[Schedule, ...] = (
     Schedule(job_type=RETENTION_JOB_TYPE, interval_seconds=RETENTION_INTERVAL_SECONDS),
     Schedule(
@@ -132,6 +200,30 @@ SCHEDULES: tuple[Schedule, ...] = (
     Schedule(
         job_type=HONORED_RATE_JOB_TYPE,
         interval_seconds=HONORED_RATE_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=INJECTION_LEDGER_PRUNE_JOB_TYPE,
+        interval_seconds=INJECTION_LEDGER_PRUNE_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=LEXICON_HIT_ROLLUP_JOB_TYPE,
+        interval_seconds=LEXICON_HIT_ROLLUP_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=FEEDBACK_AGGREGATOR_JOB_TYPE,
+        interval_seconds=FEEDBACK_AGGREGATOR_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=EDIT_DIFF_MINING_JOB_TYPE,
+        interval_seconds=EDIT_DIFF_MINING_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=GRADUATION_SWEEP_JOB_TYPE,
+        interval_seconds=GRADUATION_SWEEP_INTERVAL_SECONDS,
+    ),
+    Schedule(
+        job_type=COPILOT_TRIAGE_JOB_TYPE,
+        interval_seconds=COPILOT_TRIAGE_INTERVAL_SECONDS,
     ),
 )
 
@@ -146,15 +238,20 @@ JobBody = Callable[[Mapping[str, Any]], None]
 
 
 class L6ReviewMisconfigured(RuntimeError):
-    """An ``l6_review`` job reached a process that cannot durably run the fork.
+    """A per-turn FORK job reached a process that cannot durably run it.
+
+    Named for the first such job (``l6_review``) and kept under that name because
+    the ops docs and the compose file already reference it; 0.0.5 S04's
+    ``l7_capture`` is the second, checked by the same rule for the same reason.
 
     **Why this is a misconfiguration and not the default-OFF state.** The job's
-    own existence proves the L6 flag was ON in the process that enqueued it:
-    ``copilot_turn.run_turn``'s ``if agent_experience_enabled():`` is the only
-    thing in the repo that enqueues this type, and nothing schedules it. So a
+    own existence proves the fork's flag was ON in the process that enqueued it:
+    ``copilot_turn.run_turn``'s ``if agent_experience_enabled():`` (and
+    ``openrouter.run_turn``'s ``if lexicon_capture_enabled():``) are the only
+    things in the repo that enqueue these types, and nothing schedules them. So a
     flag that reads OFF *here* means the flag is split across the two processes
-    (dispatch/copilot has it, this worker does not) -- exactly the gap S04 opened
-    by moving the fork into a second process.
+    (dispatch/gateway has it, this worker does not) -- exactly the gap 0.0.4 S04
+    opened by moving a fork into a second process.
 
     Both halves of the check make the fork write **nothing** while the job would
     otherwise report ``succeeded``: with the flag off,
@@ -171,36 +268,67 @@ class L6ReviewMisconfigured(RuntimeError):
     """
 
 
-def _require_l6_writable() -> None:
-    """Fail closed when this process cannot durably run an ``l6_review`` job."""
-    from .openrouter import resolve_openrouter_config
-    from .tool_backend import AGENT_EXPERIENCE_ENV, agent_experience_enabled
+def _require_fork_writable(*, enabled: bool, env_var: str, job_type: str, table: str) -> None:
+    """Fail closed when this process cannot durably run a per-turn fork job.
 
-    if not agent_experience_enabled():
+    ONE body for both fork types (0.0.5 S04): the flag-split failure and the
+    no-model failure are identical in shape and in consequence, and a second copy
+    would be the place the two drift.
+    """
+    from .openrouter import resolve_openrouter_config
+
+    if not enabled:
         logger.error(
-            "An l6_review job was queued by a process with %s ON, but it is OFF on "
-            "this worker: the review fork would run against the throwaway mock "
-            "driver and persist NO agent_experience row. Failing the job; set %s "
-            "on the background worker.",
-            AGENT_EXPERIENCE_ENV,
-            AGENT_EXPERIENCE_ENV,
+            "An %s job was queued by a process with %s ON, but it is OFF on this "
+            "worker: the fork would run against the throwaway mock driver and "
+            "persist NO %s row. Failing the job; set %s on the background worker.",
+            job_type,
+            env_var,
+            table,
+            env_var,
         )
         raise L6ReviewMisconfigured(
-            f"{AGENT_EXPERIENCE_ENV} is off on this worker but an l6_review job "
+            f"{env_var} is off on this worker but an {job_type} job "
             "was enqueued; the fork would write nothing"
         )
     try:
         resolve_openrouter_config()
     except ValueError as exc:
         logger.error(
-            "An l6_review job cannot run on this worker: %s. The fork would "
-            "propose nothing and the job would report success having written "
-            "no agent_experience row. Failing it instead.",
+            "An %s job cannot run on this worker: %s. The fork would propose "
+            "nothing and the job would report success having written no %s row. "
+            "Failing it instead.",
+            job_type,
             exc,
+            table,
         )
         raise L6ReviewMisconfigured(
-            f"the l6_review fork has no review model on this worker: {exc}"
+            f"the {job_type} fork has no review model on this worker: {exc}"
         ) from exc
+
+
+def _require_l6_writable() -> None:
+    """Fail closed when this process cannot durably run an ``l6_review`` job."""
+    from .tool_backend import AGENT_EXPERIENCE_ENV, agent_experience_enabled
+
+    _require_fork_writable(
+        enabled=agent_experience_enabled(),
+        env_var=AGENT_EXPERIENCE_ENV,
+        job_type=L6_REVIEW_JOB_TYPE,
+        table="agent_experience",
+    )
+
+
+def _require_l7_writable() -> None:
+    """Fail closed when this process cannot durably run an ``l7_capture`` job."""
+    from .tool_backend import LEXICON_CAPTURE_ENV, lexicon_capture_enabled
+
+    _require_fork_writable(
+        enabled=lexicon_capture_enabled(),
+        env_var=LEXICON_CAPTURE_ENV,
+        job_type=L7_CAPTURE_JOB_TYPE,
+        table="semantic_lexicon",
+    )
 
 
 def _run_ingest(payload: Mapping[str, Any]) -> None:
@@ -226,9 +354,16 @@ def job_bodies() -> dict[str, JobBody]:
     """The job type -> body map. Imports are local: each body drags in a large
     subtree (the agent stack, the tool-dispatch stack, fastembed) and a worker
     should pay for them once at startup, not on import of this module."""
+    from .copilot_triage import run_copilot_triage_job
     from .copilot_turn import run_l6_review_job
+    from .edit_diff_mining import run_edit_diff_mining_job
+    from .feedback_aggregator import run_feedback_aggregator_job
+    from .graduation_sweep import run_graduation_sweep_job
     from .honored_rate import run_honored_rate_job
+    from .injection_ledger import run_injection_ledger_prune_job
     from .integration_probe import run_integration_probe_job
+    from .lexicon_capture import run_l7_capture_job
+    from .lexicon_hits import run_lexicon_hit_rollup_job
     from .retention_sweep import run_retention_sweep_job
 
     def l6_review(payload: Mapping[str, Any]) -> None:
@@ -241,12 +376,33 @@ def job_bodies() -> dict[str, JobBody]:
         # an echo for the copilot result, and nothing reads it here.
         run_l6_review_job(payload)
 
+    def l7_capture(payload: Mapping[str, Any]) -> None:
+        # Same split, same guard (0.0.5 S04): the enqueue is gated on
+        # LEXICON_CAPTURE in the GATEWAY process, so a worker configured
+        # differently would run the fork against a throwaway mock and report
+        # success having written no semantic_lexicon row.
+        _require_l7_writable()
+        run_l7_capture_job(payload)
+
     return {
         L6_REVIEW_JOB_TYPE: l6_review,
+        L7_CAPTURE_JOB_TYPE: l7_capture,
         RETENTION_JOB_TYPE: run_retention_sweep_job,
         INGEST_JOB_TYPE: _run_ingest,
         INTEGRATION_PROBE_JOB_TYPE: run_integration_probe_job,
         HONORED_RATE_JOB_TYPE: run_honored_rate_job,
+        INJECTION_LEDGER_PRUNE_JOB_TYPE: run_injection_ledger_prune_job,
+        LEXICON_HIT_ROLLUP_JOB_TYPE: run_lexicon_hit_rollup_job,
+        FEEDBACK_AGGREGATOR_JOB_TYPE: run_feedback_aggregator_job,
+        EDIT_DIFF_MINING_JOB_TYPE: run_edit_diff_mining_job,
+        GRADUATION_SWEEP_JOB_TYPE: run_graduation_sweep_job,
+        # No _require_*_writable check, unlike l6_review. That guard exists
+        # because the L6 fork's enqueue is gated in ANOTHER process, so a flag
+        # split across the two would report success on a lost row. This job is
+        # SCHEDULED by this same worker, so its flag is read here or nowhere --
+        # and when it is off the run persists an audit row that says so
+        # (`skipped_reasons`), rather than silently writing nothing.
+        COPILOT_TRIAGE_JOB_TYPE: run_copilot_triage_job,
     }
 
 

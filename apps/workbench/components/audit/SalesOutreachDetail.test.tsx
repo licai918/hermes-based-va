@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import { WORKBENCH_ROLES } from "@toee/shared";
 import type { WorkbenchCase } from "@/lib/gateway/types";
 import { SalesOutreachDetail } from "./SalesOutreachDetail";
 
@@ -48,5 +49,31 @@ describe("SalesOutreachDetail", () => {
     render(<SalesOutreachDetail caseId="missing" />);
     expect(await screen.findByText(/not found/i)).toBeInTheDocument();
     expect(screen.queryByText("Acme Corp (sales)")).toBeNull();
+  });
+
+  // US-7/FR-5: a supervisor reopening this case sees their own prior verdict,
+  // seeded into ReviewBar via `initialReview` from the fetched case.
+  it("passes the fetched myReview through to ReviewBar as the prior verdict", async () => {
+    stubFetch({
+      case: {
+        ...CASE,
+        myReview: {
+          reviewId: "irev_1",
+          subjectKind: "sales_outreach_case",
+          subjectId: "case-1",
+          verdict: "fail",
+          reasonTags: ["missed_information"],
+          comment: "never mentioned the discount code",
+          reviewerAccountId: "acct_1",
+          createdAt: Date.now(),
+        },
+      },
+    });
+    render(<SalesOutreachDetail caseId="case-1" role={WORKBENCH_ROLES.supervisor} />);
+
+    const region = await screen.findByRole("region", { name: "Review" });
+    expect(region).toHaveTextContent(/Reviewed:\s*Fail/);
+    expect(region).toHaveTextContent("Missed information");
+    expect(region).toHaveTextContent("never mentioned the discount code");
   });
 });

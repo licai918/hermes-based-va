@@ -18,10 +18,15 @@ import type {
   ReingestQueued,
 } from "@/lib/bff/admin/knowledge";
 import type { AggregateMetrics } from "@/lib/bff/admin/metrics";
+import type { LexiconDraft } from "@/lib/gateway/hermes-agent-client";
 import type { QualityGatesView } from "@/lib/bff/admin/quality-gates";
+import type { InboxItem } from "@/lib/bff/admin/review-inbox";
 import type { RetentionStatus, RetentionSweepQueued } from "@/lib/bff/admin/retention";
 import type {
   AgentExperienceEntry,
+  LexiconEntry,
+  LexiconEntryKind,
+  LexiconStatus,
   MemoryAuditView,
   MemoryPreferenceSlot,
 } from "@/lib/gateway/types";
@@ -178,6 +183,23 @@ export function getMemoryAudit(caseId: string): Promise<MemoryAuditView> {
   );
 }
 
+// 0.0.5 S17 (FR-25): the supervisor's L4 correction. Sibling of the clear
+// above, on the same governed action the copilot correction panel already uses.
+// `evidence` records where a prefilled value came from and whether the
+// supervisor changed it before confirming.
+export function correctMemorySlot(
+  caseId: string,
+  slot: MemoryPreferenceSlot,
+  value: string,
+  evidence?: string,
+): Promise<{ slot: string; value: string; stored: boolean }> {
+  return sendJson<{ slot: string; value: string; stored: boolean }>(
+    "POST",
+    `/api/admin/memory-audit/correct?case_id=${encodeURIComponent(caseId)}`,
+    evidence ? { slot, value, evidence } : { slot, value },
+  );
+}
+
 export function clearMemorySlot(
   caseId: string,
   slot: MemoryPreferenceSlot,
@@ -186,6 +208,18 @@ export function clearMemorySlot(
     "POST",
     `/api/admin/memory-audit/clear?case_id=${encodeURIComponent(caseId)}`,
     { slot },
+  );
+}
+
+// 0.0.5 S11 (FR-13, US7): erase the customer's whole memory binding. Counts
+// only come back -- the binding keys stay server-side (see the BFF handler).
+export function eraseCustomerMemory(
+  caseId: string,
+): Promise<{ erased: boolean; clearedSlots: number; bindingsCleared: number }> {
+  return sendJson<{ erased: boolean; clearedSlots: number; bindingsCleared: number }>(
+    "POST",
+    `/api/admin/memory-audit/erase?case_id=${encodeURIComponent(caseId)}`,
+    {},
   );
 }
 
@@ -211,6 +245,79 @@ export function rejectExperience(id: string): Promise<AgentExperienceEntry> {
     "POST",
     `/api/admin/agent-experience/${encodeURIComponent(id)}/reject`,
   ).then((b) => b.entry);
+}
+
+// --- L7 Semantic Lexicon console (0.0.5 S02, FR-3/FR-8) -----------------------
+// One read with optional queue filters (S01's action, EXTENDED -- not a second
+// read), plus the four governed writes. Every write goes through the admin BFF,
+// which attaches the signed-in account as the actor; nothing here supplies one.
+
+// `lexiconVersion` (MAX(updated_at) over the whole table) rides the same read
+// and is returned rather than discarded: it is what the S05/S06 caches compare
+// against, and the console shows it so a decision can be seen to move it.
+export interface LexiconListing {
+  entries: LexiconEntry[];
+  lexiconVersion: string | null;
+}
+
+export function listLexiconEntries(filters: {
+  status?: LexiconStatus;
+  domain?: string;
+} = {}): Promise<LexiconListing> {
+  const query = new URLSearchParams();
+  if (filters.status) query.set("status", filters.status);
+  if (filters.domain) query.set("domain", filters.domain);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return getJson<LexiconListing>(`/api/admin/lexicon${suffix}`);
+}
+
+export function decideLexiconEntry(
+  id: string,
+  decision: "confirm" | "reject" | "retire",
+): Promise<LexiconEntry> {
+  return sendJson<{ entry: LexiconEntry }>(
+    "POST",
+    `/api/admin/lexicon/${encodeURIComponent(id)}/${decision}`,
+  ).then((b) => b.entry);
+}
+
+// D7: an in-place UPDATE (PATCH on the entry), so the id and hit_count survive.
+export function editLexiconEntry(
+  id: string,
+  changes: { surfaceForm?: string; canonicalForm?: string },
+): Promise<LexiconEntry> {
+  return sendJson<{ entry: LexiconEntry }>(
+    "PATCH",
+    `/api/admin/lexicon/${encodeURIComponent(id)}`,
+    changes,
+  ).then((b) => b.entry);
+}
+
+export interface AddLexiconEntryInput {
+  domain: string;
+  entryKind: LexiconEntryKind;
+  surfaceForm: string;
+  canonicalForm: string;
+  evidence?: string;
+  // 0.0.5 S17 (FR-24): the NL prefill's own record — the admin's sentence, the
+  // model, and which fields were confirmed exactly as drafted. Absent on a
+  // hand-typed entry, which is the whole point: the row can say which of its
+  // words started as a suggestion.
+  proposerContext?: Record<string, unknown>;
+}
+
+export function addLexiconEntry(input: AddLexiconEntryInput): Promise<LexiconEntry> {
+  return sendJson<{ entry: LexiconEntry }>("POST", "/api/admin/lexicon", input).then(
+    (b) => b.entry,
+  );
+}
+
+// FR-24: the copilot's draft for the add form. A SUGGESTION — no write happens
+// until the admin presses Add, which is the unchanged governed action above.
+export function draftLexiconEntry(text: string): Promise<LexiconDraft> {
+  return sendJson<{ draft: LexiconDraft }>("POST", "/api/admin/lexicon/draft", {
+    text,
+  }).then((b) => b.draft);
 }
 
 // --- Aggregate-metrics admin panel (0.0.3 S26, FR-28) -------------------------
@@ -266,4 +373,59 @@ export function reprobeIntegration(integrationKey: string): Promise<ReprobeRecei
   return sendJson<ReprobeReceipt>("POST", "/api/admin/integrations/reprobe", {
     integrationKey,
   });
+}
+
+// --- Unified review inbox (0.0.5 S15, FR-22) ---------------------------------
+
+export type { InboxItem };
+
+export function listInbox(): Promise<{ items: InboxItem[]; count: number }> {
+  return getJson<{ items: InboxItem[]; count: number }>("/api/admin/inbox");
+}
+
+// The kind rides the body, not the path: an inbox id is only unique within its
+// own store, and the routing table keys on (kind, decision).
+export function decideInboxItem(
+  kind: string,
+  id: string,
+  decision: string,
+): Promise<{ kind: string; id: string; result: unknown }> {
+  return sendJson<{ kind: string; id: string; result: unknown }>(
+    "POST",
+    "/api/admin/inbox/decide",
+    { kind, id, decision },
+  );
+}
+
+// FR-23 (0.0.5 S16): re-run the copilot triage annotator over ONE item.
+// `annotated: false` is a normal outcome, not a failure -- triage is default-OFF
+// and may have no model configured, and `reason` is what says which.
+export function annotateInboxItem(
+  kind: string,
+  id: string,
+): Promise<{
+  kind: string;
+  id: string;
+  annotated: boolean;
+  annotation: unknown;
+  reason: string | null;
+}> {
+  return sendJson("POST", "/api/admin/inbox/annotate", { kind, id });
+}
+
+// FR-22 Re-classify: ONE governed action rejects the source and proposes the
+// target, audited on both sides with the evidence preserved.
+export function reclassifyInboxItem(body: {
+  sourceKind: string;
+  id: string;
+  domain: string;
+  entryKind: string;
+  surfaceForm: string;
+  canonicalForm: string;
+}): Promise<{ source: unknown; target: unknown; reclassified: unknown }> {
+  return sendJson<{ source: unknown; target: unknown; reclassified: unknown }>(
+    "POST",
+    "/api/admin/inbox/reclassify",
+    body,
+  );
 }

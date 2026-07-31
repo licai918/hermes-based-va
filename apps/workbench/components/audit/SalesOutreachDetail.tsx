@@ -2,9 +2,13 @@
 
 // Read-only Sales-Outreach Audit detail (ADR-0050/0086). Case metadata only:
 // no operational Case Thread Context action header, since these records are
-// audit-sampled and not employee drafting queue items.
+// audit-sampled and not employee drafting queue items. The review bar (0.0.4
+// S04, ADR-0154) is the one write this view makes, and it targets the review
+// table only, never the case itself.
+import type { WorkbenchRoleId } from "@toee/shared";
 import { getSalesOutreach } from "@/lib/api/audit-client";
 import { formatChannel, formatRelativeTime, formatStatus } from "@/lib/format";
+import { ReviewBar } from "./ReviewBar";
 import {
   Notice,
   cardStyle,
@@ -17,7 +21,13 @@ import {
   useAsync,
 } from "./shared";
 
-export function SalesOutreachDetail({ caseId }: { caseId: string }) {
+export function SalesOutreachDetail({
+  caseId,
+  role,
+}: {
+  caseId: string;
+  role?: WorkbenchRoleId;
+}) {
   const state = useAsync(() => getSalesOutreach(caseId), [caseId]);
   const now = Date.now();
 
@@ -66,6 +76,13 @@ export function SalesOutreachDetail({ caseId }: { caseId: string }) {
               </dd>
             </dl>
           </header>
+
+          <ReviewBar
+            role={role}
+            subjectKind="sales_outreach_case"
+            subjectId={caseId}
+            initialReview={state.data.case.myReview}
+          />
 
           <section style={cardStyle}>
             <h2 style={{ marginTop: 0 }}>Latest message</h2>

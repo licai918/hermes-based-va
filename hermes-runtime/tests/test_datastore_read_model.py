@@ -333,13 +333,22 @@ def test_get_thread_writes_one_case_view_audit_entry(datastore) -> None:
 
 def test_get_thread_missing_case_is_empty_read_without_audit(datastore) -> None:
     driver, conn, _ = datastore
+    # Baseline, then delta. The claim is "this read wrote no audit row", not "the
+    # audit table is empty" -- the latter is a different and far more fragile
+    # thing to assert, since any unrelated row from a migration or another
+    # fixture would break it while saying nothing about get_thread. Deliberately
+    # NOT scoped by `action`: that would weaken it, letting a read that wrote
+    # some unexpected action through. The delta catches a row of any kind.
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM workbench_audit_log")
+        audit_rows_before = cur.fetchone()[0]
     result = _run(driver, "toee_workbench_read", "get_thread", {"case_id": "nope"}).data
     # A missing case is a legitimate empty read (ADR-0020), not a fabricated view,
     # so nothing is audited.
     assert result == {"case": None, "messages": []}
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM workbench_audit_log")
-        assert cur.fetchone()[0] == 0
+        assert cur.fetchone()[0] == audit_rows_before
 
 
 def test_get_thread_threadless_case_has_empty_timeline(datastore) -> None:

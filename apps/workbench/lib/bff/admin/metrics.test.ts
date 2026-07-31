@@ -39,7 +39,157 @@ function rawMetrics(overrides: Record<string, unknown> = {}) {
     proposal_outcomes: { accepted: 1, dismissed: 1, rate: 0.5 },
     self_service_usage: 3,
     l6_confirmed_entries: 2,
+    latency: rawLatency(),
+    deletion_success: rawDeletionSuccess(),
+    lifecycle: rawLifecycle(),
+    loop_closure: rawLoopClosure(),
+    knobs: rawKnobs(),
     ...overrides,
+  };
+}
+
+// S11/FR-14 shape, mirroring toee_hermes...memory.deletion_success_payload.
+function rawDeletionSuccess(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    window_days: 30,
+    erased_bindings: 5,
+    flagged_bindings: 2,
+    residue_bindings: 1,
+    reappeared_bindings: 1,
+    rate: 0.6,
+    flagged_slots: { contact_time_preference: 2 },
+    label: "share of erases whose bindings are still empty",
+    ...over,
+  };
+}
+
+// S22/FR-34a shape, mirroring toee_hermes.lifecycle_metrics.lifecycle_payload.
+// Every count is a DIFFERENT number, so a mapper that read the wrong row or
+// collapsed the list would show up as a wrong value rather than as a coincidence.
+function rawCount(key: string, value: number | null, over: Record<string, unknown> = {}) {
+  return {
+    key,
+    label: `label for ${key}`,
+    detail: `what ${key} counts, and what it deliberately does not`,
+    value,
+    ...over,
+  };
+}
+
+function rawLifecycle(): unknown[] {
+  return [
+    rawCount("conflict_overwrites", 7),
+    rawCount("pollution_rejected_writes", 3),
+    rawCount("privacy_deflection_self_service", 4),
+    rawCount("privacy_deflection_erasures", 1),
+    rawCount("prompt_layer_drops_L4", 0),
+    rawCount("prompt_layer_drops_L6", 2),
+    rawCount("prompt_layer_drops_L7", 9),
+  ];
+}
+
+// S28/FR-34b shape, mirroring toee_hermes.lifecycle_metrics.loop_closure_payload.
+// Every numerator, denominator and rate is a DIFFERENT number for the same reason
+// the counts above are: a mapper that read the wrong row would otherwise agree
+// with the right one by coincidence.
+function rawRate(
+  key: string,
+  numerator: number,
+  denominator: number,
+  rate: number | null,
+  over: Record<string, unknown> = {},
+) {
+  return {
+    key,
+    label: `label for ${key}`,
+    detail: `what ${key} is over, and what its denominator deliberately excludes`,
+    numerator,
+    denominator,
+    rate,
+    ...over,
+  };
+}
+
+function rawLoopClosure(): unknown[] {
+  return [
+    rawRate("feedback_proposal_conversion", 3, 6, 0.5),
+    rawRate("unroutable_feedback_signals", 4, 10, 0.4),
+    rawRate("post_fix_refail", 1, 4, 0.25),
+    // The trend-thin case: raw counts travel, the percentage does not.
+    rawRate("entry_honored_after_edit", 1, 1, null),
+  ];
+}
+
+function rawKnobs(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    label: "Read-only. These knobs move by deploy-time config commit.",
+    knobs: [
+      {
+        key: "LEXICON_GLOSSARY_LIMIT",
+        label: "L7 prompt glossary window",
+        value: "20",
+        source: "hermes_runtime.tool_backend",
+        env: null,
+        note: "how many confirmed entries the prompt glossary may carry",
+      },
+      {
+        key: "LEXICON_SELECTION",
+        label: "L7 glossary selection strategy (effective)",
+        value: "newest",
+        source: "hermes_runtime.tool_backend",
+        env: "LEXICON_SELECTION",
+        note: "fail-safe: an unrecognised value resolves to the shipped behaviour",
+      },
+    ],
+    ...over,
+  };
+}
+
+// S18/FR-26 shape, mirroring hermes_runtime.latency's payload.
+function rawTile(
+  metric: string,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    metric,
+    layer: "L4",
+    label: `label for ${metric}`,
+    p50_ms: null,
+    p95_ms: null,
+    samples: 0,
+    budget_ms: null,
+    in_slo_total: true,
+    breached: null,
+    ...over,
+  };
+}
+
+function rawLatency(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    slo_p95_ms: 150,
+    not_measured_label: "Not yet measured (no latency samples on this deployment)",
+    total: rawTile("latency_pre_turn_total", {
+      layer: "L4+L6+L7",
+      p50_ms: 31.5,
+      p95_ms: 128.25,
+      samples: 400,
+      budget_ms: 150,
+      in_slo_total: false,
+      breached: false,
+    }),
+    layers: [
+      rawTile("latency_l4_load", { p50_ms: 12.5, p95_ms: 40, samples: 400 }),
+      rawTile("knowledge_search", {
+        layer: "L5",
+        p50_ms: 210,
+        p95_ms: 900,
+        samples: 25,
+        budget_ms: 800,
+        in_slo_total: false,
+        breached: true,
+      }),
+    ],
+    ...over,
   };
 }
 
@@ -126,7 +276,264 @@ describe("handleGetAggregateMetricsViaApi", () => {
     // and label are gone from these two tiles.
     expect(body.selfServiceUsage).toBe(3);
     expect(body.l6ConfirmedEntries).toBe(2);
-    expect(JSON.stringify(body)).not.toContain("proxy");
+    // Scoped past the S22 lifecycle block, whose privacy-deflection row is an
+    // honestly labelled proxy (FR-34a, owner ⑤). A whole-body grep cannot tell
+    // "still secretly a proxy" from "correctly says it is one"; everything the
+    // old scan covered on these two tiles is still covered.
+    const { lifecycle: _lifecycle, ...rest } = body as Record<string, unknown>;
+    expect(JSON.stringify(rest)).not.toContain("proxy");
+  });
+
+  // --- 0.0.5 S22 (FR-34a): the lifecycle half ---------------------------------
+
+  it("carries every FR-34a lifecycle count with the scope its label claims", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { lifecycle: AggregateMetrics["lifecycle"] };
+
+    const byKey = Object.fromEntries(body.lifecycle.map((c) => [c.key, c.value]));
+    expect(byKey).toEqual({
+      conflict_overwrites: 7,
+      pollution_rejected_writes: 3,
+      privacy_deflection_self_service: 4,
+      privacy_deflection_erasures: 1,
+      prompt_layer_drops_L4: 0,
+      prompt_layer_drops_L6: 2,
+      prompt_layer_drops_L7: 9,
+    });
+    // The house rule S14 set and S26 extended: no count reaches a renderer
+    // without the caveat that makes it readable.
+    for (const count of body.lifecycle) {
+      expect(count.label.length).toBeGreaterThan(0);
+      expect(count.detail.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("refuses a lifecycle count that arrives without its scope rather than showing the bare number", async () => {
+    // A count whose label or detail was lost in transit is a number nobody can
+    // read correctly -- and 0 vs "0 of what" is exactly the difference this
+    // panel exists to keep. Same stance as mapHealth's scope/basis refusal.
+    for (const missing of [{ label: "" }, { detail: "" }]) {
+      const client = apiClient(async () =>
+        dispatchResponse(
+          rawMetrics({ lifecycle: [rawCount("conflict_overwrites", 7, missing)] }),
+        ),
+      );
+      expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+    }
+  });
+
+  it("keeps a lifecycle component with no source honestly absent, never a zero", async () => {
+    // `null` is "nothing feeds this yet" and 0 is "it happened zero times" --
+    // the S21 `no_stale_use` rule, applied to a count.
+    const client = apiClient(async () =>
+      dispatchResponse(rawMetrics({ lifecycle: [rawCount("conflict_overwrites", null)] })),
+    );
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { lifecycle: AggregateMetrics["lifecycle"] };
+    expect(body.lifecycle[0]?.value).toBeNull();
+  });
+
+  it("carries S11's deletion-success components, not just the rate (FR-14)", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { deletionSuccess: AggregateMetrics["deletionSuccess"] };
+
+    expect(body.deletionSuccess.erasedBindings).toBe(5);
+    expect(body.deletionSuccess.flaggedBindings).toBe(2);
+    expect(body.deletionSuccess.residueBindings).toBe(1);
+    expect(body.deletionSuccess.reappearedBindings).toBe(1);
+    expect(body.deletionSuccess.rate).toBe(0.6);
+    expect(body.deletionSuccess.windowDays).toBe(30);
+    expect(body.deletionSuccess.flaggedSlots).toEqual({ contact_time_preference: 2 });
+  });
+
+  it("reports a null deletion-success rate as not-computed, never as 100%", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({
+          deletion_success: rawDeletionSuccess({
+            erased_bindings: 0,
+            flagged_bindings: 0,
+            residue_bindings: 0,
+            reappeared_bindings: 0,
+            rate: null,
+            flagged_slots: {},
+          }),
+        }),
+      ),
+    );
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { deletionSuccess: AggregateMetrics["deletionSuccess"] };
+    expect(body.deletionSuccess.rate).toBeNull();
+    expect(body.deletionSuccess.erasedBindings).toBe(0);
+  });
+
+  it("carries the read-only knob panel with each knob's source and env override", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { knobs: AggregateMetrics["knobs"] };
+
+    expect(body.knobs?.label).toContain("Read-only");
+    const glossary = body.knobs?.knobs.find((k) => k.key === "LEXICON_GLOSSARY_LIMIT");
+    expect(glossary?.value).toBe("20");
+    expect(glossary?.source).toBe("hermes_runtime.tool_backend");
+    // No env override for this one; the next knob has one.
+    expect(glossary?.env).toBeNull();
+    expect(body.knobs?.knobs.find((k) => k.key === "LEXICON_SELECTION")?.env).toBe(
+      "LEXICON_SELECTION",
+    );
+  });
+
+  it("accepts a backend that reports no knob values at all (the mock twin)", async () => {
+    // toee_hermes must not import hermes_runtime, so the mock twin sends null
+    // rather than a copy of the constants. Null is renderable as "not reported
+    // by this backend"; a 502 here would break the whole panel on dev.
+    const client = apiClient(async () => dispatchResponse(rawMetrics({ knobs: null })));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as AggregateMetrics).knobs).toBeNull();
+  });
+
+  it("carries per-layer p50/p95 and the SLO verdict per tile (S18/FR-26)", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { latency: AggregateMetrics["latency"] };
+
+    expect(body.latency.sloP95Ms).toBe(150);
+    expect(body.latency.total.p95Ms).toBe(128.25);
+    expect(body.latency.total.budgetMs).toBe(150);
+    expect(body.latency.total.breached).toBe(false);
+
+    const l4 = body.latency.layers.find((t) => t.metric === "latency_l4_load");
+    expect(l4?.p50Ms).toBe(12.5);
+    expect(l4?.samples).toBe(400);
+    // Measured but not budgeted: this slice ships no deadline of its own (S19
+    // owns enforcement), so an unbudgeted layer renders percentiles and no verdict.
+    expect(l4?.budgetMs).toBeNull();
+    expect(l4?.breached).toBeNull();
+    expect(l4?.inSloTotal).toBe(true);
+
+    // L5 is judged against its OWN 800ms budget and excluded from the SLO total
+    // (D5.2): 900ms p95 breaches that budget, not the 150ms line.
+    const l5 = body.latency.layers.find((t) => t.metric === "knowledge_search");
+    expect(l5?.budgetMs).toBe(800);
+    expect(l5?.breached).toBe(true);
+    expect(l5?.inSloTotal).toBe(false);
+  });
+
+  it("keeps an unmeasured latency tile honestly unmeasured, never a zero (S18)", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({
+          latency: rawLatency({
+            total: rawTile("latency_pre_turn_total", { budget_ms: 150 }),
+            layers: [rawTile("latency_l4_load")],
+          }),
+        }),
+      ),
+    );
+    const res = await handleGetAggregateMetricsViaApi(client);
+    const body = (await res.json()) as { latency: AggregateMetrics["latency"] };
+    expect(body.latency.total.p95Ms).toBeNull();
+    expect(body.latency.total.samples).toBe(0);
+    // `false` here would render a green "within SLO" tile for a deployment that
+    // has never measured anything.
+    expect(body.latency.total.breached).toBeNull();
+    expect(body.latency.notMeasuredLabel.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a latency block whose tiles are malformed rather than passing it through", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(rawMetrics({ latency: rawLatency({ layers: ["not a tile"] }) })),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+  });
+
+  // --- S28/FR-34b: the loop-closure rates ------------------------------------
+
+  it("carries each loop-closure rate with the population it is over", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const body = (await (await handleGetAggregateMetricsViaApi(client)).json()) as {
+      loopClosure: AggregateMetrics["loopClosure"];
+    };
+    // `loopClosure` is nullable so a backend older than this app degrades to
+    // "not reported" instead of taking the whole page down. A POPULATED payload
+    // reporting null would be a different bug, so say that rather than casting
+    // it away with `!`.
+    const rates = body.loopClosure;
+    if (!rates) throw new Error("a populated payload must report loopClosure, got null");
+    expect(rates.map((r) => r.key)).toEqual([
+      "feedback_proposal_conversion",
+      "unroutable_feedback_signals",
+      "post_fix_refail",
+      "entry_honored_after_edit",
+    ]);
+    const conversion = rates[0]!;
+    expect(conversion.rate).toBe(0.5);
+    // The two halves of the fraction travel WITH it: a reader must never have to
+    // take "50%" on trust when the denominator is the whole argument.
+    expect([conversion.numerator, conversion.denominator]).toEqual([3, 6]);
+    expect(conversion.detail.length).toBeGreaterThan(0);
+  });
+
+  it("keeps a null rate null and still carries its counts (one data point is not a trend)", async () => {
+    const client = apiClient(async () => dispatchResponse(rawMetrics()));
+    const body = (await (await handleGetAggregateMetricsViaApi(client)).json()) as {
+      loopClosure: AggregateMetrics["loopClosure"];
+    };
+    const rates = body.loopClosure;
+    if (!rates) throw new Error("a populated payload must report loopClosure, got null");
+    const thin = rates[3]!;
+    expect(thin.rate).toBeNull();
+    expect([thin.numerator, thin.denominator]).toEqual([1, 1]);
+  });
+
+  it("reports an older backend's missing block as absent, not as a broken page", async () => {
+    // The 502 alternative takes the WHOLE metrics panel down for the duration of
+    // a normal app-ahead-of-runtime deploy skew -- which is exactly what
+    // `malformed aggregate metrics payload: latency` did after S18. Both twins
+    // build this block from one shared builder, so absent can only mean "old
+    // backend"; a twin dropping it is caught on the Python side instead.
+    const raw = rawMetrics();
+    delete (raw as Record<string, unknown>).loop_closure;
+    const res = await handleGetAggregateMetricsViaApi(apiClient(async () => dispatchResponse(raw)));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { loopClosure: unknown; lifecycle: unknown[] };
+    expect(body.loopClosure).toBeNull();
+    // ... and the rest of the panel is untouched.
+    expect(body.lifecycle).toHaveLength(7);
+  });
+
+  it("still refuses a loop-closure block that is PRESENT and the wrong shape", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(rawMetrics({ loop_closure: "not a list" })),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+  });
+
+  it("refuses a loop-closure rate that arrives without its scope", async () => {
+    // Same stance as the lifecycle counts and S26's entry health: a percentage
+    // with no `detail` is a broken contract from our own twin, not a degraded
+    // upstream, and rendering the bare number is exactly the failure the shape
+    // exists to prevent.
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({ loop_closure: [rawRate("post_fix_refail", 1, 4, 0.25, { detail: "" })] }),
+      ),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
+  });
+
+  it("refuses a loop-closure rate with no denominator field rather than inventing one", async () => {
+    const client = apiClient(async () =>
+      dispatchResponse(
+        rawMetrics({
+          loop_closure: [rawRate("post_fix_refail", 1, 4, 0.25, { denominator: null })],
+        }),
+      ),
+    );
+    expect((await handleGetAggregateMetricsViaApi(client)).status).toBe(502);
   });
 
   it("maps a governed denial to its per-class status (ADR-0104)", async () => {

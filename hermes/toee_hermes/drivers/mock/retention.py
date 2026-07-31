@@ -97,6 +97,25 @@ def create_retention_mock_handlers() -> MockHandlerRegistry:
             "counts": {"verified": 0, "provisional": 0},
             "total_deleted": 0,
             "windows_days": dict(RETENTION_WINDOW_DAYS),
+            # 0.0.5 S09: the Postgres twin also reports the injection-ledger
+            # prune's last run here. There is no ledger and no scheduled worker
+            # behind the mock backend, and its window is a hermes-runtime
+            # constant this package must not import, so the honest never-run
+            # shape carries a null window rather than a copied number.
+            "ledger_prune": {"last_run_at": None, "deleted": 0, "window_seconds": None},
+            # 0.0.5 S20: likewise for the graduation / zero-hit retirement sweep.
+            # Same reasoning as the prune above -- no scheduled worker behind the
+            # mock backend, and its window is a hermes-runtime constant this
+            # package must not import, so the never-run shape carries a null
+            # window rather than a copied number.
+            "graduation_sweep": {
+                "last_run_at": None,
+                "graduation_candidates": 0,
+                "retirement_candidates": 0,
+                "emitted": 0,
+                "blocked": 0,
+                "window_seconds": None,
+            },
         }
 
     return {

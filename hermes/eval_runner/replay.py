@@ -4,6 +4,29 @@ This is the CI half of the record/replay strategy. A live turn (recorded once,
 possibly against a real model) is saved as a transcript; CI replays it through
 the same transcript parser the live turn uses, so the go-live gate exercises a
 real agent's captured behavior with no model, network, or credentials.
+
+**The coverage boundary, stated (0.0.5 S31).** Replay verifies the RECORDING, not
+the current model. Every assertion in the replay suite answers "does this
+transcript still satisfy this assertion" — a question about a file — so
+behavioural drift between the recording and the model running in production is
+structurally invisible here, by construction and not by oversight (the
+determinism is deliberate and load-bearing, NFR-4). This has already bitten once:
+the 0.0.4 quality-feedback acceptance run found the live agent failing
+``case_created`` twice out of two while this gate passed in 15 seconds on the same
+assertion.
+
+So: **a green launch gate never means "the agent still does X".** It means the
+recordings still do. The only live read of the AGENT's current behaviour is the
+escalation probe (``hermes_runtime.escalation_check``), which runs OUTSIDE this
+gate on the non-blocking advisory CI job; it reports and never gates. Any prose or
+panel copy that quotes a green eval gate as evidence about the live agent is
+overclaiming.
+
+(Deliberately named without reference to the advisory model-scored machinery:
+``tests/test_eval_advisory.py`` forbids every module reachable from
+``--harness replay`` from so much as mentioning it, in a comment included, so that
+no wording here can ever paper over a real wiring. That guard fired on an earlier
+draft of this very paragraph and it was right to.)
 """
 
 from __future__ import annotations

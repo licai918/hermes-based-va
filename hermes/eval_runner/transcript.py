@@ -15,6 +15,7 @@ from typing import Any
 
 from toee_hermes.drivers.mock.agent_experience import AGENT_EXPERIENCE_KINDS
 from toee_hermes.drivers.mock.memory import MEMORY_PREFERENCE_SLOTS
+from toee_hermes.drivers.mock.semantic_lexicon import LEXICON_ENTRY_KINDS
 
 from .harness import AgentTurnResult, RecordedToolCall
 
@@ -198,6 +199,63 @@ def experience_proposals_from_messages(messages: list[dict]) -> list[ExperienceP
             ExperienceProposal(
                 kind=kind,
                 content=content,
+                status=status if isinstance(status, str) and status else "proposed",
+            )
+        )
+    return proposals
+
+
+@dataclass(frozen=True)
+class LexiconProposal:
+    """One L7 semantic-lexicon proposal extracted from a capture fork (S04, FR-4).
+
+    The third member of the family, and the same discipline as its two siblings:
+    every field is read from the governed ``propose_lexicon_entry`` RESULT, never
+    from the model's call arguments. That is what makes ``status`` trustworthy --
+    a fork that passed ``status="confirmed"`` or ``provenance="admin_manual"`` has
+    both ignored by the driver, so the echo here is what the framework decided.
+    """
+
+    domain: str
+    entry_kind: str
+    surface_form: str
+    canonical_form: str
+    status: str = "proposed"
+
+
+def lexicon_proposals_from_messages(messages: list[dict]) -> list[LexiconProposal]:
+    """Structured ``toee_semantic_lexicon.propose_lexicon_entry`` proposals (S04).
+
+    Same framework-derived rule as :func:`experience_proposals_from_messages`: only
+    SUCCESSFUL governed calls count, so a proposal the S01 write scan rejected
+    (an injection pattern in either form) is already ``ok is False`` and yields
+    nothing. An ``entry_kind`` outside the current enum is dropped too, defense in
+    depth against a driver that ever validates differently. Pure extraction -- the
+    row was written by the governed call itself, not here.
+    """
+    proposals: list[LexiconProposal] = []
+    for call in _parsed_calls(messages):
+        if (
+            call.tool != "toee_semantic_lexicon"
+            or call.action != "propose_lexicon_entry"
+            or not call.ok
+        ):
+            continue
+        result = call.result if isinstance(call.result, dict) else {}
+        entry_kind = result.get("entry_kind")
+        if entry_kind not in LEXICON_ENTRY_KINDS:
+            continue
+        fields = [result.get(key) for key in ("domain", "surface_form", "canonical_form")]
+        if not all(isinstance(value, str) and value for value in fields):
+            continue
+        domain, surface_form, canonical_form = fields  # type: ignore[assignment]
+        status = result.get("status")
+        proposals.append(
+            LexiconProposal(
+                domain=domain,
+                entry_kind=entry_kind,
+                surface_form=surface_form,
+                canonical_form=canonical_form,
                 status=status if isinstance(status, str) and status else "proposed",
             )
         )

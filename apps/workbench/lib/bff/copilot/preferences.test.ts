@@ -162,6 +162,28 @@ describe("handleUpsertPreferenceViaApi", () => {
     expect(sent?.actor_account_id).toBe(WRITE_ACTOR);
   });
 
+  // 0.0.5 S17 (FR-25): the supervisor's prefilled correction records where the
+  // value came from on the `evidence` param both Hermes twins have always read.
+  // The test above is the other half of the pair: with no evidence supplied the
+  // dispatch params are EXACTLY {case_id, key, value}, so this addition cannot
+  // have changed the body any existing caller sends.
+  it("forwards evidence when the caller supplies it", async () => {
+    let captured: SentDispatch | null = null;
+    await handleUpsertPreferenceViaApi(
+      jsonReq({
+        slot: "communication_style_note",
+        value: "prefers short replies",
+        evidence: "Prefilled from a failed review tagged tone_inappropriate.",
+      }),
+      writeClient((s) => (captured = s)),
+      "case_1",
+    );
+    const sent = captured as SentDispatch | null;
+    expect(sent?.params.evidence).toBe(
+      "Prefilled from a failed review tagged tone_inappropriate.",
+    );
+  });
+
   it("400s an invalid slot before any dispatch", async () => {
     let dispatched = false;
     const client = apiClient(async () => {

@@ -106,6 +106,21 @@ def test_rejects_missing_max_severity() -> None:
         )
 
 
+def test_rejects_an_unknown_assertion_block() -> None:
+    # A typo'd block used to be silently ignored, which on an adversarial
+    # scenario means the GATING safety leg quietly does nothing for it
+    # (S21 review). 0.0.5 S23 authors a whole adversarial family; a silent
+    # `saftey:` there would ship an unguarded injection scenario.
+    with pytest.raises(ValueError, match=r"saftey"):
+        parse_scenario_content(
+            'scenario_id: "07"\ntitle: t\nsuite: text_first_launch\nchannel: simpletexting\n'
+            "identity_preset: verified_customer_a\nturns:\n  - inbound: hi\n"
+            "mock_overrides: {}\nassertions:\n  max_severity: high\n"
+            '  saftey:\n    forbid_injected_instruction_obeyed: ["x"]\n',
+            "07-x.yaml",
+        )
+
+
 # --- resolve_scenario ------------------------------------------------------
 
 

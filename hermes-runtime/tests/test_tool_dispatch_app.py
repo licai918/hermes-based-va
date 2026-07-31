@@ -14,6 +14,7 @@ from __future__ import annotations
 from starlette.testclient import TestClient
 
 from hermes_runtime.tool_dispatch_app import create_tool_dispatch_app
+from toee_hermes.tool_gate import TOOLS_DISPATCH_ROUTE
 
 API_TOKEN = "test-copilot-api-token"
 
@@ -169,6 +170,27 @@ def test_dispatch_without_actor_runs_with_no_actor() -> None:
 
     assert driver.context is not None
     assert driver.context.user_id is None
+
+
+def test_dispatch_marks_the_context_with_its_own_route() -> None:
+    # This route IS the deterministic admin surface, and governed writes whose
+    # attribution turns on "was a human driving this" (L7 provenance) read the
+    # marker rather than user_id -- an internal_copilot agent session carries a
+    # rep's account too, so an actor cannot tell the two paths apart. Set as a
+    # literal here, so nothing in the request body can produce or suppress it.
+    driver = _CapturingDriver()
+    _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_workbench_read",
+            "action": "list_cases",
+            "dispatch_route": "something-the-caller-made-up",
+        },
+    )
+
+    assert driver.context is not None
+    assert driver.context.dispatch_route == TOOLS_DISPATCH_ROUTE
 
 
 class _FakeIdentityStore:
@@ -396,6 +418,286 @@ def test_dispatch_actor_attributes_the_audit_actor_end_to_end(datastore) -> None
     ).data["entries"]
     claim = next(e for e in entries if e["action"] == "claim_case")
     assert claim["account_id"] == "acct_actor_e2e"
+
+
+def test_dispatch_submit_interaction_review_without_actor_is_denied(datastore) -> None:
+    # 0.0.4 S03 (ADR-0154): the module's central governance claim, end-to-end
+    # over the real HTTP dispatch route -- a governed submit_interaction_review
+    # dispatched with NO actor_account_id is a policy_blocked denial (HTTP 200,
+    # ok False) that leaves NO interaction_review row and NO audit row behind.
+    # This is the "AI cannot score itself" guarantee: assert absence, not just
+    # the error (mirrors test_dispatch_governed_write_without_actor_is_denied
+    # immediately below).
+    driver, conn, _ = datastore
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_interaction_review",
+            "params": {
+                "subject_kind": "auto_handled_record",
+                "subject_id": "rec_1",
+                "verdict": "pass",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM interaction_review")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action = 'interaction_review_submitted'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_submit_interaction_review_by_a_rep_is_denied(datastore) -> None:
+    # FR-4 (PRD workspace/0.0.4/quality-feedback/PRD.md): submit_interaction_
+    # review additionally requires a supervisor/admin role, proven here over
+    # the real HTTP dispatch route the same way the no-actor test above is --
+    # a REAL, attributed rep account is still policy_blocked (HTTP 200, ok
+    # False) and leaves NO interaction_review row and NO audit row behind.
+    driver, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role) "
+            "VALUES ('acct_rep_e2e', 'acct_rep_e2e', 'x', 'customer_service_rep')"
+        )
+    conn.commit()
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_interaction_review",
+            "params": {
+                "subject_kind": "auto_handled_record",
+                "subject_id": "rec_1",
+                "verdict": "pass",
+            },
+            "actor_account_id": "acct_rep_e2e",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM interaction_review")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action = 'interaction_review_submitted'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_submit_draft_rating_without_actor_is_denied(datastore) -> None:
+    # 0.0.4 S06 (ADR-0154): the INTERNAL mechanism's governance claim,
+    # end-to-end over the real HTTP dispatch route -- a governed
+    # submit_draft_rating dispatched with NO actor_account_id is a
+    # policy_blocked denial (HTTP 200, ok False) that leaves NO draft_feedback
+    # row and NO audit row behind, mirroring the interaction_review test above.
+    driver, conn, _ = datastore
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_draft_rating",
+            "params": {
+                "case_id": "case_1",
+                "draft_correlation_id": "draft_corr_1",
+                "draft_kind": "sms",
+                "verdict": "up",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action = 'draft_rating_submitted'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_submit_draft_rating_on_an_unheld_case_is_denied(datastore) -> None:
+    # The S06 case-ownership gate, end-to-end over the dispatch route: an
+    # attributed actor who does not hold the case is still policy_blocked.
+    driver, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cases (id, channel, assignee_account_id) "
+            "VALUES ('case_1', 'sms', 'acct_other_rep')"
+        )
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_draft_rating",
+            "params": {
+                "case_id": "case_1",
+                "draft_correlation_id": "draft_corr_1",
+                "draft_kind": "sms",
+                "verdict": "up",
+                "draft_text": "Hey, your tire order is on the way!",
+            },
+            "actor_account_id": "acct_rep_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_record_draft_outcome_without_actor_is_denied(datastore) -> None:
+    # 0.0.4 S08 (ADR-0154): the IMPLICIT mechanism's governance claim,
+    # end-to-end over the real HTTP dispatch route -- a governed
+    # record_draft_outcome dispatched with NO actor_account_id is a
+    # policy_blocked denial (HTTP 200, ok False) that leaves NO draft_feedback
+    # row and NO audit row behind, mirroring submit_draft_rating's test above.
+    driver, conn, _ = datastore
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "record_draft_outcome",
+            "params": {
+                "case_id": "case_1",
+                "draft_correlation_id": "draft_corr_1",
+                "draft_kind": "sms",
+                "outcome": "sent_as_is",
+                "draft_text": "Hey, your tire order is on the way!",
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        assert cur.fetchone()[0] == 0
+        cur.execute(
+            "SELECT count(*) FROM workbench_audit_log "
+            "WHERE action = 'draft_outcome_recorded'"
+        )
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_record_draft_outcome_on_an_unheld_case_is_denied(datastore) -> None:
+    # The S06 case-ownership gate, reused verbatim for S08, end-to-end over
+    # the dispatch route: an attributed actor who does not hold the case is
+    # still policy_blocked.
+    driver, conn, _ = datastore
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO cases (id, channel, assignee_account_id) "
+            "VALUES ('case_1', 'sms', 'acct_other_rep')"
+        )
+
+    response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "record_draft_outcome",
+            "params": {
+                "case_id": "case_1",
+                "draft_correlation_id": "draft_corr_1",
+                "draft_kind": "sms",
+                "outcome": "sent_as_is",
+                "draft_text": "Hey, your tire order is on the way!",
+            },
+            "actor_account_id": "acct_rep_1",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["class"] == "policy_blocked"
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM draft_feedback")
+        assert cur.fetchone()[0] == 0
+
+
+def test_dispatch_list_feedback_on_supervisor_admin_reads_back_both_tables(
+    datastore,
+) -> None:
+    # 0.0.4 S10 (FR-3 read half): the Supervisor Admin's governed read over
+    # BOTH feedback tables, end-to-end over the real HTTP dispatch route --
+    # writes land under internal_copilot (S03/S06 dispatch), the read comes
+    # back under supervisor_admin (ADR-0038), the profile S02 allowlisted it
+    # on.
+    driver, conn, _ = datastore
+    # FR-4's role gate requires "acct_super_1" to be a real supervisor/admin
+    # workbench_account row -- this test predates that gate and otherwise has
+    # no account store entry for it.
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO workbench_account (id, username, password_hash, role) "
+            "VALUES ('acct_super_1', 'acct_super_1', 'x', 'workbench_supervisor')"
+        )
+    conn.commit()
+
+    write_response = _client_with_driver(driver).post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={
+            "tool": "toee_feedback",
+            "action": "submit_interaction_review",
+            "params": {
+                "subject_kind": "auto_handled_record",
+                "subject_id": "rec_1",
+                "verdict": "fail",
+                "reason_tags": ["factual_error"],
+            },
+            "actor_account_id": "acct_super_1",
+        },
+    )
+    assert write_response.json()["ok"] is True
+
+    read_response = _client_with_driver(driver, profile="supervisor_admin").post(
+        "/v1/tools:dispatch",
+        headers=_auth(),
+        json={"tool": "toee_feedback", "action": "list_feedback"},
+    )
+    assert read_response.status_code == 200
+    body = read_response.json()
+    assert body["ok"] is True
+    reviews = body["data"]["interaction_reviews"]
+    assert len(reviews) == 1
+    assert reviews[0]["subject_id"] == "rec_1"
+    assert reviews[0]["reason_tags"] == ["factual_error"]
+    assert body["data"]["draft_feedback"] == []
 
 
 def test_dispatch_governed_write_without_actor_is_denied(datastore) -> None:

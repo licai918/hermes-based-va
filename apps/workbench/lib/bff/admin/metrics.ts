@@ -50,6 +50,111 @@ export interface ProposalOutcomes {
   rate: number | null;
 }
 
+// Per-layer read latency (0.0.5 S18, FR-26). One tile per memory-read site plus
+// the total-vs-SLO tile; percentiles come from `metric_event.duration_ms`
+// (migration 0023) via hermes_runtime.latency.
+//
+// `budgetMs` is null for most tiles ON PURPOSE: S18 measures and displays, S19
+// owns enforcement, so only two lines exist today -- the owner's 150ms p95 on
+// the total, and L5's own shipped retrieval deadline. `breached` is null (never
+// false) wherever there is no budget or no sample: a false would render an
+// unmeasured tile as a green "within budget".
+export interface LatencyTile {
+  metric: string;
+  layer: string;
+  label: string;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  samples: number;
+  budgetMs: number | null;
+  inSloTotal: boolean;
+  breached: boolean | null;
+}
+
+export interface LatencyMetrics {
+  sloP95Ms: number;
+  notMeasuredLabel: string;
+  total: LatencyTile;
+  layers: LatencyTile[];
+}
+
+// S11/FR-14 (0.0.5): "cleared and STAYED cleared", tiled by S22. A rate over
+// ERASES, not a count of deletions -- a deletion count says nothing about
+// whether the data came back. `rate` is null when nothing has been erased:
+// zero-over-zero is "not computed", and a 100% would be the worst possible lie
+// on a system that has erased nothing. A flagged binding is residue (a row the
+// erase itself left) or a re-appearance (a row written afterwards); a single
+// binding can be both, so the two do not have to sum to `flaggedBindings`.
+export interface DeletionSuccess {
+  windowDays: number;
+  erasedBindings: number;
+  flaggedBindings: number;
+  residueBindings: number;
+  reappearedBindings: number;
+  rate: number | null;
+  /** slot name -> how many flagged bindings carry it. Never a binding key. */
+  flaggedSlots: Record<string, number>;
+  label: string;
+}
+
+// S22/FR-34a lifecycle counts. The wire shape carries the caveat, so a renderer
+// cannot show the number without it: `label` is what it counts, `detail` is over
+// what window and -- the half that is easiest to lose -- what is deliberately
+// NOT in it. `value` is null for a component nothing feeds yet, which is a
+// different fact from 0 and must not be flattened into one.
+export interface LifecycleCount {
+  key: string;
+  label: string;
+  detail: string;
+  value: number | null;
+}
+
+// S28/FR-34b loop-closure rates: did the control loop actually close? Unlike the
+// lifecycle COUNTS above these are fractions, so the wire shape carries the whole
+// fraction -- `numerator` and `denominator` beside the `rate`, never the
+// percentage alone. `rate` is null in two different situations that both render
+// as "not yet computed": nothing observed at all, and too little observed to say
+// (below the shared builder's minimum denominator). The counts are what tell the
+// two apart, which is why they are required rather than optional.
+//
+// The BLOCK, unlike each row inside it, is nullable -- and that is a deliberate
+// departure from how `latency` and `deletionSuccess` are mapped. Those are
+// REQUIRED so a twin cannot silently drop them, but both twins build this block
+// from ONE shared builder and a Python test asserts they agree, so a missing key
+// here cannot mean "a twin dropped it": it can only mean the backend image is
+// older than this app. Making that a hard 502 takes the whole metrics page down
+// for the duration of a normal deploy skew, which is not a hypothetical -- it is
+// what `malformed aggregate metrics payload: latency` did after S18, and what
+// this key did after S28's first draft. An absent block renders as "not reported
+// by this backend" (the `knobs` precedent); a live Postgres twin must never take
+// that branch, which is pinned on the Python side where it would actually break.
+export interface LoopClosureRate {
+  key: string;
+  label: string;
+  detail: string;
+  numerator: number;
+  denominator: number;
+  rate: number | null;
+}
+
+// S22/FR-34a, D14: READ-ONLY. The panel displays deploy-time config and never
+// mutates it -- a knob moves by a code/config commit whose audit trail is git
+// history. `source` is the module an admin edits; `env` is the override name
+// where one exists, null where the value is code-only.
+export interface Knob {
+  key: string;
+  label: string;
+  value: string;
+  source: string;
+  env: string | null;
+  note: string;
+}
+
+export interface KnobPanel {
+  label: string;
+  knobs: Knob[];
+}
+
 export interface AggregateMetrics {
   memoryInjection: { injected: number; total: number; rate: number | null };
   knowledgeSearch: { found: number; total: number; rate: number | null };
@@ -62,6 +167,20 @@ export interface AggregateMetrics {
   // like mergeCount/correctionCount.
   selfServiceUsage: number;
   l6ConfirmedEntries: number;
+  // S18/FR-26: per-layer read latency + the SLO tile.
+  latency: LatencyMetrics;
+  // S11/FR-14, tiled by S22: did an erase stay erased?
+  deletionSuccess: DeletionSuccess;
+  // S22/FR-34a: conflict, pollution, privacy-deflection proxy, layer drops.
+  lifecycle: LifecycleCount[];
+  // S28/FR-34b: conversion, post-fix re-fail, per-entry honored trend. Null only
+  // when the backend predates the block -- see the type above.
+  loopClosure: LoopClosureRate[] | null;
+  // S22/FR-34a: the read-only knob panel. Null when the backend does not report
+  // one -- the mock twin cannot, because the constants are hermes_runtime's and
+  // toee_hermes must not import back. Null renders as "not reported by this
+  // backend"; it must NOT break the rest of the panel.
+  knobs: KnobPanel | null;
 }
 
 function malformed(detail: string): never {
@@ -104,6 +223,134 @@ function requireString(value: unknown, field: string): string {
 function requireObject(value: unknown, field: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null) malformed(field);
   return value as Record<string, unknown>;
+}
+
+function nullableBoolean(value: unknown, field: string): boolean | null {
+  if (value === null || value === undefined) return null;
+  return requireBoolean(value, field);
+}
+
+function mapLatencyTile(raw: unknown, field: string): LatencyTile {
+  const t = requireObject(raw, field);
+  return {
+    metric: requireString(t.metric, `${field}.metric`),
+    layer: requireString(t.layer, `${field}.layer`),
+    label: requireString(t.label, `${field}.label`),
+    p50Ms: nullableNumber(t.p50_ms, `${field}.p50_ms`),
+    p95Ms: nullableNumber(t.p95_ms, `${field}.p95_ms`),
+    samples: requireNumber(t.samples, `${field}.samples`),
+    budgetMs: nullableNumber(t.budget_ms, `${field}.budget_ms`),
+    inSloTotal: requireBoolean(t.in_slo_total, `${field}.in_slo_total`),
+    breached: nullableBoolean(t.breached, `${field}.breached`),
+  };
+}
+
+function mapLatency(raw: unknown): LatencyMetrics {
+  const l = requireObject(raw, "latency");
+  if (!Array.isArray(l.layers)) malformed("latency.layers");
+  return {
+    sloP95Ms: requireNumber(l.slo_p95_ms, "latency.slo_p95_ms"),
+    notMeasuredLabel: requireString(l.not_measured_label, "latency.not_measured_label"),
+    total: mapLatencyTile(l.total, "latency.total"),
+    layers: (l.layers as unknown[]).map((tile, i) => mapLatencyTile(tile, `latency.layers[${i}]`)),
+  };
+}
+
+function mapDeletionSuccess(raw: unknown): DeletionSuccess {
+  const d = requireObject(raw, "deletion_success");
+  const slots = requireObject(d.flagged_slots, "deletion_success.flagged_slots");
+  return {
+    windowDays: requireNumber(d.window_days, "deletion_success.window_days"),
+    erasedBindings: requireNumber(d.erased_bindings, "deletion_success.erased_bindings"),
+    flaggedBindings: requireNumber(d.flagged_bindings, "deletion_success.flagged_bindings"),
+    residueBindings: requireNumber(d.residue_bindings, "deletion_success.residue_bindings"),
+    reappearedBindings: requireNumber(
+      d.reappeared_bindings,
+      "deletion_success.reappeared_bindings",
+    ),
+    rate: optionalNumber(d.rate, "deletion_success.rate"),
+    flaggedSlots: Object.fromEntries(
+      Object.entries(slots).map(([slot, count]) => [
+        slot,
+        requireNumber(count, `deletion_success.flagged_slots.${slot}`),
+      ]),
+    ),
+    label: requireString(d.label, "deletion_success.label"),
+  };
+}
+
+// `label` and `detail` are REQUIRED, exactly as `scope`/`basis` are on an entry
+// health score: a count that arrives without the thing that makes it readable is
+// a broken contract from our own twin, not a degraded upstream, and rendering
+// the bare number would be the specific failure this shape exists to prevent.
+function mapLifecycleCount(raw: unknown, index: number): LifecycleCount {
+  const field = `lifecycle[${index}]`;
+  const c = requireObject(raw, field);
+  const label = requireString(c.label, `${field}.label`);
+  const detail = requireString(c.detail, `${field}.detail`);
+  if (!label || !detail) malformed(`${field} carries a count with no scope`);
+  return {
+    key: requireString(c.key, `${field}.key`),
+    label,
+    detail,
+    // Null is "nothing feeds this component yet", which is not zero.
+    value: nullableNumber(c.value, `${field}.value`),
+  };
+}
+
+function mapLifecycle(raw: unknown): LifecycleCount[] {
+  if (!Array.isArray(raw)) malformed("lifecycle");
+  return (raw as unknown[]).map(mapLifecycleCount);
+}
+
+// The counterpart of `mapLifecycleCount`, and strict for the same reason plus one
+// more: a rate whose denominator went missing is unreadable in a way a count
+// never is -- "25%" with no population behind it is the single most misleading
+// thing this panel could render. So `numerator`/`denominator` are REQUIRED
+// numbers even when `rate` is null; only the percentage may be absent.
+function mapLoopClosureRate(raw: unknown, index: number): LoopClosureRate {
+  const field = `loop_closure[${index}]`;
+  const r = requireObject(raw, field);
+  const label = requireString(r.label, `${field}.label`);
+  const detail = requireString(r.detail, `${field}.detail`);
+  if (!label || !detail) malformed(`${field} carries a rate with no scope`);
+  return {
+    key: requireString(r.key, `${field}.key`),
+    label,
+    detail,
+    numerator: requireNumber(r.numerator, `${field}.numerator`),
+    denominator: requireNumber(r.denominator, `${field}.denominator`),
+    // Null is "not computed" -- either nothing observed, or too little to say.
+    rate: optionalNumber(r.rate, `${field}.rate`),
+  };
+}
+
+function mapLoopClosure(raw: unknown): LoopClosureRate[] | null {
+  // Absent = an older backend image, not a malformed payload. Anything PRESENT
+  // is still held to the full contract: a wrong shape is a real defect.
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw)) malformed("loop_closure");
+  return (raw as unknown[]).map(mapLoopClosureRate);
+}
+
+function mapKnobs(raw: unknown): KnobPanel | null {
+  if (raw === null || raw === undefined) return null;
+  const p = requireObject(raw, "knobs");
+  if (!Array.isArray(p.knobs)) malformed("knobs.knobs");
+  return {
+    label: requireString(p.label, "knobs.label"),
+    knobs: (p.knobs as unknown[]).map((entry, i) => {
+      const k = requireObject(entry, `knobs.knobs[${i}]`);
+      return {
+        key: requireString(k.key, `knobs.knobs[${i}].key`),
+        label: requireString(k.label, `knobs.knobs[${i}].label`),
+        value: requireString(k.value, `knobs.knobs[${i}].value`),
+        source: requireString(k.source, `knobs.knobs[${i}].source`),
+        env: nullableString(k.env, `knobs.knobs[${i}].env`),
+        note: requireString(k.note, `knobs.knobs[${i}].note`),
+      };
+    }),
+  };
 }
 
 export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
@@ -151,6 +398,17 @@ export function mapAggregateMetrics(raw: unknown): AggregateMetrics {
     },
     selfServiceUsage: requireNumber(r.self_service_usage, "self_service_usage"),
     l6ConfirmedEntries: requireNumber(r.l6_confirmed_entries, "l6_confirmed_entries"),
+    // Required, not optional: both twins ship the block (the mock's zero-sample
+    // copy is pinned equal to the Postgres one). A tolerant mapper would let a
+    // twin silently drop it and render "not yet measured" forever.
+    latency: mapLatency(r.latency),
+    // Required for the same reason `latency` is: both twins ship the block, so
+    // a tolerant mapper would let one silently drop it and render nothing.
+    deletionSuccess: mapDeletionSuccess(r.deletion_success),
+    lifecycle: mapLifecycle(r.lifecycle),
+    loopClosure: mapLoopClosure(r.loop_closure),
+    // The one OPTIONAL block, and deliberately so -- see the KnobPanel type.
+    knobs: mapKnobs(r.knobs),
   };
 }
 

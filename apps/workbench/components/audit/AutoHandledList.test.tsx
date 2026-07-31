@@ -14,6 +14,7 @@ function record(over: Partial<AutoHandledRecord> = {}): AutoHandledRecord {
     toolFailure: false,
     timeline: [],
     toolCalls: [],
+    reviewed: false,
     ...over,
   };
 }
@@ -85,5 +86,25 @@ describe("AutoHandledList", () => {
     stubFetch({ records: [] });
     render(<AutoHandledList />);
     expect(await screen.findByText(/no auto-handled/i)).toBeInTheDocument();
+  });
+
+  it("shows the review-status badge for both reviewed and not-reviewed rows", async () => {
+    stubFetch({
+      records: [
+        record({ recordId: "rec-1", identitySummary: "Reviewed row", reviewed: true }),
+        record({ recordId: "rec-2", identitySummary: "Unreviewed row", reviewed: false }),
+      ],
+    });
+    render(<AutoHandledList />);
+
+    const reviewedRow = (
+      await screen.findByRole("link", { name: "Reviewed row" })
+    ).closest("tr") as HTMLElement;
+    expect(within(reviewedRow).getByText("Reviewed")).toBeInTheDocument();
+
+    const unreviewedRow = screen
+      .getByRole("link", { name: "Unreviewed row" })
+      .closest("tr") as HTMLElement;
+    expect(within(unreviewedRow).getByText("Not reviewed")).toBeInTheDocument();
   });
 });

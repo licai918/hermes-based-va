@@ -10,10 +10,16 @@ boundary -- a FAKE client makes this CI-safe and deterministic (see
 ``hermes_runtime.judge_eval.OpenRouterJudgeClient``) makes this a real measurement
 run, same code path either way.
 
-The fixture set spans two different legs, each with its own "positive" meaning
-(``honored`` / ``silent``). Precision/recall here treat ``expected_passed=True`` as
-the positive class uniformly across both legs -- a simplification, but the right
-one for a single "how much do I trust this judge" number.
+The fixture set spans several legs, each with its own "positive" meaning
+(``honored`` / ``silent`` / ``not misapplied`` / ``current value`` / ``resisted``).
+Precision/recall here treat ``expected_passed=True`` as the positive class
+uniformly across every leg -- which is why the leg names are all phrased so that
+True means "the agent behaved well" (see :data:`eval_runner.judge.JudgeLeg`).
+
+S21 (0.0.5 FR-28) adds :func:`measure_judge_legs`: the same measurement split PER
+LEG. The whole-set number is the headline, but it is the per-leg numbers that
+say whether a given advisory leg is trustworthy enough to report -- an average
+happily hides a leg that fires on everything next to one that never fires.
 
 CLI (repeatable command, PRD FR-29 acceptance layer 1)::
 
@@ -34,8 +40,30 @@ import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from .judge import JudgeClient, judge_reply, resolve_judge_model
+from .judge import (
+    JudgeClient,
+    judge_reply,
+    legs_with_guidance,
+    resolve_judge_model,
+)
 from .judge_fixtures import JUDGE_FIXTURES, JudgeFixture
+
+
+# Fixtures that carry NO live evidence yet (S21 verification). The S21 re-review
+# rewrote this `honored` held-out pair -- new memory preset, both replies flipped
+# -- and did not re-run `--live`, defensibly: the judge prompt was unchanged, so
+# re-measuring 41 billed completions would have re-confirmed a number nothing had
+# moved. The consequence is that the recorded held-out live figure (10/10) was
+# measured on the fixtures these two REPLACED. Nobody should read it as live
+# evidence about them.
+#
+# Printed on every `--live` run, because that is the moment it matters. Whoever
+# runs the next live calibration is the first person to put a live number on
+# these two: record it, and delete this constant in the same commit.
+UNSCORED_LIVE_FIXTURES: tuple[str, ...] = (
+    "held_out_honored_switches_to_the_preferred_channel",
+    "held_out_not_honored_uses_the_wrong_channel",
+)
 
 
 @dataclass(frozen=True)
@@ -129,6 +157,102 @@ def measure_judge(
     )
 
 
+def split_held_out(
+    fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+) -> tuple[tuple[JudgeFixture, ...], tuple[JudgeFixture, ...]]:
+    """``(in_sample, held_out)`` -- the contamination split (S21 review).
+
+    :data:`eval_runner.judge._LEG_GUIDANCE` was written against the in-sample
+    fixtures (its verb list, its "merely mentioning" carve-out, and a memory
+    rendering it quotes verbatim all map onto specific ones), so an in-sample
+    precision of 1.000 partly measures the prompt describing those fixtures. The
+    held-out fixtures use shapes the guidance never mentions; they are scored and
+    reported on their own, never averaged into the in-sample figure.
+
+    The two subsets PARTITION the set, so measuring both costs exactly what
+    measuring the whole set once costs -- one billed completion per fixture.
+    """
+    return (
+        tuple(f for f in fixtures if not f.held_out),
+        tuple(f for f in fixtures if f.held_out),
+    )
+
+
+def held_out_effective_n_note(
+    fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+) -> str:
+    """State the EFFECTIVE held-out n, not the headcount (S21 re-review).
+
+    "Held out from the rubric guidance" only means something on a leg that HAS
+    leg-specific guidance (:func:`eval_runner.judge.legs_with_guidance`). The
+    others get the shared preamble only, so their held-out fixtures are held out
+    from nothing and are not evidence about contamination -- reporting the
+    headcount as the strength of the split overstates it.
+
+    One sentence, generated rather than written down, because the requirement is
+    that the caveat travels with the number EVERYWHERE the number appears: this
+    CLI, the PR markdown (``judge_report``) and the quality-gates panel row
+    (``hermes_runtime.advisory_judge_report``) all print this exact string.
+    """
+    guided = set(legs_with_guidance())
+    held_out = [f for f in fixtures if f.held_out]
+    effective = [f for f in held_out if f.leg in guided]
+    unguided = sorted({f.leg for f in held_out} - guided)
+    if not unguided:
+        return f"Effective held-out n: **{len(effective)} of {len(held_out)}**."
+    names = ", ".join(f"`{leg}`" for leg in unguided)
+    return (
+        f"**Effective held-out n is {len(effective)} of {len(held_out)}.** Only "
+        f"{len(guided & {f.leg for f in held_out})} legs carry leg-specific "
+        f"rubric guidance to be held out FROM; {names} get the shared preamble "
+        "only, so their held-out fixtures are held out from nothing and say "
+        "nothing about contamination. Read the per-leg rows, not the total."
+    )
+
+
+def _combine(parts: Sequence[JudgeMetrics]) -> JudgeMetrics:
+    """Sum per-leg metrics into the whole-set metrics.
+
+    Legs PARTITION the fixture set, so the sum is exactly what
+    :func:`measure_judge` would have returned over all of them -- without paying
+    for a second (billed, on ``--live``) pass.
+    """
+    return JudgeMetrics(
+        total=sum(p.total for p in parts),
+        correct=sum(p.correct for p in parts),
+        true_positives=sum(p.true_positives for p in parts),
+        false_positives=sum(p.false_positives for p in parts),
+        true_negatives=sum(p.true_negatives for p in parts),
+        false_negatives=sum(p.false_negatives for p in parts),
+        undetermined=sum(p.undetermined for p in parts),
+        misses=tuple(miss for p in parts for miss in p.misses),
+    )
+
+
+def measure_judge_legs(
+    fixtures: Sequence[JudgeFixture] = JUDGE_FIXTURES,
+    *,
+    client: JudgeClient,
+    model: Optional[str] = None,
+) -> tuple[JudgeMetrics, dict[str, JudgeMetrics]]:
+    """``(overall, {leg: metrics})`` -- per-leg precision/recall in ONE pass.
+
+    S21 (0.0.5 FR-28): the whole-set number hides a bad leg. A leg that never
+    fires and a leg that fires on everything average out to a respectable
+    headline, and an advisory leg nobody trusts is worse than no leg -- so each
+    leg is scored against its own fixtures and reported on its own row. Each
+    fixture is still judged exactly once (the legs partition the set).
+    """
+    by_leg: dict[str, list[JudgeFixture]] = {}
+    for fixture in fixtures:
+        by_leg.setdefault(fixture.leg, []).append(fixture)
+    metrics = {
+        leg: measure_judge(leg_fixtures, client=client, model=model)
+        for leg, leg_fixtures in by_leg.items()
+    }
+    return _combine(list(metrics.values())), metrics
+
+
 class _OracleJudgeClient:
     """Deterministic stand-in that always answers a fixture's own ground truth.
 
@@ -194,22 +318,52 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"Running LIVE judge measurement (model={model!r}) over OpenRouter "
             "-- this makes a real, billed API call."
         )
+        if UNSCORED_LIVE_FIXTURES:
+            print(
+                "  NOTE: no live measurement has ever covered "
+                f"{', '.join(UNSCORED_LIVE_FIXTURES)} -- the recorded held-out "
+                "figure was measured on the fixtures they replaced. This run is "
+                "the first live evidence for them; record it and delete "
+                "judge_measure.UNSCORED_LIVE_FIXTURES."
+            )
     else:
         client = _OracleJudgeClient(JUDGE_FIXTURES)
         model = None
 
-    metrics = measure_judge(JUDGE_FIXTURES, client=client, model=model)
-
-    print(
-        f"judge_measure: total={metrics.total} correct={metrics.correct} "
-        f"precision={metrics.precision:.3f} recall={metrics.recall:.3f} "
-        f"accuracy={metrics.accuracy:.3f} undetermined={metrics.undetermined}"
-    )
-    for miss in metrics.misses:
+    # Reported as two separate runs, never averaged (S21 review): the in-sample
+    # number is measured on the fixtures the rubric guidance was tuned against,
+    # the held-out number on shapes it never describes. Together they still cost
+    # one completion per fixture -- the subsets partition the set.
+    in_sample, held_out = split_held_out(JUDGE_FIXTURES)
+    for label, subset in (("in-sample", in_sample), ("held-out", held_out)):
+        if not subset:
+            continue
+        metrics, by_leg = measure_judge_legs(subset, client=client, model=model)
         print(
-            f"  MISS leg={miss.fixture.leg} expected={miss.fixture.expected_passed} "
-            f"got={miss.got_passed}: {miss.reason}"
+            f"judge_measure [{label}]: total={metrics.total} "
+            f"correct={metrics.correct} precision={metrics.precision:.3f} "
+            f"recall={metrics.recall:.3f} accuracy={metrics.accuracy:.3f} "
+            f"undetermined={metrics.undetermined}"
         )
+        # Per-leg is the number that decides whether a leg is trustworthy (S21).
+        for leg in sorted(by_leg):
+            leg_metrics = by_leg[leg]
+            print(
+                f"  [{label}] leg={leg} n={leg_metrics.total} "
+                f"correct={leg_metrics.correct} "
+                f"precision={leg_metrics.precision:.3f} "
+                f"recall={leg_metrics.recall:.3f} "
+                f"accuracy={leg_metrics.accuracy:.3f} "
+                f"undetermined={leg_metrics.undetermined}"
+            )
+        for miss in metrics.misses:
+            print(
+                f"  [{label}] MISS leg={miss.fixture.leg} "
+                f"expected={miss.fixture.expected_passed} "
+                f"got={miss.got_passed}: {miss.reason}"
+            )
+        if label == "held-out":
+            print(f"  [held-out] {held_out_effective_n_note()}")
 
     return 0
 

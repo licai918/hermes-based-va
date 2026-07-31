@@ -1,0 +1,30 @@
+-- 0029_draft_feedback_sent_text
+-- 0.0.5 S27 (FR-33, D11): the second operand edit-diff mining needs.
+--
+-- S27 span-diffs "the draft as generated" against "the text the rep actually
+-- sent". The first operand has been stored since 0019 (`draft_text`); the SECOND
+-- was persisted nowhere queryable. `edit_distance_ratio` is a scalar -- it says
+-- HOW MUCH changed and nothing about WHAT -- and `outbound_send` (0012) carries
+-- no body column and no draft-correlation id by design (ADR-0105: identity keys
+-- only, never the reply body). So the mining algorithm had no second string.
+--
+-- D11 took the additive default over cutting the slice: one nullable column,
+-- written at governed-send time by `record_draft_outcome`, and **NO BACKFILL**.
+-- Rows written before this migration keep a NULL `sent_text` and are invisible
+-- to mining, which is why the miner's read filters on `sent_text IS NOT NULL`
+-- rather than pretending to historical coverage it does not have.
+--
+-- NULLABLE is load-bearing twice over, not laziness:
+--   1. there is nothing to backfill it FROM -- the sent body was never stored;
+--   2. `rated_only` and `sent_as_is` rows have no sent text by definition, and
+--      the shared validator (`_read_sent_text`) REFUSES one on a `sent_as_is`
+--      row rather than coercing it.
+--
+-- No index. The miner's read is already bounded by `outcome = 'sent_edited'`
+-- and a 30-day window over a table that grows one row per drafted reply;
+-- ponytail: add one when that read shows up in a slow-query log.
+--
+-- The edited-send stream this feeds is SMS-only by construction today (the
+-- governed send modal is the only writer), which is stated here rather than
+-- discovered later by whoever wonders why email drafts never mine.
+ALTER TABLE draft_feedback ADD COLUMN sent_text TEXT;

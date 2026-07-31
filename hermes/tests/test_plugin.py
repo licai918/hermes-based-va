@@ -217,6 +217,48 @@ def test_get_memory_audit_is_never_registered_as_an_llm_tool_for_any_profile() -
         assert "toee_customer_memory__get_memory_audit" not in ctx.registered_names()
 
 
+# --- 0.0.5 S11: erase_customer_memory is never LLM-callable (governance) ---
+
+
+def test_erase_customer_memory_is_never_registered_as_an_llm_tool() -> None:
+    # toee_customer_memory is allowlisted for BOTH external and internal_copilot,
+    # and unexcluded actions ride the shared toolset registration onto every
+    # profile the toolset is attached to -- so the erase has to be checked on
+    # both, not just the admin one (FR-13, the get_memory_audit precedent).
+    # A model that could call this would destroy, in one tool call, the data
+    # every other governance surface in 0.0.5 exists to protect.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_customer_memory__erase_customer_memory" not in ctx.registered_names()
+
+
+def test_erase_customer_memory_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would actually try to exploit,
+    # and the one register() alone does not cover (the link_identity precedent).
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_customer_memory__erase_customer_memory" not in ctx.registered_names()
+
+
+def test_erase_customer_memory_is_listed_in_the_exclusion_set() -> None:
+    # The registration tests above prove the OUTCOME on the profiles that exist
+    # today; this proves the MECHANISM, so a future profile gaining the toolset
+    # cannot expose an action nobody excluded.
+    assert ("toee_customer_memory", "erase_customer_memory") in _AGENT_EXCLUDED_ACTIONS
+
+
+def test_clear_preference_stays_llm_callable_so_the_exclusion_is_not_blanket() -> None:
+    # Contrast, so the three assertions above cannot pass by toee_customer_memory
+    # having been excluded WHOLESALE. clear_preference is the customer's own
+    # governed self-service clear (FR-21) and must keep reaching the model's
+    # tool-calling surface; the erase is what does not.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register(ctx)
+    assert "toee_customer_memory__clear_preference" in ctx.registered_names()
+
+
 # --- 0.0.3 S22: list_agent_experience is never LLM-callable (governance) ---
 
 
@@ -236,6 +278,114 @@ def test_propose_experience_is_registered_as_an_llm_tool_for_internal_copilot() 
     # internal_copilot's tool-calling surface, not be excluded.
     ctx = RecordingCtx(profile="internal_copilot")
     register(ctx)
+    assert "toee_agent_experience__propose_experience" in ctx.registered_names()
+
+
+# --- 0.0.5 S15: no review-inbox action is ever LLM-callable (governance) ---
+
+
+def test_no_review_inbox_action_is_registered_as_an_llm_tool() -> None:
+    # toee_review_inbox is allowlisted for internal_copilot only (re-classify
+    # dispatches to L6 and L7, which live on that profile). EVERY action is
+    # excluded, and the loop is derived from the catalog so a fifth action added
+    # later cannot slip past by nobody remembering to add a line here -- the
+    # "loop over every governed action that ran three of four" shape.
+    #
+    # propose_review_item is excluded for its own reason: it is the seam S10's
+    # blast-radius pass, S20's sweep and S25's aggregator emit through, not an
+    # admin action. A model that could raise its own review items would be
+    # writing the queue that exists to check it.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        for action in TOOL_CATALOG["toee_review_inbox"]:
+            assert f"toee_review_inbox__{action}" not in ctx.registered_names()
+
+
+def test_every_review_inbox_action_is_listed_in_the_exclusion_set() -> None:
+    # The registration test above proves the OUTCOME on the two profiles that
+    # exist today; this proves the MECHANISM, so a future profile gaining the
+    # toolset cannot expose an action nobody excluded.
+    for action in TOOL_CATALOG["toee_review_inbox"]:
+        assert ("toee_review_inbox", action) in _AGENT_EXCLUDED_ACTIONS
+
+
+# --- 0.0.5 S10: get_blast_radius is never LLM-callable (governance) --------
+
+
+def test_get_blast_radius_is_never_registered_as_an_llm_tool() -> None:
+    # The two tests above are catalog-DERIVED loops, which is why they went red
+    # the moment this action entered the catalog -- exactly what S15 wrote them
+    # for. They cannot say WHICH action they checked, so this names it: the
+    # blast-radius read reports which customer CASES a memory entry reached, a
+    # cross-customer view no live turn may reach (the get_memory_audit
+    # precedent).
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_review_inbox__get_blast_radius" not in ctx.registered_names()
+    assert ("toee_review_inbox", "get_blast_radius") in _AGENT_EXCLUDED_ACTIONS
+
+
+def test_get_blast_radius_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would actually try to exploit, and
+    # the one register() alone does not cover (the link_identity precedent).
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_review_inbox__get_blast_radius" not in ctx.registered_names()
+
+
+def test_the_blast_radius_exclusion_is_not_an_empty_registration() -> None:
+    # The contrast S11 shipped, adapted. toee_review_inbox is excluded WHOLESALE,
+    # so there is no same-tool action to contrast against -- which means the
+    # assertions above would also pass if register() had produced no tools at
+    # all. This proves the mechanism was live on the same profile: a governed
+    # action that IS meant to reach the model's surface still does.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert ctx.registered_names(), "register() produced no tools at all"
+    assert "toee_agent_experience__propose_experience" in ctx.registered_names()
+
+
+# --- 0.0.5 S16: annotate_inbox_item is never LLM-callable (governance) -----
+
+
+def test_annotate_inbox_item_is_never_registered_as_an_llm_tool() -> None:
+    # The catalog-DERIVED loops above went red the moment this action entered
+    # the catalog -- S15 wrote them for exactly that, and S10 proved they fire.
+    # They cannot say WHICH action they checked, so this names it, and the
+    # reason is sharper than "admin-only". This action is the seam that puts
+    # STORED QUEUE TEXT in front of a model. If the model on the far side of it
+    # could call back through the tool surface, it would be annotating the
+    # pending proposals that exist to check it -- and D24 records that the
+    # adversarial eval gate reads reply TEXT, so obedience expressed as a tool
+    # call with a bland reply leaves every marker green. The exclusion is the
+    # instrument here; the eval suite could not be.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_review_inbox__annotate_inbox_item" not in ctx.registered_names()
+    assert ("toee_review_inbox", "annotate_inbox_item") in _AGENT_EXCLUDED_ACTIONS
+
+
+def test_annotate_inbox_item_stays_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would actually try to exploit
+    # (the link_identity precedent, and S10's).
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_review_inbox__annotate_inbox_item" not in ctx.registered_names()
+
+
+def test_the_annotate_exclusion_is_not_an_empty_registration() -> None:
+    # S10's contrast, and it is load-bearing for the same reason:
+    # toee_review_inbox is excluded WHOLESALE, so there is no same-tool action
+    # to contrast against and the two assertions above would also pass over a
+    # register() that produced nothing at all.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert ctx.registered_names(), "register() produced no tools at all"
     assert "toee_agent_experience__propose_experience" in ctx.registered_names()
 
 
@@ -289,6 +439,50 @@ def test_confirm_and_reject_experience_are_never_registered_as_llm_tools() -> No
     assert "toee_agent_experience__reject_experience" not in ctx.registered_names()
 
 
+# --- 0.0.5 S01/S02: the L7 admin surface is never LLM-callable (governance) ---
+
+
+def test_the_lexicon_admin_actions_are_never_registered_as_llm_tools() -> None:
+    # The human gate (FR-3/FR-8), the confirm_experience precedent one layer up:
+    # a model that could confirm its own L7 proposal -- or call add_lexicon_entry,
+    # which lands a CONFIRMED row with no proposal step at all -- would make the
+    # propose->confirm gate decorative and NFR-3 false. edit and retire carry the
+    # same authority over live L7 content. list is admin-only for the
+    # list_agent_experience reason. Reached only from the admin BFF's gated
+    # dispatch, on every profile that could otherwise expose the toolset.
+    for profile in ("customer_service_external", "internal_copilot"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        names = ctx.registered_names()
+        for action in (
+            "list_lexicon_entries",
+            "confirm_lexicon_entry",
+            "reject_lexicon_entry",
+            "retire_lexicon_entry",
+            "edit_lexicon_entry",
+            "add_lexicon_entry",
+        ):
+            assert f"toee_semantic_lexicon__{action}" not in names
+
+
+def test_propose_lexicon_entry_stays_llm_callable_for_internal_copilot() -> None:
+    # Contrast with the exclusions above: propose_lexicon_entry IS the governed
+    # write S04's capture fork calls, exactly like propose_experience. If this
+    # ever flips, L7 loses its only agent-side input.
+    ctx = RecordingCtx(profile="internal_copilot")
+    register(ctx)
+    assert "toee_semantic_lexicon__propose_lexicon_entry" in ctx.registered_names()
+
+
+def test_the_lexicon_admin_actions_stay_excluded_on_register_turn_too() -> None:
+    # register_turn is the live async SMS turn's entry point -- the production
+    # path a prompt-injected customer message would try to exploit.
+    ctx = RecordingCtx(profile="customer_service_external")
+    register_turn(ctx, conversation_id="conv_1")
+    assert "toee_semantic_lexicon__add_lexicon_entry" not in ctx.registered_names()
+    assert "toee_semantic_lexicon__confirm_lexicon_entry" not in ctx.registered_names()
+
+
 # --- 0.0.3 S21: get_my_memory_summary IS LLM-callable on EXTERNAL (FR-21) ---
 
 
@@ -318,10 +512,32 @@ def test_register_supervisor_profile_excludes_customer_send_tools() -> None:
     }
     # 0.0.4 S15 adds toee_integrations -- also fully agent-excluded (its single
     # status read is admin-BFF-only, never a model tool loop).
-    assert fully_excluded == {"toee_job_queue", "toee_integrations"}
+    # 0.0.4 S02 adds toee_feedback -- also fully agent-excluded (all four
+    # actions, including list_feedback, are admin-BFF/copilot-BFF-dispatch-only).
+    assert fully_excluded == {"toee_job_queue", "toee_integrations", "toee_feedback"}
     assert toolsets == set(PROFILE_TOOL_ALLOWLIST["supervisor_admin"]) - fully_excluded
     assert "toee_sms_reply" not in toolsets
     assert "toee_square_payment_link" not in toolsets
+
+
+# --- 0.0.4 S02: toee_feedback is never LLM-callable on any profile (ADR-0154) -
+
+
+def test_toee_feedback_actions_are_never_registered_as_llm_tools() -> None:
+    # toee_feedback is allowlisted on BOTH internal_copilot (the three write
+    # actions) and supervisor_admin (list_feedback), but every one of its four
+    # actions is in _AGENT_EXCLUDED_ACTIONS -- the governance guarantee this
+    # slice exists to prove (ADR-0154 decision 3: dispatch-reachable, never
+    # model-callable). It must never appear on either profile's tool-calling
+    # surface, nor on the toolset level (a wholly-excluded toolset registers no
+    # handler at all -- see _wholly_excluded_toolsets in test_copilot_turn.py).
+    feedback_actions = TOOL_CATALOG["toee_feedback"]
+    for profile in ("internal_copilot", "supervisor_admin"):
+        ctx = RecordingCtx(profile=profile)
+        register(ctx)
+        assert "toee_feedback" not in ctx.registered_toolsets()
+        for action in feedback_actions:
+            assert f"toee_feedback__{action}" not in ctx.registered_names()
 
 
 def test_register_defaults_to_external_when_profile_absent(monkeypatch) -> None:

@@ -18,6 +18,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ...errors import ToolDriverError
+from ...lexicon_seam import (
+    LexiconVocabulary,
+    current_lexicon_vocabulary,
+    filter_products,
+    is_canonical_size,
+    product_matches,
+    resolve_product_query,
+)
 from .driver import MockHandlerRegistry
 
 if TYPE_CHECKING:
@@ -228,39 +236,95 @@ def _list_customer_orders(
     ]
 
 
-def _search_products(
+def _search_catalog(
     data: ShopifyMockData, params: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    query = _read_string(params, "query")
-    if query is None:
-        matches = list(data.products)
-    else:
-        needle = query.lower()
-        matches = [
-            product
-            for product in data.products
-            if needle in product.title.lower() or needle in product.sku.lower()
-        ]
-    return [_to_public_product(product) for product in matches]
+    """One catalog read for one parameter set. The seam's ``lookup``.
+
+    The matcher is :func:`~toee_hermes.lexicon_seam.product_matches` -- shared
+    with the live twin, so "which products does this term reach" cannot mean two
+    different things in the two drivers (NFR-7).
+    """
+    return filter_products(
+        _read_string(params, "query"),
+        (_to_public_product(product) for product in data.products),
+    )
 
 
-def _get_product(
-    data: ShopifyMockData, params: dict[str, Any], context: ToolExecutionContext
-) -> dict[str, Any]:
+def _search_products(
+    data: ShopifyMockData,
+    params: dict[str, Any],
+    vocabulary: LexiconVocabulary | None,
+) -> list[dict[str, Any]]:
+    # 0.0.5 S05 call site 1 of 2 in this twin (FR-5).
+    return resolve_product_query(
+        "search_products",
+        params,
+        lookup=lambda resolved: _search_catalog(data, resolved),
+        vocabulary=vocabulary,
+    ).value
+
+
+def _find_product(
+    data: ShopifyMockData, params: dict[str, Any]
+) -> ShopifyProduct | None:
+    """An EXACT id/sku lookup, with one narrow fallback for a normalized size.
+
+    The exact pass runs over the WHOLE catalog first. Anything else lets catalog
+    order decide the answer: a substring hit on an earlier product's title would
+    outrank the exact sku match on a later one, and ``get_product`` would return a
+    different product than the one it was asked for.
+
+    The fallback exists because a normalized sku (``205/55R16``) is a size, not a
+    stock code, so it has to be matched the way search matches or the seam could
+    only ever hurt this action. It is gated on the value BEING a canonical size,
+    which is the only thing the seam can hand this handler -- so with no
+    vocabulary installed (eval, replay, every mock deployment) this stays the
+    exact lookup it has always been (NFR-4).
+    """
     product_id = _read_string(params, "product_id", "productId")
     sku = _read_string(params, "sku")
-    product = next(
+    exact = next(
         (
             candidate
             for candidate in data.products
-            if candidate.product_id == product_id or candidate.sku == sku
+            if (product_id is not None and candidate.product_id == product_id)
+            or (sku is not None and candidate.sku == sku)
         ),
         None,
     )
+    if exact is not None or not is_canonical_size(sku):
+        return exact
+    return next(
+        (
+            candidate
+            for candidate in data.products
+            if product_matches(sku, _to_public_product(candidate))
+        ),
+        None,
+    )
+
+
+def _get_product(
+    data: ShopifyMockData,
+    params: dict[str, Any],
+    context: ToolExecutionContext,
+    vocabulary: LexiconVocabulary | None,
+) -> dict[str, Any]:
+    # 0.0.5 S05 call site 2 of 2 in this twin (FR-5).
+    product = resolve_product_query(
+        "get_product",
+        params,
+        lookup=lambda resolved: _find_product(data, resolved),
+        vocabulary=vocabulary,
+    ).value
     if product is None:
+        reference = _read_string(params, "product_id", "productId") or _read_string(
+            params, "sku"
+        )
         raise ToolDriverError(
             "unexpected_error",
-            f"Product {product_id or sku or '<missing>'} not found.",
+            f"Product {reference or '<missing>'} not found.",
         )
     return (
         _to_verified_product(product)
@@ -271,20 +335,36 @@ def _get_product(
 
 def create_shopify_mock_handlers(
     data: ShopifyMockData = shopify_baseline_data,
+    *,
+    vocabulary: LexiconVocabulary | None = None,
 ) -> MockHandlerRegistry:
     """Build the registry fragment bound to a specific data set.
 
     The Launch Eval fixture loader passes per-scenario data; the default uses the
     base.yaml baseline. Each handler takes ``(params, context)``; only the
     account-domain reads consult ``context.identity`` (search stays public).
+
+    ``vocabulary`` (0.0.5 S05) overrides the process-installed L7 vocabulary for
+    the two product reads. Test seam only: a deployment installs ONE vocabulary
+    (``install_lexicon_vocabulary``) so both twins read the same store, and every
+    caller that passes nothing -- the eval harness included -- gets the installed
+    one, which on the eval/replay path is deliberately absent.
     """
+
+    def _vocabulary() -> LexiconVocabulary | None:
+        return vocabulary if vocabulary is not None else current_lexicon_vocabulary()
+
     return {
         "toee_shopify_read": {
             "get_order": lambda params, context: _get_order(data, params, context),
             "list_customer_orders": lambda params, context: _list_customer_orders(
                 data, context
             ),
-            "search_products": lambda params, context: _search_products(data, params),
-            "get_product": lambda params, context: _get_product(data, params, context),
+            "search_products": lambda params, context: _search_products(
+                data, params, _vocabulary()
+            ),
+            "get_product": lambda params, context: _get_product(
+                data, params, context, _vocabulary()
+            ),
         }
     }

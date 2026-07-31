@@ -203,6 +203,16 @@ def resolve_turn_collaborators() -> TurnCollaborators:
 
     warm_knowledge_embedder()
 
+    # 0.0.5 S05 (FR-5): point the two product-read seams at the governed L7 store,
+    # so a customer who texts "20555r16" reaches the same product as one who texts
+    # "205 55 16". ONE install per process serves BOTH driver twins (mock handlers
+    # + ComposioDriver) -- NFR-7 lockstep by construction. No-op unless
+    # TOOL_BACKEND=datastore, so the eval record/replay path installs nothing and
+    # stays byte-identical (NFR-4).
+    from hermes_runtime.lexicon_hits import install_postgres_lexicon_vocabulary
+
+    install_postgres_lexicon_vocabulary()
+
     reply_sender = resolve_reply_sender()
     # S18 (FR-26): the scripted-eval seam is the ONLY other thing that fills the model
     # boundary. Off by default (production is unchanged); when armed it refuses a prod

@@ -29,7 +29,15 @@ queue, and the worker runs ``trigger_retention_sweep`` below unchanged. The swee
 itself, its windows, and its audit row are untouched -- only the caller moved.
 The *button* additionally writes its own ``retention_sweep_queued`` audit row, so
 a click is recorded even if the worker never runs (S04 fix wave 1); nothing reads
-that action, and ``get_retention_status`` still keys on ``retention_sweep`` alone.
+that action, and ``get_retention_status``'s own "last run" still keys on
+``retention_sweep`` alone.
+
+0.0.5 S09 (FR-11) adds a SECOND aged-data job -- the ``injection_ledger`` prune --
+which records its runs the same way. ``get_retention_status`` therefore also
+returns ``ledger_prune`` (:func:`_ledger_prune_status`): its last run is aged-data
+housekeeping like the sweep's, and this is the surface that already answers "when
+did the aging last run". The prune itself lives in
+``hermes_runtime.injection_ledger``; only the read is here.
 
 All three actions are admin-only, never LLM-callable (see
 ``_AGENT_EXCLUDED_ACTIONS``) -- reached only from the admin BFF's deterministic
@@ -155,9 +163,107 @@ def _enqueue_retention_sweep(
     return {"job_id": job_id, "status": "queued"}
 
 
+def _ledger_prune_status(conn) -> dict[str, Any]:
+    """The injection-ledger prune's last run (0.0.5 S09, FR-11).
+
+    S09 ships a windowed prune over ``injection_ledger`` and records each run as
+    a ``workbench_audit_log`` row -- deliberately the same mechanism the sweep
+    uses, rather than a new sweep-state table. But writing the row is only half
+    of "last-run visibility alongside the existing sweep surfaces": this read
+    keys on ``retention_sweep`` alone, so without this the prune's run was a row
+    no surface queried. Same never-run posture as the sweep above: nulls and
+    zeros plus the configured window, never a fabricated timestamp.
+
+    Deferred import for the same reason ``_enqueue_retention_sweep`` defers
+    ``job_queue`` -- this handler package is loaded during driver construction,
+    and ``injection_ledger`` reaches back into ``tool_backend``.
+    """
+    from hermes_runtime.injection_ledger import PRUNE_AUDIT_ACTION, PRUNE_WINDOW_SECONDS
+
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT created_at, details
+            FROM workbench_audit_log
+            WHERE action = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (PRUNE_AUDIT_ACTION,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return {"last_run_at": None, "deleted": 0, "window_seconds": PRUNE_WINDOW_SECONDS}
+    details = row["details"] or {}
+    return {
+        # Prefer the job's own run_at over created_at, same reason as the sweep.
+        "last_run_at": details.get("run_at") or row["created_at"].isoformat(),
+        "deleted": details.get("deleted", 0),
+        "window_seconds": details.get("window_seconds", PRUNE_WINDOW_SECONDS),
+    }
+
+
+def _graduation_sweep_status(conn) -> dict[str, Any]:
+    """The graduation/retirement sweep's last run (0.0.5 S20, FR-19/FR-20).
+
+    The THIRD scheduled memory-lifecycle job to record itself as a
+    ``workbench_audit_log`` row rather than in a state table, and read back here
+    for the same reason the prune is: this is the surface that already answers
+    "when did the lifecycle work last run, and what did it find". Same never-run
+    posture as its two siblings -- nulls and zeros plus the configured window,
+    never a fabricated timestamp.
+
+    Deferred import for the same reason ``_ledger_prune_status`` defers
+    ``injection_ledger``: this handler package is loaded during driver
+    construction and the sweep reaches back into the handler registry.
+    """
+    from hermes_runtime.graduation_sweep import (
+        GRADUATION_SWEEP_AUDIT_ACTION,
+        ZERO_HIT_WINDOW_SECONDS,
+    )
+
+    empty = {
+        "last_run_at": None,
+        "graduation_candidates": 0,
+        "retirement_candidates": 0,
+        "emitted": 0,
+        "blocked": 0,
+        "window_seconds": ZERO_HIT_WINDOW_SECONDS,
+    }
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            """
+            SELECT created_at, details
+            FROM workbench_audit_log
+            WHERE action = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (GRADUATION_SWEEP_AUDIT_ACTION,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return empty
+    details = row["details"] or {}
+    status = {key: details.get(key, value) for key, value in empty.items()}
+    # Prefer the job's own run_at over created_at, same reason as the sweep.
+    status["last_run_at"] = details.get("run_at") or row["created_at"].isoformat()
+    status["window_seconds"] = details.get("window_seconds", empty["window_seconds"])
+    # The exclusion travels WITH its count (the brief: say why they are excluded
+    # rather than silently omitting them), so no surface can render one without
+    # the other.
+    status["excluded_seasonal"] = details.get("excluded_seasonal", 0)
+    status["excluded_reason"] = details.get("excluded_reason")
+    return status
+
+
 def _get_retention_status(
     conn, params: dict[str, Any], context: "ToolExecutionContext"
 ) -> Any:
+    ledger_prune = _ledger_prune_status(conn)
+    graduation_sweep = _graduation_sweep_status(conn)
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
@@ -176,6 +282,8 @@ def _get_retention_status(
             "counts": dict(_EMPTY_COUNTS),
             "total_deleted": 0,
             "windows_days": dict(RETENTION_WINDOW_DAYS),
+            "ledger_prune": ledger_prune,
+            "graduation_sweep": graduation_sweep,
         }
 
     details = row["details"] or {}
@@ -190,6 +298,8 @@ def _get_retention_status(
         "counts": details.get("counts", dict(_EMPTY_COUNTS)),
         "total_deleted": details.get("total_deleted", 0),
         "windows_days": details.get("windows_days", dict(RETENTION_WINDOW_DAYS)),
+        "ledger_prune": ledger_prune,
+        "graduation_sweep": graduation_sweep,
     }
 
 

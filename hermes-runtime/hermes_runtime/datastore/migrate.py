@@ -61,7 +61,11 @@ def _ensure_bookkeeping(cur) -> None:
 
 
 def run_migrations(
-    conn, migrations_dir: Path = MIGRATIONS_DIR, *, exclude: Collection[str] = ()
+    conn,
+    migrations_dir: Path = MIGRATIONS_DIR,
+    *,
+    exclude: Collection[str] = (),
+    allow_out_of_order: bool = False,
 ) -> list[str]:
     """Apply pending migrations on an open connection; return versions applied.
 
@@ -77,10 +81,42 @@ def run_migrations(
         cur.execute("SELECT version FROM schema_migrations")
         already_applied = {row[0] for row in cur.fetchall()}
 
+    pending = [
+        (version, sql)
+        for version, sql in discover_migrations(migrations_dir, exclude=exclude)
+        if version not in already_applied
+    ]
+
+    # A pending migration that sorts BELOW something already applied would run in
+    # a different position here than on a fresh database -- last, rather than in
+    # its numeric place. Same directory, two execution orders, decided by when
+    # the database happened to be created. A backfilled 0027 that touches a table
+    # 0028 creates works on one and fails on the other, and which way round is
+    # silent. Refuse instead of picking one.
+    #
+    # This is the mirror of the hazard D1's note on 0031 already describes -- that
+    # editing an applied migration "would constrain fresh databases while silently
+    # skipping already-migrated ones". Deliberately fail-closed and BEFORE any
+    # statement runs, so a refused deploy leaves the schema exactly as it was.
+    #
+    # ``allow_out_of_order`` is the deliberate case, and it is a real one: proving
+    # that a nullable ALTER does not backfill requires applying it AFTER rows
+    # exist, which means staging it behind the rest (see
+    # test_datastore_migrate.py's 0007 test). That is knowing, so it says so.
+    if already_applied and pending and not allow_out_of_order:
+        highest_applied = max(already_applied)
+        out_of_order = [v for v, _ in pending if v < highest_applied]
+        if out_of_order:
+            raise RuntimeError(
+                "refusing to apply out-of-order migration(s) "
+                f"{', '.join(out_of_order)}: this database has already applied "
+                f"{highest_applied}, so they would run AFTER it here and BEFORE "
+                "it on a fresh database. Renumber above the highest applied "
+                "version rather than backfilling a gap."
+            )
+
     applied: list[str] = []
-    for version, sql in discover_migrations(migrations_dir, exclude=exclude):
-        if version in already_applied:
-            continue
+    for version, sql in pending:
         with conn.cursor() as cur:
             cur.execute(sql)
             cur.execute(
@@ -100,10 +136,10 @@ def migrate(url: str | None = None, migrations_dir: Path = MIGRATIONS_DIR) -> li
     """
     import psycopg
 
-    from .config import database_url
+    from .config import CONNECT_TIMEOUT_OFFLINE_SECONDS, database_url
 
     dsn = url or database_url()
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, connect_timeout=CONNECT_TIMEOUT_OFFLINE_SECONDS) as conn:
         return run_migrations(conn, migrations_dir, exclude=migrate_exclusions())
 
 

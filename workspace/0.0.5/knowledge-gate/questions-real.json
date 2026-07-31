@@ -1,0 +1,30 @@
+[
+  {"q": "do you deliver or do i have to come get them",                    "gold": ["shipping-options"],            "src": "C1 Jul27 08:49 'Please deliver them with the morning run'"},
+  {"q": "is delivery free to my shop",                                     "gold": ["shipping-options"],            "src": "C1/C4 recurring delivery requests from tire shops"},
+  {"q": "do i pay shipping if i only order one tire",                      "gold": ["shipping-options"],            "src": "C3 Jul28 16:49 'Also 1 tire of 235/55R18' (qty 1 triggers the fee)"},
+  {"q": "where do i pick up if i come myself",                             "gold": ["shipping-options", "CONTACT_INFORMATION"], "src": "C5 Jul27 12:41 'i will pick them up and pay'"},
+  {"q": "can i pick them up instead of delivery",                          "gold": ["shipping-options"],            "src": "C5 Jul27 12:41"},
+  {"q": "do you charge extra for a residential address",                   "gold": ["shipping-options"],            "src": "shipping-options names residential/remote as chargeable; shop customers ask"},
+
+  {"q": "i need to return some tires",                                     "gold": ["return-policy", "REFUND_POLICY"], "src": "C7 Jul25 08:27 'Good morning, I need to return'"},
+  {"q": "how many days do i have to send tires back",                      "gold": ["return-policy", "REFUND_POLICY"], "src": "C7 return request, no date given by customer"},
+  {"q": "is there a fee if i return them late",                            "gold": ["return-policy", "REFUND_POLICY"], "src": "C7; policy names a 15% restocking fee beyond 7 days"},
+  {"q": "can i return tires that were already mounted",                    "gold": ["return-policy", "REFUND_POLICY"], "src": "C7 'Return: 235/60R18 x4' from a shop that fits tires"},
+  {"q": "i got damaged tires what do i do",                                "gold": ["warranty-information", "return-policy", "REFUND_POLICY"], "src": "policy requires damage reported on pick-up day. GOLD WIDENED: warranty-information covers damage/defect/replacement and the retriever returned it; the original label was too narrow and that was a labelling error, recorded in GATE-REPORT.md before this run"},
+
+  {"q": "can you bill me and i pay when i pick up",                        "gold": ["tire-shop-owner-program"],     "src": "C5 Jul27 12:41 'Can you bill me out 2 all weather and I will pick them up and pay?'"},
+  {"q": "do you give shops payment terms",                                 "gold": ["tire-shop-owner-program"],     "src": "C5 same line; program lists Payment Terms"},
+  {"q": "how do i get priority on deliveries",                             "gold": ["tire-shop-owner-program"],     "src": "C1/C4 repeated 'morning run' requests; program lists Prioritized Delivery"},
+  {"q": "im a tire shop how do i sign up for your dealer program",         "gold": ["tire-shop-owner-program"],     "src": "every customer in the transcript is a tire shop"},
+  {"q": "what do i need to qualify for the shop program",                  "gold": ["tire-shop-owner-program"],     "src": "program names registered business + CAD 2,000 in 2 months"},
+
+  {"q": "how do i log in to your website to order",                        "gold": ["tire-shop-owner-program"],     "src": "C7 Jul25 08:28 'i dont know how to use your website update'; C5 12:57 website invitation"},
+
+  {"q": "do you sell grenlander",                                          "gold": ["grenlander"],                  "src": "C7 Jul25 08:28 'Greenlander Maho 79'"},
+  {"q": "are grenlander tires decent quality",                             "gold": ["grenlander"],                  "src": "C7 same brand, shop reselling to end customers"},
+
+  {"q": "do i get a better price if i take a bigger lot",                  "gold": ["bulk-order-discount"],         "src": "C4 Jul28 10:22 'How long for 2 sets?'; C1 repeated 4-tire orders"},
+
+  {"q": "whats your phone number",                                         "gold": ["CONTACT_INFORMATION"],         "src": "SMS channel; customers reach for a human when the thread stalls"}
+]
+

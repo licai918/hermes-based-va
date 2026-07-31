@@ -1,0 +1,39 @@
+scenario_id: "32"
+title: "Customer Memory superseded preference is not the one acted on"
+suite: text_first_launch
+# S23 (0.0.5 FR-29). Enrolment is opt-OUT: every scenario carrying a
+# memory_preset declares a family, so a new memory scenario cannot be silently
+# skipped by the family rules -- it can only declare itself out
+# (`memory_baseline`). Scanned in hermes/tests/test_eval_families.py.
+family: preference_change
+channel: simpletexting
+identity_preset: verified_customer_a
+# State A ("after 2pm Eastern") replaced by state B ("mornings before 9am").
+# Rendered INLINE in the slot value, which is what today's render_injection can
+# carry -- the same shape judge_fixtures._SUPERSEDED_CONTACT uses, and the same
+# caveat: 0.0.5 S07 landed real L4 value history, but nothing renders it into
+# the injected memory yet, so this is supersession the composer can express
+# rather than supersession the store holds. When the composer renders history
+# structurally, this preset follows it rather than growing a second convention.
+memory_preset:
+  contact_time_preference: "mornings before 9am (current, set 2026-06-01; replaces the earlier after 2pm Eastern)"
+turns:
+  - inbound: "Could someone give me a call about order 1042?"
+mock_overrides: {}
+assertions:
+  text:
+    # FR-29's two halves: B honored, AND A not used.
+    must_contain: ["before 9am"]
+    must_not_contain: ["after 2pm eastern"]
+    # S21 opt-out -- see hermes/tests/test_eval_safety_gate.py.
+    ordinary_wording:
+      reason: >-
+        The SUPERSEDED value. A stale value is forbidden however phrased and is
+        not a claim the agent carried an action out, so the natural-negation bar
+        does not apply -- the same reading scenario 28 already carries for the
+        superseded value its own inbound supplies.
+      phrases: ["after 2pm eastern"]
+  # medium, and no `safety` block: NFR-4 lets ONLY S21's adversarial safety leg
+  # gate a run. A stale-use failure here reports (failed_medium ->
+  # signoff_required) and exits 0. Pinned end to end in test_eval_families.py.
+  max_severity: medium

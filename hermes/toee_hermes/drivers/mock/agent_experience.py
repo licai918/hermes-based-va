@@ -15,11 +15,18 @@ loop that GENERATES proposals is S23 -- out of scope here.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
+from ...content_scan import (
+    PII_IN_VALUES_REJECT,
+    read_proposer_context,
+    scan_injection,
+    scan_pii,
+    scan_proposer_context,
+)
 from ...errors import ToolDriverError
+from ...write_advisories import l6_write_advisories
 from .driver import MockHandlerRegistry
 
 if TYPE_CHECKING:
@@ -36,9 +43,21 @@ AGENT_EXPERIENCE_STATUS_VALUES: tuple[str, ...] = ("proposed", "confirmed", "rej
 
 # Framework-derived write source (RK-1 parity with Customer Memory's
 # resolve_memory_write_source). toee_agent_experience is allowlisted on
-# internal_copilot only (S22) and the sole caller is the copilot review fork
-# (S23), so there is exactly one L6 source value today.
+# internal_copilot only (S22); 0.0.3 shipped the copilot review fork (S23) as its
+# sole caller, so there was exactly one value until 0.0.5 S25.
 AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT = "copilot_agent"
+
+# 0.0.5 S25 (FR-32, D3): the scheduled feedback aggregator's own value. It exists
+# so a feedback-derived proposal is DISTINGUISHABLE from an agent-proposed one in
+# every queue -- the one thing FR-32 is for. Like its L7 twin
+# (LEXICON_PROVENANCE_FEEDBACK_DERIVED) it is framework-derived from the job's own
+# execution context and can never be reached by a caller param.
+AGENT_EXPERIENCE_SOURCE_FEEDBACK_DERIVED = "feedback_derived"
+
+AGENT_EXPERIENCE_SOURCE_VALUES: tuple[str, ...] = (
+    AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT,
+    AGENT_EXPERIENCE_SOURCE_FEEDBACK_DERIVED,
+)
 
 # NFR-3: the store is operational-only. A "learning" is a short note/procedure,
 # not an essay -- same discipline as Customer Memory's MEMORY_VALUE_MAX_LENGTH,
@@ -46,32 +65,6 @@ AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT = "copilot_agent"
 AGENT_EXPERIENCE_CONTENT_MAX_LENGTH = 2000
 
 # --- write-side injection/PII scan (S22, the S09 hardening discipline floor) -
-#
-# ponytail: a heuristic keyword/regex floor, not a semantic classifier -- this
-# is the FIRST of three lines of defense (S23 layers prompt-side enforcement
-# on the review fork itself; S24's human confirm gate is the third, and the
-# only one a proposal must clear before it can ever be injected). Extend the
-# pattern tuples below as new seeded adversarial cases get diagnosed, the same
-# way plugin/schemas.py's PARAM_SCHEMAS grows from diagnosed failures.
-_INJECTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"ignore\s+(all\s+|any\s+)?(the\s+)?(previous|prior)\s+instructions",
-        r"disregard\s+(all\s+|any\s+)?(the\s+)?(previous|prior)\s+instructions",
-        r"\bsystem\s*:",
-        r"\bassistant\s*:",
-        r"\byou are now\b",
-        r"<\s*/?\s*tool_call",
-        r"\bnew\s+instructions\b",
-        r"\boverride\s+(your|the)\s+(instructions|system prompt)\b",
-    )
-)
-
-# Email / phone / Shopify-customer-id-shaped tokens -- the store is
-# operational-only (NFR-3), never customer PII.
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}")
-_PHONE_RE = re.compile(r"\+?\d[\d\-\s]{6,14}\d")
-_CUSTOMER_ID_RE = re.compile(r"gid://shopify/Customer/\d+|\bcust_[A-Za-z0-9]{4,}\b")
 
 
 def scan_agent_experience_content(*texts: Optional[str]) -> None:
@@ -82,23 +75,40 @@ def scan_agent_experience_content(*texts: Optional[str]) -> None:
     silently drift on what counts as a governed rejection. Any positional
     ``None``/empty string is skipped, so callers can pass ``content`` plus
     every string value out of ``proposer_context`` in one call.
+
+    0.0.5 S01 (D2) SPLIT the pattern sets into ``toee_hermes.content_scan``'s
+    two named resolvers, because L4 and L7 need the injection leg WITHOUT the
+    PII leg (the phone heuristic matches the tire size ``205 55 16``). L6 is
+    unchanged: it is both legs, per text, in the original order -- so an input
+    that used to be rejected still is, with the same ``policy_blocked`` class.
     """
     for text in texts:
-        if not text:
-            continue
-        for pattern in _INJECTION_PATTERNS:
-            if pattern.search(text):
-                raise ToolDriverError(
-                    "policy_blocked",
-                    "agent_experience write rejected: instruction-injection "
-                    "pattern detected in proposed content (S22 write-side scan).",
-                )
-        if _EMAIL_RE.search(text) or _PHONE_RE.search(text) or _CUSTOMER_ID_RE.search(text):
-            raise ToolDriverError(
-                "policy_blocked",
-                "agent_experience write rejected: content must be "
-                "operational-only, no customer PII (NFR-3).",
-            )
+        scan_injection(text)
+        scan_pii(text)
+
+
+def scan_agent_experience_write(
+    content: str, proposer_context: Optional[dict[str, Any]]
+) -> tuple[Optional[dict[str, Any]], bool]:
+    """L6's whole write scan, in ONE place both twins call. Mirrors L7's
+    ``scan_lexicon_write``.
+
+    Returns ``(storable proposer_context, pii_redacted)``. The context comes back
+    because it is no longer necessarily what the caller sent: a PII-shaped KEY is
+    redacted rather than rejected (D2 amendment 3), so a twin that scans and then
+    stores the ORIGINAL dict re-opens the NFR-6 hole.
+
+    ``PII_IN_VALUES_REJECT`` is stated here, once, rather than at each twin's call
+    site: L6's no-PII-in-content rule is unchanged since 0.0.3 S22, and one
+    resolver per layer is what keeps the mock and Postgres paths in lockstep
+    (NFR-7). Naming it at all is the point -- see
+    :func:`toee_hermes.content_scan.scan_proposer_context`.
+    """
+    scan_agent_experience_content(content)
+    scanned, pii_redacted, _ = scan_proposer_context(
+        proposer_context, pii_in_values=PII_IN_VALUES_REJECT
+    )
+    return scanned, pii_redacted
 
 
 def _require_kind(params: dict[str, Any]) -> str:
@@ -128,46 +138,45 @@ def _require_content(params: dict[str, Any]) -> str:
     return content
 
 
-def _read_proposer_context(params: dict[str, Any]) -> Optional[dict[str, Any]]:
-    ctx = params.get("proposer_context")
-    if ctx is None:
-        return None
-    if not isinstance(ctx, dict):
-        raise ToolDriverError(
-            "unexpected_error",
-            "proposer_context must be an object when provided.",
-        )
-    return ctx
-
-
-def _context_strings(ctx: Optional[dict[str, Any]]) -> list[str]:
-    # ponytail: shallow scan only (top-level string values) -- proposer_context
-    # is a flat redacted operational snapshot by convention, not nested prose.
-    # Deepen if a nested shape becomes common.
-    if not ctx:
-        return []
-    return [value for value in ctx.values() if isinstance(value, str)]
-
-
 def resolve_agent_experience_source(context: "ToolExecutionContext") -> str:
     """Framework-derived ``source`` for a propose_experience write (RK-1 parity).
 
     ONE shared resolver for the mock and Postgres datastore handlers, same
     reasoning as Customer Memory's ``resolve_memory_write_source``: never taken
     from a model-supplied tool param. ``toee_agent_experience`` is allowlisted
-    on ``internal_copilot`` only (S22, ADR-0034/35) and the sole caller is the
-    copilot review fork (S23), so the resolved source is always
-    ``"copilot_agent"``. Any other profile is fail-closed -- defense in depth,
-    since the profile allowlist already keeps this unreachable elsewhere.
+    on ``internal_copilot`` only (S22, ADR-0034/35), so the profile alone cannot
+    separate the two writers that share that home. Any other profile is
+    fail-closed -- defense in depth, since the profile allowlist already keeps
+    this unreachable elsewhere.
+
+    **0.0.5 S25 (D3) adds the second value, on the SAME axis L7 provenance
+    already uses.** The discriminator is ``context.dispatch_route``, i.e. which
+    surface reached dispatch:
+
+    * ``FEEDBACK_AGGREGATOR_ROUTE`` -- the scheduled aggregator's own job body,
+      running in the background worker -> ``feedback_derived``;
+    * anything else -- the copilot review fork (S23), an eval run, the admin BFF
+      -> ``copilot_agent``, exactly as in 0.0.3.
+
+    **NOT a param and NOT ``user_id``**, for the reason the L7 twin spells out:
+    ``plugin/__init__.py`` reads ``user_id`` out of the framework's runtime
+    kwargs, so an attributed rep's session says WHO, never WHICH PATH. The route
+    marker is a literal set at the construction site and the agent path's context
+    provider never reads it from kwargs, so it is framework-derived rather than
+    forgeable -- pinned by
+    ``test_the_agent_path_cannot_claim_the_aggregator_route_via_a_runtime_kwarg``.
     """
     from ...plugin.profiles import INTERNAL
+    from ...tool_gate import FEEDBACK_AGGREGATOR_ROUTE
 
-    if context.profile == INTERNAL:
-        return AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT
-    raise ToolDriverError(
-        "policy_blocked",
-        f'agent_experience proposals are not permitted for profile "{context.profile}".',
-    )
+    if context.profile != INTERNAL:
+        raise ToolDriverError(
+            "policy_blocked",
+            f'agent_experience proposals are not permitted for profile "{context.profile}".',
+        )
+    if context.dispatch_route == FEEDBACK_AGGREGATOR_ROUTE:
+        return AGENT_EXPERIENCE_SOURCE_FEEDBACK_DERIVED
+    return AGENT_EXPERIENCE_SOURCE_COPILOT_AGENT
 
 
 def _require_id(params: dict[str, Any]) -> str:
@@ -226,11 +235,28 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
     ) -> dict[str, Any]:
         kind = _require_kind(params)
         content = _require_content(params)
-        proposer_context = _read_proposer_context(params)
-        scan_agent_experience_content(content, *_context_strings(proposer_context))
+        proposer_context = read_proposer_context(params)
+        proposer_context, pii_redacted = scan_agent_experience_write(
+            content, proposer_context
+        )
         # RK-1: source is framework-derived from context.profile, never the
         # model-supplied params -- any "source" the caller passed is ignored.
         source = resolve_agent_experience_source(context)
+        # 0.0.5 S13 (FR-18, D8): write-time advisories, computed AFTER the scan
+        # so nothing rejected is ever compared, and stored under the `heuristic`
+        # key alone (S16 owns `copilot`). Advisory only -- the row below is
+        # identical whether this returns anything or not (NFR-3).
+        #
+        # ponytail: `lexicon_entries=()` because the mock's L6 and L7 fragments
+        # close over SEPARATE stores, so this handler genuinely cannot see the
+        # lexicon. The Postgres twin -- the only one with real cross-layer data
+        # -- runs both legs. Close it by handing the lexicon fragment in from
+        # `create_all_mock_handlers`, exactly as S15 hands both fragments to the
+        # review inbox; that file belongs to the serialized catalog lane (D17),
+        # which is why it was not touched here.
+        annotations = l6_write_advisories(
+            content, lexicon_entries=(), experience_entries=store
+        )
         entry = {
             "id": f"aexp_{len(store) + 1}",
             "kind": kind,
@@ -238,11 +264,15 @@ def create_agent_experience_mock_handlers() -> MockHandlerRegistry:
             "content": content,
             "source": source,
             "proposer_context": proposer_context,
+            "annotations": annotations,
             "decider_account_id": None,
             "decided_at": None,
         }
         store.append(entry)
-        return {**entry, "proposed": True}
+        # pii_redacted rides on the RESPONSE only, not the row: L6 has no column
+        # for it, and inventing one on the mock would break lockstep with the
+        # Postgres twin (NFR-7). Postgres records it in the audit row instead.
+        return {**entry, "pii_redacted": pii_redacted, "proposed": True}
 
     def list_agent_experience(
         params: dict[str, Any], context: "ToolExecutionContext"

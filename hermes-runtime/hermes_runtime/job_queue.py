@@ -94,6 +94,53 @@ INTEGRATION_PROBE_JOB_TYPE = "integration_probe"
 # replay/concurrency dicts below): a judge/API fault should retry then dead-letter,
 # never silently produce a wrong rate.
 HONORED_RATE_JOB_TYPE = "honored_rate"
+# S09 (0.0.5, FR-11): the injection-ledger prune. The ledger gains rows every
+# governed turn, so retention is not optional; this is a windowed DELETE on the
+# same schedule tick retention rides. Plain default retry/dead-letter -- the
+# DELETE is idempotent, so a retry is free and a persistently failing prune must
+# be visible rather than quietly letting the table grow.
+INJECTION_LEDGER_PRUNE_JOB_TYPE = "injection_ledger_prune"
+# S05 (0.0.5, FR-5 / D6): the L7 hit rollup. Applications append hit events on the
+# turn; this folds them into `semantic_lexicon.hit_count` and consumes them. Plain
+# default retry/dead-letter -- the fold is one atomic statement, so a retry either
+# repeats nothing (the events were already consumed) or does the whole job.
+LEXICON_HIT_ROLLUP_JOB_TYPE = "lexicon_hit_rollup"
+# S25 (0.0.5, FR-32): the propose-only feedback aggregator. Reads both quality-
+# feedback tables, clusters by reason tag, and raises PROPOSALS through the
+# governed propose actions -- never a memory write. Plain default retry/dead-
+# letter: a retry is safe by construction (the watermark plus the stores' own
+# open-set idempotence), and an aggregator that fails silently is a feedback loop
+# that quietly stops closing.
+FEEDBACK_AGGREGATOR_JOB_TYPE = "feedback_aggregator"
+# S27 (0.0.5, FR-33): the aggregator's diff arm. Reads the `sent_edited` stream,
+# span-diffs draft against sent, and raises PROPOSALS through the governed
+# propose actions -- an L7 alias for a recurring term rewrite, an L6 procedure
+# question for a recurring clause rewrite. Same retry/dead-letter defaults and
+# the same reason as its sibling: the watermark plus the stores' own idempotence
+# make a retry safe, and a mining job that fails silently is a feedback loop that
+# quietly stops closing.
+EDIT_DIFF_MINING_JOB_TYPE = "edit_diff_mining"
+# S20 (0.0.5, FR-19/FR-20): the propose-only graduation + zero-hit retirement
+# sweep. Scans the confirmed L6 notes and the confirmed L7 entries and raises
+# review items -- never a memory write. Plain default retry/dead-letter: the
+# scan is a pure read and the emissions are idempotent (the store's open-set
+# index plus the sweep's own already-raised check), so a retry re-derives the
+# same answer and raises nothing twice.
+GRADUATION_SWEEP_JOB_TYPE = "graduation_sweep"
+# S16 (0.0.5, FR-23): the copilot triage annotator. Reads the pending queue and
+# writes ONE advisory `annotations.copilot` key per item -- never memory content
+# and never a decision (NFR-3). Plain default retry/dead-letter, and replay-safe
+# for a reason worth stating: the candidate query excludes anything that already
+# carries a copilot key, so a re-run annotates only what the failed run did not,
+# and never re-buys a completion it already paid for.
+COPILOT_TRIAGE_JOB_TYPE = "copilot_triage"
+# S04 (0.0.5, FR-4): the gateway-side L7 capture fork. Enqueued by the EXTERNAL
+# turn (the only per-turn background type besides l6_review) and run here, off
+# the reply path, so a fork failure can never reach the customer. Its payload is
+# identity keys only -- the fork reads the exchange from `message_turn`, where it
+# already lives under its own retention, rather than copying customer text into
+# the `job` table.
+L7_CAPTURE_JOB_TYPE = "l7_capture"
 
 # Per-type replay safety (S05, FR-13). A type listed here CANNOT be replayed and
 # the value is the message the operator sees. Default is replayable, so this dict
@@ -114,6 +161,12 @@ REPLAY_BLOCKED_JOB_TYPES: dict[str, str] = {
         "Replay is blocked for l6_review: the review fork writes a proposal and "
         "the model is non-deterministic, so a re-run produces a second, different "
         "proposal for one copilot turn. Blocked until proposal dedupe exists."
+    ),
+    L7_CAPTURE_JOB_TYPE: (
+        "Replay is blocked for l7_capture: the capture fork writes a proposed "
+        "lexicon entry and the model is non-deterministic, so a re-run produces a "
+        "second, different proposal for one customer turn. UNIQUE(domain, "
+        "surface_form) stops an identical duplicate, not a differently-worded one."
     ),
 }
 

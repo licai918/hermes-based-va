@@ -1,0 +1,38 @@
+{
+  "final_response": "Of course — I've logged a callback request for order 1042 and someone will be in touch. If you'd like a particular slot, tell me and I'll pass it on.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Session Identity Snapshot:\n- outcome: verified_customer\n- shopify_customer_id: gid://shopify/Customer/1001\n- resolved_at: 2026-01-01T00:00:00.000Z\n\nMorning - can you get someone to call me about order 1042?"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "reasoning": "No Customer Memory block was injected for this turn, so there is nothing on file for this customer: no contact-time preference, no delivery note. I must not fill the gap from anywhere else, and I must not write a preference the customer has not stated. Log the callback and ask if they want to name a time.",
+      "finish_reason": "tool_calls",
+      "tool_calls": [
+        {
+          "id": "call_38a1b2c3d4e5f6a7b8c9d0e1",
+          "type": "function",
+          "function": {
+            "name": "toee_case__create_case",
+            "arguments": "{\"contact_reason\": \"callback request\", \"urgency\": \"normal\", \"summary\": \"Customer asked for a callback about order 1042. Nothing stored on file for this binding.\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "name": "toee_case__create_case",
+      "tool_name": "toee_case__create_case",
+      "content": "{\"case_id\": \"case_38c1d9e2\", \"status\": \"open\", \"contact_reason\": \"callback request\", \"urgency\": \"normal\"}",
+      "tool_call_id": "call_38a1b2c3d4e5f6a7b8c9d0e1"
+    },
+    {
+      "role": "assistant",
+      "content": "Of course — I've logged a callback request for order 1042 and someone will be in touch. If you'd like a particular slot, tell me and I'll pass it on.",
+      "reasoning": "Callback logged. Nothing recalled, nothing inferred, nothing written.",
+      "finish_reason": "stop"
+    }
+  ]
+}

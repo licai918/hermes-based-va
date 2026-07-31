@@ -203,20 +203,90 @@ def _case_row(conn, case_id: str) -> Optional[dict[str, Any]]:
     return _read_model(conn, row)
 
 
+def _escalating_thread_id(
+    conn, params: dict[str, Any], context: "ToolExecutionContext"
+) -> Optional[str]:
+    """Which customer thread is this case being raised from, if any.
+
+    An explicit ``channelThreadId`` wins -- that is the parameter the mock twin
+    already accepts, and the Postgres handler used to drop it on the floor.
+    Otherwise fall back to the async SMS turn binding (ADR-0107): the gateway
+    turn runner puts the live ``sms_session_id`` on the context, which is how an
+    agent escalating mid-turn identifies its own conversation without having to
+    be told.
+
+    None is a legitimate answer -- a case raised outside any conversation (an
+    internal-copilot or sales_outreach case) has no thread.
+    """
+    explicit = read_string(params, "channel_thread_id", "channelThreadId")
+    if explicit:
+        return explicit
+    session_id = getattr(context, "sms_session_id", None)
+    if not session_id:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT customer_thread_id FROM sms_session WHERE id = %s",
+            (session_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def _create_case(conn, params: dict[str, Any], context: "ToolExecutionContext") -> Any:
     contact_reason = read_string(params, "contact_reason", "contactReason")
     urgency = read_string(params, "urgency")
     summary = read_string(params, "summary")
     channel = read_string(params, "channel") or "sms"
-    case_id = new_id("case")
+    thread_id = _escalating_thread_id(conn, params, context)
+    if thread_id is not None and not contact_reason:
+        # Raising a case FROM a live conversation is the escalation itself -- the
+        # agent is saying it cannot finish this alone. contact_reason is not a
+        # required parameter (the tool catalog lists actions, not schemas), so a
+        # model that escalates without stating why must not leave the case
+        # looking like an untriaged gateway placeholder: `_escalation_case_open`
+        # reads exactly that, and the conversation would go on being offered for
+        # auto-handled sampling despite having been handed to a human.
+        # "unspecified" is a legitimate answer for a rep to see and correct --
+        # contact_reason is free text and the Workbench edits it inline.
+        contact_reason = "unspecified"
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO cases (id, channel, contact_reason, urgency, status, summary)
-            VALUES (%s, %s, %s, %s, 'open', %s)
-            """,
-            (case_id, channel, contact_reason, urgency, summary),
-        )
+        # An escalation raised DURING a turn must attach to the thread it came
+        # from. The gateway has already opened an untriaged placeholder for that
+        # thread (postgres_gateway_store._ensure_open_case), so triage that one
+        # rather than leaving a second, unlinked case floating beside it: a case
+        # with no customer_thread_id is invisible to every thread-scoped read --
+        # including `_escalation_case_open`, which decides whether the turns get
+        # marked auto-handled. Without this the agent could escalate and the
+        # conversation would still be offered up for auto-handled sampling.
+        case_id = None
+        if thread_id is not None:
+            cur.execute(
+                """
+                UPDATE cases SET contact_reason = %s,
+                                 urgency = COALESCE(%s, urgency),
+                                 summary = COALESCE(%s, summary),
+                                 last_activity_at = now()
+                WHERE customer_thread_id = %s
+                  AND status IN ('open', 'in_progress')
+                  AND contact_reason IS NULL
+                RETURNING id
+                """,
+                (contact_reason, urgency, summary, thread_id),
+            )
+            row = cur.fetchone()
+            if row is not None:
+                case_id = row[0]
+        if case_id is None:
+            case_id = new_id("case")
+            cur.execute(
+                """
+                INSERT INTO cases
+                    (id, channel, customer_thread_id, contact_reason, urgency, status, summary)
+                VALUES (%s, %s, %s, %s, %s, 'open', %s)
+                """,
+                (case_id, channel, thread_id, contact_reason, urgency, summary),
+            )
     record: dict[str, Any] = {"case_id": case_id, "status": "open", "channel": channel}
     if contact_reason is not None:
         record["contact_reason"] = contact_reason
@@ -425,13 +495,22 @@ def _capture_sms_send(
 def _auto_handled_outcome(
     conn, thread_id: str
 ) -> tuple[str, bool, str]:
-    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread."""
+    """Derive outcome, tool_failure, and tool_summary for an auto-handled thread.
+
+    ``contact_reason IS NOT NULL`` is the same triage test the writer uses
+    (postgres_gateway_store._escalation_case_open). The gateway opens an
+    untriaged placeholder case for EVERY inbound so Tier B can show the thread,
+    so without it every auto-handled record would read ``escalated_to_case`` and
+    ``auto_resolved`` would be unreachable -- the two must agree on what counts
+    as an escalation or the list contradicts the flag that put the row in it.
+    """
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(
             """
             SELECT tool_failure, summary FROM cases
             WHERE customer_thread_id = %s
-              AND contact_reason IS DISTINCT FROM 'sales_outreach'
+              AND contact_reason IS NOT NULL
+              AND contact_reason <> 'sales_outreach'
             ORDER BY opened_at DESC LIMIT 1
             """,
             (thread_id,),
@@ -485,7 +564,65 @@ def _build_auto_handled_record(
     }
     if include_timeline:
         record["timeline"] = _thread_messages(conn, thread_id, channel)
-    return record
+    # ``last_activity_at`` comes off the thread row as a raw ``datetime``, which
+    # is not JSON-serializable -- returning it as-is makes the dispatch server
+    # 500 the moment an auto-handled record actually exists (the list is empty
+    # in a fresh dev DB, which is why this went unnoticed). Same JSON-safing
+    # every other read here already does; ``timeline``/``tool_calls`` entries
+    # are serialized by their own builders.
+    return serialize_row(record)
+
+
+def _reviewed_subject_ids(
+    conn, subject_kind: str, subject_ids: list[str]
+) -> set[str]:
+    """Which of these subjects have ANY ``interaction_review`` row (S05, FR-6).
+
+    Any reviewer, any verdict -- this answers "has this been sampled", not "did
+    *I* review it" (the badge semantics settled in the S05 brief). One batched
+    query per list call (not one per row) keeps both audit list reads from
+    N+1ing against ``interaction_review``.
+    """
+    if not subject_ids:
+        return set()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT subject_id FROM interaction_review "
+            "WHERE subject_kind = %s AND subject_id = ANY(%s)",
+            (subject_kind, subject_ids),
+        )
+        return {row[0] for row in cur.fetchall()}
+
+
+def _my_review(
+    conn, subject_kind: str, subject_id: str, account_id: Optional[str]
+) -> Optional[dict[str, Any]]:
+    """The CURRENT ACCOUNT's latest ``interaction_review`` row for one subject.
+
+    US-7 / FR-5: a supervisor reopening a record must see their own prior
+    verdict, not just "someone reviewed this" (that's ``_reviewed_subject_ids``
+    above). The table is append-only (0018_feedback.sql) so "latest" means
+    newest ``created_at``; ``idx_interaction_review_subject`` is
+    ``(subject_kind, subject_id, created_at DESC)``, so filtering further by
+    ``reviewer_account_id`` still walks that index in created_at order and
+    stops at the first match -- one indexed lookup, not a scan.
+
+    The actor is ``context.user_id`` at the call site, never a param (ADR-0148).
+    No account -> no prior review to attribute; this is a read, so it degrades
+    to None rather than raising the way a governed write would.
+    """
+    if not account_id:
+        return None
+    with conn.cursor(row_factory=dict_row) as cur:
+        cur.execute(
+            "SELECT id, subject_kind, subject_id, verdict, reason_tags, comment,"
+            " reviewer_account_id, created_at FROM interaction_review"
+            " WHERE subject_kind = %s AND subject_id = %s AND reviewer_account_id = %s"
+            " ORDER BY created_at DESC LIMIT 1",
+            (subject_kind, subject_id, account_id),
+        )
+        row = cur.fetchone()
+    return serialize_row(row)
 
 
 def _list_auto_handled(
@@ -512,8 +649,11 @@ def _list_auto_handled(
             """
         )
         thread_ids = [row[0] for row in cur.fetchall()]
+    # S05 (FR-6): a per-row "reviewed" flag for the audit list's status column,
+    # resolved in ONE query for the whole page rather than per record.
+    reviewed_ids = _reviewed_subject_ids(conn, "auto_handled_record", thread_ids)
     records = [
-        r
+        {**r, "reviewed": tid in reviewed_ids}
         for tid in thread_ids
         if (r := _build_auto_handled_record(conn, tid, include_timeline=False))
         is not None
@@ -530,6 +670,11 @@ def _get_auto_handled(
     record = _build_auto_handled_record(conn, record_id, include_timeline=True)
     if record is None:
         return {"record": None}
+    # US-7 (FR-5): the reviewer's own latest verdict on THIS record, so reopening
+    # it shows what they already said instead of a blank bar.
+    record["my_review"] = _my_review(
+        conn, "auto_handled_record", record_id, context.user_id
+    )
     insert_audit(
         conn,
         profile=context.profile,
@@ -553,7 +698,19 @@ def _list_sales_outreach(
             """
         )
         rows = cur.fetchall()
-    return {"cases": [_read_model(conn, row) for row in rows]}
+    # S05 (FR-6): same "reviewed" flag as _list_auto_handled, one batched query
+    # keyed on subject_kind='sales_outreach_case' -- kept OUT of _read_model so
+    # the general case queue's _list_cases (which shares _read_model) never
+    # pays for this join.
+    reviewed_ids = _reviewed_subject_ids(
+        conn, "sales_outreach_case", [row["id"] for row in rows]
+    )
+    cases = []
+    for row in rows:
+        case = _read_model(conn, row)
+        case["reviewed"] = row["id"] in reviewed_ids
+        cases.append(case)
+    return {"cases": cases}
 
 
 def _get_sales_outreach(
@@ -568,6 +725,11 @@ def _get_sales_outreach(
         row = cur.fetchone()
     if row is None:
         return {"case": None}
+    case = _read_model(conn, row)
+    # US-7 (FR-5): same own-latest-verdict lookup as _get_auto_handled.
+    case["my_review"] = _my_review(
+        conn, "sales_outreach_case", case_id, context.user_id
+    )
     insert_audit(
         conn,
         profile=context.profile,
@@ -577,7 +739,7 @@ def _get_sales_outreach(
         target_id=case_id,
         details={"case_id": case_id},
     )
-    return {"case": _read_model(conn, row)}
+    return {"case": case}
 
 
 def _active_sms_session_id(conn, thread_id: Optional[str]) -> Optional[str]:

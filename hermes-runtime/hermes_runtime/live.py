@@ -128,7 +128,7 @@ def run_agent_turn(
     max_iterations: int,
     openai_factory: Any = None,
     governed_tool_names: Sequence[str] = (),
-    tools_exclusive: bool = False,
+    tools_exclusive: bool = True,
 ) -> dict[str, Any]:
     """Drive one real ``AIAgent`` turn against the given provider; capture the turn.
 
@@ -162,8 +162,17 @@ def run_agent_turn(
         )
         agent._disable_streaming = True
         if governed_tool_names:
-            # Gateway SMS turns must not inherit Hermes built-ins (terminal,
-            # read_file, …). Eval/scripted runs union them in for harness flexibility.
+            # A turn that names its governed tools must not inherit the Hermes
+            # built-ins. That set is 25 tools and includes `terminal`,
+            # `execute_code`, `write_file`, `patch` and `delegate_task` -- shell
+            # and arbitrary code, on paths whose input is customer-authored text.
+            #
+            # This defaulted to the UNION until D27, which made the fence
+            # something each caller had to remember. Two capture forks forgot
+            # (S23-0.0.3 → S04), and the review that followed found the copilot
+            # draft turn had forgotten too. The default is now the fence; a
+            # harness that genuinely wants the built-ins passes
+            # tools_exclusive=False, which is a line a reviewer can see.
             if tools_exclusive:
                 agent.valid_tool_names = set(governed_tool_names)
             else:
@@ -186,11 +195,21 @@ def run_scripted_agent(
     system_message: str | None = None,
     scripted_completions: Sequence[Mapping[str, Any]],
     governed_tool_names: Sequence[str] = (),
+    tools_exclusive: bool = True,
 ) -> dict[str, Any]:
     """Drive one real ``AIAgent`` turn against a scripted provider; capture the turn.
 
     The scripted ``OpenAI`` runs the loop with no model, network, or credentials.
     Returns ``{"final_response": str, "messages": list}`` for record/replay.
+
+    ``tools_exclusive`` threads through to :func:`run_agent_turn`. **It defaults to
+    ``True``**: a caller that names its governed tools gets exactly those, and a
+    caller that wants the SDK built-ins unioned in has to ask.
+
+    It shipped defaulting ``False`` (0.0.5 S04), which made the fence opt-in --
+    and D27 records the two capture forks that forgot to opt in. Inverted after
+    the review found the copilot draft turn had forgotten as well. See
+    :func:`run_agent_turn` for what the union actually admits.
     """
     return run_agent_turn(
         user_message=user_message,
@@ -201,6 +220,7 @@ def run_scripted_agent(
         max_iterations=max(1, len(scripted_completions)),
         openai_factory=_scripted_openai_factory(scripted_completions),
         governed_tool_names=governed_tool_names,
+        tools_exclusive=tools_exclusive,
     )
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ...content_scan import scan_injection
 from ...errors import ToolDriverError
 from .driver import MockHandlerRegistry
 
@@ -56,6 +57,44 @@ MEMORY_SOURCE_VALUES: tuple[str, ...] = (
     MEMORY_SOURCE_COPILOT_AGENT,
     MEMORY_SOURCE_MERGED_PROVISIONAL,
 ) = MEMORY_SOURCE_VALUES
+
+# The audit action a genuine L4 value change records (0.0.5 S07, FR-9). Named
+# here beside the predicate below because the emit site (the Postgres handler's
+# ``insert_audit``) and every later COUNT of these rows -- S22's conflict-rate
+# metric is SQL over exactly this action -- must spell it the same way.
+MEMORY_ACTION_PREFERENCE_UPDATED = "preference_updated"
+
+# The SUMMARY audit action a whole-binding erase records (0.0.5 S11, FR-13),
+# one per binding it touches, alongside the per-slot ``preference_cleared`` rows
+# the looped clear already writes. Named here for the same reason as the line
+# above, and one stronger: FR-14's deletion-success tripwire is a query ANCHORED
+# on exactly this action, so the emit site and the query must not drift.
+MEMORY_ACTION_ERASED = "memory_erased"
+
+# FR-14's window N, in days: how long after an erase a binding is watched. Any
+# slot row still on -- or back on -- an erased binding inside this window is
+# flagged. A named constant per D16, because S22's knob panel renders it rather
+# than hunting a magic number.
+ERASE_REAPPEARANCE_WINDOW_DAYS = 30
+
+
+def is_differing_value_overwrite(old_value: Any, new_value: str) -> bool:
+    """The "differing-value overwrite" rule, in ONE place (0.0.5 S07, FR-9).
+
+    True only when a PRIOR value existed and the write genuinely changes it.
+    ``old_value is None`` is the slot's first-ever write: already fully
+    attributed by the slot row itself (source/actor/created_at), so a "changed
+    from nothing" audit row would be pure noise -- and S22 defines conflict rate
+    over *differing-value overwrites*, so counting every new slot as a conflict
+    would inflate it outright. An identical re-write (the common re-confirm)
+    changes nothing and is likewise not a conflict.
+
+    Named and shared rather than inlined at the emit site because S22 must
+    re-derive exactly this definition for its metric, and two independent
+    spellings of one rule are how the two silently drift apart.
+    """
+    return old_value is not None and old_value != new_value
+
 
 # ADR-0111 slots hold a short preference note (e.g. "after 2pm"), not free text;
 # PRD FR-3 caps the stored value so a write can't smuggle an essay into a slot.
@@ -138,6 +177,46 @@ def _read_evidence(params: dict[str, Any]) -> str | None:
             f"{MEMORY_EVIDENCE_MAX_LENGTH} characters.",
         )
     return evidence
+
+
+def scan_memory_write(value: str, evidence: str | None) -> None:
+    """L4's whole write scan, in ONE place both twins call (0.0.5 S08, FR-10).
+
+    Mirrors L6's ``scan_agent_experience_write`` and L7's ``scan_lexicon_write``:
+    one named resolver per layer, imported by the mock driver AND the Postgres
+    datastore handler, so the two cannot drift on what a governed rejection is
+    (NFR-7, the S15/S21 lesson). Raises ``policy_blocked``; returns nothing,
+    because L4 stores exactly what it was given or nothing at all.
+
+    **Injection ONLY. The PII leg is deliberately NOT applied, and that is the
+    whole reason this function exists rather than a bare ``scan_injection`` call
+    at each site.** NFR-6's no-PII rule governs the SHARED layers (L6/L7); L4 is
+    the layer customer PII legitimately lives in, bound to its own customer (D2).
+    A correct delivery habit reads ``leave at back door, call 604-555-1212``, and
+    ``scan_pii``'s phone heuristic would ``policy_blocked`` it. Adding
+    :func:`toee_hermes.content_scan.scan_pii` here would not harden L4; it would
+    break the one layer that is supposed to remember a customer.
+
+    **Hard-reject, never scrub-and-store.** A slot value is re-injected into the
+    prompt every turn, so instructions hidden in one are a live prompt-injection
+    surface -- but a sanitized value that still persists would record something
+    the customer never said, in the store a rep reads to decide what to do. So
+    the write fails and the prior value stands.
+
+    ``evidence`` is scanned too, on a weaker but real justification: unlike the
+    slot value it is NOT injected into the turn prompt (``get_preferences``
+    withholds it deliberately), so it is not a live injection surface today. It
+    is a verbatim customer phrase persisted for audit and rendered to a human in
+    the Memory Audit console -- and S16's copilot triage will read the same rows
+    back to a model. Rejecting the write is also the only coherent option: the
+    value and its evidence are one governed write, so accepting half of one would
+    store a slot whose stated justification was thrown away.
+
+    The read-side fence (``hooks._fence_safe``, S06) stays as defence in depth
+    for rows written before this guard existed; it is not a substitute for it --
+    escaping a stored instruction still leaves the instruction stored.
+    """
+    scan_injection(value, evidence)
 
 
 def is_verified_customer_identity(identity: Any) -> bool:
@@ -331,6 +410,128 @@ def resolve_clear_authorization(context: "ToolExecutionContext") -> tuple[str | 
     )
 
 
+def resolve_erase_authorization(context: "ToolExecutionContext") -> tuple[str, str]:
+    """Framework-derived ``(account_id, initiator)`` gate for the whole-binding
+    erase (0.0.5 S11, FR-13, US7). ONE shared resolver, both twins (NFR-7).
+
+    COMPOSES :func:`resolve_clear_authorization` rather than restating it -- the
+    erase is a loop over the existing per-slot clear, so it must not be able to
+    authorize a clear the clear itself would refuse -- and then adds the one
+    thing an erase needs on top: **an attributed actor is mandatory**.
+
+    That extra requirement is not decoration. ``resolve_clear_authorization``
+    deliberately returns ``(None, "customer")`` for a verified EXTERNAL customer
+    clearing their own slot (FR-21), and the erase's ``4+1`` audit rows are
+    attributed to a supervisor. A row asserting "somebody erased this customer's
+    whole memory" with nobody attached is unfalsifiable provenance -- the exact
+    shape D20 refused for ``admin_manual`` -- so this is fail-closed
+    ``policy_blocked``, on the single most destructive governed action there is.
+    Org-wide / customer-initiated erasure is PRD §6, not this action.
+
+    Returns the tuple (not a bare id) so the audit rows keep deriving their
+    ``initiator`` instead of hardcoding the only value that can reach them.
+    """
+    account_id, initiator = resolve_clear_authorization(context)
+    if not account_id:
+        raise ToolDriverError(
+            "policy_blocked",
+            "A whole-binding memory erase requires an attributed administrator.",
+        )
+    return account_id, initiator
+
+
+def erase_binding_keys(
+    context: "ToolExecutionContext",
+    linked_channel_identities: Any = (),
+) -> list[str]:
+    """Every binding key one erase must clear, deduped, in a deterministic order
+    (0.0.5 S11, FR-13, D10). ONE shared derivation, both twins (NFR-7).
+
+    The primary binding comes first, from the same fail-closed
+    :func:`resolve_customer_memory_binding` every other L4 write uses -- so no
+    resolvable identity is ``policy_blocked`` here too, before anything is
+    deleted.
+
+    **Why there is ever more than one.** ``merge_provisional_memory`` copies
+    provisional slots from every linked channel identity onto the verified key
+    on the customer's next verified turn. An erase that stopped at the verified
+    binding would therefore be silently undone by the customer's next SMS, and
+    the FR-14 tripwire would fire on the erase's own aftermath rather than on a
+    real event (D10 inverts S11's original acceptance for exactly this reason).
+    So the caller's OWN pre-verification provisional key is derived from the
+    identity's channel fields (a verified identity short-circuits
+    ``binding_key_from_identity`` to its Shopify id, so the channel form has to
+    be asked for separately -- the same move ``openrouter._provisional_key_for``
+    makes), and ``linked_channel_identities`` -- ``(channel, channel_identity)``
+    pairs from the Identity Graph -- contributes the rest.
+
+    The mock twin passes nothing there and cannot pass anything: it has no
+    ``identity_link`` store, and equally no merge path, so it has no linked
+    provisional slots to leave behind. The Postgres twin, which owns both, reads
+    the links and passes them.
+    """
+    keys = [resolve_customer_memory_binding(context, {})[0]]
+    identity = context.identity if isinstance(context.identity, dict) else {}
+    candidates = [(identity.get("channel"), identity.get("channel_identity"))]
+    candidates.extend(linked_channel_identities)
+    for channel, channel_identity in candidates:
+        resolved = binding_key_from_identity(
+            {"channel": channel, "channel_identity": channel_identity}
+        )
+        if resolved is not None and resolved[0] not in keys:
+            keys.append(resolved[0])
+    return keys
+
+
+# FR-14's tile label. The metric is "cleared and STAYED cleared", so it reports
+# a rate over erases rather than a count of deletions -- a deletion count says
+# nothing about whether the data came back.
+DELETION_SUCCESS_LABEL = (
+    "Share of erases in the window whose bindings are still empty. A flagged "
+    "binding is either residue (a row the erase itself left) or a re-appearance "
+    "(a row written afterwards) -- both are alerts for a human, never an "
+    "automatic re-delete."
+)
+
+
+def deletion_success_payload(
+    *,
+    erased_bindings: int = 0,
+    flagged_bindings: int = 0,
+    residue_bindings: int = 0,
+    reappeared_bindings: int = 0,
+    flagged_slots: Any = (),
+) -> dict[str, Any]:
+    """The FR-14 metric's shape, built in ONE place both twins call.
+
+    Shared rather than restated (the ``empty_latency_metrics`` lesson, one step
+    further -- ``hermes_runtime`` already imports this module, so the mock twin's
+    zero payload and the Postgres twin's real one are literally the same
+    function rather than two spellings pinned by an equality test).
+
+    Carries **counts and slot names only, never a binding key**: a binding key
+    is the customer's raw identity (a Shopify id or their phone/email), and this
+    payload renders on an org-wide admin panel. Slot names are the four ADR-0111
+    enum values, so they identify nobody.
+    """
+    return {
+        "window_days": ERASE_REAPPEARANCE_WINDOW_DAYS,
+        "erased_bindings": erased_bindings,
+        "flagged_bindings": flagged_bindings,
+        # A single binding can be both (residue plus a later write), so these
+        # two do not have to sum to flagged_bindings.
+        "residue_bindings": residue_bindings,
+        "reappeared_bindings": reappeared_bindings,
+        "rate": (
+            round((erased_bindings - flagged_bindings) / erased_bindings, 4)
+            if erased_bindings
+            else None
+        ),
+        "flagged_slots": dict(flagged_slots),
+        "label": DELETION_SUCCESS_LABEL,
+    }
+
+
 def create_memory_mock_handlers(
     data: MemoryMockData = memory_baseline_data,
     *,
@@ -372,6 +573,11 @@ def create_memory_mock_handlers(
         slot = _require_slot(params)
         value = _require_value(params)
         write_evidence = _read_evidence(params)
+        # S08 (FR-10): the shared L4 write scan, same call as the Postgres twin.
+        # Placed after the type/length checks so those keep their own governed
+        # error class, and before any store mutation so a rejection leaves the
+        # slot exactly as it was.
+        scan_memory_write(value, write_evidence)
         # RK-1: source is framework-derived from context.profile, never the
         # model-supplied params — any "source" the caller passed is ignored.
         source = resolve_memory_write_source(context)
@@ -405,7 +611,49 @@ def create_memory_mock_handlers(
         resolve_clear_authorization(context)
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots_for(binding_key).pop(slot, None)
+        # ``evidence`` is a SECOND store here, where the Postgres twin has a
+        # COLUMN on the row it just deleted -- so popping only the slot map left
+        # the verbatim customer phrase behind and the two twins disagreed about
+        # what a clear removes (NFR-7). One line, on the shared path, so the S11
+        # erase that loops this clear inherits it rather than fixing it twice.
+        evidence.get(binding_key, {}).pop(slot, None)
         return {"binding_key": binding_key, "slot": slot, "cleared": True}
+
+    def erase_customer_memory(
+        params: dict[str, Any], context: "ToolExecutionContext"
+    ) -> dict[str, Any]:
+        # 0.0.5 S11 (FR-13, US7): the whole-binding erase -- a governed LOOP over
+        # the four slots and every binding this customer reaches, not a new write
+        # primitive. The gate and the key derivation are the shared resolvers the
+        # Postgres twin calls (NFR-7); the audit rows are the Postgres twin's
+        # alone, same no-audit-sink-in-mock-mode convention as clear_preference.
+        resolve_erase_authorization(context)
+        bindings = []
+        cleared_total = 0
+        for binding_key in erase_binding_keys(context):
+            slots = slots_for(binding_key)
+            cleared = [slot for slot in MEMORY_PREFERENCE_SLOTS if slot in slots]
+            # The whole binding, not just the four slots this build knows about:
+            # `slots.clear()` after recording the enum outcomes means a key that
+            # somehow holds anything else goes too. Scoped to ONE binding_key --
+            # the neighbouring binding's dict is a different object.
+            extra = len(slots) - len(cleared)
+            slots.clear()
+            evidence.pop(binding_key, None)
+            cleared_total += len(cleared)
+            bindings.append(
+                {
+                    "binding_key": binding_key,
+                    "cleared_slots": cleared,
+                    "extra_rows_removed": extra,
+                }
+            )
+        return {
+            "binding_key": bindings[0]["binding_key"],
+            "bindings": bindings,
+            "cleared": cleared_total,
+            "erased": True,
+        }
 
     def get_preferences(
         params: dict[str, Any], context: "ToolExecutionContext"
@@ -473,7 +721,16 @@ def create_memory_mock_handlers(
         # no audit sink (same convention as dismiss_proposal/clear_preference above)
         # -- source/actor/timestamps come back null and audit is always empty (so
         # there is never a row lacking the Postgres twin's joined actor_username --
-        # the empty list is itself the documented null for that field).
+        # the empty list is itself the documented null for that field). 0.0.5 S07
+        # (FR-9) extends the Postgres twin's audit sink with a preference_updated
+        # row on a genuine value change -- the same convention holds here: this
+        # mock still never emits one, "audit": [] stays the documented null even
+        # after a real change (test_get_memory_audit_history_stays_empty_after_a_
+        # real_value_change, hermes/tests/test_memory.py). What DOES stay in
+        # lockstep is the write itself: upsert_preference below unconditionally
+        # overwrites and returns the same shape whether the value changed or
+        # not, exactly like the Postgres handler's write step (only the audit
+        # is gated there, never the write).
         binding_key, _binding_kind = resolve_customer_memory_binding(context, params)
         slots = [
             {
@@ -487,12 +744,23 @@ def create_memory_mock_handlers(
             }
             for slot, value in slots_for(binding_key).items()
         ]
-        return {"binding_key": binding_key, "slots": slots, "audit": []}
+        # 0.0.5 S22 (FR-34a): the memory-health strip's last-injection recency
+        # comes from the injection ledger, which is Postgres-only -- there is no
+        # ledger behind the mock backend and no turn writes one. `None` is the
+        # documented null here for the same reason `audit` is `[]`, and the
+        # strip renders it as "never", not as a fabricated timestamp.
+        return {
+            "binding_key": binding_key,
+            "slots": slots,
+            "audit": [],
+            "last_injection_at": None,
+        }
 
     return {
         "toee_customer_memory": {
             "upsert_preference": upsert_preference,
             "clear_preference": clear_preference,
+            "erase_customer_memory": erase_customer_memory,
             "get_preferences": get_preferences,
             "get_my_memory_summary": get_my_memory_summary,
             "dismiss_proposal": dismiss_proposal,

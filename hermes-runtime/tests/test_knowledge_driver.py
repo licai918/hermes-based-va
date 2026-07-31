@@ -328,7 +328,7 @@ def test_emit_skipped_when_knowledge_disabled(monkeypatch: pytest.MonkeyPatch) -
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(
         "hermes_runtime.knowledge.driver.emit_metric_event",
-        lambda metric, flag: calls.append((metric, flag)),
+        lambda metric, flag, duration_ms=None: calls.append((metric, flag)),
     )
     driver = KnowledgeDriver(retrieve_fn=lambda query, **kw: [_chunk()])
     request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": "hours"})
@@ -343,7 +343,7 @@ def test_emit_found_true_on_a_hit_when_knowledge_enabled(monkeypatch: pytest.Mon
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(
         "hermes_runtime.knowledge.driver.emit_metric_event",
-        lambda metric, flag: calls.append((metric, flag)),
+        lambda metric, flag, duration_ms=None: calls.append((metric, flag)),
     )
     driver = KnowledgeDriver(retrieve_fn=lambda query, **kw: [_chunk()])
     request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": "hours"})
@@ -358,7 +358,7 @@ def test_emit_found_false_on_a_miss_when_knowledge_enabled(monkeypatch: pytest.M
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(
         "hermes_runtime.knowledge.driver.emit_metric_event",
-        lambda metric, flag: calls.append((metric, flag)),
+        lambda metric, flag, duration_ms=None: calls.append((metric, flag)),
     )
     driver = KnowledgeDriver(retrieve_fn=lambda query, **kw: [])
     request = ToolRequest(tool="toee_knowledge_search", action="search_public_site", params={"query": "nope"})
@@ -377,7 +377,7 @@ def test_emit_skipped_for_empty_query_even_when_knowledge_enabled(
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(
         "hermes_runtime.knowledge.driver.emit_metric_event",
-        lambda metric, flag: calls.append((metric, flag)),
+        lambda metric, flag, duration_ms=None: calls.append((metric, flag)),
     )
     driver = KnowledgeDriver(
         retrieve_fn=lambda *a, **k: (_ for _ in ()).throw(

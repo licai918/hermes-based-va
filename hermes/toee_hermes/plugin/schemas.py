@@ -19,7 +19,42 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..blast_radius import LEDGER_LAYERS
+from ..drivers.mock.review_item import (
+    ANNOTATABLE_SOURCES,
+    RECLASSIFY_ROUTES,
+    REVIEW_ITEM_DECISIONS,
+    REVIEW_ITEM_KINDS,
+    REVIEW_ITEM_STATUS_VALUES,
+)
 from ..tool_catalog import TOOL_CATALOG
+
+# The two Review Reason Tag enums (ADR-0154, 0.0.4 S02). EXTERNAL is used by
+# toee_feedback.submit_interaction_review (supervisor/admin pass/fail review of
+# an auto_handled_record or sales_outreach_case); INTERNAL is used by
+# toee_feedback.submit_draft_rating (a rep's thumbs up/down on a copilot
+# draft). The sets are deliberately separate -- an external tag on an internal
+# rating (or vice versa) is a validation error the S03/S06 handlers enforce.
+# TS keeps its own mirror at packages/shared/src/feedback.ts -- update both
+# lists together so the two runtimes can't silently drift.
+EXTERNAL_REVIEW_REASON_TAGS: tuple[str, ...] = (
+    "factual_error",
+    "tone_inappropriate",
+    "policy_violation",
+    "tool_misuse",
+    "missed_information",
+    "should_have_escalated",
+    "other",
+)
+
+INTERNAL_REVIEW_REASON_TAGS: tuple[str, ...] = (
+    "factual_error",
+    "wrong_tone",
+    "missing_context",
+    "too_verbose",
+    "wrong_action",
+    "other",
+)
 
 # Known (tool, action) -> {"properties": ..., "required": [...]} overrides.
 # Populated only for actions with a diagnosed param-guessing failure so far
@@ -165,6 +200,306 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
         },
         "required": ["id"],
     },
+    # 0.0.5 S01 (FR-1/FR-3): the governed L7 propose write. All FOUR core fields
+    # are declared and required -- name-guessing on a store whose whole job is
+    # exact surface->canonical mapping would be the S10 failure mode with a
+    # governance cost. Deliberately ABSENT: status, provenance, decider,
+    # hit_count. Those are framework-derived (ADR-0148) and a caller-supplied
+    # value is ignored, so advertising them would only invite a forged param.
+    ("toee_semantic_lexicon", "propose_lexicon_entry"): {
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": (
+                    "The vocabulary this term belongs to, e.g. 'tire' or "
+                    "'company'. Open vocabulary, not an enum."
+                ),
+            },
+            "entry_kind": {
+                "type": "string",
+                "enum": ["alias", "normalizer", "default_rule"],
+                "description": (
+                    "'alias' for an exact surface->canonical mapping, "
+                    "'normalizer' for a pattern class, 'default_rule' for a "
+                    "conditional default that must still be confirmed."
+                ),
+            },
+            "surface_form": {
+                "type": "string",
+                "description": (
+                    "Exactly what the customer wrote, e.g. '2055516' or 'TOEE'."
+                ),
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": (
+                    "What it means in Toee's own vocabulary, e.g. '205/55R16' "
+                    "or 'TOEE TIRE'."
+                ),
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Optional short excerpt of the exchange that confirms the "
+                    "mapping. Customer PII in it is redacted, not rejected."
+                ),
+            },
+            "proposer_context": {
+                "type": "object",
+                "description": (
+                    "Optional redacted operational context the proposal was "
+                    "drawn from."
+                ),
+            },
+        },
+        "required": ["domain", "entry_kind", "surface_form", "canonical_form"],
+    },
+    # 0.0.5 S02 (FR-3 decide side/FR-8): the human gate. None of these five is
+    # LLM-callable (all are in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's
+    # deterministic dispatch runs the same schema/param validation, so params are
+    # declared explicitly -- the confirm_experience precedent above.
+    ("toee_semantic_lexicon", "confirm_lexicon_entry"): {
+        "properties": {
+            "id": {"type": "string", "description": "The lexicon entry id to confirm."},
+        },
+        "required": ["id"],
+    },
+    ("toee_semantic_lexicon", "reject_lexicon_entry"): {
+        "properties": {
+            "id": {"type": "string", "description": "The lexicon entry id to reject."},
+        },
+        "required": ["id"],
+    },
+    ("toee_semantic_lexicon", "retire_lexicon_entry"): {
+        "properties": {
+            "id": {
+                "type": "string",
+                "description": "The CONFIRMED lexicon entry id to retire.",
+            },
+        },
+        "required": ["id"],
+    },
+    # D7: an edit is an IN-PLACE update of the MAPPING and the entry id is stable.
+    # domain/entry_kind are deliberately absent -- changing either makes it a
+    # different entry, which is the retire-then-add intent, not an edit.
+    ("toee_semantic_lexicon", "edit_lexicon_entry"): {
+        "properties": {
+            "id": {"type": "string", "description": "The lexicon entry id to edit."},
+            "surface_form": {
+                "type": "string",
+                "description": "Replacement surface form. Omit to leave unchanged.",
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": "Replacement canonical form. Omit to leave unchanged.",
+            },
+        },
+        "required": ["id"],
+    },
+    # The admin's own entry: no proposal step, because the admin IS the gate.
+    ("toee_semantic_lexicon", "add_lexicon_entry"): {
+        "properties": {
+            "domain": {
+                "type": "string",
+                "description": (
+                    "The vocabulary this term belongs to, e.g. 'tire' or "
+                    "'company'. Open vocabulary, not an enum."
+                ),
+            },
+            "entry_kind": {
+                "type": "string",
+                "enum": ["alias", "normalizer", "default_rule"],
+                "description": (
+                    "'alias' for an exact surface->canonical mapping, "
+                    "'normalizer' for a pattern class, 'default_rule' for a "
+                    "conditional default that must still be confirmed."
+                ),
+            },
+            "surface_form": {
+                "type": "string",
+                "description": "Exactly what the customer writes, e.g. 'TOEE'.",
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": "What it means in Toee's own vocabulary.",
+            },
+            "evidence": {
+                "type": "string",
+                "description": (
+                    "Optional note on why this mapping exists. Customer PII in "
+                    "it is redacted, not rejected."
+                ),
+            },
+        },
+        "required": ["domain", "entry_kind", "surface_form", "canonical_form"],
+    },
+    # 0.0.5 S15 (FR-22): the unified review inbox. None of the four is
+    # LLM-callable (all are in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's
+    # deterministic dispatch -- and S10/S20/S25's job dispatch -- run the same
+    # schema/param validation, so params are declared explicitly rather than left
+    # to an open object. `status`, `decider` and `annotations` are deliberately
+    # ABSENT from the emission: they are framework-derived or another slice's
+    # column, and advertising them would only invite a forged param.
+    ("toee_review_inbox", "propose_review_item"): {
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_KINDS),
+                "description": (
+                    "Which kind of pending decision this is. L6/L7 proposals are "
+                    "NOT stored here -- they have their own governed propose "
+                    "actions and tables."
+                ),
+            },
+            "subject_ref": {
+                "type": "string",
+                "description": (
+                    "Stable reference to whatever the item is ABOUT -- an "
+                    "agent_experience id, a lexicon entry id, an L4 binding+slot."
+                ),
+            },
+            "evidence": {
+                "type": "object",
+                "description": (
+                    "The emitter's reason to believe: hit counts, affected case "
+                    "ids, the window it looked at."
+                ),
+            },
+        },
+        "required": ["kind", "subject_ref"],
+    },
+    ("toee_review_inbox", "list_review_items"): {
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_STATUS_VALUES),
+                "description": "Optional status filter; omit for every item.",
+            },
+            "kind": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_KINDS),
+                "description": "Optional kind filter; omit for every kind.",
+            },
+        },
+    },
+    ("toee_review_inbox", "decide_review_item"): {
+        "properties": {
+            "id": {"type": "string", "description": "The review_item id to decide."},
+            "decision": {
+                "type": "string",
+                "enum": list(REVIEW_ITEM_DECISIONS),
+                "description": (
+                    "The terminal status to land. There is no re-open: that "
+                    "would erase the decider of the decision it undid."
+                ),
+            },
+        },
+        "required": ["id", "decision"],
+    },
+    # FR-22's Re-classify: reject-in-source + propose-in-target in ONE governed
+    # action, so a mis-filed proposal moves with its evidence instead of being
+    # rejected and retyped. The target fields are the L7 proposal's own --
+    # `evidence` is not among them, because it is ALWAYS the source's content.
+    ("toee_review_inbox", "reclassify_proposal"): {
+        "properties": {
+            "source_kind": {
+                "type": "string",
+                "enum": list(RECLASSIFY_ROUTES),
+                "description": "The queue the mis-filed proposal is in today.",
+            },
+            "id": {
+                "type": "string",
+                "description": "The still-pending source proposal's id.",
+            },
+            "domain": {
+                "type": "string",
+                "description": (
+                    "Target lexicon vocabulary, e.g. 'tire' or 'company'. Open "
+                    "vocabulary, not an enum."
+                ),
+            },
+            "entry_kind": {
+                "type": "string",
+                "enum": ["alias", "normalizer", "default_rule"],
+                "description": "The target lexicon entry's kind.",
+            },
+            "surface_form": {
+                "type": "string",
+                "description": "Exactly what the customer wrote, e.g. '2055516'.",
+            },
+            "canonical_form": {
+                "type": "string",
+                "description": "What it means in Toee's vocabulary, e.g. '205/55R16'.",
+            },
+        },
+        "required": [
+            "source_kind",
+            "id",
+            "domain",
+            "entry_kind",
+            "surface_form",
+            "canonical_form",
+        ],
+    },
+    # 0.0.5 S10 (FR-12): the blast-radius read behind the blast_radius item.
+    # `layer` has no default on purpose -- see read_blast_radius_query: the same
+    # entry_ref under the wrong layer joins to nothing and reads as "this entry
+    # touched nobody", which is the one wrong answer this action must not give.
+    ("toee_review_inbox", "get_blast_radius"): {
+        "properties": {
+            "layer": {
+                "type": "string",
+                "enum": list(LEDGER_LAYERS),
+                "description": (
+                    "Which memory layer the entry belongs to -- the injection "
+                    "ledger's own layer column."
+                ),
+            },
+            "entry_ref": {
+                "type": "string",
+                "description": (
+                    "The ledger's stable natural key: binding_key + ':' + "
+                    "slot_name for l4, the entry id for l6/l7 (D4)."
+                ),
+            },
+            "since": {
+                "type": "string",
+                "description": (
+                    "Optional ISO-8601 lower bound on injected_at; omit for the "
+                    "whole retained ledger window."
+                ),
+            },
+        },
+        "required": ["layer", "entry_ref"],
+    },
+    # 0.0.5 S16 (FR-23): re-run copilot triage over ONE inbox item. Two params
+    # and no annotation param, deliberately: the verdict is produced INSIDE the
+    # action by a restricted, tool-less model pass and coerced into a bounded
+    # shape (`annotation_payload`), so there is no caller-supplied text channel
+    # onto the shared admin surface -- not for a model, and not for the console.
+    ("toee_review_inbox", "annotate_inbox_item"): {
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": list(ANNOTATABLE_SOURCES),
+                # All SIX inbox kinds, not this store's four: FR-23 annotates
+                # every pending decision, and the two proposal kinds live in
+                # their own tables (D8 is why all three carry the column).
+                "description": (
+                    "Which inbox queue the item belongs to -- it decides which "
+                    "store the annotation is written beside."
+                ),
+            },
+            "id": {
+                "type": "string",
+                "description": (
+                    "The item's id in its own store (an agent_experience id, a "
+                    "semantic_lexicon id, or a review_item id)."
+                ),
+            },
+        },
+        "required": ["kind", "id"],
+    },
     # 0.0.4 S17 (FR-25): the two reconnect actions. Neither is LLM-callable (both are
     # in _AGENT_EXCLUDED_ACTIONS), but the admin BFF's deterministic dispatch still
     # goes through this schema/param validation, so params are declared explicitly.
@@ -194,6 +529,160 @@ PARAM_SCHEMAS: dict[tuple[str, str], dict[str, Any]] = {
             },
         },
         "required": ["integration_key"],
+    },
+    # 0.0.4 S02 (ADR-0154): the toee_feedback tool shell's four actions. None
+    # are LLM-callable (all are in _AGENT_EXCLUDED_ACTIONS), but the BFF's
+    # deterministic dispatch still goes through this same schema/param
+    # validation, so params are declared now rather than left open -- S03/S06/
+    # S08/S10 add the handlers that enforce these shapes for real.
+    ("toee_feedback", "submit_interaction_review"): {
+        "properties": {
+            "subject_kind": {
+                "type": "string",
+                "enum": ["auto_handled_record", "sales_outreach_case"],
+                "description": "Which audit subject this review is about.",
+            },
+            "subject_id": {
+                "type": "string",
+                "description": (
+                    "The id of the auto_handled_record or sales_outreach_case "
+                    "being reviewed."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["pass", "fail"],
+                "description": "The reviewer's pass/fail judgment on the interaction.",
+            },
+            "reason_tags": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(EXTERNAL_REVIEW_REASON_TAGS)},
+                "description": (
+                    "Reason tags for a fail verdict; at least one is required "
+                    "when verdict is fail."
+                ),
+            },
+            "comment": {
+                "type": "string",
+                "description": "Optional free-text color, never required.",
+            },
+        },
+        "required": ["subject_kind", "subject_id", "verdict"],
+    },
+    ("toee_feedback", "record_draft_outcome"): {
+        "properties": {
+            "case_id": {
+                "type": "string",
+                "description": "The case the draft belongs to; the acting rep must hold it.",
+            },
+            "draft_correlation_id": {
+                "type": "string",
+                "description": (
+                    "The correlation id shared with the draft this outcome is about."
+                ),
+            },
+            "draft_kind": {
+                "type": "string",
+                "enum": ["sms", "email", "note"],
+                "description": "Which copilot draft surface generated the draft.",
+            },
+            "outcome": {
+                "type": "string",
+                "enum": ["sent_as_is", "sent_edited"],
+                "description": (
+                    "Whether the rep sent the draft unchanged or edited it first."
+                ),
+            },
+            "edit_distance_ratio": {
+                "type": "number",
+                "description": (
+                    "Normalized edit distance; required when outcome is "
+                    "sent_edited, rejected when outcome is sent_as_is."
+                ),
+            },
+            "draft_text": {
+                "type": "string",
+                "description": (
+                    "The generated-draft snapshot this outcome is about; always "
+                    "available (the rep sends the draft card), so required."
+                ),
+            },
+        },
+        "required": [
+            "case_id",
+            "draft_correlation_id",
+            "draft_kind",
+            "outcome",
+            "draft_text",
+        ],
+    },
+    ("toee_feedback", "submit_draft_rating"): {
+        "properties": {
+            "case_id": {
+                "type": "string",
+                "description": "The case the rated draft belongs to; the acting rep must hold it.",
+            },
+            "draft_correlation_id": {
+                "type": "string",
+                "description": "The correlation id shared with the draft being rated.",
+            },
+            "draft_kind": {
+                "type": "string",
+                "enum": ["sms", "email", "note"],
+                "description": "Which copilot draft surface generated the draft.",
+            },
+            "verdict": {
+                "type": "string",
+                "enum": ["up", "down"],
+                "description": "The rep's thumbs up/down on the draft.",
+            },
+            "reason_tags": {
+                "type": "array",
+                "items": {"type": "string", "enum": list(INTERNAL_REVIEW_REASON_TAGS)},
+                "description": (
+                    "Reason tags for a down verdict; at least one is required "
+                    "when verdict is down."
+                ),
+            },
+            "comment": {
+                "type": "string",
+                "description": "Optional free-text color, never required.",
+            },
+            "draft_text": {
+                "type": "string",
+                "description": (
+                    "The generated-draft snapshot being rated; always available "
+                    "(you rate the draft card), so required -- a rated_only row "
+                    "has no linked outcome row to recover it from otherwise."
+                ),
+            },
+        },
+        "required": [
+            "case_id",
+            "draft_correlation_id",
+            "draft_kind",
+            "verdict",
+            "draft_text",
+        ],
+    },
+    ("toee_feedback", "list_feedback"): {
+        "properties": {
+            "since": {
+                "type": "string",
+                "description": (
+                    "Optional ISO-8601 timestamp; only rows created at/after "
+                    "this are returned."
+                ),
+            },
+            "verdict": {
+                "type": "string",
+                "description": "Optional verdict filter (pass/fail/up/down).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Optional bounded page size.",
+            },
+        },
     },
 }
 

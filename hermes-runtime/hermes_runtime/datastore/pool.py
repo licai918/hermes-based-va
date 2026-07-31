@@ -24,7 +24,7 @@ import threading
 
 from psycopg_pool import ConnectionPool
 
-from .config import database_url
+from .config import CONNECT_TIMEOUT_TURN_SECONDS, database_url
 
 # Sizing knobs, env-overridable with sane local-first defaults. max_size bounds
 # the connection count under concurrent load (RK-8); min_size keeps pool
@@ -71,6 +71,15 @@ def get_database_pool(dsn: str | None = None) -> ConnectionPool:
                 resolved_dsn,
                 min_size=_int_env(POOL_MIN_SIZE_ENV, DEFAULT_POOL_MIN_SIZE),
                 max_size=_int_env(POOL_MAX_SIZE_ENV, DEFAULT_POOL_MAX_SIZE),
+                # Bound the TCP connect on every connection this pool opens.
+                # Without it the timeout is whatever the DSN happens to carry,
+                # and the DSN carries nothing -- so a host that blackholes
+                # instead of refusing hangs a turn until the OS gives up. The
+                # pool is the BIGGER instance of that hazard, not the smaller
+                # one: every datastore read and write on the reply path comes
+                # through here, where the unpooled metrics emit is one
+                # fire-and-forget insert.
+                kwargs={"connect_timeout": CONNECT_TIMEOUT_TURN_SECONDS},
                 open=True,
             )
             _pools[resolved_dsn] = pool

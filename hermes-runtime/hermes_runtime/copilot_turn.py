@@ -45,18 +45,29 @@ never logged.
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from eval_runner.transcript import (
     experience_proposals_from_messages,
+    lexicon_proposals_from_messages,
     memory_proposals_from_messages,
 )
 from toee_hermes.drivers.mock.memory import binding_key_from_identity
-from toee_hermes.plugin.hooks import render_injection
+from toee_hermes.plugin.hooks import glossary_entries, render_injection
 from toee_hermes.plugin.profiles import INTERNAL
 
 from hermes_runtime.boot import boot_profile
+from hermes_runtime.datastore.handlers._common import new_id
+from hermes_runtime.injection_ledger import injected_entry_refs, record_injection
 from hermes_runtime.job_queue import L6_REVIEW_JOB_TYPE, PostgresJobQueue
+from hermes_runtime.latency import (
+    LATENCY_L4_LOAD,
+    LATENCY_L6_LOAD,
+    LATENCY_L7_LOAD,
+    load_reads,
+    record_latency_samples,
+)
 from hermes_runtime.live import run_agent_turn, run_scripted_agent
 from hermes_runtime.openrouter import (
     OpenRouterConfig,
@@ -67,10 +78,14 @@ from hermes_runtime.openrouter import (
 from hermes_runtime.tool_backend import (
     _agent_experience_extra_drivers,
     _gateway_store,
+    _lexicon_capture_extra_drivers,
     _turn_extra_drivers,
     agent_experience_enabled,
     agent_experience_injection_enabled,
+    lexicon_capture_enabled,
+    lexicon_injection_enabled,
     load_confirmed_experience,
+    load_confirmed_lexicon,
     memory_enabled,
     record_memory_injection_metric,
 )
@@ -333,6 +348,76 @@ _REVIEW_SYSTEM_MESSAGE = (
     "the customer and cannot change the draft; you only record learnings."
 )
 
+# --- 0.0.5 S04 (FR-4): the review fork's SECOND destination -------------------
+# The fork used to have exactly one place to put a finding, so it had no routing
+# decision to make; it now has two, and this paragraph is the decision rule. The
+# split is D-shaped, not a preference: if a learning CAN be expressed as
+# surface -> canonical it belongs in L7, where the deterministic seam can apply it;
+# only what cannot stays L6 prose (see memory-layers.md's L6-vs-L7 rule).
+#
+# EXISTING L6 notes are NOT rerouted by this. Re-classifying already-proposed rows
+# is S15's `reclassify_proposal` (a human decides) and S13's write-time advisory
+# (annotate-only); this paragraph only decides where a NEW finding is filed.
+_LEXICON_ROUTING_ADDENDUM = (
+    " If the learning is a VOCABULARY mapping instead -- a surface form customers "
+    "use and the canonical form it means, confirmed in this conversation -- use "
+    "propose_lexicon_entry for it rather than propose_experience, because a "
+    "mapping can be applied automatically and a note cannot. Use exactly one of "
+    "the two tools, or neither. In proposer_context carry only identifiers such as "
+    "a case id -- never contact details."
+)
+
+# 0.0.5 S04: the review fork's whole governed surface, resolved from the booted
+# profile's registered names. Explicit names, not a `startswith` prefix, for the
+# lexicon half: the tool's six other actions are the admin DECIDE surface, and a
+# later slice that un-excludes one of them from `_AGENT_EXCLUDED_ACTIONS` would
+# otherwise hand a fork the power to confirm its own proposal.
+_REVIEW_FORK_L6_TOOL = "toee_agent_experience__propose_experience"
+_REVIEW_FORK_L7_TOOL = "toee_semantic_lexicon__propose_lexicon_entry"
+
+
+def review_fork_system_message() -> str:
+    """The review fork's prompt: L6 only, or L6 + the L7 routing rule.
+
+    With ``LEXICON_CAPTURE`` off the message is byte-identical to the S23-0.0.3
+    one -- a prompt must never advertise a destination the deployment has
+    disabled, because a proposal routed to a tool whose overlay is off lands in a
+    throwaway mock and vanishes without an error.
+    """
+    if not lexicon_capture_enabled():
+        return _REVIEW_SYSTEM_MESSAGE
+    return _REVIEW_SYSTEM_MESSAGE + _LEXICON_ROUTING_ADDENDUM
+
+
+def review_fork_tool_names(tool_names: Sequence[str]) -> list[str]:
+    """Narrow a booted profile's tools to the review fork's restricted set.
+
+    The fork is reflecting, not drafting, so it holds neither the reply tools nor
+    the read tools -- and it holds no DECIDE action on either layer, because a
+    fork PROPOSES and never confirms (NFR-3). The L7 half appears only under
+    ``LEXICON_CAPTURE``, in lockstep with the prompt above and with
+    ``_lexicon_capture_extra_drivers``: one flag decides whether the destination
+    is advertised, reachable, AND durable, so the three cannot drift apart.
+    """
+    allowed = {_REVIEW_FORK_L6_TOOL}
+    if lexicon_capture_enabled():
+        allowed.add(_REVIEW_FORK_L7_TOOL)
+    return [name for name in tool_names if name in allowed]
+
+
+def _review_fork_extra_drivers() -> Optional[dict[str, Any]]:
+    """Merge the L6 and L7 propose overlays for one review fork.
+
+    Each is gated on its own independent axis (``AGENT_EXPERIENCE_LEARNING`` /
+    ``LEXICON_CAPTURE``), mirroring ``_turn_extra_drivers``. ``None`` only when
+    both are off, so a fork with neither enabled boots exactly as it did before.
+    """
+    l6 = _agent_experience_extra_drivers()
+    l7 = _lexicon_capture_extra_drivers()
+    if l6 is None and l7 is None:
+        return None
+    return {**(l6 or {}), **(l7 or {})}
+
 
 def _review_user_message(case_id: str, draft_result: Mapping[str, Any]) -> str:
     """Frame the just-completed turn for the review fork (transcript + case id).
@@ -379,13 +464,18 @@ def run_l6_review_job(
     openai_factory: Any = None,
     is_retryable: Callable[[BaseException], bool] = default_is_retryable,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
-) -> list[dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
     """The ``l6_review`` job body: run the fork for a payload the queue handed back.
 
-    Same fork, same prompt, same governed toolset as the inline S23 pass -- only
-    the caller moved (S04). ``review_scripted_completions`` is the deterministic
-    test/eval seam the copilot turn used to own; the background worker never
-    passes it.
+    Same fork, same prompt and same governed toolset as the inline S23 pass -- only
+    the caller moved (0.0.4 S04). ``review_scripted_completions`` is the
+    deterministic test/eval seam the copilot turn used to own; the background
+    worker never passes it.
+
+    Returns ``{"experience": [...], "lexicon": [...]}`` -- 0.0.5 S04 gave the fork
+    a second destination, so the answer to "where did this fork route?" has to be
+    expressible, including as "neither". The job type keeps its ``l6_review`` name:
+    renaming it would strand every job already on the queue at deploy time.
     """
     return _run_review_pass(
         user_message=payload["review_prompt"],
@@ -405,29 +495,42 @@ def _run_review_pass(
     openai_factory: Any,
     is_retryable: Callable[[BaseException], bool],
     max_iterations: int,
-) -> list[dict[str, Any]]:
+) -> dict[str, list[dict[str, Any]]]:
     """Run ONE bounded review fork over the just-completed turn; return proposals.
 
     A SECOND agent pass booted ``internal_copilot`` (structurally no-send) whose
-    governed toolset is RESTRICTED to ``toee_agent_experience`` only -- it is not
-    drafting a customer reply, only reflecting. The ``_agent_experience_extra_drivers``
-    overlay routes ``propose_experience`` to Postgres when the L6 flag is on
-    (else the shared mock discards it). Provider precedence mirrors the draft
-    (scripted -> real OpenRouter -> keyless), but a keyless fork has no model to
-    reflect with, so it proposes nothing deterministically. Proposals are captured
-    framework-derived from the governed RESULT (:func:`experience_proposals_from_messages`),
-    never model free-text.
+    governed toolset is RESTRICTED to the propose actions of the layers it may
+    file into -- it is not drafting a customer reply, only reflecting. The
+    ``_review_fork_extra_drivers`` overlay routes each propose to Postgres when
+    that layer's flag is on (else the shared mock discards it). Provider precedence
+    mirrors the draft (scripted -> real OpenRouter -> keyless), but a keyless fork
+    has no model to reflect with, so it proposes nothing deterministically.
+
+    The fork now has TWO destinations (0.0.5 S04): an operational learning goes to
+    L6, a confirmed vocabulary mapping to L7, and a turn that taught neither goes
+    nowhere. Both are captured framework-derived from the governed RESULT
+    (:func:`experience_proposals_from_messages` /
+    :func:`lexicon_proposals_from_messages`), never model free-text, so the model
+    chooses which TOOL to call and the framework decides what that call recorded.
     """
-    booted = boot_profile(INTERNAL, extra_drivers=_agent_experience_extra_drivers())
-    # Restricted toolset: only the L6 propose tool, never the reply/read tools.
-    tool_names = [n for n in booted.tool_names if n.startswith("toee_agent_experience__")]
+    booted = boot_profile(INTERNAL, extra_drivers=_review_fork_extra_drivers())
+    tool_names = review_fork_tool_names(booted.tool_names)
+    system_message = review_fork_system_message()
 
     if review_scripted_completions is not None:
         turn = run_scripted_agent(
             user_message=user_message,
-            system_message=_REVIEW_SYSTEM_MESSAGE,
+            system_message=system_message,
             scripted_completions=review_scripted_completions,
             governed_tool_names=tool_names,
+            # 0.0.5 S04: EXCLUSIVE, and this is a fix, not a tightening. Without
+            # it `governed_tool_names` is UNIONed into the agent's existing
+            # `valid_tool_names` -- which, after boot_profile registered the whole
+            # internal_copilot allowlist, already holds every tool on the profile.
+            # So the "restricted toolset" this fork has claimed since S23-0.0.3
+            # was an OFFER list a model could step outside of, not a fence. Found
+            # by a bait: unrestricting `tool_names` left every routing test green.
+            tools_exclusive=True,
         )
     else:
         resolved = config
@@ -452,19 +555,33 @@ def _run_review_pass(
         )
         turn = run_agent_turn(
             user_message=user_message,
-            system_message=_REVIEW_SYSTEM_MESSAGE,
+            system_message=system_message,
             base_url=resolved.base_url,
             api_key=resolved.api_key,
             model=resolved.model,
             max_iterations=max_iterations,
-            openai_factory=factory,
             governed_tool_names=tool_names,
+            openai_factory=factory,
+            tools_exclusive=True,  # see the scripted branch above
         )
 
-    return [
-        {"kind": p.kind, "content": p.content, "status": p.status}
-        for p in experience_proposals_from_messages(turn.get("messages", []) or [])
-    ]
+    messages = turn.get("messages", []) or []
+    return {
+        "experience": [
+            {"kind": p.kind, "content": p.content, "status": p.status}
+            for p in experience_proposals_from_messages(messages)
+        ],
+        "lexicon": [
+            {
+                "domain": p.domain,
+                "entry_kind": p.entry_kind,
+                "surface_form": p.surface_form,
+                "canonical_form": p.canonical_form,
+                "status": p.status,
+            }
+            for p in lexicon_proposals_from_messages(messages)
+        ],
+    }
 
 
 def make_copilot_run_turn(
@@ -508,10 +625,57 @@ def make_copilot_run_turn(
         # (gated + fail-closed in _load_case_memory). Boot bound to that identity so
         # an employee-confirmed correction write binds from context, and prepend the
         # memory block so the draft is grounded in prior preferences.
-        identity, memory = _load_case_memory(case_id, store)
-        # S26 (FR-28): memory-injection counter emit, same gate/rationale as the
-        # external turn (openrouter.py) -- turn-safe, gated on memory_enabled().
-        record_memory_injection_metric(bool(memory))
+        # S18 (FR-26): this turn's per-layer read durations, written once after
+        # the model call (see `record_latency_samples` below). The L4 sample on
+        # THIS path covers the case-identity lookup as well as the slot read --
+        # `_load_case_memory` is one read site and both halves are on the draft's
+        # critical path -- so the L4 histogram pools slightly more work from the
+        # copilot seam than from the external one. Stated rather than split:
+        # separating them would buy a tile nobody asked for.
+        latency: list[tuple[str, float]] = []
+        # S19 (FR-27): the three independent pre-turn reads, deadline-bounded and
+        # fail-open under the budget flag, inline in this order when it is off
+        # (the default). L6 and L7 are read HERE rather than after the boot they
+        # do not feed, so all three are one parallelizable set; nothing between
+        # them changed order.
+        #
+        # S25 (FR-25): confirmed L6 learnings for the draft, gated on the COPILOT
+        # injection flag (its OWN axis, default OFF -- the eval record/replay path
+        # sets neither flag, so nothing is read/injected there and the gate stays
+        # deterministic, NFR-6). Read is bounded + fail-closed (returns None on any
+        # error, NFR-5); only status='confirmed' rows ever come back.
+        #
+        # S06 (FR-6/FR-7): the confirmed L7 glossary, behind the COPILOT lexicon
+        # flag -- its own axis, so the external read is disable-able without
+        # touching this path. Default OFF (the eval record/replay path sets
+        # neither, NFR-4). The RAW read goes to the renderer; the ledger below
+        # re-derives the SELECTED rows (see hooks.glossary_entries -- it is not
+        # idempotent, so pre-narrowing here would drop an admin season override).
+        case_memory, experience, lexicon = load_reads(
+            latency,
+            (
+                (LATENCY_L4_LOAD, lambda: _load_case_memory(case_id, store)),
+                (
+                    LATENCY_L6_LOAD,
+                    lambda: load_confirmed_experience(store)
+                    if agent_experience_injection_enabled()
+                    else None,
+                ),
+                (
+                    LATENCY_L7_LOAD,
+                    lambda: load_confirmed_lexicon(store)
+                    if lexicon_injection_enabled()
+                    else None,
+                ),
+            ),
+        )
+        # A breached L4 read on THIS seam costs more than a memory block: the same
+        # call resolves the case IDENTITY, so the draft then boots unbound and its
+        # business-tool reads lose their verification subject. Stated because it is
+        # a real cost, and accepted because the alternative is worse -- NFR-5 is
+        # absolute, and a draft that stalls behind a hung identity lookup helps
+        # nobody. The turn degrades; it never fails.
+        identity, memory = case_memory if case_memory else (None, None)
         # Unbound boot (no conversation_id): the Copilot path the boot docstring
         # calls out. This registers the internal_copilot read tools and — by
         # allowlist (ADR-0035) — NO send tool, so the turn is structurally no-send.
@@ -532,21 +696,21 @@ def make_copilot_run_turn(
         )
         system_message = _system_message(channel)
         base_user_message = _user_message(channel, case_id, prompt)
-        # S25 (FR-25): confirmed L6 learnings for the draft, gated on the COPILOT
-        # injection flag (its OWN axis, default OFF -- the eval record/replay path
-        # sets neither flag, so nothing is read/injected there and the gate stays
-        # deterministic, NFR-6). Read is bounded + fail-closed (returns None on any
-        # error, NFR-5); only status='confirmed' rows ever come back.
-        experience = (
-            load_confirmed_experience(store)
-            if agent_experience_injection_enabled()
-            else None
+        # Memory + confirmed learnings + glossary — the case identity is not
+        # surfaced as a snapshot block (the agent gathers case detail via its
+        # governed read tools, ADR-0147 decision 2). render_injection returns None
+        # when everything is empty, so no binding / no slots / no learnings / no
+        # confirmed vocabulary / disabled injects nothing.
+        # ONE clock read per turn, threaded to BOTH consumers. Two independent
+        # date.today() calls -- one inside the render, one inside the ledger's
+        # re-derivation below -- can land on either side of midnight, and on
+        # Sep 30/Oct 1 (the WINTER_MONTHS edge) that renders one seasonal
+        # default and credits the OTHER: the ledger asserting an entry reached a
+        # draft that never carried it, which is the over-claim D4.3 forbids.
+        today = date.today()
+        injected = render_injection(
+            None, memory, experience, lexicon=lexicon, today=today
         )
-        # Memory + confirmed learnings — the case identity is not surfaced as a
-        # snapshot block (the agent gathers case detail via its governed read tools,
-        # ADR-0147 decision 2). render_injection returns None when everything is
-        # empty, so no binding / no slots / no learnings / disabled injects nothing.
-        injected = render_injection(None, memory, experience)
         user_message = (
             f"{injected}\n\n{base_user_message}" if injected else base_user_message
         )
@@ -606,6 +770,45 @@ def make_copilot_run_turn(
                     governed_tool_names=booted.tool_names,
                 )
                 model = resolved.model
+
+        # S09 (FR-11): the copilot half of the provenance ledger. Same posture as
+        # the external turn (openrouter.py): written from the CALLER, only when
+        # something was injected, each layer gated on that layer's own injection
+        # flag inside record_injection, and it can never fail the draft (NFR-5).
+        # AFTER the model call for the same two reasons as the external path -- no
+        # DB round-trip in front of the draft, and a draft that never happened has
+        # no injected-into-a-draft fact to record.
+        #
+        # ponytail: the draft turn has no durable turn id -- it is transient and
+        # nothing else in the schema names it -- so the turn ref is minted here.
+        # It exists to keep the grain honest (two drafts on ONE case are two
+        # turns, not one merged row); the joinable identifier is
+        # case_or_binding_ref. Swap in a real id the day a draft turn persists one.
+        if injected:
+            resolved_binding = binding_key_from_identity(identity) if identity else None
+            record_injection(
+                store,
+                turn_ref=new_id("copilot_turn"),
+                case_or_binding_ref=case_id,
+                entries=injected_entry_refs(
+                    binding_key=resolved_binding[0] if resolved_binding else None,
+                    memory=memory,
+                    experience=experience,
+                    # `today` is the SAME date the render above used, never a
+                    # second clock read -- see the comment at that call.
+                    lexicon=glossary_entries(lexicon, today),
+                ),
+            )
+        # S26 (FR-28): memory-injection counter emit, same gate/rationale as the
+        # external turn (openrouter.py) -- turn-safe, gated on memory_enabled().
+        # Moved behind the model call by S19 (FR-27) on BOTH seams: it is a
+        # synchronous, unpooled INSERT + commit, and in front of the model it was
+        # a database round-trip standing between the rep and their draft.
+        record_memory_injection_metric(bool(memory))
+        # S18 (FR-26): one batched metric write for the whole draft turn, AFTER
+        # the model call for the same NFR-5 reason the ledger is. Unconditional,
+        # unlike the ledger -- a read that returned nothing still took time.
+        record_latency_samples(latency)
 
         draft = turn["final_response"]
         result: dict[str, Any] = {"draft": draft, "model": model, "profile": INTERNAL}

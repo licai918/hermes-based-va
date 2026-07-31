@@ -95,5 +95,14 @@ def test_mock_metrics_has_no_proxy_flag_for_the_two_deproxied_tiles() -> None:
 
     assert data["self_service_usage"] == 0
     assert data["l6_confirmed_entries"] == 0
-    assert "proxy" not in repr(data).lower()
+    # The grep is scoped to everything OUTSIDE the 0.0.5 S22 lifecycle block.
+    # That block's privacy-deflection row is a proxy and says so on purpose
+    # (FR-34a, owner decision ⑤) -- a whole-payload grep cannot tell "this tile
+    # is secretly still a proxy" from "this tile is honestly labelled one", so
+    # it would fail on the correct label. Everything the old scan covered is
+    # still covered: a `proxy` wrapper or proxy label on EITHER S21 tile, or
+    # anywhere else in the payload, is still red. The lifecycle block's own
+    # labels are pinned by tests/test_lifecycle_metrics.py.
+    deproxied = {key: value for key, value in data.items() if key != "lifecycle"}
+    assert "proxy" not in repr(deproxied).lower()
     assert METRIC_L6_CONFIRMED == "l6_confirmed_entries"

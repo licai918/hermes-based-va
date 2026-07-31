@@ -9,7 +9,7 @@ as the per-profile dispatch servers, ADR-0142).
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Sequence
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -28,6 +28,7 @@ from .datastore.config import database_url
 from .datastore.handlers._common import customer_thread_id, new_id
 from .datastore.pool import get_database_pool
 from .job_queue import AGENT_TURN_JOB_TYPE, insert_job
+from .tool_backend import LEXICON_GLOSSARY_LIMIT
 
 _SMS_CHANNEL = "sms"
 _EMAIL_CHANNEL = "email"
@@ -38,6 +39,26 @@ _SESSION_TTL = "24 hours"
 # operational guidance prepended to every gated turn; cap the count so the prompt
 # can't grow unbounded as the store accumulates. Newest-confirmed first (ADR-0152).
 _CONFIRMED_EXPERIENCE_LIMIT = 20
+
+# The confirmed-glossary read, shared by both selection strategies (S26) so the
+# two can only ever differ in HOW MANY rows come back and in what order -- never
+# in which columns the renderer and the ledger see. `hit_count` rides along for
+# the health score; every other consumer ignores the extra key.
+_CONFIRMED_LEXICON_COLUMNS = (
+    "id",
+    "domain",
+    "entry_kind",
+    "surface_form",
+    "canonical_form",
+    "status",
+    "hit_count",
+)
+_CONFIRMED_LEXICON_SQL = """
+SELECT id, domain, entry_kind, surface_form, canonical_form, status, hit_count
+FROM semantic_lexicon
+WHERE status = 'confirmed'
+ORDER BY decided_at DESC NULLS LAST, created_at DESC
+"""
 
 
 def _channel_column(channel: str) -> str:
@@ -236,10 +257,16 @@ class PostgresGatewayStore:
                         INSERT INTO message_turn
                             (id, sms_session_id, customer_thread_id, direction,
                              author, body, auto_handled)
-                        VALUES (%s, %s, %s, 'inbound', 'customer', %s, FALSE)
+                        VALUES (%s, %s, %s, 'inbound', 'customer', %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
-                        (turn_id, session_id, thread_id, event.body),
+                        (
+                            turn_id,
+                            session_id,
+                            thread_id,
+                            event.body,
+                            not _escalation_case_open(cur, thread_id),
+                        ),
                     )
 
                     if snapshot is not None:
@@ -376,6 +403,36 @@ class PostgresGatewayStore:
                 row = cur.fetchone()
         return row[0] if row else None
 
+    def load_recent_exchange(
+        self, sms_session_id: str, *, limit: int
+    ) -> list[dict[str, Any]]:
+        """The last ``limit`` turns of ONE conversation, oldest first (0.0.5 S04).
+
+        The gateway capture fork's only read. Scoped to the ``sms_session_id``
+        rather than the thread on purpose: a confirmed clarification belongs to
+        the conversation it happened in, and a session is the narrowest window
+        that still contains both halves of "do you mean X?" -> "yes". Widening it
+        to the thread would put older, unrelated conversations in front of a model
+        for no capture benefit.
+
+        Read on the WORKER, never on the turn (NFR-5). ``ORDER BY created_at DESC
+        LIMIT n`` then reversed, so the fork sees the newest window in the order it
+        was said; ``id`` breaks a same-timestamp tie deterministically.
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT author, direction, body FROM message_turn "
+                    "WHERE sms_session_id = %s "
+                    "ORDER BY created_at DESC, id DESC LIMIT %s",
+                    (sms_session_id, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            {"author": author, "direction": direction, "body": body}
+            for author, direction, body in reversed(rows)
+        ]
+
     def load_case_identity(self, case_id: str) -> Optional[dict[str, Any]]:
         """Resolve a case's customer-thread identity for turn-time memory binding (S08).
 
@@ -434,7 +491,8 @@ class PostgresGatewayStore:
         ``rejected`` are never injected into any turn -- newest-confirmed first,
         capped at :data:`_CONFIRMED_EXPERIENCE_LIMIT`. Returns the
         ``[{"content": ..., "kind": ...}, ...]`` shape ``hooks._render_experience``
-        expects.
+        expects, plus ``id`` (S09): the provenance ledger's L6 ``entry_ref`` IS the
+        entry id, and the renderer ignores the extra key.
         # ponytail: fixed cap is fine at current volume; make it relevance-ranked
         # only if the confirmed set ever outgrows the prompt budget (post-launch
         # real-traffic calibration, FR-27 -- see ADR-0152)."""
@@ -442,7 +500,7 @@ class PostgresGatewayStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT content, kind FROM agent_experience
+                    SELECT id, content, kind FROM agent_experience
                     WHERE status = 'confirmed'
                     ORDER BY decided_at DESC NULLS LAST, created_at DESC
                     LIMIT %s
@@ -450,7 +508,105 @@ class PostgresGatewayStore:
                     (_CONFIRMED_EXPERIENCE_LIMIT,),
                 )
                 rows = cur.fetchall()
-        return [{"content": content, "kind": kind} for content, kind in rows]
+        return [
+            {"id": entry_id, "content": content, "kind": kind}
+            for entry_id, content, kind in rows
+        ]
+
+    def load_confirmed_lexicon(self) -> list[dict[str, Any]]:
+        """Bounded read of CONFIRMED ``semantic_lexicon`` entries (0.0.5 S06, FR-6).
+
+        Shared domain language, so — like :meth:`load_confirmed_experience` and
+        unlike :meth:`load_customer_memory` — it is keyed by nothing but
+        ``status``. Capped at
+        :data:`~hermes_runtime.tool_backend.LEXICON_GLOSSARY_LIMIT` (D16: a named
+        constant, because S22's knob panel reads it).
+
+        **WHICH entries fill that cap is a knob (0.0.5 S26, FR-6's upgrade
+        clause).** ``newest`` — the shipped default — orders by decided-at and
+        lets Postgres apply the LIMIT. ``health`` reads every confirmed row plus
+        its effectiveness aggregate and ranks in Python, through the SAME
+        ``select_ranked_entries`` the console's score comes from, so the number an
+        admin sees and the rule that decides what reaches the prompt can never be
+        two different formulas.
+
+        Reading every confirmed row in ``health`` mode is deliberate and cheap:
+        the confirmed set is small (``lexicon_hits._CONFIRMED_SQL``, the
+        deterministic seam's own vocabulary read, already does exactly this), and
+        the alternative — an aggregate over ``injection_ledger`` per turn — is the
+        reply-path read NFR-5 forbids. ``entry_effectiveness`` is materialized for
+        that reason and joins on its primary key.
+
+        ``status`` is in the projection even though the WHERE clause already
+        pins it: ``hooks._render_lexicon`` re-checks the field rather than
+        trusting its caller, so omitting it here would silently render an empty
+        glossary. ``entry_kind`` and ``domain`` are what let the renderer resolve
+        a ``default_rule``'s condition at render time; ``id`` is S09's L7
+        ``entry_ref``.
+        """
+        from .entry_effectiveness import (
+            entry_effectiveness_for,
+            health_for_rows,
+            select_ranked_entries,
+        )
+        from .injection_ledger import LAYER_L7
+        from .tool_backend import LEXICON_SELECTION_HEALTH, lexicon_selection_strategy
+
+        ranked = lexicon_selection_strategy() == LEXICON_SELECTION_HEALTH
+        # In ranked mode the cap is applied AFTER scoring, so the SQL must not
+        # pre-cut the set: pre-cutting by date is exactly the eviction the ranking
+        # exists to replace.
+        sql = _CONFIRMED_LEXICON_SQL + ("" if ranked else "\nLIMIT %s")
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, () if ranked else (LEXICON_GLOSSARY_LIMIT,))
+                rows = [
+                    dict(zip(_CONFIRMED_LEXICON_COLUMNS, row)) for row in cur.fetchall()
+                ]
+                if not ranked:
+                    return rows
+                effectiveness = entry_effectiveness_for(
+                    cur, layer=LAYER_L7, entry_refs=[row["id"] for row in rows]
+                )
+        return select_ranked_entries(
+            health_for_rows(rows, effectiveness), limit=LEXICON_GLOSSARY_LIMIT
+        )
+
+    def record_injection_ledger(
+        self,
+        *,
+        turn_ref: str,
+        case_or_binding_ref: Optional[str],
+        entries: Sequence[tuple[str, str]],
+    ) -> None:
+        """Append this turn's injected ``(layer, entry_ref)`` pairs (S09, FR-11).
+
+        ONE batched insert per turn. ``ON CONFLICT DO NOTHING`` on the
+        ``(turn_ref, layer, entry_ref)`` primary key -- the grain -- so a
+        redelivered turn cannot double-count an entry into S26's per-entry
+        score. Ids and slot NAMES only; no memory value ever reaches this table
+        (NFR-6, and the column list has nowhere to put one).
+
+        Reached only through
+        :func:`hermes_runtime.injection_ledger.record_injection`, which owns the
+        eval gate and swallows any failure -- so a raise here never reaches the
+        turn (NFR-5).
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO injection_ledger
+                        (turn_ref, layer, entry_ref, case_or_binding_ref)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (turn_ref, layer, entry_ref) DO NOTHING
+                    """,
+                    [
+                        (turn_ref, layer, entry_ref, case_or_binding_ref)
+                        for layer, entry_ref in entries
+                    ],
+                )
+            conn.commit()
 
     def list_channel_identities_for_customer(
         self, shopify_customer_id: str
@@ -496,6 +652,12 @@ class PostgresGatewayStore:
         **carried forward** on a migrated slot (the verbatim customer phrase is the
         slot's real provenance, and FR-3 wants every write to carry it); a conflicting
         slot is not inserted, so the verified slot's own evidence is left intact.
+
+        **It also re-points the injection provenance ledger (S09, D4.3).** The
+        binding key itself changes here, so the L4 ``entry_ref`` built from it
+        (``binding_key || ':' || slot_name``) would otherwise be orphaned by
+        verification -- see :func:`_repoint_injection_ledger`. Same transaction:
+        the slots and their provenance move together or not at all.
 
         Idempotency (RK-5): the provisional rows are locked ``FOR UPDATE`` as the
         first statement, so two concurrent/repeat merges serialize here — the first
@@ -555,6 +717,13 @@ class PostgresGatewayStore:
                         (provisional_key,),
                     )
 
+                    _repoint_injection_ledger(
+                        cur,
+                        provisional_key=provisional_key,
+                        verified_key=verified_key,
+                        slot_names=[row[0] for row in provisional_rows],
+                    )
+
                     details = {"moved": moved, "overridden": overridden}
                     cur.execute(
                         """
@@ -584,16 +753,35 @@ class PostgresGatewayStore:
         with self._connect() as conn:
             try:
                 with conn.cursor() as cur:
+                    # Decided HERE rather than at inbound, because the escalation
+                    # happens DURING the turn: the agent calls toee_case only once
+                    # it knows it cannot finish the request itself. At inbound we
+                    # would always read "no escalation yet" and mark every turn
+                    # auto-handled.
+                    auto_handled = not _escalation_case_open(cur, thread_id)
                     cur.execute(
                         """
                         INSERT INTO message_turn
                             (id, sms_session_id, customer_thread_id, direction,
                              author, body, auto_handled)
-                        VALUES (%s, %s, %s, 'outbound', 'hermes', %s, FALSE)
+                        VALUES (%s, %s, %s, 'outbound', 'hermes', %s, %s)
                         ON CONFLICT (id) DO NOTHING
                         """,
-                        (turn_id, session_id, thread_id, body),
+                        (turn_id, session_id, thread_id, body, auto_handled),
                     )
+                    if not auto_handled and context.inbound_body_ref:
+                        # The inbound that TRIGGERED this escalation belongs to the
+                        # human-intervention segment too. It was written before the
+                        # agent escalated, so it optimistically read auto-handled;
+                        # settle the pair now that the turn's outcome is known.
+                        # Without this the customer's message reads "auto-handled"
+                        # while the reply that escalated it does not -- and
+                        # `active_case_segment` (cases.py) would hide the very turn
+                        # that opened the case from the case segment.
+                        cur.execute(
+                            "UPDATE message_turn SET auto_handled = FALSE WHERE id = %s",
+                            (context.inbound_body_ref,),
+                        )
                     cur.execute(
                         """
                         UPDATE cases SET last_activity_at = now()
@@ -608,6 +796,100 @@ class PostgresGatewayStore:
                 raise
 
 
+def _repoint_injection_ledger(
+    cur, *, provisional_key: str, verified_key: str, slot_names: Sequence[str]
+) -> int:
+    """Move this merge's L4 provenance rows onto the verified binding key (S09, D4.3).
+
+    The symmetric other half of what the merge already does to the slots
+    themselves. An L4 ``entry_ref`` is ``binding_key || ':' || slot_name``, and
+    the merge CHANGES the binding key -- so without this, every ledger row
+    written before the customer verified points at a key that no longer names
+    anything, and S10's blast radius silently omits those turns while S26 scores
+    a prompt whose entries it can no longer resolve. Same cursor, same
+    transaction as the slot move: the two cannot half-apply.
+
+    Both moved AND overridden slots re-point: the ledger records which ENTRY
+    reached a turn, and after the merge the customer's ``slot_name`` entry IS
+    the verified one either way. (An overridden slot's *value* was already free
+    to change between the turn and the read -- the ledger never claimed
+    otherwise.)
+
+    The ``NOT EXISTS`` guard is deliberate. ``entry_ref`` is part of the ledger's
+    primary key, so a turn that somehow already held the verified ref would make
+    a bare UPDATE raise a duplicate-key error -- which, inside this transaction,
+    would roll back the customer's memory merge. Provenance bookkeeping must
+    never do that: the guard leaves the stale row behind instead.
+    """
+    if not slot_names:
+        return 0
+    from .injection_ledger import LAYER_L4
+
+    cur.execute(
+        """
+        UPDATE injection_ledger AS il
+        SET entry_ref = %(verified)s || ':' || s.slot_name
+        FROM unnest(%(slots)s::text[]) AS s(slot_name)
+        WHERE il.layer = %(layer)s
+          AND il.entry_ref = %(provisional)s || ':' || s.slot_name
+          AND NOT EXISTS (
+              SELECT 1 FROM injection_ledger dup
+              WHERE dup.turn_ref = il.turn_ref
+                AND dup.layer = %(layer)s
+                AND dup.entry_ref = %(verified)s || ':' || s.slot_name
+          )
+        """,
+        {
+            "verified": verified_key,
+            "provisional": provisional_key,
+            "slots": list(slot_names),
+            "layer": LAYER_L4,
+        },
+    )
+    return cur.rowcount
+
+
+def _escalation_case_open(cur, thread_id: str) -> bool:
+    """Is a human actually needed on this thread right now?
+
+    This is what decides ``message_turn.auto_handled`` -- an **Auto-Handled
+    Interaction** is a turn the External Customer Service Profile completes
+    "without opening a Human Intervention Case" (CONTEXT.md), and ADR-0037 is
+    explicit that such threads must NOT enter the rep work queue.
+
+    The test cannot simply be "does a case exist", because ``_ensure_open_case``
+    below opens one on EVERY accepted inbound so Tier B can show the thread.
+    That placeholder is deliberately **untriaged** -- it carries no
+    ``contact_reason``. A case only becomes a real Human Intervention Case once
+    something states WHY a human is needed:
+
+      * the agent escalates and calls ``toee_case`` create_case with a
+        contact_reason (it is in the EXTERNAL Profile Tool Allowlist), or
+      * an employee triages the placeholder in the Workbench ("Edit reason").
+
+    So ``contact_reason IS NOT NULL`` is the escalation signal, and the
+    untriaged placeholder stays out of it. `_ensure_open_case` must therefore
+    keep leaving contact_reason NULL -- ``test_gateway_placeholder_case_stays_untriaged``
+    pins that, because setting one there would silently mark every conversation
+    escalated and empty the auto-handled audit view again.
+
+    ``sales_outreach`` is excluded to match ``_list_auto_handled``, which routes
+    those to the separate Sales Outreach Audit View.
+    """
+    cur.execute(
+        """
+        SELECT 1 FROM cases
+        WHERE customer_thread_id = %s
+          AND status IN ('open', 'in_progress')
+          AND contact_reason IS NOT NULL
+          AND contact_reason <> 'sales_outreach'
+        LIMIT 1
+        """,
+        (thread_id,),
+    )
+    return cur.fetchone() is not None
+
+
 def _ensure_open_case(
     cur,
     *,
@@ -616,7 +898,12 @@ def _ensure_open_case(
     preview: str,
     channel: str = _SMS_CHANNEL,
 ) -> None:
-    """Open a Follow-up Case when none exists so Tier B Workbench shows the thread."""
+    """Open a Follow-up Case when none exists so Tier B Workbench shows the thread.
+
+    Leaves ``contact_reason`` NULL on purpose: an untriaged placeholder, not an
+    escalation. See ``_escalation_case_open`` for why that distinction carries
+    the whole auto-handled read model.
+    """
     cur.execute(
         "SELECT id FROM cases WHERE customer_thread_id = %s AND status IN ('open', 'in_progress') LIMIT 1",
         (thread_id,),

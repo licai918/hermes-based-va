@@ -12,6 +12,7 @@ describe("TOOL_CATALOG", () => {
       "match_phone",
       "match_email_sender",
       "get_email_link_status",
+      "link_identity",
     ]);
     expect(TOOL_CATALOG.toee_shopify_read).toEqual([
       "get_order",
@@ -22,7 +23,11 @@ describe("TOOL_CATALOG", () => {
     expect(TOOL_CATALOG.toee_customer_memory).toEqual([
       "upsert_preference",
       "clear_preference",
+      "erase_customer_memory",
       "get_preferences",
+      "get_my_memory_summary",
+      "dismiss_proposal",
+      "get_memory_audit",
     ]);
   });
 
@@ -33,6 +38,7 @@ describe("TOOL_CATALOG", () => {
       "get_audit_log",
       "get_thread",
       "get_thread_by_phone",
+      "get_thread_by_email",
       "list_auto_handled",
       "get_auto_handled",
       "list_sales_outreach",
@@ -54,27 +60,39 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_workbench_admin", "authenticate")).toBe(true);
   });
 
-  it("contains exactly the 16 v1 tool names", () => {
-    expect([...TOOL_NAMES].sort()).toEqual(
-      [
-        "toee_agent_experience",
-        "toee_case",
-        "toee_case_manage",
-        "toee_copilot_draft",
-        "toee_customer_memory",
-        "toee_easyroutes_read",
-        "toee_eval_review",
-        "toee_identity_lookup",
-        "toee_knowledge_ops",
-        "toee_knowledge_search",
-        "toee_qbo_read",
-        "toee_shopify_read",
-        "toee_square_payment_link",
-        "toee_sms_reply",
-        "toee_workbench_admin",
-        "toee_workbench_read",
-      ].sort(),
-    );
+  // The test that used to live here compared TOOL_NAMES against a hardcoded
+  // array of 18 names. It looked like a completeness guard and was not one: it
+  // fired only when someone edited tools.ts without editing the test, and it
+  // could not see the Python catalog at all. Five tools and six actions went
+  // missing on this side across two iterations while it stayed green, because a
+  // Python-side addition was invisible to it by construction.
+  //
+  // Deleted rather than updated to 23. The real check --
+  // hermes/tests/test_tool_catalog_parity.py -- reads both catalogs and fails on
+  // any divergence in either direction, which subsumes everything this test did.
+  // Re-adding the hardcoded list would only create a second place to update and
+  // a second thing to forget.
+  it("exposes every declared tool through TOOL_NAMES and isToolName", () => {
+    expect(TOOL_NAMES).toHaveLength(Object.keys(TOOL_CATALOG).length);
+    for (const name of TOOL_NAMES) {
+      expect(isToolName(name)).toBe(true);
+      expect(TOOL_CATALOG[name].length).toBeGreaterThan(0);
+    }
+  });
+
+  it("exposes the toee_feedback tool shell actions (0.0.4 S02, ADR-0154)", () => {
+    expect(TOOL_CATALOG.toee_feedback).toEqual([
+      "submit_interaction_review",
+      "record_draft_outcome",
+      "submit_draft_rating",
+      "list_feedback",
+    ]);
+    expect(isToolAction("toee_feedback", "submit_interaction_review")).toBe(true);
+    expect(isToolAction("toee_feedback", "record_draft_outcome")).toBe(true);
+    expect(isToolAction("toee_feedback", "submit_draft_rating")).toBe(true);
+    expect(isToolAction("toee_feedback", "list_feedback")).toBe(true);
+    // Schema test (S02 acceptance): a foreign action name is rejected.
+    expect(isToolAction("toee_feedback", "delete_feedback")).toBe(false);
   });
 
   it("exposes the L6 Agent-experience store actions (0.0.3 S22/S24, FR-23/FR-24)", () => {
@@ -88,6 +106,34 @@ describe("TOOL_CATALOG", () => {
     expect(isToolAction("toee_agent_experience", "list_agent_experience")).toBe(true);
     expect(isToolAction("toee_agent_experience", "confirm_experience")).toBe(true);
     expect(isToolAction("toee_agent_experience", "reject_experience")).toBe(true);
+  });
+
+  it("exposes the L7 Semantic Lexicon store actions (0.0.5 S01/S02, FR-1/FR-3/FR-8)", () => {
+    expect(TOOL_CATALOG.toee_semantic_lexicon).toEqual([
+      "propose_lexicon_entry",
+      "list_lexicon_entries",
+      "confirm_lexicon_entry",
+      "reject_lexicon_entry",
+      "retire_lexicon_entry",
+      "edit_lexicon_entry",
+      "add_lexicon_entry",
+    ]);
+    expect(isToolAction("toee_semantic_lexicon", "propose_lexicon_entry")).toBe(
+      true,
+    );
+    expect(isToolAction("toee_semantic_lexicon", "list_lexicon_entries")).toBe(
+      true,
+    );
+    expect(isToolAction("toee_semantic_lexicon", "confirm_lexicon_entry")).toBe(
+      true,
+    );
+    expect(isToolAction("toee_semantic_lexicon", "add_lexicon_entry")).toBe(true);
+    // S02 EXTENDED the one read with filters instead of adding a second, and
+    // retirement is a status -- there is no delete.
+    expect(isToolAction("toee_semantic_lexicon", "list_lexicon_queue")).toBe(false);
+    expect(isToolAction("toee_semantic_lexicon", "delete_lexicon_entry")).toBe(
+      false,
+    );
   });
 });
 

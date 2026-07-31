@@ -244,9 +244,13 @@ def ingest(
 
     owns_conn = conn is None
     if owns_conn:
+        from ..datastore.config import CONNECT_TIMEOUT_OFFLINE_SECONDS
+
         target_dsn = dsn or knowledge_database_url()
         migrate_knowledge_db(target_dsn)  # ensure_database + apply migrations, idempotent
-        conn = psycopg.connect(target_dsn)
+        conn = psycopg.connect(
+            target_dsn, connect_timeout=CONNECT_TIMEOUT_OFFLINE_SECONDS
+        )
 
     try:
         with conn.cursor() as cur:

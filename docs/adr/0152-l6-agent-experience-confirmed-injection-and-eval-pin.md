@@ -1,5 +1,11 @@
 # L6 Agent-experience: confirmed-entry injection, external read-only, and the eval pin
 
+> **Superseded in part by 0.0.5 S04 (FR-4) — see the superseding note at the end
+> of this file.** Decision 5 ("External is READ-ONLY") stands for the **agent**;
+> it never constrained a **fork**, and 0.0.5 puts one on the gateway turn path.
+> Read that note before concluding that a proposal originating on an external
+> conversation contradicts this ADR.
+
 > **Status: Accepted — implemented** (decided during 0.0.3, 2026-07-21). Closes
 > the L6 Agent-experience chain opened by S22
 > ([migration 0008](../../hermes-runtime/migrations/0008_agent_experience.sql)),
@@ -203,3 +209,83 @@ not lost.
   the determinism gate; `test_copilot_turn.py`, `test_copilot_learning_loop.py`,
   `test_openrouter_memory_injection.py`, `test_postgres_gateway_store.py`.
 - Full-suite regression: `hermes-runtime` and `hermes`, live Postgres.
+
+---
+
+## Superseding note (0.0.5 S04, FR-4): a fork is not the agent
+
+Decision 5 above says *"External is READ-ONLY"* and decision 2 says the shared
+layers have *"deliberately no PII path"*. 0.0.5 S04 adds a **gateway-side capture
+fork** that runs after an external customer turn and proposes L7 semantic-lexicon
+entries. That is not a reversal of either sentence, and this note exists so the
+next reader does not have to decide for themselves which one won.
+
+**What decision 5 constrains is the AGENT — the thing that talks to the customer.**
+That constraint is structural and unchanged: `PROFILE_TOOL_ALLOWLIST` gives
+`customer_service_external` neither `toee_agent_experience` nor
+`toee_semantic_lexicon`, so the external agent cannot propose to any shared layer,
+in this iteration or any previous one. Removing a tool from an allowlist is the
+only way that fact could change, and nothing in S04 touches it.
+
+**A fork is different in four ways that are each checkable**, and the four together
+are what make it internal infrastructure rather than an external write path:
+
+| | external agent | capture fork (S04) |
+| --- | --- | --- |
+| profile | `customer_service_external` | `internal_copilot` |
+| when | during the turn, with the customer waiting | after the reply, on the background worker (`l7_capture`) |
+| toolset | the External allowlist | `CAPTURE_FORK_TOOL_NAMES` — one action, `propose_lexicon_entry` |
+| what it can land | nothing in a shared layer | `status='proposed'` only; an admin decides |
+
+The same distinction already existed for L6 and was simply never written down:
+S23-0.0.3's review fork also boots `internal_copilot` and proposes, and it also
+runs after a turn that the external agent could not have proposed from. S04 does
+for the gateway path exactly what S23 did for the copilot path. **The invariant
+worth stating, because it is the one both forks actually obey, is: *the model that
+is talking to a customer never writes to a shared layer; a separate, restricted,
+after-the-fact pass may propose into one.***
+
+**Decision 2's "no PII path" is narrowed, honestly, rather than left to imply more
+than it delivers.** For L6 it still holds as written — the review prompt forbids
+person-specific data and the L6 write scan hard-rejects PII in content and in
+`proposer_context` values (D2, amendment 3's clarification). For **L7** the honest
+statement is different: `evidence` is *designed* to carry a verbatim customer
+exchange, because that exchange is what an administrator needs in order to judge
+the proposal, so the L7 leg of the scan **redacts PII in place and keeps the
+entry** rather than rejecting it (D2). NFR-6 is satisfied by the PII being
+*removed*, not by the exchange never being read. A fork that carries a callback
+number in a `proposer_context` value has that value redacted on L7 and the whole
+write rejected on L6 — and in both cases the fix is for the fork to carry ids and
+refs, which its prompt tells it to do.
+
+**A correction to decision 5's own machinery, found while building S04's tests.**
+"Restricted to `toee_agent_experience` only" was, until now, an **offer list and
+not a fence**. `run_agent_turn` UNIONs `governed_tool_names` into the agent's
+existing `valid_tool_names` unless `tools_exclusive=True`, and the fork boots the
+whole `internal_copilot` profile first — so a review fork that decided to call
+`toee_customer_memory` or `toee_case_manage` would have been dispatched. The
+external production turn has passed `tools_exclusive=True` since it shipped; both
+forks now do too. Found by a bait: removing the restriction from the fork's call
+site left every routing test green, which is what a restriction that restricts
+nothing looks like from inside its own test suite. Pinned at both call sites by
+`test_the_gateway_fork_hands_the_model_only_the_lexicon_propose_tool` and
+`test_the_review_fork_hands_the_model_only_the_two_propose_tools`, each asserting
+the exclusivity flag alongside the names.
+
+**The eval pin generalizes unchanged.** `LEXICON_CAPTURE` is default OFF and its
+own axis (neither injection flag, neither L6 flag), so the record/replay path
+enqueues nothing; and the structural half is stronger than the flag, exactly as
+decision 7 argued for L6 — the eval record path builds its turn from
+`boot_profile_eval` + `run_agent_turn` and never goes through
+`make_openrouter_run_turn`, which is the only thing in the repo that enqueues an
+`l7_capture` job. Pinned by
+`test_the_eval_record_path_does_not_go_through_the_capture_enqueue_seam`.
+
+**Turn resilience generalizes too, and gets stronger.** Decision 8 made L6
+*injection* degrade to skip. The capture fork cannot degrade a turn at all: it is
+not on the turn's thread. `openrouter.run_turn` only enqueues, after the model
+call and after the metric writes, with the enqueue itself swallowed — so a dead
+queue, a dead worker or a fork that raises all leave the customer's reply exactly
+as it was.
+
+Verification for this note: `hermes-runtime/tests/test_lexicon_capture.py`.

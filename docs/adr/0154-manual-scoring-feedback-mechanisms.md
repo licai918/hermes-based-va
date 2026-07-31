@@ -37,13 +37,28 @@ framework-derived attribution) constrains how such a loop may close.
 2. **Pass/fail + fixed reason tags, not a 1–5 scale.** Binary verdicts are
    consistent across raters; fixed tags are aggregable structure. Free-text
    comment is optional color, never required.
-3. **Append-only, actor-attributed writes via a dispatch-only tool.** New
-   `toee_feedback` tool (fixed action enum) is reachable only through
-   `POST /v1/tools:dispatch` and registered in **no** Profile Tool Allowlist.
-   Every write requires framework-resolved `context.user_id` (fail-closed) —
-   by the ADR-0148 boot-path invariant, an agent draft turn can never carry
-   one, so **the AI structurally cannot score itself**. Re-review appends; the
-   audit trail keeps history.
+3. **Append-only, actor-attributed writes; allowlisted for dispatch, excluded
+   from the model's tool loop.** New `toee_feedback` tool (fixed action enum)
+   is added to the Internal Copilot and Supervisor Admin profiles'
+   `PROFILE_TOOL_ALLOWLIST` — the dispatch route's Tool Gate *is* that
+   allowlist, so a tool absent from it would return `policy_blocked` and be
+   unreachable even for the BFF. What keeps a live agent from calling it is the
+   separate, per-action `_AGENT_EXCLUDED_ACTIONS` set: every `(toee_feedback,
+   action)` pair is listed there, so tool registration skips it when building
+   the model's callable schema and it never reaches the model surface — the
+   same pattern already used by `toee_agent_experience`, `toee_metrics`,
+   `toee_retention`, `toee_job_queue`, and `toee_integrations`. The tool is
+   reachable only through `POST /v1/tools:dispatch`. Allowlisting is per
+   **tool**, not per action — `toee_feedback`'s own action-level split
+   (`submit_interaction_review` on Internal Copilot vs. `list_feedback` on
+   Supervisor Admin) is enforced by which BFF route calls which action, not by
+   the allowlist. The load-bearing guarantee that **the AI structurally cannot
+   score itself** is independent of any of this registration plumbing: every
+   write requires framework-resolved `context.user_id` (fail-closed), and by
+   the ADR-0148 boot-path invariant the copilot draft turn's boot path carries
+   no acting employee at all, so an agent-initiated feedback write fails closed
+   on the actor check regardless of registration. Re-review appends; the audit
+   trail keeps history.
 4. **The improvement loop is proposal-gated, not autonomous, and reuses
    0.0.3's existing machinery (Phase 2).** Aggregated feedback yields
    **Improvement Proposals** that become effective only after human approval
