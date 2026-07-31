@@ -21,13 +21,13 @@
 
 | PAC | state | basis |
 | --- | --- | --- |
-| **PAC-1** | ⚠ **partly shown** | L7 normalizer live in a real conversation (`205 55 16` → agent said `205/55R16`). The **seasonal-default confirm-before-quoting** half is NOT shown: the size probed was out of stock, and the PAC's wording says "in winter" while the walkthrough ran in the all-season window. Needs an in-stock size, ideally re-run in the winter window. |
+| **PAC-1** | ✅ **shown** (all-season window) | A bare **`185 55 16`** — an in-stock size — returned: *"We carry the **185/55R16** Grenlander Kingpro One **Passenger** tire … **Were you looking for passenger tires, or something else in that size?**"* Three things in one reply: the normalizer resolved the bare digits; the seasonal `default_rule` supplied the class; and it was rendered as a **QUESTION before quoting**, which is FR-7/US3's confirm-first rule. It also says **"passenger tires"**, not "all-season" — D28.1's wording fix in the sentence the rule itself generates. **Caveat:** the PAC's text says "in winter defaults to winter tires"; this ran on 2026-07-30, the all-season window, so the same mechanism was shown on the other branch. The winter branch needs a January date or a clock override. |
 | **PAC-2** | ✅ **shown** | add → edit → retire driven through the console. New row rendered `admin_manual` + a named decider and **no** UNATTRIBUTED badge (the D28.2 flag discriminates); `(edited …)` appeared on edit; retire left `retired` with no action buttons. |
 | **PAC-3** | ✅ **shown** (retire half) | Entry injected into a live turn, then retired → `blast_radius` item with `open_case_count: 1`. The **preference old→new history** and **whole-binding erase trail** halves were NOT exercised. |
 | **PAC-4** | ⚠ **partial** | Adversarial eval family green — but **D24 says green is not proof no injection was obeyed** (the gate reads reply text; obedience as a tool call is invisible). The L4 hard-reject leg was not driven by hand. |
 | **PAC-5** | ⚠ **partly shown** | Hub renders every claim honestly (5/5 + a PII-absence check); inbox now populates and renders decisions. **Re-classify, triage annotations, NL pre-fill and the fail-review one-click L4 correction were NOT exercised.** |
 | **PAC-6** | ⚠ **number in doubt** | Tiles live, 150 ms line shown — but L5 measured **p95 787.52 ms against its 800 ms budget** (98%) while the FR-7b gate reports 11.54 ms for the same code. Gate warms and loops; a turn does not. See the ⚠ in the walkthrough. |
-| **PAC-7** | ⛔ **blocked on the owner's session** — mechanism confirmed, input cannot be created without you | See the note below. |
+| **PAC-7** | ⚠ **first clause shown, second clause structurally out of reach in one sitting** | Three `tone_inappropriate` fails submitted through the real review UI on three DISTINCT records → aggregator: `signals 11, clusters 5, tripped 1, emitted 1`. **ONE** proposal, not three, carrying `{"emitted_by":"feedback_aggregator","distinct_subjects":3,"signal_rows":3,"feedback_cluster":"tone_inappropriate"}`. Acknowledged it: queue 2 → 1. **The loop-closure metrics did not move, and that is correct** — see below. |
 | **PAC-8** | 🔒 **owner** | 81% is real, and the questions AND their expected source pages were derived by the implementer from the owner's transcript. Read the 21 questions, not the percentage. |
 | **PAC-9** | ⚠ **head drift** | CI 6/6 green on `ead07c2`; commits after that are unverified until pushed. |
 
@@ -57,9 +57,41 @@ a supervisor submitting three reviews through `/copilot/audit/auto-handled/<id>`
 that requires a supervisor session, which cannot be minted from outside (ADR-0093, HttpOnly signed
 cookie).
 
-**Fabricating the rows to make the PAC demonstrable would be manufacturing the evidence the PAC
-exists to gather.** Left undone deliberately. With a signed-in session the rest of the chain —
-aggregate → one item → acknowledge → loop-closure metrics — is minutes.
+**RUN 2026-07-30 with the owner signed in.** Three `tone_inappropriate` fails submitted through the
+real review UI on three distinct auto-handled records. Aggregator:
+
+```
+signals 11   clusters 5   tripped 1   emitted 1   already_open 0   blocked 0   unrouted 0
+```
+
+**ONE proposal from three fails** — the PAC's central claim — carrying its own provenance:
+`{"emitted_by":"feedback_aggregator","feedback_cluster":"tone_inappropriate","distinct_subjects":3,
+"signal_rows":3,"window_days":30}`. Acknowledged: queue 2 → 1.
+
+### The second clause did NOT happen, and that is the correct behaviour
+
+Loop-closure metrics, measured immediately before and immediately after the acknowledge —
+**identical**:
+
+| metric | before | after |
+| --- | --- | --- |
+| Feedback that became a proposal (routable signals) | 33.3% — 3/9 | 33.3% — 3/9 |
+| Feedback with nowhere legal to go (D23) | 18.2% — 2/11 | 18.2% — 2/11 |
+| Confirmed fixes that came back | Not yet computed — 0/0 | Not yet computed — 0/0 |
+| Edited L7 entries that held or improved honored rate | Not yet computed — 0/0 | Not yet computed — 0/0 |
+
+The first two **had already moved** — from the aggregator run, not the acknowledge: the 3/9 IS this
+cluster converting.
+
+The last two cannot move on an acknowledge, by design. A `persona_review` item is **advisory**; the
+routing table says a persona changes by *dev edit + eval re-record*, and acknowledge/dismiss are its
+only actuators. "Confirmed fixes that came back" needs a CONFIRMED memory fix plus **judged turns
+after it**; "edited L7 entries that held their honored rate" needs an EDIT plus judge scores.
+
+**So PAC-7's second clause spans a loop no walkthrough can close in one sitting:** it needs an
+ACTION-tag cluster (→ an L6 procedure proposal, not a persona item) → confirm → subsequent customer
+traffic → the judge scoring it. That is days of real usage, not a session. **Stated as a limit of
+the PAC as written**, not marked done and not marked broken.
 
 ## ⚠ Carried exceptions — these do NOT get closed quietly (see [../DECISIONS.md](../DECISIONS.md))
 
