@@ -27,11 +27,39 @@
 | **PAC-4** | ⚠ **partial** | Adversarial eval family green — but **D24 says green is not proof no injection was obeyed** (the gate reads reply text; obedience as a tool call is invisible). The L4 hard-reject leg was not driven by hand. |
 | **PAC-5** | ⚠ **partly shown** | Hub renders every claim honestly (5/5 + a PII-absence check); inbox now populates and renders decisions. **Re-classify, triage annotations, NL pre-fill and the fail-review one-click L4 correction were NOT exercised.** |
 | **PAC-6** | ⚠ **number in doubt** | Tiles live, 150 ms line shown — but L5 measured **p95 787.52 ms against its 800 ms budget** (98%) while the FR-7b gate reports 11.54 ms for the same code. Gate warms and loops; a turn does not. See the ⚠ in the walkthrough. |
-| **PAC-7** | ❌ **not shown** | Needs three same-tag fails → one proposal → loop-closure metrics moving. Unblocked by D30 (the ledger fills now) but never driven. |
+| **PAC-7** | ⛔ **blocked on the owner's session** — mechanism confirmed, input cannot be created without you | See the note below. |
 | **PAC-8** | 🔒 **owner** | 81% is real, and the questions AND their expected source pages were derived by the implementer from the owner's transcript. Read the 21 questions, not the percentage. |
 | **PAC-9** | ⚠ **head drift** | CI 6/6 green on `ead07c2`; commits after that are unverified until pushed. |
 
 **Nothing here is signed. This table is what a walkthrough produced, not a verdict.**
+
+### PAC-7, what was established and what is missing
+
+The **mechanism** was verified against the live database by running S25's real
+`aggregate_feedback` (not a test double):
+
+* `SAME_TAG_FAIL_THRESHOLD = 3`, counted in **DISTINCT SUBJECTS** — the same case reviewed three
+  times is one problem, by design.
+* Which tags can produce an inbox item at all: **tone** tags (`wrong_tone`, `too_verbose`,
+  `tone_inappropriate`) → a `persona_review` item; **action** tags (`tool_misuse`, `wrong_action`,
+  `should_have_escalated`) → an L6 procedure proposal. The **knowledge** tags emit nothing — that is
+  D23's "five of eleven tags have nowhere legal to emit", and it is why the tag chosen for this PAC
+  matters.
+* The run reported `signals=8, clusters=0`. That looked wrong and is not: `aggregate_feedback`
+  returns early when nothing is newer than its **watermark** (D13's idempotence leg), and the early
+  return leaves `clusters` at its default. Confirmed by reading the function after observing the
+  number, rather than filed as a defect.
+
+**What is missing is the INPUT.** The database holds two failing reviews, both carrying
+`['factual_error', 'should_have_escalated']`, and all of it sits behind the watermark. PAC-7 needs
+**three distinct subjects failing on one tag, newer than the last run**. Creating that honestly means
+a supervisor submitting three reviews through `/copilot/audit/auto-handled/<id>` — a governed write
+that requires a supervisor session, which cannot be minted from outside (ADR-0093, HttpOnly signed
+cookie).
+
+**Fabricating the rows to make the PAC demonstrable would be manufacturing the evidence the PAC
+exists to gather.** Left undone deliberately. With a signed-in session the rest of the chain —
+aggregate → one item → acknowledge → loop-closure metrics — is minutes.
 
 ## ⚠ Carried exceptions — these do NOT get closed quietly (see [../DECISIONS.md](../DECISIONS.md))
 
